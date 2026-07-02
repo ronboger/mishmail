@@ -1,0 +1,33 @@
+name: PerfectMail
+options:
+  bundleIdPrefix: dev.ronboger
+  deploymentTarget:
+    macOS: "14.0"
+packages:
+  GRDB:
+    url: https://github.com/groue/GRDB.swift
+    from: 6.29.0
+targets:
+  PerfectMail:
+    type: application
+    platform: macOS
+    sources: [Sources/PerfectMail]
+    dependencies:
+      - package: GRDB
+    entitlements:
+      path: Sources/PerfectMail/PerfectMail.entitlements
+      properties:
+        com.apple.security.app-sandbox: true
+        com.apple.security.network.client: true
+        com.apple.security.network.server: true
+    settings:
+      base:
+        MARKETING_VERSION: 0.1.0
+        CURRENT_PROJECT_VERSION: 1
+        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_STYLE: Automatic
+        SWIFT_VERSION: 5.10
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        ENABLE_HARDENED_RUNTIME: false
