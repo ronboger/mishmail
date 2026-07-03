@@ -3,22 +3,27 @@ import SwiftUI
 struct ContentView: View {
     @EnvironmentObject var store: MailStore
     @State private var keyMonitor: Any?
+    // Persisted so the layout survives relaunch, like the sidebar state.
+    @AppStorage("readingPaneHidden") private var readingPaneHidden = false
 
     var body: some View {
-        NavigationSplitView {
-            Sidebar()
-        } content: {
-            ThreadListView()
-                .navigationSplitViewColumnWidth(min: 420, ideal: 560)
-        } detail: {
-            if let id = store.selectedThreadId,
-               let thread = store.threads.first(where: { $0.id == id }) {
-                ThreadDetailView(thread: thread, onReply: { msg in
-                    store.composeRequest = .init(replyTo: msg)
-                })
+        Group {
+            if readingPaneHidden {
+                // Two columns: the thread list takes the full right side.
+                NavigationSplitView {
+                    Sidebar()
+                } detail: {
+                    ThreadListView()
+                }
             } else {
-                Text("Select a conversation")
-                    .foregroundStyle(.secondary)
+                NavigationSplitView {
+                    Sidebar()
+                } content: {
+                    ThreadListView()
+                        .navigationSplitViewColumnWidth(min: 420, ideal: 560)
+                } detail: {
+                    detailPane
+                }
             }
         }
         .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search all mail")
@@ -45,6 +50,15 @@ struct ContentView: View {
                     store.composeRequest = .init(replyTo: nil)
                 } label: { Label("Compose", systemImage: "square.and.pencil") }
                     .keyboardShortcut("n", modifiers: .command)
+                Button {
+                    readingPaneHidden.toggle()
+                } label: {
+                    Label(readingPaneHidden ? "Show Reading Pane" : "Hide Reading Pane",
+                          systemImage: "sidebar.trailing")
+                }
+                .keyboardShortcut("0", modifiers: [.command, .option])
+                .help(readingPaneHidden ? "Show the reading pane (⌥⌘0)"
+                                        : "Hide the reading pane (⌥⌘0)")
             }
         }
         // Compose docks bottom-right like Gmail/Notion; the rest of the app
@@ -81,6 +95,19 @@ struct ContentView: View {
             Button("OK") { store.lastError = nil }
         } message: {
             Text(store.lastError ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private var detailPane: some View {
+        if let id = store.selectedThreadId,
+           let thread = store.threads.first(where: { $0.id == id }) {
+            ThreadDetailView(thread: thread, onReply: { msg in
+                store.composeRequest = .init(replyTo: msg)
+            })
+        } else {
+            Text("Select a conversation")
+                .foregroundStyle(.secondary)
         }
     }
 
