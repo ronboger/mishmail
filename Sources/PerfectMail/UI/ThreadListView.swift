@@ -136,13 +136,26 @@ struct ThreadListView: View {
                 .shadow(radius: 8)
                 .padding(.bottom, 12)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let notice = store.notice {
+                Text(notice)
+                    .padding(.horizontal, 16).padding(.vertical, 10)
+                    .background(.regularMaterial, in: Capsule())
+                    .shadow(radius: 8)
+                    .padding(.bottom, 12)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         .animation(.easeOut(duration: 0.15), value: store.undoAction?.id)
+        .animation(.easeOut(duration: 0.15), value: store.notice)
     }
 
     @ViewBuilder
     private func threadMenu(_ thread: MailThread) -> some View {
+        if thread.labels.contains("DRAFT") {
+            Button("Edit Draft") { store.editDraft(inThread: thread) }
+            Button("Delete Draft", role: .destructive) { store.deleteDraft(inThread: thread) }
+            Divider()
+        }
         Button("Archive") { store.archive(thread) }
         Button(thread.isStarred ? "Unstar" : "Star") { store.toggleStar(thread) }
         Button(thread.isUnread ? "Mark Read" : "Mark Unread") {

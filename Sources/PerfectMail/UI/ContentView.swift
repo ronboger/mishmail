@@ -22,6 +22,11 @@ struct ContentView: View {
             }
         }
         .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search all mail")
+        .onSubmit(of: .search) {
+            // Hand focus back to the list so j/k/e/etc. work immediately.
+            NSApp.keyWindow?.makeFirstResponder(nil)
+            if store.selectedThreadId == nil { store.moveSelection(1) }
+        }
         .onChange(of: store.searchText) { store.reloadThreads() }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil

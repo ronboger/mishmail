@@ -12,6 +12,8 @@ struct ComposeView: View {
     private var replyTo: Message? { request.forward ? nil : request.replyTo }
     /// The original message, whatever the mode.
     private var original: Message? { request.replyTo }
+    /// The Gmail draft being edited, if any.
+    private var editingDraft: Message? { request.editDraft }
 
     @State private var fromAccount: String = ""
     @State private var toTokens: [String] = []
@@ -36,19 +38,20 @@ struct ComposeView: View {
 
     /// Content the user actually authored (quoted prefill doesn't count).
     private var hasContent: Bool {
-        body_.trimmingCharacters(in: .whitespacesAndNewlines)
-            != initialBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        editingDraft != nil
+            || body_.trimmingCharacters(in: .whitespacesAndNewlines)
+                != initialBody.trimmingCharacters(in: .whitespacesAndNewlines)
             || !attachmentURLs.isEmpty
     }
 
     /// Close and keep the work: unsent content becomes a real Gmail draft.
     private func saveAndClose() {
         if hasContent {
-            let (from, to, cc, subj, body, reply) =
+            let (from, to, cc, subj, body, reply, old) =
                 (fromAccount, toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
-                 subject, body_, replyTo)
+                 subject, body_, replyTo, editingDraft)
             Task { await store.saveDraft(from: from, to: to, cc: cc, subject: subj,
-                                         body: body, replyTo: reply) }
+                                         body: body, replyTo: reply, replacing: old) }
         }
         close()
     }
@@ -57,7 +60,9 @@ struct ComposeView: View {
         VStack(alignment: .leading, spacing: 0) {
             // Header: subject as title, close (saves a draft).
             HStack {
-                Text(subject.isEmpty ? "New Message" : subject)
+                Text(editingDraft != nil
+                     ? "Draft: \(subject.isEmpty ? "(no subject)" : subject)"
+                     : (subject.isEmpty ? "New Message" : subject))
                     .font(.system(size: 13, weight: .semibold))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -234,6 +239,21 @@ struct ComposeView: View {
     }
 
     private func prefill() {
+        // Editing an existing Gmail draft: load its fields verbatim.
+        if let draft = editingDraft {
+            fromAccount = draft.accountId
+            toTokens = MessageParser.splitAddresses(draft.toHeader)
+                .map { MessageParser.emailAddress($0) }.filter { $0.contains("@") }
+            ccTokens = MessageParser.splitAddresses(draft.ccHeader)
+                .map { MessageParser.emailAddress($0) }.filter { $0.contains("@") }
+            if !ccTokens.isEmpty { showCc = true }
+            subject = draft.subject
+            body_ = draft.bodyText
+            initialBody = ""   // a draft always counts as content
+            bodyFocused = true
+            return
+        }
+
         fromAccount = original?.accountId ?? store.accounts.first?.id ?? ""
         guard let original else { return }
         let ownAddresses = Set(store.accounts.map { $0.id.lowercased() })
@@ -337,7 +357,8 @@ struct ComposeView: View {
                                      to: toTokens.joined(separator: ", "),
                                      cc: ccTokens.joined(separator: ", "),
                                      subject: subject, body: body_, replyTo: replyTo,
-                                     attachments: attachments)
+                                     attachments: attachments,
+                                     replacingDraft: editingDraft)
                 close()
             } catch {
                 self.error = error.localizedDescription

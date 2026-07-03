@@ -17,6 +17,22 @@ struct ThreadDetailView: View {
                     .textSelection(.enabled)
                     .padding(.horizontal)
 
+                // Draft threads get an obvious way back into compose.
+                if thread.labels.contains("DRAFT") {
+                    HStack(spacing: 8) {
+                        Button {
+                            store.editDraft(inThread: thread)
+                        } label: {
+                            Label("Edit Draft", systemImage: "pencil")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        Button("Delete Draft", role: .destructive) {
+                            store.deleteDraft(inThread: thread)
+                        }
+                    }
+                    .padding(.horizontal)
+                }
+
                 // Labels on this thread, with add/remove. "l" opens the picker.
                 HStack(spacing: 6) {
                     ForEach(userLabelIds, id: \.self) { labelId in

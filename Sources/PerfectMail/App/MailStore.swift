@@ -107,6 +107,16 @@ final class MailStore: ObservableObject {
     @Published var showLabelPicker = false
     @Published var showCommandPalette = false
     @Published var unreadCounts: [String: Int] = [:]   // sidebar badges
+    @Published var notice: String?                      // transient confirmation toast
+    private var noticeTimer: Timer?
+
+    func showNotice(_ text: String) {
+        notice = text
+        noticeTimer?.invalidate()
+        noticeTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
+            Task { @MainActor in self?.notice = nil }
+        }
+    }
 
     /// User-facing label for an account ("Personal", "Fund", …).
     func renameAccount(_ id: String, label: String) {
@@ -125,6 +135,7 @@ final class MailStore: ObservableObject {
         let replyTo: Message?
         var replyAll = false
         var forward = false
+        var editDraft: Message? = nil   // an existing Gmail draft being edited
     }
 
     struct UndoAction: Identifiable {
@@ -699,33 +710,72 @@ final class MailStore: ObservableObject {
 
     func send(from accountId: String, to: String, cc: String, subject: String,
               body: String, replyTo message: Message? = nil,
-              attachments: [MIMEBuilder.Attachment] = []) async throws {
+              attachments: [MIMEBuilder.Attachment] = [],
+              replacingDraft draft: Message? = nil) async throws {
         let raw = MIMEBuilder.build(
             from: accountId, to: to, cc: cc, subject: subject, bodyText: body,
             inReplyTo: message?.messageIdHeader,
-            references: message?.referencesHeader,
+            references: message?.referencesHeader ?? draft?.referencesHeader,
             attachments: attachments
         )
-        let gmailThreadId = message.map { String($0.threadId.split(separator: ":").last!) }
+        // A reply keeps its thread; so does a draft that lives in one.
+        let gmailThreadId = (message ?? draft).map { String($0.threadId.split(separator: ":").last!) }
         try await client(for: accountId).send(raw: raw, threadId: gmailThreadId)
+        if let draft { await deleteUnderlyingDraft(draft, silent: true) }
         await sync(accountId: accountId)
     }
 
     /// Saves compose state as a real Gmail draft (shows up in Gmail too).
+    /// Replaces `replacing` when re-saving an edited draft.
     func saveDraft(from accountId: String, to: String, cc: String, subject: String,
-                   body: String, replyTo message: Message? = nil) async {
+                   body: String, replyTo message: Message? = nil,
+                   replacing draft: Message? = nil) async {
         let raw = MIMEBuilder.build(
             from: accountId, to: to, cc: cc, subject: subject, bodyText: body,
             inReplyTo: message?.messageIdHeader,
-            references: message?.referencesHeader
+            references: message?.referencesHeader ?? draft?.referencesHeader
         )
-        let gmailThreadId = message.map { String($0.threadId.split(separator: ":").last!) }
+        let gmailThreadId = ((message ?? draft).map { String($0.threadId.split(separator: ":").last!) })
         do {
             try await client(for: accountId).createDraft(raw: raw, threadId: gmailThreadId)
+            if let draft { await deleteUnderlyingDraft(draft, silent: true) }
+            showNotice("Draft saved — find it in Drafts")
             await sync(accountId: accountId)
         } catch {
             lastError = "Draft not saved: \(error.localizedDescription)"
         }
+    }
+
+    // MARK: - Draft management
+
+    /// Opens an existing draft back into compose.
+    func editDraft(inThread thread: MailThread) {
+        if let draft = messages(inThread: thread.id).last(where: { $0.labelIds.contains("DRAFT") }) {
+            composeRequest = ComposeRequest(replyTo: nil, editDraft: draft)
+        }
+    }
+
+    /// Deletes the Gmail draft behind a local draft message.
+    func deleteUnderlyingDraft(_ draftMessage: Message, silent: Bool = false) async {
+        do {
+            let client = client(for: draftMessage.accountId)
+            let drafts = try await client.listDrafts()
+            guard let match = drafts.first(where: { $0.message.id == draftMessage.gmailId }) else {
+                return
+            }
+            try await client.deleteDraft(id: match.id)
+            if !silent {
+                showNotice("Draft deleted")
+                await sync(accountId: draftMessage.accountId)
+            }
+        } catch {
+            if !silent { lastError = error.localizedDescription }
+        }
+    }
+
+    func deleteDraft(inThread thread: MailThread) {
+        guard let draft = messages(inThread: thread.id).last(where: { $0.labelIds.contains("DRAFT") }) else { return }
+        Task { await deleteUnderlyingDraft(draft) }
     }
 
     // MARK: - Attachments

@@ -98,6 +98,11 @@ struct CommandPalette: View {
                              icon: "magnifyingglass") { s in
             s.searchText = raw
             s.reloadThreads()
+            // Land keyboard focus on the results so j/k work right away.
+            DispatchQueue.main.async {
+                NSApp.keyWindow?.makeFirstResponder(nil)
+                if s.selectedThreadId == nil { s.moveSelection(1) }
+            }
         }
         return [search] + commands.filter { $0.title.lowercased().contains(q) }
     }

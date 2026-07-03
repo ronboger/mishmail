@@ -116,6 +116,18 @@ actor GmailClient {
         return try JSONDecoder().decode(T.self, from: data)
     }
 
+    /// For endpoints with empty responses (DELETE).
+    private func requestVoid(_ method: String, _ path: String) async throws {
+        var req = URLRequest(url: URL(string: base + path)!)
+        req.httpMethod = method
+        req.setValue("Bearer \(try await validToken())", forHTTPHeaderField: "Authorization")
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else {
+            throw GmailError.http(code, String(data: data, encoding: .utf8) ?? "")
+        }
+    }
+
     // MARK: API surface
 
     func profile() async throws -> GProfile {
@@ -179,6 +191,30 @@ actor GmailClient {
         var message: [String: Any] = ["raw": raw.base64URLEncoded()]
         if let threadId { message["threadId"] = threadId }
         let _: DraftResp = try await request("POST", "/drafts", jsonBody: ["message": message])
+    }
+
+    struct GDraftRef: Decodable {
+        let id: String
+        let message: GMessageList.Ref
+    }
+
+    /// Lists all drafts (draft id ↔ message id mapping).
+    func listDrafts() async throws -> [GDraftRef] {
+        struct List: Decodable { let drafts: [GDraftRef]?; let nextPageToken: String? }
+        var all: [GDraftRef] = []
+        var pageToken: String?
+        repeat {
+            var q: [String: String] = ["maxResults": "100"]
+            if let pageToken { q["pageToken"] = pageToken }
+            let page: List = try await request("GET", "/drafts", query: q)
+            all += page.drafts ?? []
+            pageToken = page.nextPageToken
+        } while pageToken != nil
+        return all
+    }
+
+    func deleteDraft(id: String) async throws {
+        try await requestVoid("DELETE", "/drafts/\(id)")
     }
 
     /// Downloads an attachment's bytes.
