@@ -443,7 +443,8 @@ struct ThreadRow: View {
         .background(hovering ? Color.primary.opacity(0.07) : .clear,
                     in: RoundedRectangle(cornerRadius: 6))
         .padding(.horizontal, -6)
-        .contentShape(Rectangle())
+        // No contentShape here: it hijacks the List row's click handling on
+        // macOS, so clicking a thread would no longer select/open it.
         .onHover { inside in
             hovering = inside
             if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }

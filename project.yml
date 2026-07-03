@@ -30,6 +30,7 @@ targets:
         DEVELOPMENT_TEAM: 47T79PSL25
         SWIFT_VERSION: 5.10
         GENERATE_INFOPLIST_FILE: true
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         ENABLE_HARDENED_RUNTIME: false
