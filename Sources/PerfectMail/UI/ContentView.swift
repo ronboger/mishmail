@@ -42,9 +42,22 @@ struct ContentView: View {
                     .keyboardShortcut("n", modifiers: .command)
             }
         }
-        .sheet(item: $store.composeRequest) { request in
-            ComposeView(replyTo: request.replyTo)
+        // Compose docks bottom-right like Gmail/Notion; the rest of the app
+        // stays fully usable behind it.
+        .overlay(alignment: .bottomTrailing) {
+            if let request = store.composeRequest {
+                ComposeView(replyTo: request.replyTo)
+                    .id(request.id)
+                    .frame(width: 620, height: 500)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                    .clipShape(RoundedRectangle(cornerRadius: 12))
+                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
+                    .shadow(color: .black.opacity(0.35), radius: 24, y: 8)
+                    .padding(16)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
         }
+        .animation(.easeOut(duration: 0.15), value: store.composeRequest?.id)
         .sheet(item: $store.editingView) { view in
             ViewEditor(view: view)
         }

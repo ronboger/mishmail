@@ -1,17 +1,18 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
-/// Notion Mail-style compose: chips for recipients, borderless fields,
-/// minimal footer.
+/// Notion/Gmail-style compose: a docked card with recipient chips,
+/// borderless fields, minimal footer.
 struct ComposeView: View {
     @EnvironmentObject var store: MailStore
-    @Environment(\.dismiss) private var dismiss
 
     let replyTo: Message?
 
     @State private var fromAccount: String = ""
     @State private var toTokens: [String] = []
+    @State private var toDraft = ""
     @State private var ccTokens: [String] = []
+    @State private var ccDraft = ""
     @State private var showCc = false
     @State private var subject: String = ""
     @State private var body_: String = ""
@@ -22,8 +23,31 @@ struct ComposeView: View {
     @State private var error: String?
     @FocusState private var bodyFocused: Bool
 
+    private func close() {
+        store.composeRequest = nil
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
+            // Header: subject as title, close button.
+            HStack {
+                Text(subject.isEmpty ? "New Message" : subject)
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                Spacer()
+                Button {
+                    close()
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .keyboardShortcut(.cancelAction)
+            }
+            .padding(.bottom, 8)
+
             // From + Cc toggle row
             HStack {
                 Menu {
@@ -48,10 +72,10 @@ struct ComposeView: View {
             }
             .padding(.bottom, 4)
 
-            TokenAddressField(label: "To", tokens: $toTokens)
+            TokenAddressField(label: "To", tokens: $toTokens, draft: $toDraft)
                 .zIndex(3)
             if showCc || !ccTokens.isEmpty {
-                TokenAddressField(label: "Cc", tokens: $ccTokens)
+                TokenAddressField(label: "Cc", tokens: $ccTokens, draft: $ccDraft)
                     .zIndex(2)
             }
 
@@ -66,7 +90,7 @@ struct ComposeView: View {
                 .scrollContentBackground(.hidden)
                 .focused($bodyFocused)
                 .padding(.top, 8)
-                .frame(minHeight: 200, maxHeight: .infinity)
+                .frame(minHeight: 120, maxHeight: .infinity)
 
             if !attachmentURLs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -119,8 +143,7 @@ struct ComposeView: View {
 
                 Spacer()
 
-                Button("Cancel") { dismiss() }
-                    .keyboardShortcut(.cancelAction)
+                Button("Cancel") { close() }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                 Button {
                     send()
@@ -130,12 +153,12 @@ struct ComposeView: View {
                 }
                 .keyboardShortcut(.return, modifiers: .command)
                 .buttonStyle(.borderedProminent)
-                .disabled(sending || toTokens.isEmpty || fromAccount.isEmpty)
+                .disabled(sending || fromAccount.isEmpty
+                          || (toTokens.isEmpty && !toDraft.contains("@")))
             }
             .padding(.top, 8)
         }
-        .padding(16)
-        .frame(minWidth: 620, minHeight: 460)
+        .padding(14)
         .onAppear { prefill() }
         .fileImporter(isPresented: $showFilePicker,
                       allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
@@ -194,6 +217,16 @@ struct ComposeView: View {
     }
 
     private func send() {
+        // Typed-but-uncommitted addresses count as recipients.
+        for (draft, tokens) in [(toDraft, $toTokens), (ccDraft, $ccTokens)] {
+            let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
+            if cleaned.contains("@"), !tokens.wrappedValue.contains(cleaned) {
+                tokens.wrappedValue.append(cleaned)
+            }
+        }
+        toDraft = ""; ccDraft = ""
+        guard !toTokens.isEmpty else { return }
+
         sending = true
         error = nil
         Task {
@@ -212,7 +245,7 @@ struct ComposeView: View {
                                      cc: ccTokens.joined(separator: ", "),
                                      subject: subject, body: body_, replyTo: replyTo,
                                      attachments: attachments)
-                dismiss()
+                close()
             } catch {
                 self.error = error.localizedDescription
             }

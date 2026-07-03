@@ -6,7 +6,7 @@ struct TokenAddressField: View {
     @EnvironmentObject var store: MailStore
     let label: String
     @Binding var tokens: [String]
-    @State private var draft = ""
+    @Binding var draft: String
     @FocusState private var focused: Bool
     @State private var highlighted = 0
 
@@ -40,6 +40,10 @@ struct TokenAddressField: View {
                             .onChange(of: draft) {
                                 highlighted = 0
                                 if draft.hasSuffix(",") { commitDraft() }
+                            }
+                            .onChange(of: focused) {
+                                // Leaving the field turns typed text into a chip.
+                                if !focused { commitDraft() }
                             }
                             .onSubmit { commitDraft() }
                             .onKeyPress(.downArrow) {
