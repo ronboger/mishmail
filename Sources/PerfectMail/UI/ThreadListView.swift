@@ -111,20 +111,21 @@ struct ThreadListView: View {
                         }
                     } header: {
                         // Compact so the pinned (sticky) header stays a thin
-                        // line while scrolling.
+                        // line while scrolling. Secondary gray adapts to the
+                        // theme and sets headers clearly apart from thread text.
                         Text(title)
                             .font(.system(size: 12 * fontScale, weight: .semibold))
-                            .foregroundStyle(.primary.opacity(0.7))
+                            .foregroundStyle(.secondary)
                     } footer: {
                         // The air lives AFTER each group, so every gap between
                         // groups is this exact height.
-                        Color.clear.frame(height: 32 * fontScale)
+                        Color.clear.frame(height: 40 * fontScale)
                     }
                 }
             }
             .listStyle(.plain)
             // Matching air above the first group.
-            .contentMargins(.top, 32 * fontScale, for: .scrollContent)
+            .contentMargins(.top, 40 * fontScale, for: .scrollContent)
         }
         .navigationTitle(store.selectedView.title)
         .overlay {
