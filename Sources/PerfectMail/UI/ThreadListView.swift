@@ -439,7 +439,15 @@ struct ThreadRow: View {
             .frame(height: 18 * fontScale)
         }
         .padding(.vertical, 3 * fontScale)
-        .onHover { hovering = $0 }
+        .padding(.horizontal, 6)
+        .background(hovering ? Color.primary.opacity(0.07) : .clear,
+                    in: RoundedRectangle(cornerRadius: 6))
+        .padding(.horizontal, -6)
+        .contentShape(Rectangle())
+        .onHover { inside in
+            hovering = inside
+            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
     }
 
     private var participantsDisplay: String {

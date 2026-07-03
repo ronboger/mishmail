@@ -176,6 +176,14 @@ struct MessageCard: View {
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                 }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
+                .help(expanded ? "Collapse" : "Expand")
+            }
+            .contentShape(Rectangle())
+            .onTapGesture {
+                withAnimation { expanded.toggle() }
+            }
+            .onHover { inside in
+                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
             }
 
             if expanded {
