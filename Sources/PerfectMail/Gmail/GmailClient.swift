@@ -173,6 +173,14 @@ actor GmailClient {
         let _: GMessage = try await request("POST", "/messages/send", jsonBody: body)
     }
 
+    /// Saves an RFC 2822 message as a Gmail draft.
+    func createDraft(raw: Data, threadId: String? = nil) async throws {
+        struct DraftResp: Decodable { let id: String }
+        var message: [String: Any] = ["raw": raw.base64URLEncoded()]
+        if let threadId { message["threadId"] = threadId }
+        let _: DraftResp = try await request("POST", "/drafts", jsonBody: ["message": message])
+    }
+
     /// Downloads an attachment's bytes.
     func getAttachment(messageId: String, attachmentId: String) async throws -> Data {
         struct Body: Decodable { let data: String? }

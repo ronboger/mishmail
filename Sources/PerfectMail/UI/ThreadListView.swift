@@ -280,32 +280,27 @@ struct ThreadRow: View {
 
             HStack(spacing: 4) {
                 Text(participantsDisplay)
-                    .font(.system(size: 13 * fontScale, weight: thread.isUnread ? .semibold : .regular))
+                    .font(.system(size: 14 * fontScale, weight: thread.isUnread ? .semibold : .regular))
                     .lineLimit(1)
                 if thread.messageCount > 1 {
                     Text("\(thread.messageCount)")
-                        .font(.system(size: 11 * fontScale)).foregroundStyle(.secondary)
+                        .font(.system(size: 11.5 * fontScale)).foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 170 * fontScale, alignment: .leading)
+            .frame(width: 180 * fontScale, alignment: .leading)
 
             (Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
                 .fontWeight(thread.isUnread ? .semibold : .medium)
              + Text("  \(thread.snippet)")
                 .foregroundColor(.secondary))
-                .font(.system(size: 13 * fontScale))
+                .font(.system(size: 14 * fontScale))
                 .lineLimit(1)
 
             Spacer(minLength: 8)
 
-            if hovering {
-                HStack(spacing: 2) {
-                    hoverButton("star", filled: thread.isStarred) { store.toggleStar(thread) }
-                    hoverButton("archivebox") { store.archive(thread) }
-                    hoverButton("clock") { store.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 1)) }
-                    hoverButton("trash") { store.trash(thread) }
-                }
-            } else {
+            // Fixed-height trailing area: icons overlay the timestamp on
+            // hover so the row never changes size.
+            ZStack(alignment: .trailing) {
                 HStack(spacing: 5) {
                     if thread.hasAttachment {
                         Image(systemName: "paperclip").font(.caption2).foregroundStyle(.secondary)
@@ -317,12 +312,22 @@ struct ThreadRow: View {
                         Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow)
                     }
                     Text(thread.lastDate, format: relativeFormat)
-                        .font(.system(size: 11 * fontScale)).foregroundStyle(.secondary)
+                        .font(.system(size: 12 * fontScale)).foregroundStyle(.secondary)
                         .frame(minWidth: 52, alignment: .trailing)
                 }
+                .opacity(hovering ? 0 : 1)
+
+                HStack(spacing: 2) {
+                    hoverButton("star", filled: thread.isStarred) { store.toggleStar(thread) }
+                    hoverButton("archivebox") { store.archive(thread) }
+                    hoverButton("clock") { store.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 1)) }
+                    hoverButton("trash") { store.trash(thread) }
+                }
+                .opacity(hovering ? 1 : 0)
             }
+            .frame(height: 18 * fontScale)
         }
-        .padding(.vertical, 2 + 2 * (fontScale - 1) * 6)
+        .padding(.vertical, 3 * fontScale)
         .onHover { hovering = $0 }
     }
 

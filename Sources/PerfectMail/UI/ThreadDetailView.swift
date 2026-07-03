@@ -3,6 +3,7 @@ import WebKit
 
 struct ThreadDetailView: View {
     @EnvironmentObject var store: MailStore
+    @AppStorage("fontScale") private var fontScale = 1.0
     let thread: MailThread
     let onReply: (Message) -> Void
 
@@ -12,7 +13,7 @@ struct ThreadDetailView: View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
-                    .font(.title3.weight(.semibold))
+                    .font(.system(size: 19 * fontScale, weight: .semibold))
                     .textSelection(.enabled)
                     .padding(.horizontal)
                 ForEach(messages) { message in

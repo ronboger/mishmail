@@ -8,10 +8,18 @@ actor SyncEngine {
     private let accountId: String
     private let db = AppDatabase.shared.dbQueue
 
-    /// How much mail the initial backfill pulls in. Recent-first; older mail
-    /// can be backfilled later without any schema change.
-    static let initialBackfillQuery = "newer_than:90d"
-    static let initialMaxMessages = 1500
+    /// Configurable sync window (Settings → Accounts). 0 = everything.
+    static var syncWindowDays: Int {
+        UserDefaults.standard.object(forKey: "syncWindowDays") as? Int ?? 90
+    }
+
+    private static var windowQuery: String? {
+        syncWindowDays == 0 ? nil : "newer_than:\(syncWindowDays)d"
+    }
+
+    private static var windowLimit: Int {
+        syncWindowDays == 0 ? 50_000 : max(3000, syncWindowDays * 60)
+    }
 
     init(accountId: String) {
         self.accountId = accountId
@@ -35,6 +43,20 @@ actor SyncEngine {
         } else {
             account.historyId = try await fullBackfill(progress: progress)
         }
+
+        // Deepen the archive when the configured window grew, and always
+        // pull ALL starred mail regardless of age (once).
+        let windowKey = "backfill.window.\(accountId)"
+        if UserDefaults.standard.integer(forKey: windowKey) != Self.syncWindowDays {
+            try await fetchAll(query: Self.windowQuery, limit: Self.windowLimit, progress: progress)
+            UserDefaults.standard.set(Self.syncWindowDays, forKey: windowKey)
+        }
+        let starKey = "backfill.starred.\(accountId)"
+        if !UserDefaults.standard.bool(forKey: starKey) {
+            try await fetchAll(query: "is:starred", limit: 3000, progress: progress)
+            UserDefaults.standard.set(true, forKey: starKey)
+        }
+
         account.lastSyncAt = Date()
         let updated = account
         try await db.write { db in try updated.update(db) }
@@ -62,12 +84,26 @@ actor SyncEngine {
 
     private func fullBackfill(progress: (@Sendable (String) -> Void)?) async throws -> String {
         let profile = try await client.profile()
+        try await fetchAll(query: Self.windowQuery, limit: Self.windowLimit, progress: progress)
+        UserDefaults.standard.set(Self.syncWindowDays, forKey: "backfill.window.\(accountId)")
+        return profile.historyId
+    }
+
+    /// Lists messages matching a query and downloads only the ones missing
+    /// from the local cache.
+    private func fetchAll(query: String?, limit: Int,
+                          progress: (@Sendable (String) -> Void)?) async throws {
+        let existing = try await db.read { [accountId] db in
+            Set(try String.fetchAll(db, sql: "SELECT gmailId FROM message WHERE accountId = ?",
+                                    arguments: [accountId]))
+        }
         var pageToken: String?
+        var listed = 0
         var fetched = 0
         repeat {
-            let page = try await client.listMessages(query: Self.initialBackfillQuery,
-                                                     pageToken: pageToken, maxResults: 100)
-            let refs = page.messages ?? []
+            let page = try await client.listMessages(query: query, pageToken: pageToken, maxResults: 100)
+            let refs = (page.messages ?? []).filter { !existing.contains($0.id) }
+            listed += page.messages?.count ?? 0
             try await withThrowingTaskGroup(of: GMessage.self) { group in
                 var pending = 0
                 var iterator = refs.makeIterator()
@@ -86,10 +122,9 @@ actor SyncEngine {
                 }
             }
             fetched += refs.count
-            progress?("Synced \(fetched) messages…")
+            if fetched > 0 { progress?("Downloaded \(fetched) messages…") }
             pageToken = page.nextPageToken
-        } while pageToken != nil && fetched < Self.initialMaxMessages
-        return profile.historyId
+        } while pageToken != nil && listed < limit
     }
 
     // MARK: - Incremental

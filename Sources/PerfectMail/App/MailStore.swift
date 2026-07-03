@@ -673,6 +673,23 @@ final class MailStore: ObservableObject {
         await sync(accountId: accountId)
     }
 
+    /// Saves compose state as a real Gmail draft (shows up in Gmail too).
+    func saveDraft(from accountId: String, to: String, cc: String, subject: String,
+                   body: String, replyTo message: Message? = nil) async {
+        let raw = MIMEBuilder.build(
+            from: accountId, to: to, cc: cc, subject: subject, bodyText: body,
+            inReplyTo: message?.messageIdHeader,
+            references: message?.referencesHeader
+        )
+        let gmailThreadId = message.map { String($0.threadId.split(separator: ":").last!) }
+        do {
+            try await client(for: accountId).createDraft(raw: raw, threadId: gmailThreadId)
+            await sync(accountId: accountId)
+        } catch {
+            lastError = "Draft not saved: \(error.localizedDescription)"
+        }
+    }
+
     // MARK: - Attachments
 
     func openAttachment(_ attachment: AttachmentRow, message: Message) {

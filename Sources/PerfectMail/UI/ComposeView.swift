@@ -27,9 +27,25 @@ struct ComposeView: View {
         store.composeRequest = nil
     }
 
+    private var hasContent: Bool {
+        !body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachmentURLs.isEmpty
+    }
+
+    /// Close and keep the work: unsent content becomes a real Gmail draft.
+    private func saveAndClose() {
+        if hasContent {
+            let (from, to, cc, subj, body, reply) =
+                (fromAccount, toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
+                 subject, body_, replyTo)
+            Task { await store.saveDraft(from: from, to: to, cc: cc, subject: subj,
+                                         body: body, replyTo: reply) }
+        }
+        close()
+    }
+
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header: subject as title, close button.
+            // Header: subject as title, close (saves a draft).
             HStack {
                 Text(subject.isEmpty ? "New Message" : subject)
                     .font(.system(size: 13, weight: .semibold))
@@ -37,7 +53,7 @@ struct ComposeView: View {
                     .lineLimit(1)
                 Spacer()
                 Button {
-                    close()
+                    saveAndClose()
                 } label: {
                     Image(systemName: "xmark")
                         .font(.system(size: 11, weight: .semibold))
@@ -45,22 +61,39 @@ struct ComposeView: View {
                 }
                 .buttonStyle(.plain)
                 .keyboardShortcut(.cancelAction)
+                .help(hasContent ? "Close (saves as draft)" : "Close")
             }
-            .padding(.bottom, 8)
+            .padding(.bottom, 6)
+
+            // Reply context — you're inside this Gmail thread.
+            if let replyTo {
+                HStack(spacing: 5) {
+                    Image(systemName: "arrowshape.turn.up.left")
+                        .font(.system(size: 10))
+                    Text("Replying to \(MessageParser.displayName(fromHeader: replyTo.fromHeader)) — same thread in Gmail")
+                        .font(.system(size: 11))
+                        .lineLimit(1)
+                }
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 6)
+            }
 
             // From + Cc toggle row
             HStack {
                 Menu {
                     ForEach(store.accounts) { account in
-                        Button(account.id) { fromAccount = account.id }
+                        Button(menuTitle(account)) { fromAccount = account.id }
                     }
                 } label: {
-                    HStack(spacing: 4) {
-                        Text(fromAccount.isEmpty ? "From" : fromAccount)
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                    HStack(spacing: 5) {
+                        Text("From").font(.system(size: 12)).foregroundStyle(.tertiary)
+                        Text(fromAccount.isEmpty ? "Select account" : fromAccount)
+                            .font(.system(size: 13, weight: .medium))
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 8)).foregroundStyle(.secondary)
+                            .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                     }
+                    .padding(.horizontal, 8).padding(.vertical, 4)
+                    .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                 }
                 .menuStyle(.borderlessButton).fixedSize()
                 Spacer()
@@ -143,8 +176,18 @@ struct ComposeView: View {
 
                 Spacer()
 
-                Button("Cancel") { close() }
+                if hasContent {
+                    Button {
+                        close()   // discard: no draft
+                    } label: {
+                        Image(systemName: "trash").foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Discard without saving")
+                }
+                Button("Cancel") { saveAndClose() }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help(hasContent ? "Close (saves as draft)" : "Close")
                 Button {
                     send()
                 } label: {
@@ -164,6 +207,10 @@ struct ComposeView: View {
                       allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { attachmentURLs.append(contentsOf: urls) }
         }
+    }
+
+    private func menuTitle(_ account: Account) -> String {
+        account.displayName == account.id ? account.id : "\(account.displayName) — \(account.id)"
     }
 
     private func footerButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
