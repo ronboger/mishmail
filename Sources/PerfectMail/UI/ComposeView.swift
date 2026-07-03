@@ -1,6 +1,8 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Notion Mail-style compose: chips for recipients, borderless fields,
+/// minimal footer.
 struct ComposeView: View {
     @EnvironmentObject var store: MailStore
     @Environment(\.dismiss) private var dismiss
@@ -8,8 +10,9 @@ struct ComposeView: View {
     let replyTo: Message?
 
     @State private var fromAccount: String = ""
-    @State private var to: String = ""
-    @State private var cc: String = ""
+    @State private var toTokens: [String] = []
+    @State private var ccTokens: [String] = []
+    @State private var showCc = false
     @State private var subject: String = ""
     @State private var body_: String = ""
     @State private var attachmentURLs: [URL] = []
@@ -17,25 +20,51 @@ struct ComposeView: View {
     @State private var sending = false
     @State private var drafting = false
     @State private var error: String?
+    @FocusState private var bodyFocused: Bool
 
     var body: some View {
-        VStack(spacing: 0) {
-            Form {
-                Picker("From", selection: $fromAccount) {
-                    ForEach(store.accounts) { Text($0.id).tag($0.id) }
+        VStack(alignment: .leading, spacing: 0) {
+            // From + Cc toggle row
+            HStack {
+                Menu {
+                    ForEach(store.accounts) { account in
+                        Button(account.id) { fromAccount = account.id }
+                    }
+                } label: {
+                    HStack(spacing: 4) {
+                        Text(fromAccount.isEmpty ? "From" : fromAccount)
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8)).foregroundStyle(.secondary)
+                    }
                 }
-                AddressField(label: "To", text: $to)
-                AddressField(label: "Cc", text: $cc)
-                TextField("Subject", text: $subject)
+                .menuStyle(.borderlessButton).fixedSize()
+                Spacer()
+                if !showCc {
+                    Button("Cc") { showCc = true }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
             }
-            .formStyle(.columns)
-            .textFieldStyle(.roundedBorder)
-            .padding()
+            .padding(.bottom, 4)
+
+            TokenAddressField(label: "To", tokens: $toTokens)
+            if showCc || !ccTokens.isEmpty {
+                TokenAddressField(label: "Cc", tokens: $ccTokens)
+            }
+
+            TextField("Subject", text: $subject)
+                .textFieldStyle(.plain)
+                .font(.system(size: 14, weight: .semibold))
+                .padding(.vertical, 8)
+            Divider()
 
             TextEditor(text: $body_)
                 .font(.system(size: 13))
-                .padding(.horizontal)
-                .frame(minHeight: 220)
+                .scrollContentBackground(.hidden)
+                .focused($bodyFocused)
+                .padding(.top, 8)
+                .frame(minHeight: 200, maxHeight: .infinity)
 
             if !attachmentURLs.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -53,18 +82,19 @@ struct ComposeView: View {
                             .background(Color.secondary.opacity(0.12), in: Capsule())
                         }
                     }
-                    .padding(.horizontal)
                 }
-                .padding(.bottom, 4)
+                .padding(.bottom, 6)
             }
 
-            HStack {
-                Button {
-                    showFilePicker = true
-                } label: { Image(systemName: "paperclip") }
-                    .help("Attach files")
+            if let error {
+                Text(error).font(.caption).foregroundStyle(.red).lineLimit(2)
+                    .padding(.bottom, 4)
+            }
 
-                Menu("Snippets") {
+            HStack(spacing: 10) {
+                footerButton("paperclip", help: "Attach files") { showFilePicker = true }
+
+                Menu {
                     let snippets = store.snippets()
                     if snippets.isEmpty { Text("No snippets yet") }
                     ForEach(snippets) { s in
@@ -72,34 +102,38 @@ struct ComposeView: View {
                     }
                     Divider()
                     Button("Save body as snippet…") { saveCurrentAsSnippet() }
+                } label: {
+                    Image(systemName: "text.badge.plus")
+                        .foregroundStyle(.secondary)
                 }
-                .frame(width: 110)
+                .menuStyle(.borderlessButton).fixedSize()
+                .help("Snippets")
 
                 if replyTo != nil {
-                    Button {
-                        draftWithAI()
-                    } label: {
-                        Label(drafting ? "Drafting…" : "Draft with AI",
-                              systemImage: "sparkles")
-                    }
-                    .disabled(drafting)
-                    .help("Uses a local Ollama model — nothing leaves your Mac")
+                    footerButton(drafting ? "hourglass" : "sparkles",
+                                 help: "Draft with local AI (Ollama)") { draftWithAI() }
+                        .disabled(drafting)
                 }
 
-                if let error {
-                    Text(error).font(.caption).foregroundStyle(.red).lineLimit(2)
-                }
                 Spacer()
+
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button(sending ? "Sending…" : "Send") { send() }
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .buttonStyle(.borderedProminent)
-                    .disabled(sending || to.isEmpty || fromAccount.isEmpty)
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                Button {
+                    send()
+                } label: {
+                    Text(sending ? "Sending…" : "Send")
+                        .padding(.horizontal, 10)
+                }
+                .keyboardShortcut(.return, modifiers: .command)
+                .buttonStyle(.borderedProminent)
+                .disabled(sending || toTokens.isEmpty || fromAccount.isEmpty)
             }
-            .padding()
+            .padding(.top, 8)
         }
-        .frame(minWidth: 560, minHeight: 440)
+        .padding(16)
+        .frame(minWidth: 620, minHeight: 460)
         .onAppear { prefill() }
         .fileImporter(isPresented: $showFilePicker,
                       allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
@@ -107,12 +141,21 @@ struct ComposeView: View {
         }
     }
 
+    private func footerButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: icon).foregroundStyle(.secondary)
+        }
+        .buttonStyle(.plain)
+        .help(help)
+    }
+
     private func prefill() {
         fromAccount = replyTo?.accountId ?? store.accounts.first?.id ?? ""
         if let replyTo {
-            to = MessageParser.emailAddress(replyTo.fromHeader)
+            toTokens = [MessageParser.emailAddress(replyTo.fromHeader)]
             let subj = replyTo.subject
             subject = subj.lowercased().hasPrefix("re:") ? subj : "Re: \(subj)"
+            bodyFocused = true
         }
     }
 
@@ -128,8 +171,7 @@ struct ComposeView: View {
                     originalBody: replyTo.bodyText,
                     intent: intent,
                     userEmail: fromAccount)
-                let draft = try await Ollama.generate(prompt: prompt)
-                body_ = draft
+                body_ = try await Ollama.generate(prompt: prompt)
             } catch {
                 self.error = error.localizedDescription
             }
@@ -163,7 +205,9 @@ struct ComposeView: View {
                         ?? "application/octet-stream"
                     attachments.append(.init(filename: url.lastPathComponent, mimeType: mime, data: data))
                 }
-                try await store.send(from: fromAccount, to: to, cc: cc,
+                try await store.send(from: fromAccount,
+                                     to: toTokens.joined(separator: ", "),
+                                     cc: ccTokens.joined(separator: ", "),
                                      subject: subject, body: body_, replyTo: replyTo,
                                      attachments: attachments)
                 dismiss()

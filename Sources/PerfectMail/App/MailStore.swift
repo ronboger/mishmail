@@ -162,8 +162,7 @@ final class MailStore: ObservableObject {
             for row in rows {
                 let isSent = (row["labelIds"] as String).contains("SENT")
                 for header in [row["fromHeader"] as String, row["toHeader"] as String, row["ccHeader"] as String] {
-                    for part in header.split(separator: ",") {
-                        let piece = String(part)
+                    for piece in MessageParser.splitAddresses(header) {
                         let email = MessageParser.emailAddress(piece).lowercased()
                         guard email.contains("@"), !email.contains(" "),
                               !ownAddresses.contains(email) else { continue }

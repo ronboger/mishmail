@@ -96,6 +96,28 @@ enum MessageParser {
         }
         return header.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
     }
+
+    /// Splits an address-list header on commas, respecting quoted display
+    /// names like `"Boger, Ron" <ron@x.com>`.
+    static func splitAddresses(_ header: String) -> [String] {
+        var result: [String] = []
+        var current = ""
+        var inQuotes = false
+        for ch in header {
+            switch ch {
+            case "\"":
+                inQuotes.toggle()
+                current.append(ch)
+            case "," where !inQuotes:
+                result.append(current)
+                current = ""
+            default:
+                current.append(ch)
+            }
+        }
+        if !current.trimmingCharacters(in: .whitespaces).isEmpty { result.append(current) }
+        return result
+    }
 }
 
 /// Builds RFC 2822 messages for sending/replying, optionally multipart/mixed
