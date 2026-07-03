@@ -128,19 +128,26 @@ actor SyncEngine {
     /// always kept); nil removes everything. Attachments cascade; thread rows
     /// are rebuilt from what remains.
     func pruneLocalMail(keepingDays: Int?) async throws {
+        let cutoff = keepingDays.map { Date().addingTimeInterval(-Double($0) * 86_400) }
         try await db.write { [accountId] db in
-            if let days = keepingDays {
-                let cutoff = Date().addingTimeInterval(-Double(days) * 86_400)
-                try db.execute(sql: """
-                    DELETE FROM message WHERE accountId = ? AND date < ?
-                    AND labelIds NOT LIKE '%STARRED%'
-                    """, arguments: [accountId, cutoff])
-            } else {
-                try db.execute(sql: "DELETE FROM message WHERE accountId = ?",
-                               arguments: [accountId])
-            }
+            try Self.pruneMessages(db, accountId: accountId, olderThan: cutoff)
         }
         try await rebuildThreads()
+    }
+
+    /// Deletes this account's messages older than `cutoff` (starred kept),
+    /// or all of them when cutoff is nil. Pure SQL — exercised directly by
+    /// the test suite.
+    static func pruneMessages(_ db: Database, accountId: String, olderThan cutoff: Date?) throws {
+        if let cutoff {
+            try db.execute(sql: """
+                DELETE FROM message WHERE accountId = ? AND date < ?
+                AND labelIds NOT LIKE '%STARRED%'
+                """, arguments: [accountId, cutoff])
+        } else {
+            try db.execute(sql: "DELETE FROM message WHERE accountId = ?",
+                           arguments: [accountId])
+        }
     }
 
     /// Lists messages matching a query and downloads only the ones missing
