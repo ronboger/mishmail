@@ -77,6 +77,34 @@ struct ContentView: View {
             }
         }
         .animation(.easeOut(duration: 0.15), value: store.composeRequest?.id)
+        // Undo/notice toast: centered on the bottom of the whole window.
+        .overlay(alignment: .bottom) {
+            if let undo = store.undoAction {
+                HStack(spacing: 14) {
+                    Text(undo.label)
+                        .font(.system(size: 14, weight: .medium))
+                    Button("Undo") { undo.undo() }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .keyboardShortcut("z", modifiers: .command)
+                }
+                .padding(.horizontal, 22).padding(.vertical, 13)
+                .background(.regularMaterial, in: Capsule())
+                .shadow(radius: 10)
+                .padding(.bottom, 20)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            } else if let notice = store.notice {
+                Text(notice)
+                    .font(.system(size: 14, weight: .medium))
+                    .padding(.horizontal, 22).padding(.vertical, 13)
+                    .background(.regularMaterial, in: Capsule())
+                    .shadow(radius: 10)
+                    .padding(.bottom, 20)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: store.undoAction?.id)
+        .animation(.easeOut(duration: 0.15), value: store.notice)
         .sheet(item: $store.editingView) { view in
             ViewEditor(view: view)
         }

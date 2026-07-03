@@ -125,30 +125,7 @@ struct ThreadListView: View {
                 )
             }
         }
-        .overlay(alignment: .bottom) {
-            if let undo = store.undoAction {
-                HStack(spacing: 12) {
-                    Text(undo.label)
-                    Button("Undo") { undo.undo() }
-                        .buttonStyle(.borderedProminent)
-                        .keyboardShortcut("z", modifiers: .command)
-                }
-                .padding(.horizontal, 16).padding(.vertical, 10)
-                .background(.regularMaterial, in: Capsule())
-                .shadow(radius: 8)
-                .padding(.bottom, 12)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if let notice = store.notice {
-                Text(notice)
-                    .padding(.horizontal, 16).padding(.vertical, 10)
-                    .background(.regularMaterial, in: Capsule())
-                    .shadow(radius: 8)
-                    .padding(.bottom, 12)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        .animation(.easeOut(duration: 0.15), value: store.undoAction?.id)
-        .animation(.easeOut(duration: 0.15), value: store.notice)
+        // Undo/notice toast lives in ContentView, centered over the whole window.
     }
 
     @ViewBuilder
