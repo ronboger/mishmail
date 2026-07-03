@@ -111,12 +111,18 @@ struct ComposeView: View {
                         Text("From").font(.system(size: 12)).foregroundStyle(.tertiary)
                         Text(fromAccount.isEmpty ? "Select account" : fromAccount)
                             .font(.system(size: 13, weight: .medium))
-                        // The borderless Menu draws its own chevron indicator.
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
+                    .contentShape(Rectangle())
                 }
-                .menuStyle(.borderlessButton)
+                // .button + .plain renders custom labels reliably on macOS
+                // (borderlessButton can drop the label text entirely).
+                .menuStyle(.button)
+                .buttonStyle(.plain)
+                .menuIndicator(.hidden)
                 .fixedSize()
                 Spacer()
             }
