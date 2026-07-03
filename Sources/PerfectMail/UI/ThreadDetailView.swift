@@ -253,35 +253,35 @@ struct MessageCard: View {
                         .padding(.vertical, 2)
                     }
                 }
-                // Notion Mail-style action bar on the newest message.
-                if isLast {
-                    HStack(spacing: 8) {
-                        Button {
-                            store.composeRequest = .init(replyTo: message)
-                        } label: {
-                            Label("Reply", systemImage: "arrowshape.turn.up.left")
-                                .font(.system(size: 12.5 * fontScale))
-                        }
-                        .buttonStyle(.bordered)
-                        Button {
-                            store.composeRequest = .init(replyTo: message, forward: true)
-                        } label: {
-                            Label("Forward", systemImage: "arrowshape.turn.up.right")
-                                .font(.system(size: 12.5 * fontScale))
-                        }
-                        .buttonStyle(.bordered)
+                // Notion Mail-style action bar on every message.
+                HStack(spacing: 8) {
+                    Button {
+                        store.composeRequest = .init(replyTo: message)
+                    } label: {
+                        Label("Reply", systemImage: "arrowshape.turn.up.left")
+                            .font(.system(size: 12.5 * fontScale))
                     }
-                    .padding(.top, 4)
+                    .buttonStyle(.bordered)
+                    Button {
+                        store.composeRequest = .init(replyTo: message, forward: true)
+                    } label: {
+                        Label("Forward", systemImage: "arrowshape.turn.up.right")
+                            .font(.system(size: 12.5 * fontScale))
+                    }
+                    .buttonStyle(.bordered)
                 }
+                .padding(.top, 4)
             } else {
                 Text(message.snippet)
                     .font(.system(size: 12.5 * fontScale)).foregroundStyle(.secondary).lineLimit(1)
-                    .contentShape(Rectangle())
-                    .onTapGesture { withAnimation { expanded = true } }
             }
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+        .contentShape(Rectangle())
+        .onTapGesture {
+            if !expanded { withAnimation { expanded = true } }
+        }
     }
 
     private func byteSize(_ bytes: Int) -> String {
