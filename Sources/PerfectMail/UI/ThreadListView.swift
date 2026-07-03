@@ -110,10 +110,14 @@ struct ThreadListView: View {
                                 .contextMenu { threadMenu(thread) }
                         }
                     } header: {
-                        // Notion Mail-style air above group headers: a little
-                        // for the first, more for the rest.
+                        // Notion Mail-style headers: darker than the default
+                        // secondary style, with air above — the first group
+                        // gets slightly more so it doesn't read smaller (later
+                        // headers also inherit inter-section spacing).
                         Text(group.0)
-                            .padding(.top, (index == 0 ? 14 : 36) * fontScale)
+                            .font(.system(size: 12 * fontScale, weight: .semibold))
+                            .foregroundStyle(.primary.opacity(0.7))
+                            .padding(.top, (index == 0 ? 40 : 32) * fontScale)
                     }
                 }
             }
