@@ -24,8 +24,9 @@ targets:
       base:
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
-        CODE_SIGN_IDENTITY: "-"
+        CODE_SIGN_IDENTITY: "Apple Development"
         CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 47T79PSL25
         SWIFT_VERSION: 5.10
         GENERATE_INFOPLIST_FILE: true
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
