@@ -73,6 +73,11 @@ struct TokenAddressField: View {
             }
             .padding(.vertical, 7)
 
+            Divider()
+        }
+        // The suggestion list floats over whatever is below instead of
+        // pushing the layout around.
+        .overlay(alignment: .topLeading) {
             if focused, !suggestions.isEmpty {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(Array(suggestions.enumerated()), id: \.element.id) { idx, contact in
@@ -88,7 +93,7 @@ struct TokenAddressField: View {
                                 }
                                 Spacer()
                             }
-                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .padding(.horizontal, 8).padding(.vertical, 5)
                             .background(idx == highlighted ? Color.accentColor.opacity(0.18) : .clear)
                             .contentShape(Rectangle())
                         }
@@ -96,12 +101,14 @@ struct TokenAddressField: View {
                         .onHover { if $0 { highlighted = idx } }
                     }
                 }
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
-                .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
-                .padding(.bottom, 4)
+                .frame(width: 380, alignment: .leading)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+                .shadow(radius: 10)
+                .offset(x: 58, y: 34)
             }
-            Divider()
         }
+        .zIndex(focused ? 10 : 0)
     }
 
     private var suggestions: [MailStore.Contact] {

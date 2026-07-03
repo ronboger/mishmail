@@ -142,6 +142,7 @@ struct Sidebar: View {
 }
 
 /// Notion Mail-style account scope switcher: unified, or one account only.
+/// Accounts carry user-defined labels ("Personal", "Fund", …).
 struct AccountSwitcher: View {
     @EnvironmentObject var store: MailStore
 
@@ -159,20 +160,21 @@ struct AccountSwitcher: View {
                     store.setActiveAccount(account.id)
                 } label: {
                     if store.activeAccountId == account.id { Image(systemName: "checkmark") }
-                    Text(account.id)
+                    Text(menuTitle(account))
                 }
             }
             Divider()
             Button("Add Google Account…") { store.addAccount() }
+            Button("Edit Account Labels…") { store.editingAccountLabels = true }
         } label: {
             HStack(spacing: 8) {
                 Image(systemName: "person.crop.circle.fill")
                     .font(.title2).foregroundStyle(.secondary)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(displayName)
+                    Text(title)
                         .font(.system(size: 13, weight: .semibold))
                         .lineLimit(1)
-                    Text(scopeLine)
+                    Text(subtitle)
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -183,17 +185,62 @@ struct AccountSwitcher: View {
             .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
+        .sheet(isPresented: $store.editingAccountLabels) {
+            AccountLabelsEditor()
+        }
     }
 
-    private var displayName: String {
+    private func menuTitle(_ account: Account) -> String {
+        account.displayName == account.id ? account.id : "\(account.displayName) — \(account.id)"
+    }
+
+    private var title: String {
         if let active = store.activeAccountId,
            let account = store.accounts.first(where: { $0.id == active }) {
             return account.displayName
         }
-        return store.accounts.first?.displayName ?? "PerfectMail"
+        return "All accounts"
     }
 
-    private var scopeLine: String {
-        store.activeAccountId ?? "All accounts (\(store.accounts.count))"
+    private var subtitle: String {
+        store.activeAccountId ?? "\(store.accounts.count) inboxes"
+    }
+}
+
+/// Rename accounts ("Personal", "Fund", …); labels are local only.
+struct AccountLabelsEditor: View {
+    @EnvironmentObject var store: MailStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var labels: [String: String] = [:]
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Account Labels")
+                .font(.headline)
+                .padding(.bottom, 10)
+            Form {
+                ForEach(store.accounts) { account in
+                    TextField(account.id, text: .init(
+                        get: { labels[account.id] ?? account.displayName },
+                        set: { labels[account.id] = $0 }
+                    ), prompt: Text("e.g. Personal"))
+                }
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Save") {
+                    for (id, label) in labels { store.renameAccount(id, label: label) }
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .buttonStyle(.borderedProminent)
+            }
+            .padding(.top, 8)
+        }
+        .padding(16)
+        .frame(width: 400)
     }
 }

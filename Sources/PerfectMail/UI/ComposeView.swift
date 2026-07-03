@@ -49,8 +49,10 @@ struct ComposeView: View {
             .padding(.bottom, 4)
 
             TokenAddressField(label: "To", tokens: $toTokens)
+                .zIndex(3)
             if showCc || !ccTokens.isEmpty {
                 TokenAddressField(label: "Cc", tokens: $ccTokens)
+                    .zIndex(2)
             }
 
             TextField("Subject", text: $subject)

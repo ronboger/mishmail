@@ -95,8 +95,21 @@ final class MailStore: ObservableObject {
     @Published var composeRequest: ComposeRequest?
     @Published var undoAction: UndoAction?
     @Published var editingView: SavedView?
+    @Published var editingAccountLabels = false
     @Published var showCommandPalette = false
     @Published var unreadCounts: [String: Int] = [:]   // sidebar badges
+
+    /// User-facing label for an account ("Personal", "Fund", …).
+    func renameAccount(_ id: String, label: String) {
+        let trimmed = label.trimmingCharacters(in: .whitespaces)
+        try? db.write { db in
+            if var account = try Account.fetchOne(db, key: id) {
+                account.displayName = trimmed.isEmpty ? id : trimmed
+                try account.update(db)
+            }
+        }
+        reloadAccounts()
+    }
 
     struct ComposeRequest: Identifiable {
         let id = UUID()
