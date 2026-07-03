@@ -402,7 +402,10 @@ struct FilterBar: View {
         }
     }
 
-    /// "Date" / "Received date": a submenu of relative windows.
+    /// "Date" / "Received date": a submenu of relative windows. Padding and
+    /// hover tint sit OUTSIDE the Menu so the icon/text column lines up with
+    /// the plain FilterMenuRow buttons (the borderless menu style applies its
+    /// own insets to the label, which shifted this row left of the others).
     private func dateRow(icon: String, title: String) -> some View {
         Menu {
             ForEach(DateWindow.allCases, id: \.rawValue) { window in
@@ -424,12 +427,14 @@ struct FilterBar: View {
                     .font(.system(size: 12)).foregroundStyle(.secondary)
                     .frame(width: 16)
                 Text(title).font(.system(size: 12.5)).foregroundStyle(.primary)
-                Spacer(minLength: 0)
             }
-            .padding(.horizontal, 6).padding(.vertical, 4)
             .contentShape(Rectangle())
         }
         .menuStyle(.borderlessButton)
+        .fixedSize()
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal, 6).padding(.vertical, 4)
+        .hoverTint()
     }
 
     /// Editor pane for text filters (From/To/Cc/Bcc/Subject) and Labels.
@@ -599,6 +604,22 @@ struct FilterBar: View {
         .background(active ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.1),
                     in: Capsule())
     }
+}
+
+/// Hover tint matching FilterMenuRow, for non-Button rows (the Date menus).
+struct FilterRowHoverTint: ViewModifier {
+    @State private var hovering = false
+
+    func body(content: Content) -> some View {
+        content
+            .background(hovering ? Color.primary.opacity(0.07) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 5))
+            .onHover { hovering = $0 }
+    }
+}
+
+extension View {
+    func hoverTint() -> some View { modifier(FilterRowHoverTint()) }
 }
 
 /// One row of the Notion Mail-style filter menu: icon + title, hover tint.
