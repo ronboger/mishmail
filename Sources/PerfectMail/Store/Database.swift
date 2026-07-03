@@ -116,8 +116,56 @@ final class AppDatabase {
                                               in: .userDomainMask, appropriateFor: nil, create: true)
             .appendingPathComponent("PerfectMail", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        dbQueue = try DatabaseQueue(path: dir.appendingPathComponent("mail.sqlite").path)
+        let path = dir.appendingPathComponent("mail.sqlite").path
+
+        // The mail cache is encrypted with SQLCipher; the key never leaves
+        // the Keychain. A pre-encryption database is migrated in place.
+        let passphrase = try Self.databaseKey()
+        if FileManager.default.fileExists(atPath: path), Self.isPlaintext(path) {
+            try Self.encryptInPlace(path: path, passphrase: passphrase)
+        }
+        var config = Configuration()
+        config.prepareDatabase { db in
+            try db.usePassphrase(passphrase)
+        }
+        dbQueue = try DatabaseQueue(path: path, configuration: config)
         try migrator.migrate(dbQueue)
+    }
+
+    /// Random 256-bit key, hex-encoded, generated once and kept in the Keychain.
+    private static func databaseKey() throws -> String {
+        if let existing = Keychain.get("db.key") { return existing }
+        var bytes = [UInt8](repeating: 0, count: 32)
+        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+            throw KeychainError.status(errSecParam)
+        }
+        let key = bytes.map { String(format: "%02x", $0) }.joined()
+        try Keychain.set(key, forKey: "db.key")
+        return key
+    }
+
+    /// A plaintext SQLite file starts with the magic "SQLite format 3\0";
+    /// an SQLCipher file starts with a random salt.
+    private static func isPlaintext(_ path: String) -> Bool {
+        guard let handle = FileHandle(forReadingAtPath: path),
+              let magic = try? handle.read(upToCount: 16) else { return false }
+        try? handle.close()
+        return magic.elementsEqual("SQLite format 3\u{0}".utf8)
+    }
+
+    /// One-time migration: exports the plaintext database into an encrypted
+    /// copy (sqlcipher_export) and swaps it into place.
+    private static func encryptInPlace(path: String, passphrase: String) throws {
+        let tmp = path + ".encrypting"
+        try? FileManager.default.removeItem(atPath: tmp)
+        let plain = try DatabaseQueue(path: path)
+        try plain.inDatabase { db in
+            try db.execute(sql: "ATTACH DATABASE ? AS encrypted KEY ?", arguments: [tmp, passphrase])
+            try db.execute(sql: "SELECT sqlcipher_export('encrypted')")
+            try db.execute(sql: "DETACH DATABASE encrypted")
+        }
+        try FileManager.default.removeItem(atPath: path)
+        try FileManager.default.moveItem(atPath: tmp, toPath: path)
     }
 
     private var migrator: DatabaseMigrator {

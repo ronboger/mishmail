@@ -9,7 +9,7 @@ struct ContentView: View {
             Sidebar()
         } content: {
             ThreadListView()
-                .navigationSplitViewColumnWidth(min: 320, ideal: 400)
+                .navigationSplitViewColumnWidth(min: 420, ideal: 560)
         } detail: {
             if let id = store.selectedThreadId,
                let thread = store.threads.first(where: { $0.id == id }) {
@@ -25,7 +25,7 @@ struct ContentView: View {
         .onChange(of: store.searchText) { store.reloadThreads() }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
-            store.chips = FilterChips()
+            store.chips = FilterChips.defaults(for: store.selectedView)
             store.reloadThreads()
         }
         .onChange(of: store.chips) { store.reloadThreads() }
@@ -36,18 +36,10 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup {
-                if !store.syncStatus.isEmpty {
-                    ProgressView().controlSize(.small)
-                    Text(store.syncStatus).font(.caption).foregroundStyle(.secondary)
-                }
                 Button {
                     store.composeRequest = .init(replyTo: nil)
                 } label: { Label("Compose", systemImage: "square.and.pencil") }
                     .keyboardShortcut("n", modifiers: .command)
-                Button {
-                    Task { await store.syncAll() }
-                } label: { Label("Sync", systemImage: "arrow.clockwise") }
-                    .keyboardShortcut("r", modifiers: [.command, .shift])
             }
         }
         .sheet(item: $store.composeRequest) { request in
@@ -103,58 +95,42 @@ struct Sidebar: View {
     @EnvironmentObject var store: MailStore
 
     var body: some View {
-        List(selection: $store.selectedView) {
-            Section("Views") {
-                sidebarItem(.inbox, icon: "tray", badge: store.unreadCounts["inbox"])
-                sidebarItem(.promotions, icon: "tag", badge: store.unreadCounts["promotions"])
-                sidebarItem(.social, icon: "person.2", badge: store.unreadCounts["social"])
-                sidebarItem(.starred, icon: "star")
-                sidebarItem(.snoozed, icon: "clock")
-                ForEach(store.savedViews) { view in
-                    Label(view.name, systemImage: "line.3.horizontal.decrease.circle")
-                        .tag(MailboxView.saved(view.id ?? -1, view.name))
-                        .contextMenu {
-                            Button("Edit View…") { store.editingView = view }
-                            Button("Delete View", role: .destructive) { store.deleteView(view) }
-                        }
-                }
-                Button {
-                    store.editingView = SavedView.empty()
-                } label: {
-                    Label("Add view", systemImage: "plus")
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-            }
-            Section("Mail") {
-                sidebarItem(.allMail, icon: "archivebox")
-                sidebarItem(.sent, icon: "paperplane")
-                sidebarItem(.drafts, icon: "doc.text")
-                sidebarItem(.reminders, icon: "bell", badge: store.unreadCounts["reminders"])
-                sidebarItem(.trash, icon: "trash")
-            }
-            ForEach(store.accounts) { account in
-                Section(account.id) {
-                    Label("Inbox", systemImage: "tray")
-                        .tag(MailboxView.account(account.id))
-                    ForEach(store.labelsByAccount[account.id] ?? []) { label in
-                        Label(label.name, systemImage: "tag")
-                            .tag(MailboxView.label(account: account.id,
-                                                   labelId: label.gmailLabelId,
-                                                   name: label.name))
+        VStack(spacing: 0) {
+            AccountSwitcher()
+                .padding(.horizontal, 10).padding(.vertical, 8)
+            List(selection: $store.selectedView) {
+                Section("Views") {
+                    sidebarItem(.inbox, icon: "tray", badge: store.unreadCounts["inbox"])
+                    sidebarItem(.promotions, icon: "tag", badge: store.unreadCounts["promotions"])
+                    sidebarItem(.social, icon: "person.2", badge: store.unreadCounts["social"])
+                    sidebarItem(.starred, icon: "star")
+                    sidebarItem(.snoozed, icon: "clock")
+                    ForEach(store.savedViews) { view in
+                        Label(view.name, systemImage: "line.3.horizontal.decrease.circle")
+                            .tag(MailboxView.saved(view.id ?? -1, view.name))
+                            .contextMenu {
+                                Button("Edit View…") { store.editingView = view }
+                                Button("Delete View", role: .destructive) { store.deleteView(view) }
+                            }
                     }
+                    Button {
+                        store.editingView = SavedView.empty()
+                    } label: {
+                        Label("Add view", systemImage: "plus")
+                            .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+                Section("Mail") {
+                    sidebarItem(.allMail, icon: "archivebox")
+                    sidebarItem(.sent, icon: "paperplane")
+                    sidebarItem(.drafts, icon: "doc.text")
+                    sidebarItem(.reminders, icon: "bell", badge: store.unreadCounts["reminders"])
+                    sidebarItem(.trash, icon: "trash")
                 }
             }
-            Section {
-                Button {
-                    store.addAccount()
-                } label: {
-                    Label("Add Google Account…", systemImage: "plus.circle")
-                }
-                .buttonStyle(.plain)
-            }
+            .listStyle(.sidebar)
         }
-        .listStyle(.sidebar)
     }
 
     @ViewBuilder
@@ -162,5 +138,62 @@ struct Sidebar: View {
         Label(view.title, systemImage: icon)
             .badge((badge ?? 0) > 0 ? badge! : 0)
             .tag(view)
+    }
+}
+
+/// Notion Mail-style account scope switcher: unified, or one account only.
+struct AccountSwitcher: View {
+    @EnvironmentObject var store: MailStore
+
+    var body: some View {
+        Menu {
+            Button {
+                store.setActiveAccount(nil)
+            } label: {
+                if store.activeAccountId == nil { Image(systemName: "checkmark") }
+                Text("All accounts")
+            }
+            Divider()
+            ForEach(store.accounts) { account in
+                Button {
+                    store.setActiveAccount(account.id)
+                } label: {
+                    if store.activeAccountId == account.id { Image(systemName: "checkmark") }
+                    Text(account.id)
+                }
+            }
+            Divider()
+            Button("Add Google Account…") { store.addAccount() }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "person.crop.circle.fill")
+                    .font(.title2).foregroundStyle(.secondary)
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(displayName)
+                        .font(.system(size: 13, weight: .semibold))
+                        .lineLimit(1)
+                    Text(scopeLine)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                Image(systemName: "chevron.up.chevron.down")
+                    .font(.caption2).foregroundStyle(.secondary)
+            }
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+    }
+
+    private var displayName: String {
+        if let active = store.activeAccountId,
+           let account = store.accounts.first(where: { $0.id == active }) {
+            return account.displayName
+        }
+        return store.accounts.first?.displayName ?? "PerfectMail"
+    }
+
+    private var scopeLine: String {
+        store.activeAccountId ?? "All accounts (\(store.accounts.count))"
     }
 }

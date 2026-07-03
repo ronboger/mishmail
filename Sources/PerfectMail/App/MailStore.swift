@@ -37,9 +37,32 @@ enum MailboxView: Hashable {
     }
 }
 
+/// Category chip state (Notion Mail-style "Categories: …").
+enum CategoryChip: Equatable, Hashable {
+    case notPromoSocial          // the sane inbox default
+    case all                     // "normal email" — everything
+    case only(String)            // a single Gmail category
+
+    var title: String {
+        switch self {
+        case .notPromoSocial: return "Not Promotions, Social"
+        case .all: return "All"
+        case .only(let c): return CategoryChip.names[c] ?? c
+        }
+    }
+
+    static let names = [
+        "CATEGORY_PROMOTIONS": "Promotions",
+        "CATEGORY_SOCIAL": "Social",
+        "CATEGORY_UPDATES": "Updates",
+        "CATEGORY_FORUMS": "Forums",
+    ]
+}
+
 /// Transient filter chips layered on top of the current view (the bar above
 /// the thread list). Reset when the view changes.
 struct FilterChips: Equatable {
+    var category: CategoryChip = .all
     var unreadOnly = false
     var showArchived = false
     var labelId: String?
@@ -47,7 +70,13 @@ struct FilterChips: Equatable {
     var senderContains = ""
     var hasAttachmentOnly = false
 
-    var isActive: Bool { self != FilterChips() }
+    /// Default chips for a given view (inbox hides Promotions/Social).
+    static func defaults(for view: MailboxView) -> FilterChips {
+        var chips = FilterChips()
+        if case .inbox = view { chips.category = .notPromoSocial }
+        if case .account = view { chips.category = .notPromoSocial }
+        return chips
+    }
 }
 
 @MainActor
@@ -59,7 +88,8 @@ final class MailStore: ObservableObject {
     @Published var selectedView: MailboxView = .inbox
     @Published var selectedThreadId: String?
     @Published var searchText: String = ""
-    @Published var chips = FilterChips()
+    @Published var chips = FilterChips.defaults(for: .inbox)
+    @Published var activeAccountId: String?   // nil = all accounts (unified)
     @Published var syncStatus: String = ""
     @Published var lastError: String?
     @Published var composeRequest: ComposeRequest?
@@ -84,6 +114,12 @@ final class MailStore: ObservableObject {
         threads.first { $0.id == selectedThreadId }
     }
 
+    func setActiveAccount(_ id: String?) {
+        activeAccountId = id
+        selectedThreadId = nil
+        reloadThreads()
+    }
+
     private let db = AppDatabase.shared.dbQueue
     private var syncTimer: Timer?
     private var undoTimer: Timer?
@@ -101,6 +137,61 @@ final class MailStore: ObservableObject {
         Notifier.requestPermission()
         startPolling()
         rebuildMetadataIfNeeded()
+        rebuildContacts()
+    }
+
+    // MARK: - Contacts (derived from synced mail; no extra Google scopes)
+
+    struct Contact: Identifiable, Hashable {
+        let name: String
+        let email: String
+        let weight: Int
+        var id: String { email }
+        var display: String { name.isEmpty ? email : "\(name) — \(email)" }
+    }
+
+    @Published private(set) var contacts: [Contact] = []
+
+    func rebuildContacts() {
+        let ownAddresses = Set(accounts.map { $0.id.lowercased() })
+        Task {
+            let rows = (try? await db.read { db -> [Row] in
+                try Row.fetchAll(db, sql: "SELECT fromHeader, toHeader, ccHeader, labelIds FROM message")
+            }) ?? []
+            var weights: [String: (name: String, weight: Int)] = [:]
+            for row in rows {
+                let isSent = (row["labelIds"] as String).contains("SENT")
+                for header in [row["fromHeader"] as String, row["toHeader"] as String, row["ccHeader"] as String] {
+                    for part in header.split(separator: ",") {
+                        let piece = String(part)
+                        let email = MessageParser.emailAddress(piece).lowercased()
+                        guard email.contains("@"), !email.contains(" "),
+                              !ownAddresses.contains(email) else { continue }
+                        let name = MessageParser.displayName(fromHeader: piece)
+                        // People you send to matter more than newsletter senders.
+                        let add = isSent ? 5 : 1
+                        let prev = weights[email] ?? ("", 0)
+                        weights[email] = (prev.name.count >= name.count ? prev.name : name,
+                                          prev.weight + add)
+                    }
+                }
+            }
+            let ranked = weights
+                .map { Contact(name: $0.value.name == $0.key ? "" : $0.value.name,
+                               email: $0.key, weight: $0.value.weight) }
+                .sorted { $0.weight > $1.weight }
+                .prefix(2000)
+            await MainActor.run { self.contacts = Array(ranked) }
+        }
+    }
+
+    /// Top matches for an address-field token.
+    func contactSuggestions(for query: String) -> [Contact] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard q.count >= 1 else { return [] }
+        return Array(contacts.lazy.filter {
+            $0.email.contains(q) || $0.name.lowercased().contains(q)
+        }.prefix(6))
     }
 
     func client(for accountId: String) -> GmailClient {
@@ -144,6 +235,7 @@ final class MailStore: ObservableObject {
         let view = selectedView
         let search = searchText.trimmingCharacters(in: .whitespaces)
         let chips = chips
+        let activeAccount = activeAccountId
         threads = (try? db.read { [weak self] db -> [MailThread] in
             if !search.isEmpty {
                 let ids = try Row.fetchAll(db, sql: """
@@ -152,12 +244,23 @@ final class MailStore: ObservableObject {
                     WHERE message_fts MATCH ?
                     """, arguments: [FTS5Pattern(matchingAllPrefixesIn: search)])
                     .map { $0["threadId"] as String }
-                return try MailThread.filter(ids.contains(Column("id")))
-                    .order(Column("lastDate").desc).limit(200).fetchAll(db)
+                var q = MailThread.filter(ids.contains(Column("id")))
+                if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
+                return try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
             }
             guard let self else { return [] }
             var q = Self.baseQuery(for: view, savedViews: self.savedViews)
             // Layer transient chips on top.
+            switch chips.category {
+            case .all:
+                break
+            case .notPromoSocial:
+                for cat in Self.categoryLabels {
+                    q = q.filter(!Column("labelIds").like("%\(cat)%"))
+                }
+            case .only(let cat):
+                q = q.filter(Column("labelIds").like("%\(cat)%"))
+            }
             if chips.unreadOnly { q = q.filter(Column("isUnread") == true) }
             if chips.showArchived {
                 // Widen from inbox-only to everything not trashed.
@@ -171,6 +274,7 @@ final class MailStore: ObservableObject {
                 q = q.filter(Column("fromDisplay").like("%\(chips.senderContains)%")
                              || Column("participants").like("%\(chips.senderContains)%"))
             }
+            if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
             return try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
         }) ?? []
         refreshCountsAndBadge()
@@ -184,10 +288,8 @@ final class MailStore: ObservableObject {
         }
         switch view {
         case .inbox:
+            // Category filtering is handled by the Categories chip.
             q = notSnoozed(q.filter(Column("inInbox") == true && Column("inTrash") == false))
-            for cat in categoryLabels {
-                q = q.filter(!Column("labelIds").like("%\(cat)%"))
-            }
         case .promotions:
             q = q.filter(Column("inTrash") == false && Column("labelIds").like("%CATEGORY_PROMOTIONS%"))
         case .social:
@@ -345,6 +447,7 @@ final class MailStore: ObservableObject {
     func syncAll() async {
         for account in accounts { await sync(accountId: account.id) }
         notifyNewMail()
+        rebuildContacts()
     }
 
     func sync(accountId: String) async {

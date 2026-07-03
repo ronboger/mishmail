@@ -47,6 +47,7 @@ struct ThreadListView: View {
                     }
                 }
             }
+            .listStyle(.plain)
         }
         .navigationTitle(store.selectedView.title)
         .overlay {
@@ -55,7 +56,7 @@ struct ThreadListView: View {
                     store.accounts.isEmpty ? "No accounts connected" : "Nothing here",
                     systemImage: store.accounts.isEmpty ? "person.crop.circle.badge.plus" : "tray",
                     description: Text(store.accounts.isEmpty
-                        ? "Add a Google account from the sidebar to get started."
+                        ? "Add a Google account from the account menu to get started."
                         : "You're all caught up.")
                 )
             }
@@ -106,64 +107,110 @@ struct ThreadListView: View {
     }
 }
 
-/// Notion Mail-style filter chips above the list.
+/// Notion Mail-style filter chips above the list, with click-to-refresh.
 struct FilterBar: View {
     @EnvironmentObject var store: MailStore
     @State private var senderDraft = ""
 
+    private var defaultChips: FilterChips { FilterChips.defaults(for: store.selectedView) }
+
     var body: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 8) {
-                Menu {
-                    Button("Any label") { store.chips.labelId = nil; store.chips.labelName = nil }
-                    ForEach(allLabels, id: \.gmailLabelId) { label in
-                        Button(label.name) {
-                            store.chips.labelId = label.gmailLabelId
-                            store.chips.labelName = label.name
+        HStack(spacing: 8) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    Menu {
+                        Button("Not Promotions, Social") { store.chips.category = .notPromoSocial }
+                        Button("All categories") { store.chips.category = .all }
+                        Divider()
+                        ForEach(Array(CategoryChip.names.keys.sorted()), id: \.self) { cat in
+                            Button(CategoryChip.names[cat] ?? cat) { store.chips.category = .only(cat) }
                         }
-                    }
-                } label: {
-                    chipLabel(store.chips.labelName.map { "Label: \($0)" } ?? "Labels",
-                              icon: "tag", active: store.chips.labelId != nil)
-                }
-                .menuStyle(.borderlessButton).fixedSize()
-
-                chipToggle("Is unread", icon: "envelope.badge", isOn: $store.chips.unreadOnly)
-                chipToggle("Show archived", icon: "archivebox", isOn: $store.chips.showArchived)
-                chipToggle("Has attachment", icon: "paperclip", isOn: $store.chips.hasAttachmentOnly)
-
-                TextField("From…", text: $senderDraft)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 110)
-                    .onSubmit { store.chips.senderContains = senderDraft }
-
-                if store.chips.isActive {
-                    Button {
-                        store.chips = FilterChips()
-                        senderDraft = ""
                     } label: {
-                        Label("Clear", systemImage: "xmark.circle.fill")
-                            .font(.caption)
+                        chipLabel("Categories: \(store.chips.category.title)",
+                                  icon: "bookmark",
+                                  active: store.chips.category != .all)
                     }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .menuStyle(.borderlessButton).fixedSize()
 
-                    Button("Save as view…") {
-                        var v = SavedView.empty()
-                        v.name = store.selectedView.title + " (filtered)"
-                        v.labelId = store.chips.labelId
-                        v.unreadOnly = store.chips.unreadOnly
-                        v.showArchived = store.chips.showArchived
-                        v.hasAttachmentOnly = store.chips.hasAttachmentOnly
-                        v.senderContains = store.chips.senderContains
-                        if case .inbox = store.selectedView { v.excludePromotions = true }
-                        store.editingView = v
+                    Menu {
+                        Button("Any label") { store.chips.labelId = nil; store.chips.labelName = nil }
+                        ForEach(allLabels, id: \.gmailLabelId) { label in
+                            Button(label.name) {
+                                store.chips.labelId = label.gmailLabelId
+                                store.chips.labelName = label.name
+                            }
+                        }
+                    } label: {
+                        chipLabel(store.chips.labelName.map { "Label: \($0)" } ?? "Labels",
+                                  icon: "tag", active: store.chips.labelId != nil)
                     }
-                    .font(.caption).buttonStyle(.link)
+                    .menuStyle(.borderlessButton).fixedSize()
+
+                    chipToggle("Is unread", icon: "envelope.badge", isOn: $store.chips.unreadOnly)
+                    chipToggle("Show archived", icon: "archivebox", isOn: $store.chips.showArchived)
+                    chipToggle("Has attachment", icon: "paperclip", isOn: $store.chips.hasAttachmentOnly)
+
+                    TextField("From…", text: $senderDraft)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 100)
+                        .onSubmit { store.chips.senderContains = senderDraft }
+
+                    if store.chips != defaultChips {
+                        Button {
+                            store.chips = defaultChips
+                            senderDraft = ""
+                        } label: {
+                            Label("Clear", systemImage: "xmark.circle.fill").font(.caption)
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+
+                        Button("Save as view…") {
+                            var v = SavedView.empty()
+                            v.name = store.selectedView.title + " (filtered)"
+                            v.labelId = store.chips.labelId
+                            v.unreadOnly = store.chips.unreadOnly
+                            v.showArchived = store.chips.showArchived
+                            v.hasAttachmentOnly = store.chips.hasAttachmentOnly
+                            v.senderContains = store.chips.senderContains
+                            v.accountId = store.activeAccountId
+                            if store.chips.category == .notPromoSocial { v.excludePromotions = true }
+                            if case .only(let cat) = store.chips.category { v.category = cat }
+                            store.editingView = v
+                        }
+                        .font(.caption).buttonStyle(.link)
+                    }
                 }
-                Spacer()
+                .padding(.vertical, 6)
             }
-            .padding(.horizontal, 10).padding(.vertical, 6)
+
+            Spacer(minLength: 4)
+
+            // Click to update.
+            Button {
+                Task { await store.syncAll() }
+            } label: {
+                HStack(spacing: 4) {
+                    if store.syncStatus.isEmpty {
+                        Image(systemName: "arrow.clockwise")
+                        if let last = lastSync {
+                            Text(last, format: .relative(presentation: .named))
+                        }
+                    } else {
+                        ProgressView().controlSize(.mini)
+                        Text(store.syncStatus)
+                    }
+                }
+                .font(.caption).foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Sync now (Cmd-Shift-R)")
+            .keyboardShortcut("r", modifiers: [.command, .shift])
         }
+        .padding(.horizontal, 10)
+    }
+
+    private var lastSync: Date? {
+        store.accounts.compactMap(\.lastSyncAt).min()
     }
 
     private var allLabels: [LabelRow] {
@@ -190,52 +237,39 @@ struct FilterBar: View {
     }
 }
 
+/// Dense Notion Mail-style single-line row:
+/// [dot] participants   subject  snippet………………  [icons] time
 struct ThreadRow: View {
     @EnvironmentObject var store: MailStore
     let thread: MailThread
     @State private var hovering = false
 
     var body: some View {
-        HStack(alignment: .top, spacing: 8) {
+        HStack(alignment: .center, spacing: 8) {
             Circle()
                 .fill(thread.isUnread ? Color.accentColor : .clear)
-                .frame(width: 8, height: 8)
-                .padding(.top, 5)
-            VStack(alignment: .leading, spacing: 2) {
-                HStack(spacing: 4) {
-                    Text(participantsDisplay)
-                        .font(.system(size: 13, weight: thread.isUnread ? .semibold : .regular))
-                        .lineLimit(1)
-                    if thread.messageCount > 1 {
-                        Text("\(thread.messageCount)")
-                            .font(.caption2).foregroundStyle(.secondary)
-                    }
-                    Spacer()
-                    if !hovering {
-                        if thread.hasAttachment {
-                            Image(systemName: "paperclip").font(.caption2).foregroundStyle(.secondary)
-                        }
-                        if thread.reminderAt != nil {
-                            Image(systemName: "bell.fill").font(.caption2).foregroundStyle(.orange)
-                        }
-                        if thread.isStarred {
-                            Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow)
-                        }
-                        Text(thread.lastDate, format: relativeFormat)
-                            .font(.caption).foregroundStyle(.secondary)
-                    }
-                }
-                Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
-                    .font(.system(size: 12, weight: thread.isUnread ? .medium : .regular))
+                .frame(width: 7, height: 7)
+
+            HStack(spacing: 4) {
+                Text(participantsDisplay)
+                    .font(.system(size: 13, weight: thread.isUnread ? .semibold : .regular))
                     .lineLimit(1)
-                Text(thread.snippet)
-                    .font(.system(size: 11))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(2)
+                if thread.messageCount > 1 {
+                    Text("\(thread.messageCount)")
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                }
             }
-        }
-        .padding(.vertical, 3)
-        .overlay(alignment: .topTrailing) {
+            .frame(width: 170, alignment: .leading)
+
+            (Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
+                .fontWeight(thread.isUnread ? .semibold : .medium)
+             + Text("  \(thread.snippet)")
+                .foregroundColor(.secondary))
+                .font(.system(size: 13))
+                .lineLimit(1)
+
+            Spacer(minLength: 8)
+
             if hovering {
                 HStack(spacing: 2) {
                     hoverButton("star", filled: thread.isStarred) { store.toggleStar(thread) }
@@ -243,10 +277,24 @@ struct ThreadRow: View {
                     hoverButton("clock") { store.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 1)) }
                     hoverButton("trash") { store.trash(thread) }
                 }
-                .padding(4)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
+            } else {
+                HStack(spacing: 5) {
+                    if thread.hasAttachment {
+                        Image(systemName: "paperclip").font(.caption2).foregroundStyle(.secondary)
+                    }
+                    if thread.reminderAt != nil {
+                        Image(systemName: "bell.fill").font(.caption2).foregroundStyle(.orange)
+                    }
+                    if thread.isStarred {
+                        Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow)
+                    }
+                    Text(thread.lastDate, format: relativeFormat)
+                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .frame(minWidth: 52, alignment: .trailing)
+                }
             }
         }
+        .padding(.vertical, 2)
         .onHover { hovering = $0 }
     }
 
@@ -260,7 +308,7 @@ struct ThreadRow: View {
                 .font(.system(size: 11))
         }
         .buttonStyle(.plain)
-        .padding(3)
+        .padding(2)
     }
 
     private var relativeFormat: Date.FormatStyle {

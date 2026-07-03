@@ -24,8 +24,8 @@ struct ComposeView: View {
                 Picker("From", selection: $fromAccount) {
                     ForEach(store.accounts) { Text($0.id).tag($0.id) }
                 }
-                TextField("To", text: $to)
-                TextField("Cc", text: $cc)
+                AddressField(label: "To", text: $to)
+                AddressField(label: "Cc", text: $cc)
                 TextField("Subject", text: $subject)
             }
             .formStyle(.columns)

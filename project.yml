@@ -5,8 +5,8 @@ options:
     macOS: "14.0"
 packages:
   GRDB:
-    url: https://github.com/groue/GRDB.swift
-    from: 6.29.0
+    url: https://github.com/duckduckgo/GRDB.swift
+    exactVersion: 3.0.0
 targets:
   PerfectMail:
     type: application
