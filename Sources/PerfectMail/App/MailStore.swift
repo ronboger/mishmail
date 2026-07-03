@@ -301,11 +301,12 @@ final class MailStore: ObservableObject {
                         q = q.filter(!Column("labelIds").like("%\(cat)%"))
                     }
                 } else {
-                    // Contains any of the selected categories.
+                    // Contains any of the selected categories (values bound, not interpolated).
                     let conditions = chips.category.categories
-                        .map { "labelIds LIKE '%\($0)%'" }
+                        .map { _ in "labelIds LIKE ?" }
                         .joined(separator: " OR ")
-                    q = q.filter(sql: conditions)
+                    let patterns = chips.category.categories.map { "%\($0)%" }
+                    q = q.filter(sql: conditions, arguments: StatementArguments(patterns))
                 }
             }
             if chips.unreadOnly { q = q.filter(Column("isUnread") == true) }
@@ -399,9 +400,12 @@ final class MailStore: ObservableObject {
 
     private func refreshCountsAndBadge() {
         // Local counts (fallback + reminders, which Gmail doesn't know about).
+        let activeAccount = activeAccountId
         let local: [String: Int] = (try? db.read { db in
             func count(_ q: QueryInterfaceRequest<MailThread>) -> Int {
-                (try? q.fetchCount(db)) ?? 0
+                var q = q
+                if let a = activeAccount { q = q.filter(Column("accountId") == a) }
+                return (try? q.fetchCount(db)) ?? 0
             }
             let unread = MailThread.filter(Column("isUnread") == true && Column("inTrash") == false)
             var inboxUnread = unread.filter(Column("inInbox") == true)
@@ -417,15 +421,16 @@ final class MailStore: ObservableObject {
         }) ?? [:]
 
         var counts = local
-        // Prefer Gmail's own numbers (scoped to the active account when set).
+        // Inbox badge always uses the local count: it applies the exact same
+        // filter as the visible inbox list, so badge and list can't disagree.
+        // (Gmail's INBOX-minus-categories math undercounts: CATEGORY_* label
+        // totals include archived unread, so the difference can clamp to 0
+        // while unread mail is visibly in the inbox.)
+        // Gmail's numbers are still authoritative for the category labels.
         let scoped = activeAccountId.map { id in apiCounts.filter { $0.key == id } } ?? apiCounts
         if !scoped.isEmpty {
-            let inbox = scoped.values.reduce(0) { $0 + ($1["INBOX"] ?? 0) }
-            let promo = scoped.values.reduce(0) { $0 + ($1["CATEGORY_PROMOTIONS"] ?? 0) }
-            let social = scoped.values.reduce(0) { $0 + ($1["CATEGORY_SOCIAL"] ?? 0) }
-            counts["inbox"] = max(0, inbox - promo - social)
-            counts["promotions"] = promo
-            counts["social"] = social
+            counts["promotions"] = scoped.values.reduce(0) { $0 + ($1["CATEGORY_PROMOTIONS"] ?? 0) }
+            counts["social"] = scoped.values.reduce(0) { $0 + ($1["CATEGORY_SOCIAL"] ?? 0) }
         }
         unreadCounts = counts
         Notifier.setBadge(counts["inbox"] ?? 0)
@@ -866,7 +871,7 @@ final class MailStore: ObservableObject {
                 for att in attachments {
                     let data = try await client(for: message.accountId)
                         .getAttachment(messageId: message.gmailId, attachmentId: att.gmailAttachmentId)
-                    try data.write(to: dir.appendingPathComponent(att.filename))
+                    try data.write(to: dir.appendingPathComponent(MessageParser.safeFilename(att.filename)))
                 }
                 await MainActor.run {
                     showNotice("Saved \(attachments.count) attachments")
@@ -890,7 +895,7 @@ final class MailStore: ObservableObject {
                 let dir = FileManager.default.temporaryDirectory
                     .appendingPathComponent("PerfectMailAttachments", isDirectory: true)
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let url = dir.appendingPathComponent(attachment.filename)
+                let url = dir.appendingPathComponent(MessageParser.safeFilename(attachment.filename))
                 try data.write(to: url)
                 await MainActor.run { NSWorkspace.shared.open(url) }
             } catch {
@@ -903,7 +908,7 @@ final class MailStore: ObservableObject {
     /// which is the only place outside the sandbox the app can write.
     func saveAttachment(_ attachment: AttachmentRow, message: Message) {
         let panel = NSSavePanel()
-        panel.nameFieldStringValue = attachment.filename
+        panel.nameFieldStringValue = MessageParser.safeFilename(attachment.filename)
         panel.canCreateDirectories = true
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         Task {
