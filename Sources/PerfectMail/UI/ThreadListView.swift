@@ -92,32 +92,29 @@ struct ThreadListView: View {
             FilterBar()
             Divider()
             List(selection: $store.selectedThreadId) {
-                ForEach(Array(grouped.enumerated()), id: \.element.0) { index, group in
-                    Section {
-                        ForEach(group.1) { thread in
-                            ThreadRow(thread: thread)
-                                .tag(thread.id)
-                                .listRowBackground(thread.isUnread
-                                    ? Color.primary.opacity(0.05) : Color.clear)
-                                .swipeActions(edge: .trailing) {
-                                    Button { store.archive(thread) } label: {
-                                        Label("Archive", systemImage: "archivebox")
-                                    }.tint(.green)
-                                    Button(role: .destructive) { store.trash(thread) } label: {
-                                        Label("Trash", systemImage: "trash")
-                                    }
+                ForEach(grouped, id: \.0) { title, threads in
+                    // Headers are plain rows (not Section headers) so every
+                    // group gets EXACTLY the same gap — List's own
+                    // inter-section spacing made them subtly unequal.
+                    Text(title)
+                        .font(.system(size: 12 * fontScale, weight: .semibold))
+                        .foregroundStyle(.primary.opacity(0.7))
+                        .padding(.top, 32 * fontScale)
+                        .selectionDisabled()
+                    ForEach(threads) { thread in
+                        ThreadRow(thread: thread)
+                            .tag(thread.id)
+                            .listRowBackground(thread.isUnread
+                                ? Color.primary.opacity(0.05) : Color.clear)
+                            .swipeActions(edge: .trailing) {
+                                Button { store.archive(thread) } label: {
+                                    Label("Archive", systemImage: "archivebox")
+                                }.tint(.green)
+                                Button(role: .destructive) { store.trash(thread) } label: {
+                                    Label("Trash", systemImage: "trash")
                                 }
-                                .contextMenu { threadMenu(thread) }
-                        }
-                    } header: {
-                        // Notion Mail-style headers: darker than the default
-                        // secondary style, with air above — the first group
-                        // gets slightly more so it doesn't read smaller (later
-                        // headers also inherit inter-section spacing).
-                        Text(group.0)
-                            .font(.system(size: 12 * fontScale, weight: .semibold))
-                            .foregroundStyle(.primary.opacity(0.7))
-                            .padding(.top, (index == 0 ? 34 : 32) * fontScale)
+                            }
+                            .contextMenu { threadMenu(thread) }
                     }
                 }
             }
