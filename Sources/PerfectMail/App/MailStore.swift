@@ -541,10 +541,10 @@ final class MailStore: ObservableObject {
         guard var account = accounts.first(where: { $0.id == accountId }),
               account.senderName.isEmpty,
               let name = try? await client(for: accountId).userName(),
-              let realName = name, !realName.isEmpty else { return }
-        account.senderName = realName
+              !name.isEmpty else { return }
+        account.senderName = name
         let updated = account
-        try? db.write { db in try updated.update(db) }
+        try? await db.write { db in try updated.update(db) }
     }
 
     /// RFC 2822 From value: "Ron Boger <ron@x.com>" when a name is known.
