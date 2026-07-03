@@ -110,10 +110,10 @@ struct ThreadListView: View {
                                 .contextMenu { threadMenu(thread) }
                         }
                     } header: {
-                        // Notion Mail leaves ~2 rows of air above each group
-                        // header (except the first).
+                        // Notion Mail-style air above group headers: a little
+                        // for the first, more for the rest.
                         Text(group.0)
-                            .padding(.top, index == 0 ? 0 : 48 * fontScale)
+                            .padding(.top, (index == 0 ? 14 : 36) * fontScale)
                     }
                 }
             }
