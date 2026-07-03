@@ -98,7 +98,7 @@ struct ComposeView: View {
                 .padding(.bottom, 6)
             }
 
-            // From + Cc toggle row
+            // From row
             HStack {
                 Menu {
                     ForEach(store.accounts) { account in
@@ -115,23 +115,32 @@ struct ComposeView: View {
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                 }
-                .menuStyle(.borderlessButton).fixedSize()
+                .menuStyle(.borderlessButton)
+                .menuIndicator(.hidden)
+                .fixedSize()
                 Spacer()
-                if !showCc {
-                    Button("Cc") { showCc = true }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                }
-                if !showBcc {
-                    Button("Bcc") { showBcc = true }
-                        .buttonStyle(.plain)
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                }
             }
             .padding(.bottom, 4)
 
             TokenAddressField(label: "To", tokens: $toTokens, draft: $toDraft,
                               autoFocus: original == nil && editingDraft == nil)
+                .overlay(alignment: .trailing) {
+                    // Cc/Bcc live on the To row, Gmail-style.
+                    HStack(spacing: 8) {
+                        if !showCc {
+                            Button("Cc") { showCc = true }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
+                        if !showBcc {
+                            Button("Bcc") { showBcc = true }
+                                .buttonStyle(.plain)
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                        }
+                    }
+                    .padding(.leading, 8)
+                    .background(Color(nsColor: .windowBackgroundColor))
+                }
                 .zIndex(3)
             if showCc || !ccTokens.isEmpty {
                 TokenAddressField(label: "Cc", tokens: $ccTokens, draft: $ccDraft)
@@ -234,6 +243,12 @@ struct ComposeView: View {
         }
         .padding(14)
         .onAppear { prefill() }
+        .onChange(of: store.accounts) {
+            // Accounts can finish loading after the card appears — backfill From.
+            if fromAccount.isEmpty {
+                fromAccount = store.activeAccountId ?? store.accounts.first?.id ?? ""
+            }
+        }
         .fileImporter(isPresented: $showFilePicker,
                       allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { attachmentURLs.append(contentsOf: urls) }
