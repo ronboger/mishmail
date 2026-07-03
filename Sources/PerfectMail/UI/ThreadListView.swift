@@ -29,6 +29,7 @@ enum GroupBy: String, CaseIterable {
 struct ThreadListView: View {
     @EnvironmentObject var store: MailStore
     @AppStorage("groupBy") private var groupByRaw = GroupBy.date.rawValue
+    @AppStorage("fontScale") private var fontScale = 1.0
 
     private var groupBy: GroupBy { GroupBy(rawValue: groupByRaw) ?? .date }
 
@@ -91,9 +92,9 @@ struct ThreadListView: View {
             FilterBar()
             Divider()
             List(selection: $store.selectedThreadId) {
-                ForEach(grouped, id: \.0) { title, threads in
-                    Section(title) {
-                        ForEach(threads) { thread in
+                ForEach(Array(grouped.enumerated()), id: \.element.0) { index, group in
+                    Section {
+                        ForEach(group.1) { thread in
                             ThreadRow(thread: thread)
                                 .tag(thread.id)
                                 .listRowBackground(thread.isUnread
@@ -108,6 +109,11 @@ struct ThreadListView: View {
                                 }
                                 .contextMenu { threadMenu(thread) }
                         }
+                    } header: {
+                        // Notion Mail leaves ~2 rows of air above each group
+                        // header (except the first).
+                        Text(group.0)
+                            .padding(.top, index == 0 ? 0 : 48 * fontScale)
                     }
                 }
             }
