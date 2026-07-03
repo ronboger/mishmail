@@ -164,57 +164,88 @@ struct ThreadListView: View {
 /// Notion Mail-style filter chips above the list, with click-to-refresh.
 struct FilterBar: View {
     @EnvironmentObject var store: MailStore
-    @State private var senderDraft = ""
-    @State private var showFilterPopover = false
     @State private var showCategoriesPopover = false
+    @State private var editingField: FilterField?
+    @State private var fieldDraft = ""
+    @State private var fieldExclude = false
+    @State private var showMore = false
     @AppStorage("groupBy") private var groupByRaw = GroupBy.date.rawValue
     @AppStorage("showCategoryChip") private var showCategoryChip = true
     @AppStorage("showFilterChip") private var showFilterChip = true
 
     private var defaultChips: FilterChips { FilterChips.defaults(for: store.selectedView) }
 
+    enum FilterField {
+        case from, to, cc, bcc, subject, label
+
+        var title: String {
+            switch self {
+            case .from: return "From"
+            case .to: return "To"
+            case .cc: return "Cc"
+            case .bcc: return "Bcc"
+            case .subject: return "Subject"
+            case .label: return "Label"
+            }
+        }
+    }
+
     var body: some View {
         HStack(spacing: 8) {
-            // Categories — the one always-visible chip, like Notion Mail.
-            if showCategoryChip {
-                Button {
-                    showCategoriesPopover = true
-                } label: {
-                    chipLabel("Categories: \(store.chips.category.title)",
-                              icon: "bookmark",
-                              active: store.chips.category != defaultChips.category)
-                }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showCategoriesPopover, arrowEdge: .bottom) {
-                    CategoriesPopover()
-                }
-            }
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 8) {
+                    // Categories — the one always-visible chip, like Notion Mail.
+                    if showCategoryChip {
+                        Button {
+                            showCategoriesPopover = true
+                        } label: {
+                            chipLabel("Categories: \(store.chips.category.title)",
+                                      icon: "bookmark",
+                                      active: store.chips.category != defaultChips.category)
+                        }
+                        .buttonStyle(.plain)
+                        .popover(isPresented: $showCategoriesPopover, arrowEdge: .bottom) {
+                            CategoriesPopover()
+                        }
+                    }
 
-            // Chips for whatever filters are active, each removable.
-            if let name = store.chips.labelName {
-                activeChip("Label\(store.chips.labelExclude ? " ≠" : ":") \(name)") {
-                    store.chips.labelId = nil; store.chips.labelName = nil
-                }
-            }
-            if store.chips.unreadOnly { activeChip("Unread") { store.chips.unreadOnly = false } }
-            if store.chips.showArchived { activeChip("Archived") { store.chips.showArchived = false } }
-            if store.chips.hasAttachmentOnly { activeChip("Attachment") { store.chips.hasAttachmentOnly = false } }
-            if !store.chips.senderContains.isEmpty {
-                activeChip("From\(store.chips.senderExclude ? " ≠" : ":") \(store.chips.senderContains)") {
-                    store.chips.senderContains = ""; senderDraft = ""
-                }
-            }
+                    // Chips for whatever filters are active, each removable.
+                    if let name = store.chips.labelName {
+                        activeChip("Label\(store.chips.labelExclude ? " ≠" : ":") \(name)") {
+                            store.chips.labelId = nil; store.chips.labelName = nil
+                        }
+                    }
+                    if store.chips.unreadOnly { activeChip("Unread") { store.chips.unreadOnly = false } }
+                    if store.chips.readOnly { activeChip("Read") { store.chips.readOnly = false } }
+                    if store.chips.showArchived { activeChip("Archived") { store.chips.showArchived = false } }
+                    if store.chips.showSent { activeChip("Sent") { store.chips.showSent = false } }
+                    if store.chips.hasAttachmentOnly { activeChip("Attachment") { store.chips.hasAttachmentOnly = false } }
+                    if store.chips.noAttachmentOnly { activeChip("No attachment") { store.chips.noAttachmentOnly = false } }
+                    if store.chips.calendarOnly { activeChip("Calendar events") { store.chips.calendarOnly = false } }
+                    if store.chips.hideCalendar { activeChip("No calendar events") { store.chips.hideCalendar = false } }
+                    if let window = store.chips.dateWindow {
+                        activeChip("Date: \(window.title)") { store.chips.dateWindow = nil }
+                    }
+                    if !store.chips.senderContains.isEmpty {
+                        activeChip("From\(store.chips.senderExclude ? " ≠" : ":") \(store.chips.senderContains)") {
+                            store.chips.senderContains = ""
+                        }
+                    }
+                    if !store.chips.toContains.isEmpty {
+                        activeChip("To: \(store.chips.toContains)") { store.chips.toContains = "" }
+                    }
+                    if !store.chips.ccContains.isEmpty {
+                        activeChip("Cc: \(store.chips.ccContains)") { store.chips.ccContains = "" }
+                    }
+                    if !store.chips.bccContains.isEmpty {
+                        activeChip("Bcc: \(store.chips.bccContains)") { store.chips.bccContains = "" }
+                    }
+                    if !store.chips.subjectContains.isEmpty {
+                        activeChip("Subject: \(store.chips.subjectContains)") { store.chips.subjectContains = "" }
+                    }
 
-            // Everything else lives behind one "+ Filter".
-            if showFilterChip {
-                Button {
-                    showFilterPopover = true
-                } label: {
-                    chipLabel("Filter", icon: "plus", active: false)
-                }
-                .buttonStyle(.plain)
-                .popover(isPresented: $showFilterPopover, arrowEdge: .bottom) {
-                    filterPopover
+                    // Everything else lives behind one "+ Filter" (Ctrl-F).
+                    filterButton
                 }
             }
 
@@ -262,81 +293,272 @@ struct FilterBar: View {
         .padding(.horizontal, 10).padding(.vertical, 7)
     }
 
+    /// The "+ Filter" chip. Rendered as an invisible anchor when hidden so
+    /// Ctrl-F can still open the popover.
+    @ViewBuilder
+    private var filterButton: some View {
+        Group {
+            if showFilterChip {
+                Button {
+                    store.showFilterMenu = true
+                } label: {
+                    chipLabel("Filter", icon: "plus", active: false)
+                }
+                .buttonStyle(.plain)
+                .help("Filter (Ctrl-F)")
+            } else {
+                Color.clear.frame(width: 1, height: 1)
+            }
+        }
+        .popover(isPresented: $store.showFilterMenu, arrowEdge: .bottom) {
+            filterPopover
+        }
+        .onChange(of: store.showFilterMenu) {
+            if store.showFilterMenu { editingField = nil; showMore = false }
+        }
+    }
+
+    /// Notion Mail-style filter menu: primary filters, "More filters"
+    /// expansion, and per-field editors.
+    @ViewBuilder
     private var filterPopover: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Toggle("Unread only", isOn: $store.chips.unreadOnly)
-                .toggleStyle(NotionSwitchStyle())
-            Toggle("Show archived", isOn: $store.chips.showArchived)
-                .toggleStyle(NotionSwitchStyle())
-            Toggle("Has attachment", isOn: $store.chips.hasAttachmentOnly)
-                .toggleStyle(NotionSwitchStyle())
+        Group {
+            if let field = editingField {
+                fieldEditor(field)
+            } else {
+                filterMenu
+            }
+        }
+        .padding(10)
+        .frame(width: 260)
+    }
 
-            Divider()
+    private var filterMenu: some View {
+        VStack(alignment: .leading, spacing: 1) {
+            FilterMenuRow(icon: "person.crop.circle", title: "From") { beginEditing(.from) }
+            FilterMenuRow(icon: "paperclip", title: "Has attachments") {
+                set { $0.hasAttachmentOnly = true; $0.noAttachmentOnly = false }
+            }
+            dateRow(icon: "calendar", title: "Date")
+            FilterMenuRow(icon: "calendar.badge.clock", title: "Only show calendar events") {
+                set { $0.calendarOnly = true; $0.hideCalendar = false }
+            }
+            FilterMenuRow(icon: "person.2", title: "Show \"social\" emails") { showCategory("CATEGORY_SOCIAL") }
+            FilterMenuRow(icon: "megaphone", title: "Show \"promotional\" emails") { showCategory("CATEGORY_PROMOTIONS") }
 
-            HStack(spacing: 6) {
-                Text("Label")
-                Menu(store.chips.labelExclude ? "does not contain" : "contains") {
-                    Button("contains") { store.chips.labelExclude = false }
-                    Button("does not contain") { store.chips.labelExclude = true }
+            if !showMore {
+                FilterMenuRow(icon: "ellipsis", title: "More filters") { showMore = true }
+            } else {
+                Divider().padding(.vertical, 4)
+                FilterMenuRow(icon: "tag", title: "Labels") { beginEditing(.label) }
+                FilterMenuRow(icon: "bookmark", title: "Categories") {
+                    store.showFilterMenu = false
+                    DispatchQueue.main.async { showCategoriesPopover = true }
                 }
-                .menuStyle(.borderlessButton).fixedSize()
-                .font(.caption).foregroundStyle(.secondary)
-            }
-            Picker("", selection: $store.chips.labelId) {
-                Text("Any").tag(String?.none)
-                ForEach(allLabels, id: \.gmailLabelId) { label in
-                    Text(label.name).tag(String?.some(label.gmailLabelId))
+                FilterMenuRow(icon: "at", title: "To") { beginEditing(.to) }
+                FilterMenuRow(icon: "at.badge.plus", title: "Cc") { beginEditing(.cc) }
+                FilterMenuRow(icon: "eye.slash", title: "Bcc") { beginEditing(.bcc) }
+                FilterMenuRow(icon: "textformat", title: "Subject") { beginEditing(.subject) }
+                dateRow(icon: "clock.arrow.circlepath", title: "Received date")
+                FilterMenuRow(icon: "paperplane", title: "Show sent") { set { $0.showSent = true } }
+                FilterMenuRow(icon: "archivebox", title: "Show archived") { set { $0.showArchived = true } }
+                FilterMenuRow(icon: "envelope.open", title: "Is read") {
+                    set { $0.readOnly = true; $0.unreadOnly = false }
                 }
-            }
-            .labelsHidden()
-            .onChange(of: store.chips.labelId) {
-                store.chips.labelName = allLabels.first { $0.gmailLabelId == store.chips.labelId }?.name
+                FilterMenuRow(icon: "envelope.badge", title: "Is unread") {
+                    set { $0.unreadOnly = true; $0.readOnly = false }
+                }
+                FilterMenuRow(icon: "paperclip.badge.ellipsis", title: "No attachments") {
+                    set { $0.noAttachmentOnly = true; $0.hasAttachmentOnly = false }
+                }
+                FilterMenuRow(icon: "calendar.badge.minus", title: "Hide calendar events") {
+                    set { $0.hideCalendar = true; $0.calendarOnly = false }
+                }
+                FilterMenuRow(icon: "bubble.left.and.bubble.right", title: "Show \"forums\" emails") { showCategory("CATEGORY_FORUMS") }
+                FilterMenuRow(icon: "bubble.left.and.bubble.right", title: "Hide \"forums\" emails") { hideCategory("CATEGORY_FORUMS") }
+                FilterMenuRow(icon: "info.circle", title: "Show \"updates\" emails") { showCategory("CATEGORY_UPDATES") }
+                FilterMenuRow(icon: "info.circle", title: "Hide \"updates\" emails") { hideCategory("CATEGORY_UPDATES") }
             }
 
-            HStack(spacing: 6) {
-                Text("From")
-                Menu(store.chips.senderExclude ? "does not contain" : "contains") {
-                    Button("contains") { store.chips.senderExclude = false }
-                    Button("does not contain") { store.chips.senderExclude = true }
-                }
-                .menuStyle(.borderlessButton).fixedSize()
-                .font(.caption).foregroundStyle(.secondary)
-            }
-            TextField("Name or address…", text: $senderDraft)
-                .onSubmit { store.chips.senderContains = senderDraft }
-
-            HStack {
-                if store.chips != defaultChips {
-                    Button("Clear all") {
-                        store.chips = defaultChips
-                        senderDraft = ""
-                    }
+            if store.chips != defaultChips {
+                Divider().padding(.vertical, 4)
+                HStack {
+                    Button("Clear all") { store.chips = defaultChips }
                     Spacer()
-                    Button("Save as view…") {
-                        var v = SavedView.empty()
-                        v.name = store.selectedView.title + " (filtered)"
-                        v.labelId = store.chips.labelId
-                        v.unreadOnly = store.chips.unreadOnly
-                        v.showArchived = store.chips.showArchived
-                        v.hasAttachmentOnly = store.chips.hasAttachmentOnly
-                        v.senderContains = store.chips.senderContains
-                        v.accountId = store.activeAccountId
-                        if store.chips.category.exclude,
-                           store.chips.category.categories.isSuperset(of: ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"]) {
-                            v.excludePromotions = true
-                        }
-                        if !store.chips.category.exclude,
-                           let cat = store.chips.category.categories.first {
-                            v.category = cat
-                        }
-                        showFilterPopover = false
-                        store.editingView = v
+                    Button("Save as view…") { saveAsView() }
+                }
+                .font(.system(size: 12))
+                .buttonStyle(.plain)
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 6)
+            }
+        }
+    }
+
+    /// "Date" / "Received date": a submenu of relative windows.
+    private func dateRow(icon: String, title: String) -> some View {
+        Menu {
+            ForEach(DateWindow.allCases, id: \.rawValue) { window in
+                Button(window.title) {
+                    store.chips.dateWindow = window
+                    store.showFilterMenu = false
+                }
+            }
+            if store.chips.dateWindow != nil {
+                Divider()
+                Button("Anytime") {
+                    store.chips.dateWindow = nil
+                    store.showFilterMenu = false
+                }
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .frame(width: 16)
+                Text(title).font(.system(size: 12.5)).foregroundStyle(.primary)
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 6).padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+    }
+
+    /// Editor pane for text filters (From/To/Cc/Bcc/Subject) and Labels.
+    @ViewBuilder
+    private func fieldEditor(_ field: FilterField) -> some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Button { editingField = nil } label: {
+                    Image(systemName: "chevron.left").font(.system(size: 10, weight: .semibold))
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
+                Text(field.title).font(.system(size: 12, weight: .semibold))
+                if field == .from || field == .label {
+                    Menu(fieldExclude ? "does not contain" : "contains") {
+                        Button("contains") { fieldExclude = false }
+                        Button("does not contain") { fieldExclude = true }
                     }
+                    .menuStyle(.borderlessButton).fixedSize()
+                    .font(.caption).foregroundStyle(.secondary)
+                }
+                Spacer()
+            }
+
+            if field == .label {
+                Picker("", selection: $store.chips.labelId) {
+                    Text("Any").tag(String?.none)
+                    ForEach(allLabels, id: \.gmailLabelId) { label in
+                        Text(label.name).tag(String?.some(label.gmailLabelId))
+                    }
+                }
+                .labelsHidden()
+                .onChange(of: store.chips.labelId) {
+                    store.chips.labelName = allLabels.first { $0.gmailLabelId == store.chips.labelId }?.name
+                    store.chips.labelExclude = fieldExclude
+                }
+            } else {
+                TextField(field == .subject ? "Subject contains…" : "Name or address…",
+                          text: $fieldDraft)
+                    .onSubmit { apply(field) }
+                if field == .from {
+                    // Sender suggestions with favicons, Notion Mail-style.
+                    ForEach(store.contactSuggestions(for: fieldDraft), id: \.email) { contact in
+                        Button {
+                            store.chips.senderContains = contact.email
+                            store.chips.senderExclude = fieldExclude
+                            store.showFilterMenu = false
+                        } label: {
+                            HStack(spacing: 6) {
+                                FaviconView(email: contact.email)
+                                (Text(contact.name.isEmpty ? contact.email : contact.name)
+                                 + Text(contact.name.isEmpty ? "" : "  \(contact.email)")
+                                    .foregroundColor(.secondary))
+                                    .font(.system(size: 12)).lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                HStack {
+                    Spacer()
+                    Button("Apply") { apply(field) }
+                        .controlSize(.small)
+                        .disabled(fieldDraft.trimmingCharacters(in: .whitespaces).isEmpty)
                 }
             }
         }
-        .padding(14)
-        .frame(width: 270)
+        .padding(4)
+    }
+
+    private func beginEditing(_ field: FilterField) {
+        switch field {
+        case .from:
+            fieldDraft = store.chips.senderContains
+            fieldExclude = store.chips.senderExclude
+        case .to: fieldDraft = store.chips.toContains
+        case .cc: fieldDraft = store.chips.ccContains
+        case .bcc: fieldDraft = store.chips.bccContains
+        case .subject: fieldDraft = store.chips.subjectContains
+        case .label: fieldExclude = store.chips.labelExclude
+        }
+        editingField = field
+    }
+
+    private func apply(_ field: FilterField) {
+        let value = fieldDraft.trimmingCharacters(in: .whitespaces)
+        guard !value.isEmpty else { return }
+        switch field {
+        case .from:
+            store.chips.senderContains = value
+            store.chips.senderExclude = fieldExclude
+        case .to: store.chips.toContains = value
+        case .cc: store.chips.ccContains = value
+        case .bcc: store.chips.bccContains = value
+        case .subject: store.chips.subjectContains = value
+        case .label: break
+        }
+        store.showFilterMenu = false
+    }
+
+    /// Mutate the chips and dismiss the popover.
+    private func set(_ mutate: (inout FilterChips) -> Void) {
+        mutate(&store.chips)
+        store.showFilterMenu = false
+    }
+
+    private func showCategory(_ cat: String) {
+        store.chips.category.show.insert(cat)
+        store.chips.category.hide.remove(cat)
+        store.showFilterMenu = false
+    }
+
+    private func hideCategory(_ cat: String) {
+        store.chips.category.hide.insert(cat)
+        store.chips.category.show.remove(cat)
+        store.showFilterMenu = false
+    }
+
+    private func saveAsView() {
+        var v = SavedView.empty()
+        v.name = store.selectedView.title + " (filtered)"
+        v.labelId = store.chips.labelId
+        v.unreadOnly = store.chips.unreadOnly
+        v.showArchived = store.chips.showArchived
+        v.hasAttachmentOnly = store.chips.hasAttachmentOnly
+        v.senderContains = store.chips.senderContains
+        v.accountId = store.activeAccountId
+        if store.chips.category.hide.isSuperset(of: ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"]) {
+            v.excludePromotions = true
+        }
+        if let cat = store.chips.category.show.first {
+            v.category = cat
+        }
+        store.showFilterMenu = false
+        store.editingView = v
     }
 
     private func activeChip(_ title: String, remove: @escaping () -> Void) -> some View {
@@ -369,6 +591,54 @@ struct FilterBar: View {
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(active ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.1),
                     in: Capsule())
+    }
+}
+
+/// One row of the Notion Mail-style filter menu: icon + title, hover tint.
+struct FilterMenuRow: View {
+    let icon: String
+    let title: String
+    let action: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: icon)
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .frame(width: 16)
+                Text(title).font(.system(size: 12.5))
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal, 6).padding(.vertical, 4)
+            .background(hovering ? Color.primary.opacity(0.07) : Color.clear,
+                        in: RoundedRectangle(cornerRadius: 5))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// Sender favicon for filter suggestions: the domain's favicon, falling back
+/// to a generic person glyph.
+struct FaviconView: View {
+    let email: String
+
+    var body: some View {
+        AsyncImage(url: faviconURL) { image in
+            image.resizable()
+        } placeholder: {
+            Image(systemName: "person.crop.circle")
+                .font(.system(size: 13)).foregroundStyle(.secondary)
+        }
+        .frame(width: 16, height: 16)
+        .clipShape(RoundedRectangle(cornerRadius: 3))
+    }
+
+    private var faviconURL: URL? {
+        guard let domain = email.split(separator: "@").last, !domain.isEmpty else { return nil }
+        return URL(string: "https://www.google.com/s2/favicons?domain=\(domain)&sz=64")
     }
 }
 
@@ -543,7 +813,8 @@ struct CategoriesPopover: View {
             Divider()
 
             Button {
-                filter.wrappedValue.categories = []
+                filter.wrappedValue.show = []
+                filter.wrappedValue.hide = []
             } label: {
                 Label("Clear filter", systemImage: "xmark.circle")
                     .font(.system(size: 12))
