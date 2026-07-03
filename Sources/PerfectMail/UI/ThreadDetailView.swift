@@ -109,23 +109,33 @@ struct MessageCard: View {
                 let attachments = store.attachments(for: message.id)
                 if !attachments.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 6) {
+                        HStack(spacing: 8) {
                             ForEach(attachments) { att in
                                 Button {
                                     store.openAttachment(att, message: message)
                                 } label: {
-                                    HStack(spacing: 4) {
-                                        Image(systemName: "paperclip").font(.caption)
-                                        Text(att.filename).font(.caption).lineLimit(1)
-                                        Text(byteSize(att.size)).font(.caption2).foregroundStyle(.secondary)
+                                    HStack(spacing: 8) {
+                                        Image(systemName: iconName(for: att.mimeType))
+                                            .font(.system(size: 20))
+                                            .foregroundStyle(Color.stable(for: att.filename))
+                                        VStack(alignment: .leading, spacing: 1) {
+                                            Text(att.filename)
+                                                .font(.system(size: 12.5, weight: .medium))
+                                                .lineLimit(1)
+                                            Text(byteSize(att.size))
+                                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                                        }
                                     }
-                                    .padding(.horizontal, 8).padding(.vertical, 5)
-                                    .background(Color.secondary.opacity(0.12), in: Capsule())
+                                    .padding(.horizontal, 12).padding(.vertical, 8)
+                                    .background(Color.secondary.opacity(0.1),
+                                                in: RoundedRectangle(cornerRadius: 8))
+                                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
                                 }
                                 .buttonStyle(.plain)
                                 .help("Download and open")
                             }
                         }
+                        .padding(.vertical, 2)
                     }
                 }
             } else {
@@ -142,6 +152,16 @@ struct MessageCard: View {
     private func byteSize(_ bytes: Int) -> String {
         ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
+
+    private func iconName(for mime: String) -> String {
+        if mime.hasPrefix("image/") { return "photo" }
+        if mime.contains("pdf") { return "doc.richtext" }
+        if mime.contains("zip") || mime.contains("compressed") { return "doc.zipper" }
+        if mime.contains("spreadsheet") || mime.contains("csv") || mime.contains("excel") { return "tablecells" }
+        if mime.hasPrefix("video/") { return "film" }
+        if mime.hasPrefix("audio/") { return "waveform" }
+        return "doc"
+    }
 }
 
 /// Sandboxed HTML rendering: page JavaScript disabled; remote content blocked
@@ -153,10 +173,18 @@ struct HTMLBodyView: NSViewRepresentable {
     var fontScale: Double = 1.0
     @Binding var height: CGFloat
 
+    /// The web view is sized to its full content, so it must never trap
+    /// scroll events — forward them to the enclosing SwiftUI ScrollView.
+    final class PassthroughWebView: WKWebView {
+        override func scrollWheel(with event: NSEvent) {
+            nextResponder?.scrollWheel(with: event)
+        }
+    }
+
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
-        let webView = WKWebView(frame: .zero, configuration: config)
+        let webView = PassthroughWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
         return webView

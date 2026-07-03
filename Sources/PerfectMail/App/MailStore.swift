@@ -67,7 +67,9 @@ struct FilterChips: Equatable {
     var showArchived = false
     var labelId: String?
     var labelName: String?
+    var labelExclude = false      // "does not contain" mode for the label
     var senderContains = ""
+    var senderExclude = false     // "does not contain" mode for the sender
     var hasAttachmentOnly = false
 
     /// Default chips for a given view (inbox hides Promotions/Social).
@@ -288,12 +290,15 @@ final class MailStore: ObservableObject {
                 q = Self.widenArchived(q, for: view)
             }
             if let labelId = chips.labelId {
-                q = q.filter(Column("labelIds").like("%\(labelId)%"))
+                let match = Column("labelIds").like("%\(labelId)%")
+                q = chips.labelExclude ? q.filter(!match) : q.filter(match)
             }
             if chips.hasAttachmentOnly { q = q.filter(Column("hasAttachment") == true) }
             if !chips.senderContains.isEmpty {
-                q = q.filter(Column("fromDisplay").like("%\(chips.senderContains)%")
-                             || Column("participants").like("%\(chips.senderContains)%"))
+                let pattern = "%\(chips.senderContains)%"
+                let condition = "(fromDisplay LIKE ? OR participants LIKE ?)"
+                q = q.filter(sql: chips.senderExclude ? "NOT \(condition)" : condition,
+                             arguments: [pattern, pattern])
             }
             if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
             return try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
