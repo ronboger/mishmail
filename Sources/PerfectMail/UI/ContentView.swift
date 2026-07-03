@@ -121,23 +121,18 @@ struct Sidebar: View {
                 .padding(.horizontal, 10).padding(.vertical, 8)
             List(selection: $store.selectedView) {
                 Section("Views") {
-                    sidebarItem(.inbox, icon: "tray", color: .blue, badge: store.unreadCounts["inbox"])
-                    sidebarItem(.promotions, icon: "tag", color: .green, badge: store.unreadCounts["promotions"])
-                    sidebarItem(.social, icon: "person.2", color: .purple, badge: store.unreadCounts["social"])
-                    sidebarItem(.starred, icon: "star", color: .yellow)
-                    sidebarItem(.snoozed, icon: "clock", color: .teal)
+                    sidebarItem(.inbox, icon: "tray", badge: store.unreadCounts["inbox"])
+                    sidebarItem(.promotions, icon: "tag", badge: store.unreadCounts["promotions"])
+                    sidebarItem(.social, icon: "person.2", badge: store.unreadCounts["social"])
+                    sidebarItem(.starred, icon: "star")
+                    sidebarItem(.snoozed, icon: "clock")
                     ForEach(store.savedViews) { view in
-                        Label {
-                            Text(view.name)
-                        } icon: {
-                            Image(systemName: "line.3.horizontal.decrease.circle")
-                                .foregroundStyle(Color.stable(for: view.name))
-                        }
-                        .tag(MailboxView.saved(view.id ?? -1, view.name))
-                        .contextMenu {
-                            Button("Edit View…") { store.editingView = view }
-                            Button("Delete View", role: .destructive) { store.deleteView(view) }
-                        }
+                        Label(view.name, systemImage: "line.3.horizontal.decrease.circle")
+                            .tag(MailboxView.saved(view.id ?? -1, view.name))
+                            .contextMenu {
+                                Button("Edit View…") { store.editingView = view }
+                                Button("Delete View", role: .destructive) { store.deleteView(view) }
+                            }
                     }
                     Button {
                         store.editingView = SavedView.empty()
@@ -148,11 +143,11 @@ struct Sidebar: View {
                     .buttonStyle(.plain)
                 }
                 Section("Mail") {
-                    sidebarItem(.allMail, icon: "archivebox", color: .secondary)
-                    sidebarItem(.sent, icon: "paperplane", color: .cyan)
-                    sidebarItem(.drafts, icon: "doc.text", color: .secondary)
-                    sidebarItem(.reminders, icon: "bell", color: .orange, badge: store.unreadCounts["reminders"])
-                    sidebarItem(.trash, icon: "trash", color: .secondary)
+                    sidebarItem(.allMail, icon: "archivebox")
+                    sidebarItem(.sent, icon: "paperplane")
+                    sidebarItem(.drafts, icon: "doc.text")
+                    sidebarItem(.reminders, icon: "bell", badge: store.unreadCounts["reminders"])
+                    sidebarItem(.trash, icon: "trash")
                 }
             }
             .listStyle(.sidebar)
@@ -160,13 +155,8 @@ struct Sidebar: View {
     }
 
     @ViewBuilder
-    private func sidebarItem(_ view: MailboxView, icon: String,
-                             color: Color = .accentColor, badge: Int? = nil) -> some View {
-        Label {
-            Text(view.title)
-        } icon: {
-            Image(systemName: icon).foregroundStyle(color)
-        }
+    private func sidebarItem(_ view: MailboxView, icon: String, badge: Int? = nil) -> some View {
+        Label(view.title, systemImage: icon)
         .badge((badge ?? 0) > 0 ? badge! : 0)
         .tag(view)
     }

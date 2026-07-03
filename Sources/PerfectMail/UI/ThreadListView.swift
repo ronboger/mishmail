@@ -387,24 +387,9 @@ struct ThreadRow: View {
 
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
-            // Colored initial avatar, unread dot on its corner.
-            ZStack(alignment: .topTrailing) {
-                Circle()
-                    .fill(Color.stable(for: avatarKey).gradient)
-                    .frame(width: 24 * fontScale, height: 24 * fontScale)
-                    .overlay {
-                        Text(initials)
-                            .font(.system(size: 10.5 * fontScale, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
-                if thread.isUnread {
-                    Circle()
-                        .fill(Color.accentColor)
-                        .frame(width: 8, height: 8)
-                        .overlay(Circle().strokeBorder(Color(nsColor: .windowBackgroundColor), lineWidth: 1.5))
-                        .offset(x: 2, y: -2)
-                }
-            }
+            Circle()
+                .fill(thread.isUnread ? Color.accentColor : .clear)
+                .frame(width: 7, height: 7)
 
             HStack(spacing: 4) {
                 Text(participantsDisplay)
@@ -464,20 +449,6 @@ struct ThreadRow: View {
 
     private var participantsDisplay: String {
         thread.participants.isEmpty ? thread.fromDisplay : thread.participants
-    }
-
-    /// Avatar keyed to the counterparty (skip "me" so replies keep the
-    /// other person's color).
-    private var avatarKey: String {
-        let first = thread.participants.split(separator: " .. ").first { $0 != "me" }
-        return first.map(String.init) ?? thread.fromDisplay
-    }
-
-    private var initials: String {
-        let words = avatarKey.split(separator: " ").prefix(2)
-        let letters = words.compactMap { $0.first.map(String.init) }
-        let joined = letters.joined().uppercased()
-        return joined.isEmpty ? "?" : String(joined.prefix(2))
     }
 
     private func hoverButton(_ icon: String, filled: Bool = false, action: @escaping () -> Void) -> some View {

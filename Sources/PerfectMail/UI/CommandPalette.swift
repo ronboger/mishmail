@@ -21,7 +21,7 @@ struct CommandPalette: View {
                 .onTapGesture { store.showCommandPalette = false }
 
             VStack(spacing: 0) {
-                TextField("Type a command or view name…", text: $query)
+                TextField("Search mail or type a command…", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16))
                     .padding(14)
@@ -51,7 +51,11 @@ struct CommandPalette: View {
             .frame(width: 480)
             .shadow(radius: 24)
             .padding(.top, 120)
-            .onAppear { focused = true }
+            .onAppear {
+                // Focus reliably once the overlay is in the hierarchy.
+                focused = true
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { focused = true }
+            }
             .onKeyPress(.downArrow) { highlighted = min(highlighted + 1, filtered.count - 1); return .handled }
             .onKeyPress(.upArrow) { highlighted = max(highlighted - 1, 0); return .handled }
         }
@@ -86,9 +90,16 @@ struct CommandPalette: View {
     }
 
     private var filtered: [Command] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let raw = query.trimmingCharacters(in: .whitespaces)
+        let q = raw.lowercased()
         guard !q.isEmpty else { return commands }
-        return commands.filter { $0.title.lowercased().contains(q) }
+        // Search is always the first, default action for any typed text.
+        let search = Command(id: "search", title: "Search mail for \u{201C}\(raw)\u{201D}",
+                             icon: "magnifyingglass") { s in
+            s.searchText = raw
+            s.reloadThreads()
+        }
+        return [search] + commands.filter { $0.title.lowercased().contains(q) }
     }
 
     private func run(_ cmd: Command?) {
