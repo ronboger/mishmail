@@ -411,9 +411,10 @@ struct ComposeView: View {
         // Quote the previous message so the context travels with the draft.
         let when = original.date.formatted(date: .abbreviated, time: .shortened)
         let who = "\(MessageParser.displayName(fromHeader: original.fromHeader)) <\(sender)>"
-        let quoted = original.bodyText
+        let quoted = MessageParser
+            .replyQuotableText(text: original.bodyText, html: original.bodyHTML)
             .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { "> \($0)" }
+            .map { $0.isEmpty ? ">" : "> \($0)" }
             .joined(separator: "\n")
         body_ = "\n\n\nOn \(when), \(who) wrote:\n\(quoted)"
         initialBody = body_
@@ -432,7 +433,8 @@ struct ComposeView: View {
             do {
                 let prompt = Ollama.draftReply(
                     originalFrom: original.fromHeader,
-                    originalBody: original.bodyText,
+                    originalBody: MessageParser.replyQuotableText(
+                        text: original.bodyText, html: original.bodyHTML),
                     intent: intent,
                     userEmail: fromAccount)
                 let draft = try await Ollama.generate(prompt: prompt)
