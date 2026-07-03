@@ -41,7 +41,12 @@ struct ContentView: View {
             store.reloadThreads()
         }
         .onChange(of: store.chips) { store.reloadThreads() }
-        .onAppear { installKeyMonitor() }
+        .onAppear {
+            installKeyMonitor()
+            // Don't let the sidebar search field start with keyboard focus —
+            // it would swallow Esc/j/k until clicked away.
+            DispatchQueue.main.async { NSApp.keyWindow?.makeFirstResponder(nil) }
+        }
         .onDisappear {
             if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
             keyMonitor = nil
@@ -171,16 +176,21 @@ struct ContentView: View {
                     break
                 }
             }
-            // Esc closes the reading pane (Notion Mail-style) but KEEPS the
-            // selection, so you stay where you are in the list. Skipped
-            // while typing so Esc still cancels field editing.
+            // Esc: first press while typing (e.g. in search) drops focus back
+            // to the list; otherwise it closes the reading pane (Notion
+            // Mail-style) but KEEPS the selection, so you stay where you are.
+            // Compose and the view editor keep their own Esc behavior.
             if event.keyCode == 53,
-               store.composeRequest == nil, store.editingView == nil,
-               !(event.window?.firstResponder is NSTextView),
-               !(event.window?.firstResponder is NSTextField),
-               !readingPaneHidden {
-                readingPaneHidden = true
-                return nil
+               store.composeRequest == nil, store.editingView == nil {
+                if event.window?.firstResponder is NSTextView
+                    || event.window?.firstResponder is NSTextField {
+                    event.window?.makeFirstResponder(nil)
+                    return nil
+                }
+                if !readingPaneHidden {
+                    readingPaneHidden = true
+                    return nil
+                }
             }
             guard mods.isEmpty,
                   !store.showCommandPalette,
