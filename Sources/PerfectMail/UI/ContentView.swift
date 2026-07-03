@@ -26,12 +26,7 @@ struct ContentView: View {
                 }
             }
         }
-        .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search all mail — from: label: has:attachment")
-        .onSubmit(of: .search) {
-            // Hand focus back to the list so j/k/e/etc. work immediately.
-            NSApp.keyWindow?.makeFirstResponder(nil)
-            if store.selectedThreadId == nil { store.moveSelection(1) }
-        }
+        // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         .onChange(of: store.searchText) { store.reloadThreads() }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
@@ -46,10 +41,6 @@ struct ContentView: View {
         }
         .toolbar {
             ToolbarItemGroup {
-                Button {
-                    store.composeRequest = .init(replyTo: nil)
-                } label: { Label("Compose", systemImage: "square.and.pencil") }
-                    .keyboardShortcut("n", modifiers: .command)
                 Button {
                     readingPaneHidden.toggle()
                 } label: {
@@ -173,6 +164,17 @@ struct ContentView: View {
                     break
                 }
             }
+            // Esc closes the open thread (Notion Mail-style): back to the
+            // list, full emails in the center. Skipped while typing so Esc
+            // still cancels field editing / autocomplete.
+            if event.keyCode == 53,
+               store.composeRequest == nil, store.editingView == nil,
+               !(event.window?.firstResponder is NSTextView),
+               !(event.window?.firstResponder is NSTextField),
+               store.selectedThreadId != nil {
+                store.selectedThreadId = nil
+                return nil
+            }
             guard mods.isEmpty,
                   !store.showCommandPalette,
                   !store.showLabelPicker,
@@ -194,6 +196,44 @@ struct Sidebar: View {
         VStack(spacing: 0) {
             AccountSwitcher()
                 .padding(.horizontal, 10).padding(.vertical, 8)
+            // Notion Mail-style: search right under the account name, with
+            // compose next to it.
+            HStack(spacing: 6) {
+                HStack(spacing: 5) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    TextField("Search", text: $store.searchText)
+                        .textFieldStyle(.plain)
+                        .onSubmit {
+                            // Hand focus back to the list so j/k/e/etc. work.
+                            NSApp.keyWindow?.makeFirstResponder(nil)
+                            if store.selectedThreadId == nil { store.moveSelection(1) }
+                        }
+                    if !store.searchText.isEmpty {
+                        Button {
+                            store.searchText = ""
+                        } label: {
+                            Image(systemName: "xmark.circle.fill")
+                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(.horizontal, 7).padding(.vertical, 5)
+                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+                .help("Search all mail — from: label: has:attachment")
+
+                Button {
+                    store.composeRequest = .init(replyTo: nil)
+                } label: {
+                    Image(systemName: "square.and.pencil")
+                        .font(.system(size: 14))
+                }
+                .buttonStyle(.borderless)
+                .keyboardShortcut("n", modifiers: .command)
+                .help("Compose (⌘N or c)")
+            }
+            .padding(.horizontal, 10).padding(.bottom, 8)
             List(selection: $store.selectedView) {
                 Section("Views") {
                     sidebarItem(.inbox, icon: "tray", badge: store.unreadCounts["inbox"])
