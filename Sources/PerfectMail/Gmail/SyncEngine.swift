@@ -8,16 +8,25 @@ actor SyncEngine {
     private let accountId: String
     private let db = AppDatabase.shared.dbQueue
 
-    /// Configurable sync window (Settings → Accounts). 0 = everything.
-    static var syncWindowDays: Int {
-        UserDefaults.standard.object(forKey: "syncWindowDays") as? Int ?? 90
+    /// Sentinel for "keep no mail on this Mac" (0 already means "everything").
+    static let windowNothing = -1
+
+    /// Configurable per-account sync window (Settings → Accounts).
+    /// Falls back to the old global key so existing installs keep their
+    /// setting. 0 = everything, `windowNothing` = keep no mail locally.
+    static func syncWindowDays(for accountId: String) -> Int {
+        let defaults = UserDefaults.standard
+        if let v = defaults.object(forKey: "syncWindowDays.\(accountId)") as? Int { return v }
+        return defaults.object(forKey: "syncWindowDays") as? Int ?? 90
     }
 
-    private static var windowQuery: String? {
+    private var syncWindowDays: Int { Self.syncWindowDays(for: accountId) }
+
+    private var windowQuery: String? {
         syncWindowDays == 0 ? nil : "newer_than:\(syncWindowDays)d"
     }
 
-    private static var windowLimit: Int {
+    private var windowLimit: Int {
         syncWindowDays == 0 ? 50_000 : max(3000, syncWindowDays * 60)
     }
 
@@ -34,6 +43,24 @@ actor SyncEngine {
 
         try await syncLabels()
 
+        let windowKey = "backfill.window.\(accountId)"
+
+        // "Nothing": remove all locally stored mail for this account and
+        // skip message sync entirely. Gmail is never touched.
+        if syncWindowDays == Self.windowNothing {
+            if UserDefaults.standard.integer(forKey: windowKey) != Self.windowNothing {
+                progress?("Removing local mail…")
+                try await pruneLocalMail(keepingDays: nil)
+                UserDefaults.standard.set(Self.windowNothing, forKey: windowKey)
+                UserDefaults.standard.set(false, forKey: "backfill.starred.\(accountId)")
+            }
+            account.historyId = nil  // full backfill if a window is chosen again
+            account.lastSyncAt = Date()
+            let updated = account
+            try await db.write { db in try updated.update(db) }
+            return
+        }
+
         if let historyId = account.historyId {
             do {
                 account.historyId = try await incrementalSync(since: historyId, progress: progress)
@@ -44,12 +71,17 @@ actor SyncEngine {
             account.historyId = try await fullBackfill(progress: progress)
         }
 
-        // Deepen the archive when the configured window grew, and always
-        // pull ALL starred mail regardless of age (once).
-        let windowKey = "backfill.window.\(accountId)"
-        if UserDefaults.standard.integer(forKey: windowKey) != Self.syncWindowDays {
-            try await fetchAll(query: Self.windowQuery, limit: Self.windowLimit, progress: progress)
-            UserDefaults.standard.set(Self.syncWindowDays, forKey: windowKey)
+        // When the configured window changed: backfill anything newly inside
+        // it, and remove local copies of mail that fell outside it (starred
+        // mail is kept; Gmail is never touched). Always pull ALL starred mail
+        // regardless of age (once).
+        if UserDefaults.standard.integer(forKey: windowKey) != syncWindowDays {
+            try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
+            if syncWindowDays != 0 {
+                progress?("Removing local mail outside the window…")
+                try await pruneLocalMail(keepingDays: syncWindowDays)
+            }
+            UserDefaults.standard.set(syncWindowDays, forKey: windowKey)
         }
         let starKey = "backfill.starred.\(accountId)"
         if !UserDefaults.standard.bool(forKey: starKey) {
@@ -84,9 +116,38 @@ actor SyncEngine {
 
     private func fullBackfill(progress: (@Sendable (String) -> Void)?) async throws -> String {
         let profile = try await client.profile()
-        try await fetchAll(query: Self.windowQuery, limit: Self.windowLimit, progress: progress)
-        UserDefaults.standard.set(Self.syncWindowDays, forKey: "backfill.window.\(accountId)")
+        try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
+        UserDefaults.standard.set(syncWindowDays, forKey: "backfill.window.\(accountId)")
         return profile.historyId
+    }
+
+    // MARK: - Local removal
+
+    /// Deletes locally stored mail for this account without touching Gmail.
+    /// `keepingDays` keeps mail newer than that many days (starred mail is
+    /// always kept); nil removes everything. Attachments cascade; thread rows
+    /// are rebuilt from what remains.
+    func pruneLocalMail(keepingDays: Int?) async throws {
+        let cutoff = keepingDays.map { Date().addingTimeInterval(-Double($0) * 86_400) }
+        try await db.write { [accountId] db in
+            try Self.pruneMessages(db, accountId: accountId, olderThan: cutoff)
+        }
+        try await rebuildThreads()
+    }
+
+    /// Deletes this account's messages older than `cutoff` (starred kept),
+    /// or all of them when cutoff is nil. Pure SQL — exercised directly by
+    /// the test suite.
+    static func pruneMessages(_ db: Database, accountId: String, olderThan cutoff: Date?) throws {
+        if let cutoff {
+            try db.execute(sql: """
+                DELETE FROM message WHERE accountId = ? AND date < ?
+                AND labelIds NOT LIKE '%STARRED%'
+                """, arguments: [accountId, cutoff])
+        } else {
+            try db.execute(sql: "DELETE FROM message WHERE accountId = ?",
+                           arguments: [accountId])
+        }
     }
 
     /// Lists messages matching a query and downloads only the ones missing

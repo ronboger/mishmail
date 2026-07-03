@@ -25,28 +25,27 @@ struct SettingsView: View {
 
             Form {
                 ForEach(store.accounts) { account in
-                    HStack {
-                        VStack(alignment: .leading) {
-                            Text(account.id)
-                            if let last = account.lastSyncAt {
-                                Text("Last sync \(last, format: .relative(presentation: .named))")
-                                    .font(.caption).foregroundStyle(.secondary)
+                    Section {
+                        HStack {
+                            VStack(alignment: .leading) {
+                                Text(account.id)
+                                if let last = account.lastSyncAt {
+                                    Text("Last sync \(last, format: .relative(presentation: .named))")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                }
+                            }
+                            Spacer()
+                            Button("Remove Account", role: .destructive) {
+                                store.removeAccount(account.id)
                             }
                         }
-                        Spacer()
-                        Button("Remove", role: .destructive) {
-                            store.removeAccount(account.id)
-                        }
+                        SyncWindowPicker(accountId: account.id)
                     }
                 }
-                Button("Add Google Account…") { store.addAccount() }
-
                 Section {
-                    SyncWindowPicker()
-                } header: {
-                    Text("Sync")
+                    Button("Add Google Account…") { store.addAccount() }
                 } footer: {
-                    Text("All starred mail is always downloaded regardless of age. Older mail downloads in the background on the next sync after you widen the window.")
+                    Text("Keep mail from controls what is stored on this Mac per account — Gmail itself is never changed. Narrowing it (or choosing Nothing) removes the older local copies; widening downloads older mail in the background. Starred mail is always kept and downloaded regardless of age.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
