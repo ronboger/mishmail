@@ -21,6 +21,9 @@ struct ComposeView: View {
     @State private var ccTokens: [String] = []
     @State private var ccDraft = ""
     @State private var showCc = false
+    @State private var bccTokens: [String] = []
+    @State private var bccDraft = ""
+    @State private var showBcc = false
     @State private var subject: String = ""
     @State private var body_: String = ""
     @State private var attachmentURLs: [URL] = []
@@ -47,10 +50,10 @@ struct ComposeView: View {
     /// Close and keep the work: unsent content becomes a real Gmail draft.
     private func saveAndClose() {
         if hasContent {
-            let (from, to, cc, subj, body, reply, old) =
+            let (from, to, cc, bcc, subj, body, reply, old) =
                 (fromAccount, toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
-                 subject, body_, replyTo, editingDraft)
-            Task { await store.saveDraft(from: from, to: to, cc: cc, subject: subj,
+                 bccTokens.joined(separator: ", "), subject, body_, replyTo, editingDraft)
+            Task { await store.saveDraft(from: from, to: to, cc: cc, bcc: bcc, subject: subj,
                                          body: body, replyTo: reply, replacing: old) }
         }
         close()
@@ -119,6 +122,11 @@ struct ComposeView: View {
                         .buttonStyle(.plain)
                         .font(.system(size: 12)).foregroundStyle(.secondary)
                 }
+                if !showBcc {
+                    Button("Bcc") { showBcc = true }
+                        .buttonStyle(.plain)
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                }
             }
             .padding(.bottom, 4)
 
@@ -128,6 +136,10 @@ struct ComposeView: View {
             if showCc || !ccTokens.isEmpty {
                 TokenAddressField(label: "Cc", tokens: $ccTokens, draft: $ccDraft)
                     .zIndex(2)
+            }
+            if showBcc || !bccTokens.isEmpty {
+                TokenAddressField(label: "Bcc", tokens: $bccTokens, draft: $bccDraft)
+                    .zIndex(1)
             }
 
             TextField("Subject", text: $subject)
@@ -215,7 +227,8 @@ struct ComposeView: View {
                 .keyboardShortcut(.return, modifiers: .command)
                 .buttonStyle(.borderedProminent)
                 .disabled(sending || fromAccount.isEmpty
-                          || (toTokens.isEmpty && !toDraft.contains("@")))
+                          || (toTokens.isEmpty && !toDraft.contains("@")
+                              && bccTokens.isEmpty && !bccDraft.contains("@")))
             }
             .padding(.top, 8)
         }
@@ -248,6 +261,9 @@ struct ComposeView: View {
             ccTokens = MessageParser.splitAddresses(draft.ccHeader)
                 .map { MessageParser.emailAddress($0) }.filter { $0.contains("@") }
             if !ccTokens.isEmpty { showCc = true }
+            bccTokens = MessageParser.splitAddresses(draft.bccHeader)
+                .map { MessageParser.emailAddress($0) }.filter { $0.contains("@") }
+            if !bccTokens.isEmpty { showBcc = true }
             subject = draft.subject
             body_ = draft.bodyText
             initialBody = ""   // a draft always counts as content
@@ -255,7 +271,10 @@ struct ComposeView: View {
             return
         }
 
-        fromAccount = original?.accountId ?? store.accounts.first?.id ?? ""
+        // Reply/forward: send from the account that received it. New mail:
+        // the account currently in view, falling back to the primary account.
+        fromAccount = original?.accountId ?? store.activeAccountId
+            ?? store.accounts.first?.id ?? ""
         guard let original else { return }
         let ownAddresses = Set(store.accounts.map { $0.id.lowercased() })
         let sender = MessageParser.emailAddress(original.fromHeader)
@@ -343,14 +362,14 @@ struct ComposeView: View {
 
     private func send() {
         // Typed-but-uncommitted addresses count as recipients.
-        for (draft, tokens) in [(toDraft, $toTokens), (ccDraft, $ccTokens)] {
+        for (draft, tokens) in [(toDraft, $toTokens), (ccDraft, $ccTokens), (bccDraft, $bccTokens)] {
             let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
             if cleaned.contains("@"), !tokens.wrappedValue.contains(cleaned) {
                 tokens.wrappedValue.append(cleaned)
             }
         }
-        toDraft = ""; ccDraft = ""
-        guard !toTokens.isEmpty else { return }
+        toDraft = ""; ccDraft = ""; bccDraft = ""
+        guard !toTokens.isEmpty || !bccTokens.isEmpty else { return }
 
         sending = true
         error = nil
@@ -368,6 +387,7 @@ struct ComposeView: View {
                 try await store.send(from: fromAccount,
                                      to: toTokens.joined(separator: ", "),
                                      cc: ccTokens.joined(separator: ", "),
+                                     bcc: bccTokens.joined(separator: ", "),
                                      subject: subject, body: body_, replyTo: replyTo,
                                      attachments: attachments,
                                      replacingDraft: editingDraft)

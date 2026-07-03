@@ -23,6 +23,7 @@ enum MessageParser {
             fromHeader: header("From"),
             toHeader: header("To"),
             ccHeader: header("Cc"),
+            bccHeader: header("Bcc"),
             subject: header("Subject"),
             date: Date(timeIntervalSince1970: millis / 1000),
             snippet: g.snippet ?? "",
@@ -129,7 +130,7 @@ enum MIMEBuilder {
         let data: Data
     }
 
-    static func build(from: String, to: String, cc: String = "",
+    static func build(from: String, to: String, cc: String = "", bcc: String = "",
                       subject: String, bodyText: String,
                       inReplyTo: String? = nil, references: String? = nil,
                       attachments: [Attachment] = []) -> Data {
@@ -137,6 +138,7 @@ enum MIMEBuilder {
         lines.append("From: \(from)")
         lines.append("To: \(to)")
         if !cc.isEmpty { lines.append("Cc: \(cc)") }
+        if !bcc.isEmpty { lines.append("Bcc: \(bcc)") }
         lines.append("Subject: \(encodeHeader(subject))")
         if let inReplyTo, !inReplyTo.isEmpty {
             lines.append("In-Reply-To: \(inReplyTo)")

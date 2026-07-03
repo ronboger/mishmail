@@ -236,41 +236,50 @@ actor SyncEngine {
                 .filter(Column("threadId") == threadKey)
                 .order(Column("date").desc)
                 .fetchAll(db)
-            guard let newest = messages.first else { return }
-            let allLabels = Set(messages.flatMap { $0.labelIds.split(separator: " ").map(String.init) })
-
-            // Participants in chronological order, deduped, own account as "me".
-            var seen = Set<String>()
-            var participants: [String] = []
-            for m in messages.reversed() {
-                let sender = MessageParser.emailAddress(m.fromHeader)
-                let name = sender == accountId ? "me" : MessageParser.displayName(fromHeader: m.fromHeader)
-                let short = name.split(separator: " ").first.map(String.init) ?? name
-                if seen.insert(short).inserted { participants.append(short) }
-            }
-
             let existing = try MailThread.fetchOne(db, key: threadKey)
-            let thread = MailThread(
-                id: threadKey,
-                accountId: accountId,
-                gmailThreadId: gmailThreadId,
-                subject: messages.last?.subject.isEmpty == false ? messages.last!.subject : newest.subject,
-                snippet: newest.snippet,
-                fromDisplay: MessageParser.displayName(fromHeader: newest.fromHeader),
-                lastDate: newest.date,
-                isUnread: messages.contains { $0.isUnread },
-                isStarred: allLabels.contains("STARRED"),
-                inInbox: allLabels.contains("INBOX"),
-                inTrash: allLabels.contains("TRASH"),
-                labelIds: allLabels.sorted().joined(separator: " "),
-                snoozeUntil: existing?.snoozeUntil,
-                participants: participants.joined(separator: " .. "),
-                messageCount: messages.count,
-                hasAttachment: messages.contains { $0.hasAttachment },
-                reminderAt: existing?.reminderAt
-            )
+            guard let thread = Self.deriveThread(
+                threadKey: threadKey, gmailThreadId: gmailThreadId,
+                accountId: accountId, messages: messages, existing: existing) else { return }
             try thread.save(db)
         }
+    }
+
+    /// Derives a thread row from its messages (sorted newest first).
+    /// Pure — exercised directly by the test suite.
+    static func deriveThread(threadKey: String, gmailThreadId: String, accountId: String,
+                             messages: [Message], existing: MailThread?) -> MailThread? {
+        guard let newest = messages.first else { return nil }
+        let allLabels = Set(messages.flatMap { $0.labelIds.split(separator: " ").map(String.init) })
+
+        // Participants in chronological order, deduped, own account as "me".
+        var seen = Set<String>()
+        var participants: [String] = []
+        for m in messages.reversed() {
+            let sender = MessageParser.emailAddress(m.fromHeader)
+            let name = sender == accountId ? "me" : MessageParser.displayName(fromHeader: m.fromHeader)
+            let short = name.split(separator: " ").first.map(String.init) ?? name
+            if seen.insert(short).inserted { participants.append(short) }
+        }
+
+        return MailThread(
+            id: threadKey,
+            accountId: accountId,
+            gmailThreadId: gmailThreadId,
+            subject: messages.last?.subject.isEmpty == false ? messages.last!.subject : newest.subject,
+            snippet: newest.snippet,
+            fromDisplay: MessageParser.displayName(fromHeader: newest.fromHeader),
+            lastDate: newest.date,
+            isUnread: messages.contains { $0.isUnread },
+            isStarred: allLabels.contains("STARRED"),
+            inInbox: allLabels.contains("INBOX"),
+            inTrash: allLabels.contains("TRASH"),
+            labelIds: allLabels.sorted().joined(separator: " "),
+            snoozeUntil: existing?.snoozeUntil,
+            participants: participants.joined(separator: " .. "),
+            messageCount: messages.count,
+            hasAttachment: messages.contains { $0.hasAttachment },
+            reminderAt: existing?.reminderAt
+        )
     }
 
     private func rebuildThreads() async throws {

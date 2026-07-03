@@ -44,6 +44,7 @@ struct Message: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     var fromHeader: String
     var toHeader: String
     var ccHeader: String
+    var bccHeader: String = ""
     var subject: String
     var date: Date
     var snippet: String
@@ -130,7 +131,7 @@ final class AppDatabase {
             try db.usePassphrase(passphrase)
         }
         dbQueue = try DatabaseQueue(path: path, configuration: config)
-        try migrator.migrate(dbQueue)
+        try Self.migrator.migrate(dbQueue)
     }
 
     /// Random 256-bit key, hex-encoded, generated once and kept in the Keychain.
@@ -169,7 +170,8 @@ final class AppDatabase {
         try FileManager.default.moveItem(atPath: tmp, toPath: path)
     }
 
-    private var migrator: DatabaseMigrator {
+    /// Static so tests can migrate an in-memory database.
+    static var migrator: DatabaseMigrator {
         var m = DatabaseMigrator()
         m.registerMigration("v1") { db in
             try db.create(table: "account") { t in
@@ -270,6 +272,11 @@ final class AppDatabase {
         m.registerMigration("v3") { db in
             try db.alter(table: "account") { t in
                 t.add(column: "senderName", .text).notNull().defaults(to: "")
+            }
+        }
+        m.registerMigration("v4") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "bccHeader", .text).notNull().defaults(to: "")
             }
         }
         return m
