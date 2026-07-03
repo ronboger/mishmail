@@ -47,10 +47,35 @@ struct SettingsView: View {
             SnippetsSettings()
                 .tabItem { Label("Snippets", systemImage: "text.badge.plus") }
 
+            AppearanceSettings()
+                .tabItem { Label("Appearance", systemImage: "textformat.size") }
+
             AISettings()
                 .tabItem { Label("AI", systemImage: "sparkles") }
         }
         .frame(width: 520, height: 380)
+    }
+}
+
+struct AppearanceSettings: View {
+    @AppStorage("fontScale") private var fontScale = 1.0
+
+    var body: some View {
+        Form {
+            Section {
+                Picker("Text size", selection: $fontScale) {
+                    Text("Small").tag(0.9)
+                    Text("Default").tag(1.0)
+                    Text("Large").tag(1.15)
+                    Text("Extra Large").tag(1.3)
+                }
+                .pickerStyle(.segmented)
+            } footer: {
+                Text("Also adjustable anywhere with Cmd + and Cmd −.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 

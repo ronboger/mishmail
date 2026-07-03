@@ -51,6 +51,7 @@ struct ThreadDetailView: View {
 
 struct MessageCard: View {
     @EnvironmentObject var store: MailStore
+    @AppStorage("fontScale") private var fontScale = 1.0
     let message: Message
     let isLast: Bool
     let onReply: () -> Void
@@ -70,7 +71,7 @@ struct MessageCard: View {
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(MessageParser.displayName(fromHeader: message.fromHeader))
-                        .font(.system(size: 13, weight: .semibold))
+                        .font(.system(size: 13 * fontScale, weight: .semibold))
                         .textSelection(.enabled)
                     if expanded {
                         Text("to \(message.toHeader)")
@@ -96,11 +97,12 @@ struct MessageCard: View {
 
             if expanded {
                 if let html = message.bodyHTML, !html.isEmpty {
-                    HTMLBodyView(html: html, allowRemoteImages: loadRemoteImages, height: $htmlHeight)
+                    HTMLBodyView(html: html, allowRemoteImages: loadRemoteImages,
+                                 fontScale: fontScale, height: $htmlHeight)
                         .frame(height: htmlHeight)
                 } else {
                     Text(message.bodyText)
-                        .font(.system(size: 13))
+                        .font(.system(size: 13 * fontScale))
                         .textSelection(.enabled)
                 }
                 let attachments = store.attachments(for: message.id)
@@ -147,6 +149,7 @@ struct MessageCard: View {
 struct HTMLBodyView: NSViewRepresentable {
     let html: String
     let allowRemoteImages: Bool
+    var fontScale: Double = 1.0
     @Binding var height: CGFloat
 
     func makeNSView(context: Context) -> WKWebView {
@@ -159,7 +162,7 @@ struct HTMLBodyView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        let key = "\(allowRemoteImages):\(html.hashValue)"
+        let key = "\(allowRemoteImages):\(fontScale):\(html.hashValue)"
         guard context.coordinator.loadedKey != key else { return }
         context.coordinator.loadedKey = key
         context.coordinator.setHeight = { self.height = $0 }
@@ -167,7 +170,7 @@ struct HTMLBodyView: NSViewRepresentable {
         let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src \(imgSrc); style-src 'unsafe-inline'\">"
         let style = """
             <style>
-            body { font: 13px -apple-system, sans-serif; color: canvastext; margin: 0; }
+            body { font: \(Int(13 * fontScale))px -apple-system, sans-serif; color: canvastext; margin: 0; }
             img { max-width: 100%; height: auto; }
             @media (prefers-color-scheme: dark) { body { color: #ddd; } a { color: #6cb2ff; } }
             </style>

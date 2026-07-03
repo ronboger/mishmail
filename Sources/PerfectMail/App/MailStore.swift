@@ -37,19 +37,11 @@ enum MailboxView: Hashable {
     }
 }
 
-/// Category chip state (Notion Mail-style "Categories: …").
-enum CategoryChip: Equatable, Hashable {
-    case notPromoSocial          // the sane inbox default
-    case all                     // "normal email" — everything
-    case only(String)            // a single Gmail category
-
-    var title: String {
-        switch self {
-        case .notPromoSocial: return "Not Promotions, Social"
-        case .all: return "All"
-        case .only(let c): return CategoryChip.names[c] ?? c
-        }
-    }
+/// Notion Mail-style category filter: a set of Gmail categories that the
+/// inbox either must not contain (default) or must contain.
+struct CategoryFilter: Equatable {
+    var exclude = true                 // true = "do not contain"
+    var categories: Set<String> = []   // empty = no category filtering
 
     static let names = [
         "CATEGORY_PROMOTIONS": "Promotions",
@@ -57,12 +49,20 @@ enum CategoryChip: Equatable, Hashable {
         "CATEGORY_UPDATES": "Updates",
         "CATEGORY_FORUMS": "Forums",
     ]
+
+    var isActive: Bool { !categories.isEmpty }
+
+    var title: String {
+        guard isActive else { return "All" }
+        let list = categories.map { Self.names[$0] ?? $0 }.sorted().joined(separator: ", ")
+        return exclude ? "Not \(list)" : list
+    }
 }
 
 /// Transient filter chips layered on top of the current view (the bar above
 /// the thread list). Reset when the view changes.
 struct FilterChips: Equatable {
-    var category: CategoryChip = .all
+    var category = CategoryFilter()
     var unreadOnly = false
     var showArchived = false
     var labelId: String?
@@ -73,8 +73,14 @@ struct FilterChips: Equatable {
     /// Default chips for a given view (inbox hides Promotions/Social).
     static func defaults(for view: MailboxView) -> FilterChips {
         var chips = FilterChips()
-        if case .inbox = view { chips.category = .notPromoSocial }
-        if case .account = view { chips.category = .notPromoSocial }
+        switch view {
+        case .inbox, .account:
+            chips.category = CategoryFilter(
+                exclude: true,
+                categories: ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"])
+        default:
+            break
+        }
         return chips
     }
 }
@@ -263,15 +269,18 @@ final class MailStore: ObservableObject {
             guard let self else { return [] }
             var q = Self.baseQuery(for: view, savedViews: self.savedViews)
             // Layer transient chips on top.
-            switch chips.category {
-            case .all:
-                break
-            case .notPromoSocial:
-                for cat in Self.categoryLabels {
-                    q = q.filter(!Column("labelIds").like("%\(cat)%"))
+            if chips.category.isActive {
+                if chips.category.exclude {
+                    for cat in chips.category.categories {
+                        q = q.filter(!Column("labelIds").like("%\(cat)%"))
+                    }
+                } else {
+                    // Contains any of the selected categories.
+                    let conditions = chips.category.categories
+                        .map { "labelIds LIKE '%\($0)%'" }
+                        .joined(separator: " OR ")
+                    q = q.filter(sql: conditions)
                 }
-            case .only(let cat):
-                q = q.filter(Column("labelIds").like("%\(cat)%"))
             }
             if chips.unreadOnly { q = q.filter(Column("isUnread") == true) }
             if chips.showArchived {

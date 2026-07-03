@@ -112,25 +112,24 @@ struct FilterBar: View {
     @EnvironmentObject var store: MailStore
     @State private var senderDraft = ""
     @State private var showFilterPopover = false
+    @State private var showCategoriesPopover = false
 
     private var defaultChips: FilterChips { FilterChips.defaults(for: store.selectedView) }
 
     var body: some View {
         HStack(spacing: 8) {
             // Categories — the one always-visible chip, like Notion Mail.
-            Menu {
-                Button("Not Promotions, Social") { store.chips.category = .notPromoSocial }
-                Button("All categories") { store.chips.category = .all }
-                Divider()
-                ForEach(Array(CategoryChip.names.keys.sorted()), id: \.self) { cat in
-                    Button(CategoryChip.names[cat] ?? cat) { store.chips.category = .only(cat) }
-                }
+            Button {
+                showCategoriesPopover = true
             } label: {
                 chipLabel("Categories: \(store.chips.category.title)",
                           icon: "bookmark",
                           active: store.chips.category != defaultChips.category)
             }
-            .menuStyle(.borderlessButton).fixedSize()
+            .buttonStyle(.plain)
+            .popover(isPresented: $showCategoriesPopover, arrowEdge: .bottom) {
+                CategoriesPopover()
+            }
 
             // Chips for whatever filters are active, each removable.
             if let name = store.chips.labelName {
@@ -214,8 +213,14 @@ struct FilterBar: View {
                         v.hasAttachmentOnly = store.chips.hasAttachmentOnly
                         v.senderContains = store.chips.senderContains
                         v.accountId = store.activeAccountId
-                        if store.chips.category == .notPromoSocial { v.excludePromotions = true }
-                        if case .only(let cat) = store.chips.category { v.category = cat }
+                        if store.chips.category.exclude,
+                           store.chips.category.categories.isSuperset(of: ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"]) {
+                            v.excludePromotions = true
+                        }
+                        if !store.chips.category.exclude,
+                           let cat = store.chips.category.categories.first {
+                            v.category = cat
+                        }
                         showFilterPopover = false
                         store.editingView = v
                     }
@@ -263,6 +268,7 @@ struct FilterBar: View {
 /// [dot] participants   subject  snippet………………  [icons] time
 struct ThreadRow: View {
     @EnvironmentObject var store: MailStore
+    @AppStorage("fontScale") private var fontScale = 1.0
     let thread: MailThread
     @State private var hovering = false
 
@@ -274,20 +280,20 @@ struct ThreadRow: View {
 
             HStack(spacing: 4) {
                 Text(participantsDisplay)
-                    .font(.system(size: 13, weight: thread.isUnread ? .semibold : .regular))
+                    .font(.system(size: 13 * fontScale, weight: thread.isUnread ? .semibold : .regular))
                     .lineLimit(1)
                 if thread.messageCount > 1 {
                     Text("\(thread.messageCount)")
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(.system(size: 11 * fontScale)).foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 170, alignment: .leading)
+            .frame(width: 170 * fontScale, alignment: .leading)
 
             (Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
                 .fontWeight(thread.isUnread ? .semibold : .medium)
              + Text("  \(thread.snippet)")
                 .foregroundColor(.secondary))
-                .font(.system(size: 13))
+                .font(.system(size: 13 * fontScale))
                 .lineLimit(1)
 
             Spacer(minLength: 8)
@@ -311,12 +317,12 @@ struct ThreadRow: View {
                         Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow)
                     }
                     Text(thread.lastDate, format: relativeFormat)
-                        .font(.system(size: 11)).foregroundStyle(.secondary)
+                        .font(.system(size: 11 * fontScale)).foregroundStyle(.secondary)
                         .frame(minWidth: 52, alignment: .trailing)
                 }
             }
         }
-        .padding(.vertical, 2)
+        .padding(.vertical, 2 + 2 * (fontScale - 1) * 6)
         .onHover { hovering = $0 }
     }
 
@@ -337,5 +343,80 @@ struct ThreadRow: View {
         Calendar.current.isDateInToday(thread.lastDate)
             ? .dateTime.hour().minute()
             : .dateTime.month(.abbreviated).day()
+    }
+}
+
+/// Notion Mail-style categories popover: contains / does-not-contain mode,
+/// selected categories as removable chips, checkboxes, and a clear action.
+struct CategoriesPopover: View {
+    @EnvironmentObject var store: MailStore
+
+    private var filter: Binding<CategoryFilter> {
+        Binding(get: { store.chips.category }, set: { store.chips.category = $0 })
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(spacing: 6) {
+                Text("Categories")
+                    .font(.system(size: 12, weight: .semibold))
+                Menu(filter.wrappedValue.exclude ? "do not contain" : "contain") {
+                    Button("do not contain") { filter.wrappedValue.exclude = true }
+                    Button("contain") { filter.wrappedValue.exclude = false }
+                }
+                .menuStyle(.borderlessButton).fixedSize()
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                Spacer()
+            }
+
+            // Selected categories as removable chips.
+            if filter.wrappedValue.isActive {
+                HStack(spacing: 4) {
+                    ForEach(filter.wrappedValue.categories.sorted(), id: \.self) { cat in
+                        HStack(spacing: 3) {
+                            Text(CategoryFilter.names[cat] ?? cat).font(.caption)
+                            Button {
+                                filter.wrappedValue.categories.remove(cat)
+                            } label: {
+                                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                            }
+                            .buttonStyle(.plain).foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 7).padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.14), in: Capsule())
+                    }
+                }
+                .padding(6)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor.opacity(0.6)))
+            }
+
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(Array(CategoryFilter.names.keys.sorted()), id: \.self) { cat in
+                    Toggle(CategoryFilter.names[cat] ?? cat, isOn: Binding(
+                        get: { filter.wrappedValue.categories.contains(cat) },
+                        set: { on in
+                            if on { filter.wrappedValue.categories.insert(cat) }
+                            else { filter.wrappedValue.categories.remove(cat) }
+                        }
+                    ))
+                    .toggleStyle(.checkbox)
+                    .font(.system(size: 12))
+                }
+            }
+
+            Divider()
+
+            Button {
+                filter.wrappedValue.categories = []
+            } label: {
+                Label("Clear filter", systemImage: "xmark.circle")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+        }
+        .padding(12)
+        .frame(width: 240)
     }
 }
