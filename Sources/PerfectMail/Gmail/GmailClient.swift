@@ -139,6 +139,17 @@ actor GmailClient {
         return list.labels ?? []
     }
 
+    struct GLabelDetail: Decodable {
+        let id: String
+        let threadsUnread: Int?
+        let messagesUnread: Int?
+    }
+
+    /// Authoritative per-label unread counts, straight from Gmail.
+    func labelInfo(_ id: String) async throws -> GLabelDetail {
+        try await request("GET", "/labels/\(id)")
+    }
+
     func listMessages(query: String? = nil, labelIds: [String] = [],
                       pageToken: String? = nil, maxResults: Int = 100) async throws -> GMessageList {
         var q: [String: String] = ["maxResults": String(maxResults)]

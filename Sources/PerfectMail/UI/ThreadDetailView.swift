@@ -175,6 +175,22 @@ struct MessageCard: View {
                 if !attachments.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
+                            if attachments.count > 1 {
+                                Button {
+                                    store.saveAllAttachments(attachments, message: message)
+                                } label: {
+                                    HStack(spacing: 5) {
+                                        Image(systemName: "arrow.down.to.line")
+                                        Text("Download all (\(attachments.count))")
+                                            .font(.system(size: 12, weight: .medium))
+                                    }
+                                    .padding(.horizontal, 10).padding(.vertical, 8)
+                                    .background(Color.accentColor.opacity(0.15),
+                                                in: RoundedRectangle(cornerRadius: 8))
+                                }
+                                .buttonStyle(.plain)
+                                .help("Save every attachment to a folder you choose")
+                            }
                             ForEach(attachments) { att in
                                 HStack(spacing: 8) {
                                     Button {

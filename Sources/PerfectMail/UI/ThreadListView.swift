@@ -96,6 +96,8 @@ struct ThreadListView: View {
                         ForEach(threads) { thread in
                             ThreadRow(thread: thread)
                                 .tag(thread.id)
+                                .listRowBackground(thread.isUnread
+                                    ? Color.primary.opacity(0.05) : Color.clear)
                                 .swipeActions(edge: .trailing) {
                                     Button { store.archive(thread) } label: {
                                         Label("Archive", systemImage: "archivebox")
@@ -286,8 +288,11 @@ struct FilterBar: View {
     private var filterPopover: some View {
         VStack(alignment: .leading, spacing: 10) {
             Toggle("Unread only", isOn: $store.chips.unreadOnly)
+                .toggleStyle(NotionSwitchStyle())
             Toggle("Show archived", isOn: $store.chips.showArchived)
+                .toggleStyle(NotionSwitchStyle())
             Toggle("Has attachment", isOn: $store.chips.hasAttachmentOnly)
+                .toggleStyle(NotionSwitchStyle())
 
             Divider()
 
@@ -544,7 +549,7 @@ struct CategoriesPopover: View {
                             Text(CategoryFilter.names[cat] ?? cat)
                         }
                     }
-                    .toggleStyle(.checkbox)
+                    .toggleStyle(NotionCheckStyle())
                     .font(.system(size: 12))
                 }
             }

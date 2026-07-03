@@ -387,7 +387,8 @@ final class MailStore: ObservableObject {
     }
 
     private func refreshCountsAndBadge() {
-        let counts: [String: Int] = (try? db.read { db in
+        // Local counts (fallback + reminders, which Gmail doesn't know about).
+        let local: [String: Int] = (try? db.read { db in
             func count(_ q: QueryInterfaceRequest<MailThread>) -> Int {
                 (try? q.fetchCount(db)) ?? 0
             }
@@ -403,6 +404,18 @@ final class MailStore: ObservableObject {
                 "reminders": count(MailThread.filter(Column("reminderAt") != nil)),
             ]
         }) ?? [:]
+
+        var counts = local
+        // Prefer Gmail's own numbers (scoped to the active account when set).
+        let scoped = activeAccountId.map { id in apiCounts.filter { $0.key == id } } ?? apiCounts
+        if !scoped.isEmpty {
+            let inbox = scoped.values.reduce(0) { $0 + ($1["INBOX"] ?? 0) }
+            let promo = scoped.values.reduce(0) { $0 + ($1["CATEGORY_PROMOTIONS"] ?? 0) }
+            let social = scoped.values.reduce(0) { $0 + ($1["CATEGORY_SOCIAL"] ?? 0) }
+            counts["inbox"] = max(0, inbox - promo - social)
+            counts["promotions"] = promo
+            counts["social"] = social
+        }
         unreadCounts = counts
         Notifier.setBadge(counts["inbox"] ?? 0)
     }
@@ -498,12 +511,27 @@ final class MailStore: ObservableObject {
                 Task { @MainActor [weak self] in self?.syncStatus = status }
             }
             syncStatus = ""
+            await refreshApiCounts(accountId: accountId)
             reloadAccounts()
             reloadThreads()
         } catch {
             syncStatus = ""
             lastError = "\(accountId): \(error.localizedDescription)"
         }
+    }
+
+    /// Gmail's own unread counts, so the sidebar matches gmail.com exactly.
+    private var apiCounts: [String: [String: Int]] = [:]   // account → label → threadsUnread
+
+    private func refreshApiCounts(accountId: String) async {
+        let client = client(for: accountId)
+        var counts: [String: Int] = [:]
+        for label in ["INBOX", "CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"] {
+            if let info = try? await client.labelInfo(label) {
+                counts[label] = info.threadsUnread ?? 0
+            }
+        }
+        apiCounts[accountId] = counts
     }
 
     // MARK: - New-mail notifications
@@ -563,9 +591,25 @@ final class MailStore: ObservableObject {
 
     // MARK: - Keyboard shortcuts
 
-    /// Returns true if the key was handled. Gmail-style single keys.
+    private var pendingGoKey: Date?
+
+    /// Returns true if the key was handled. Gmail-style single keys,
+    /// including "g then …" navigation (g-i inbox, g-t sent, g-d drafts…).
     func handleKey(_ chars: String) -> Bool {
+        if let started = pendingGoKey, Date().timeIntervalSince(started) < 1.5 {
+            pendingGoKey = nil
+            switch chars {
+            case "i": selectedView = .inbox; return true
+            case "s": selectedView = .starred; return true
+            case "t": selectedView = .sent; return true
+            case "d": selectedView = .drafts; return true
+            case "a": selectedView = .allMail; return true
+            case "p": selectedView = .promotions; return true
+            default: break   // fall through to normal handling
+            }
+        }
         switch chars {
+        case "g": pendingGoKey = Date()
         case "e": selectedThread.map(archive)
         case "#": selectedThread.map(trash)
         case "s": selectedThread.map(toggleStar)
@@ -776,6 +820,31 @@ final class MailStore: ObservableObject {
     func deleteDraft(inThread thread: MailThread) {
         guard let draft = messages(inThread: thread.id).last(where: { $0.labelIds.contains("DRAFT") }) else { return }
         Task { await deleteUnderlyingDraft(draft) }
+    }
+
+    /// Download every attachment on a message into a folder the user picks.
+    func saveAllAttachments(_ attachments: [AttachmentRow], message: Message) {
+        let panel = NSOpenPanel()
+        panel.canChooseDirectories = true
+        panel.canChooseFiles = false
+        panel.canCreateDirectories = true
+        panel.prompt = "Save \(attachments.count) Attachments Here"
+        guard panel.runModal() == .OK, let dir = panel.url else { return }
+        Task {
+            do {
+                for att in attachments {
+                    let data = try await client(for: message.accountId)
+                        .getAttachment(messageId: message.gmailId, attachmentId: att.gmailAttachmentId)
+                    try data.write(to: dir.appendingPathComponent(att.filename))
+                }
+                await MainActor.run {
+                    showNotice("Saved \(attachments.count) attachments")
+                    NSWorkspace.shared.activateFileViewerSelecting([dir])
+                }
+            } catch {
+                await MainActor.run { self.lastError = error.localizedDescription }
+            }
+        }
     }
 
     // MARK: - Attachments

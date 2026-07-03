@@ -263,13 +263,24 @@ struct ComposeView: View {
             let subj = original.subject
             subject = subj.lowercased().hasPrefix("fwd:") ? subj : "Fwd: \(subj)"
         } else {
-            toTokens = [sender]
+            if ownAddresses.contains(sender.lowercased()) {
+                // Replying to my own message: target its recipients, not me.
+                toTokens = MessageParser.splitAddresses(original.toHeader)
+                    .map { MessageParser.emailAddress($0) }
+                    .filter { $0.contains("@") && !ownAddresses.contains($0.lowercased()) }
+                if toTokens.isEmpty { toTokens = [sender] }  // genuinely a note to self
+            } else {
+                toTokens = [sender]
+            }
             if request.replyAll {
-                // Everyone on the original except me and the sender goes to Cc.
+                // Everyone on the original except me and whoever is already in To.
+                let taken = Set(toTokens.map { $0.lowercased() })
                 let others = MessageParser.splitAddresses(original.toHeader + "," + original.ccHeader)
                     .map { MessageParser.emailAddress($0) }
                     .filter { $0.contains("@") }
-                    .filter { !ownAddresses.contains($0.lowercased()) && $0.lowercased() != sender.lowercased() }
+                    .filter { !ownAddresses.contains($0.lowercased())
+                              && $0.lowercased() != sender.lowercased()
+                              && !taken.contains($0.lowercased()) }
                 var seen = Set<String>()
                 ccTokens = others.filter { seen.insert($0.lowercased()).inserted }
                 if !ccTokens.isEmpty { showCc = true }
