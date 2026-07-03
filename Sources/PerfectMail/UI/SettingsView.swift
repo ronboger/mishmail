@@ -40,6 +40,15 @@ struct SettingsView: View {
                     }
                 }
                 Button("Add Google Account…") { store.addAccount() }
+
+                Section {
+                    SyncWindowPicker()
+                } header: {
+                    Text("Sync")
+                } footer: {
+                    Text("All starred mail is always downloaded regardless of age. Older mail downloads in the background on the next sync after you widen the window.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
             .formStyle(.grouped)
             .tabItem { Label("Accounts", systemImage: "person.2") }
