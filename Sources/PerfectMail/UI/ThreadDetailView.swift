@@ -8,6 +8,7 @@ struct ThreadDetailView: View {
     let onReply: (Message) -> Void
 
     @State private var messages: [Message] = []
+    @State private var labelsExpanded = false
 
     var body: some View {
         ScrollView {
@@ -33,37 +34,58 @@ struct ThreadDetailView: View {
                     .padding(.horizontal)
                 }
 
-                // Labels on this thread, with add/remove. "l" opens the picker.
-                HStack(spacing: 6) {
-                    ForEach(userLabelIds, id: \.self) { labelId in
-                        let name = store.labelName(labelId, account: thread.accountId) ?? labelId
-                        HStack(spacing: 4) {
-                            Circle().fill(Color.stable(for: name)).frame(width: 7, height: 7)
-                            Text(name).font(.system(size: 11.5 * fontScale))
-                            Button {
-                                store.toggleLabel(thread, labelId: labelId)
-                            } label: {
-                                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
-                            }
-                            .buttonStyle(.plain).foregroundStyle(.secondary)
-                        }
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Color.stable(for: name).opacity(0.15), in: Capsule())
-                    }
+                // Labels on this thread, collapsed behind a disclosure by
+                // default. Expanding shows chips with add/remove; "l" still
+                // opens the picker regardless.
+                VStack(alignment: .leading, spacing: 6) {
                     Button {
-                        store.showLabelPicker = true
+                        withAnimation(.easeOut(duration: 0.12)) { labelsExpanded.toggle() }
                     } label: {
-                        HStack(spacing: 3) {
+                        HStack(spacing: 4) {
                             Image(systemName: "tag")
-                            Text(userLabelIds.isEmpty ? "Add label" : "")
+                            Text(userLabelIds.isEmpty ? "Labels" : "Labels (\(userLabelIds.count))")
+                            Image(systemName: labelsExpanded ? "chevron.down" : "chevron.right")
+                                .font(.system(size: 8 * fontScale, weight: .semibold))
                         }
                         .font(.system(size: 11 * fontScale))
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Color.secondary.opacity(0.1), in: Capsule())
                     }
                     .buttonStyle(.plain)
-                    .help("Label this thread (l)")
+                    .help("Show labels on this thread (l labels it)")
+
+                    if labelsExpanded {
+                        HStack(spacing: 6) {
+                            ForEach(userLabelIds, id: \.self) { labelId in
+                                let name = store.labelName(labelId, account: thread.accountId) ?? labelId
+                                HStack(spacing: 4) {
+                                    Circle().fill(Color.stable(for: name)).frame(width: 7, height: 7)
+                                    Text(name).font(.system(size: 11.5 * fontScale))
+                                    Button {
+                                        store.toggleLabel(thread, labelId: labelId)
+                                    } label: {
+                                        Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                                    }
+                                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                                }
+                                .padding(.horizontal, 8).padding(.vertical, 3)
+                                .background(Color.stable(for: name).opacity(0.15), in: Capsule())
+                            }
+                            Button {
+                                store.showLabelPicker = true
+                            } label: {
+                                HStack(spacing: 3) {
+                                    Image(systemName: "plus")
+                                    Text(userLabelIds.isEmpty ? "Add label" : "")
+                                }
+                                .font(.system(size: 11 * fontScale))
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 8).padding(.vertical, 3)
+                                .background(Color.secondary.opacity(0.1), in: Capsule())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Label this thread (l)")
+                        }
+                    }
                 }
                 .padding(.horizontal)
 
