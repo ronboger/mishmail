@@ -136,23 +136,27 @@ final class OAuthService {
             listener.newConnectionHandler = { conn in
                 conn.start(queue: .global())
                 conn.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { data, _, _, _ in
-                    defer { conn.cancel() }
+                    // Browsers open speculative connections and request
+                    // /favicon.ico; ignore anything that isn't the actual
+                    // OAuth redirect instead of tearing the listener down.
                     guard let data, let request = String(data: data, encoding: .utf8),
                           let firstLine = request.split(separator: "\r\n").first,
                           let pathPart = firstLine.split(separator: " ").dropFirst().first,
-                          let comps = URLComponents(string: String(pathPart)) else {
-                        continuation.finish(throwing: OAuthError.badRedirect)
+                          let comps = URLComponents(string: String(pathPart)),
+                          let items = comps.queryItems,
+                          items.contains(where: { $0.name == "code" || $0.name == "error" }) else {
+                        conn.cancel()
                         return
                     }
-                    let items = comps.queryItems ?? []
                     let code = items.first { $0.name == "code" }?.value
                     let state = items.first { $0.name == "state" }?.value
                     let ok = code != nil && state == expectedState
                     let html = ok
                         ? "<html><body style='font-family:-apple-system'><h2>Signed in.</h2>You can close this tab and return to PerfectMail.</body></html>"
-                        : "<html><body style='font-family:-apple-system'><h2>Sign-in failed.</h2></body></html>"
+                        : "<html><body style='font-family:-apple-system'><h2>Sign-in failed.</h2>You can close this tab and try again from PerfectMail.</body></html>"
                     let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n\(html)"
                     conn.send(content: Data(response.utf8), completion: .contentProcessed { _ in
+                        conn.cancel()
                         if ok, let code { continuation.yield(code); continuation.finish() }
                         else { continuation.finish(throwing: OAuthError.badRedirect) }
                     })
