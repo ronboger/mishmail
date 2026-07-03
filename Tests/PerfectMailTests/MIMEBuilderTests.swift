@@ -100,4 +100,49 @@ final class MIMEBuilderTests: XCTestCase {
         let raw = MIMEBuilder.build(from: "a@b.com", to: "c@d.com", subject: "s", bodyText: body)
         XCTAssertEqual(decodedBody(of: raw), body)
     }
+
+    // MARK: - Header injection (CRLF) hardening
+
+    func testCRLFInHeaderValuesCannotInjectHeaders() {
+        // Threading headers come verbatim from received mail; a hostile
+        // Message-ID/References (or a pasted subject) must not add headers.
+        let raw = MIMEBuilder.build(
+            from: "a@b.com", to: "c@d.com",
+            subject: "Hi\r\nBcc: evil@attacker.com",
+            bodyText: "b",
+            inReplyTo: "<msg1@mail>\r\nX-Injected: 1",
+            references: "<msg0@mail>\nX-Also-Injected: 2")
+        let all = lines(of: raw)
+        XCTAssertFalse(all.contains { $0.hasPrefix("Bcc:") })
+        XCTAssertFalse(all.contains { $0.hasPrefix("X-Injected:") })
+        XCTAssertFalse(all.contains { $0.hasPrefix("X-Also-Injected:") })
+        // Values survive, folded onto their own single line.
+        XCTAssertTrue(all.contains { $0.hasPrefix("Subject: Hi ") })
+        XCTAssertTrue(all.contains { $0.hasPrefix("In-Reply-To: <msg1@mail>") })
+        XCTAssertTrue(all.contains { $0.hasPrefix("References: <msg0@mail>") })
+    }
+
+    func testCRLFInRecipientsCannotInjectHeaders() {
+        let raw = MIMEBuilder.build(
+            from: "Ron\r\nX-From-Inject: 1 <a@b.com>",
+            to: "c@d.com\r\nX-To-Inject: 1",
+            subject: "s", bodyText: "b")
+        let all = lines(of: raw)
+        XCTAssertFalse(all.contains { $0.hasPrefix("X-From-Inject:") })
+        XCTAssertFalse(all.contains { $0.hasPrefix("X-To-Inject:") })
+    }
+
+    func testAttachmentFilenameCannotEscapeQuotingOrInjectHeaders() {
+        let raw = MIMEBuilder.build(
+            from: "a@b.com", to: "c@d.com", subject: "s", bodyText: "b",
+            attachments: [.init(filename: "evil\"\r\nX-Bad: 1.pdf",
+                                mimeType: "application/pdf", data: Data("x".utf8))])
+        let text = String(data: raw, encoding: .utf8)!
+        let all = lines(of: raw)
+        XCTAssertFalse(all.contains { $0.hasPrefix("X-Bad:") })
+        XCTAssertFalse(text.contains("filename=\"evil\"\""))
+        // Still one quoted, newline-free parameter on the disposition line.
+        XCTAssertTrue(all.contains { $0.hasPrefix("Content-Disposition: attachment; filename=\"")
+                                     && $0.hasSuffix("\"") })
+    }
 }

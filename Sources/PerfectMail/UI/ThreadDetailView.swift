@@ -369,8 +369,13 @@ struct HTMLBodyView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
-            if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url {
-                NSWorkspace.shared.open(url)
+            if navigationAction.navigationType == .linkActivated {
+                // Only hand expected schemes to the OS; a crafted file:// or
+                // app-scheme link in an email stays inert.
+                if let url = navigationAction.request.url,
+                   ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
+                    NSWorkspace.shared.open(url)
+                }
                 decisionHandler(.cancel)
             } else {
                 decisionHandler(.allow)

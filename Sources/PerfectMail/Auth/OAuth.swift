@@ -131,7 +131,11 @@ final class OAuthService {
     /// Starts a one-shot HTTP listener on an ephemeral 127.0.0.1 port and
     /// returns the port plus a task that resolves to the auth code.
     private func startLoopbackListener(expectedState: String) throws -> (UInt16, Task<String, Error>) {
-        let listener = try NWListener(using: .tcp, on: .any)
+        // Bind to 127.0.0.1 only (RFC 8252 §8.3): the redirect catcher must
+        // not be reachable from other machines on the network.
+        let params = NWParameters.tcp
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        let listener = try NWListener(using: params)
         let stream = AsyncThrowingStream<String, Error> { continuation in
             listener.newConnectionHandler = { conn in
                 conn.start(queue: .global())

@@ -98,6 +98,13 @@ enum MessageParser {
         return header.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
     }
 
+    /// Attachment filenames come from the sender. Reduce to a bare filename
+    /// so a crafted "../../name" can't write outside a chosen directory.
+    static func safeFilename(_ name: String) -> String {
+        let base = (name as NSString).lastPathComponent
+        return (base.isEmpty || base == "." || base == "..") ? "attachment" : base
+    }
+
     /// Splits an address-list header on commas, respecting quoted display
     /// names like `"Boger, Ron" <ron@x.com>`.
     static func splitAddresses(_ header: String) -> [String] {
@@ -135,15 +142,15 @@ enum MIMEBuilder {
                       inReplyTo: String? = nil, references: String? = nil,
                       attachments: [Attachment] = []) -> Data {
         var lines: [String] = []
-        lines.append("From: \(from)")
-        lines.append("To: \(to)")
-        if !cc.isEmpty { lines.append("Cc: \(cc)") }
-        if !bcc.isEmpty { lines.append("Bcc: \(bcc)") }
-        lines.append("Subject: \(encodeHeader(subject))")
+        lines.append("From: \(clean(from))")
+        lines.append("To: \(clean(to))")
+        if !cc.isEmpty { lines.append("Cc: \(clean(cc))") }
+        if !bcc.isEmpty { lines.append("Bcc: \(clean(bcc))") }
+        lines.append("Subject: \(encodeHeader(clean(subject)))")
         if let inReplyTo, !inReplyTo.isEmpty {
-            lines.append("In-Reply-To: \(inReplyTo)")
+            lines.append("In-Reply-To: \(clean(inReplyTo))")
             let refs = [references, inReplyTo].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")
-            lines.append("References: \(refs)")
+            lines.append("References: \(clean(refs))")
         }
         lines.append("MIME-Version: 1.0")
 
@@ -163,9 +170,10 @@ enum MIMEBuilder {
             lines.append("")
             lines.append(textB64)
             for att in attachments {
+                let name = quotable(att.filename)
                 lines.append("--\(boundary)")
-                lines.append("Content-Type: \(att.mimeType); name=\"\(att.filename)\"")
-                lines.append("Content-Disposition: attachment; filename=\"\(att.filename)\"")
+                lines.append("Content-Type: \(clean(att.mimeType)); name=\"\(name)\"")
+                lines.append("Content-Disposition: attachment; filename=\"\(name)\"")
                 lines.append("Content-Transfer-Encoding: base64")
                 lines.append("")
                 lines.append(att.data.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed]))
@@ -179,5 +187,18 @@ enum MIMEBuilder {
     private static func encodeHeader(_ value: String) -> String {
         value.allSatisfy(\.isASCII) ? value
             : "=?UTF-8?B?\(Data(value.utf8).base64EncodedString())?="
+    }
+
+    /// A header value is a single line. Untrusted input (reply threading
+    /// headers from received mail, pasted subjects) must not be able to
+    /// inject extra headers, so CR/LF are folded to spaces.
+    private static func clean(_ value: String) -> String {
+        value.components(separatedBy: .newlines).joined(separator: " ")
+    }
+
+    /// A value inside a quoted header parameter (attachment filenames):
+    /// additionally strip quotes and backslashes so it can't escape the quoting.
+    private static func quotable(_ value: String) -> String {
+        clean(value).filter { $0 != "\"" && $0 != "\\" }
     }
 }
