@@ -87,11 +87,14 @@ enum MessageParser {
     }
 
     /// Extracts a bare email address from an address header.
+    /// Tolerates malformed headers (missing or out-of-order angle brackets).
     static func emailAddress(_ header: String) -> String {
-        if let lt = header.firstIndex(of: "<"), let gt = header.firstIndex(of: ">") {
+        if let lt = header.firstIndex(of: "<"),
+           let gt = header.firstIndex(of: ">"),
+           lt < gt {
             return String(header[header.index(after: lt)..<gt])
         }
-        return header.trimmingCharacters(in: .whitespaces)
+        return header.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
     }
 }
 
