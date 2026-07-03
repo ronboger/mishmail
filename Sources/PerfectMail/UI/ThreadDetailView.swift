@@ -173,6 +173,7 @@ struct MessageCard: View {
     @State private var expanded: Bool
     @State private var htmlHeight: CGFloat = 120
     @State private var loadRemoteImages = false
+    @State private var cardCursorPushed = false
 
     init(message: Message, isLast: Bool, onReply: @escaping () -> Void) {
         self.message = message
@@ -338,7 +339,19 @@ struct MessageCard: View {
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
         .contentShape(Rectangle())
         .onTapGesture {
-            if !expanded { withAnimation { expanded = true } }
+            if !expanded {
+                withAnimation { expanded = true }
+                if cardCursorPushed { NSCursor.pop(); cardCursorPushed = false }
+            }
+        }
+        // Collapsed cards are clickable everywhere, so show the pointing hand
+        // over the whole card (the header row handles its own cursor when expanded).
+        .onHover { inside in
+            if inside, !expanded {
+                if !cardCursorPushed { NSCursor.pointingHand.push(); cardCursorPushed = true }
+            } else if cardCursorPushed {
+                NSCursor.pop(); cardCursorPushed = false
+            }
         }
     }
 
