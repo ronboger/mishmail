@@ -111,14 +111,12 @@ struct ComposeView: View {
                         Text("From").font(.system(size: 12)).foregroundStyle(.tertiary)
                         Text(fromAccount.isEmpty ? "Select account" : fromAccount)
                             .font(.system(size: 13, weight: .medium))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
+                        // The borderless Menu draws its own chevron indicator.
                     }
                     .padding(.horizontal, 8).padding(.vertical, 4)
                     .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                 }
                 .menuStyle(.borderlessButton)
-                .menuIndicator(.hidden)
                 .fixedSize()
                 Spacer()
             }
