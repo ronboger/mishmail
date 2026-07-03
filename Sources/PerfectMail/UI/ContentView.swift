@@ -26,7 +26,7 @@ struct ContentView: View {
                 }
             }
         }
-        .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search all mail")
+        .searchable(text: $store.searchText, placement: .toolbar, prompt: "Search all mail — from: label: has:attachment")
         .onSubmit(of: .search) {
             // Hand focus back to the list so j/k/e/etc. work immediately.
             NSApp.keyWindow?.makeFirstResponder(nil)

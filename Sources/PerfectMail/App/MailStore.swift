@@ -147,6 +147,7 @@ final class MailStore: ObservableObject {
         var replyAll = false
         var forward = false
         var editDraft: Message? = nil   // an existing Gmail draft being edited
+        var restore: PendingSend? = nil // undone send: reopen with this content
     }
 
     struct UndoAction: Identifiable {
@@ -280,15 +281,38 @@ final class MailStore: ObservableObject {
         let search = searchText.trimmingCharacters(in: .whitespaces)
         let chips = chips
         let activeAccount = activeAccountId
+        let allLabels = labelsByAccount.values.flatMap { $0 }
         threads = (try? db.read { [weak self] db -> [MailThread] in
             if !search.isEmpty {
-                let ids = try Row.fetchAll(db, sql: """
-                    SELECT DISTINCT message.threadId FROM message
-                    JOIN message_fts ON message_fts.rowid = message.rowid
-                    WHERE message_fts MATCH ?
-                    """, arguments: [FTS5Pattern(matchingAllPrefixesIn: search)])
-                    .map { $0["threadId"] as String }
-                var q = MailThread.filter(ids.contains(Column("id")))
+                let parsed = SearchQuery.parse(search)
+                var q = MailThread.all()
+                if !parsed.text.isEmpty {
+                    let ids = try Row.fetchAll(db, sql: """
+                        SELECT DISTINCT message.threadId FROM message
+                        JOIN message_fts ON message_fts.rowid = message.rowid
+                        WHERE message_fts MATCH ?
+                        """, arguments: [FTS5Pattern(matchingAllPrefixesIn: parsed.text)])
+                        .map { $0["threadId"] as String }
+                    q = q.filter(ids.contains(Column("id")))
+                }
+                if let from = parsed.from {
+                    let pattern = "%\(from)%"
+                    q = q.filter(sql: "(fromDisplay LIKE ? OR participants LIKE ?)",
+                                 arguments: [pattern, pattern])
+                }
+                for name in parsed.labels {
+                    // A label name resolves to Gmail label ids (it can exist on
+                    // several accounts); unknown names fall back to the raw
+                    // token uppercased, which covers system labels (STARRED…).
+                    var ids = allLabels
+                        .filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+                        .map(\.gmailLabelId)
+                    if ids.isEmpty { ids = [name.uppercased()] }
+                    let conditions = ids.map { _ in "labelIds LIKE ?" }.joined(separator: " OR ")
+                    q = q.filter(sql: "(\(conditions))",
+                                 arguments: StatementArguments(ids.map { "%\($0)%" }))
+                }
+                if parsed.hasAttachment { q = q.filter(Column("hasAttachment") == true) }
                 if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
                 return try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
             }
@@ -787,6 +811,75 @@ final class MailStore: ObservableObject {
     }
 
     // MARK: - Sending
+
+    /// A composed message waiting out the undo-send window.
+    struct PendingSend {
+        let accountId: String
+        let to: String
+        let cc: String
+        let bcc: String
+        let subject: String
+        let body: String
+        let replyTo: Message?
+        let forward: Bool
+        let attachments: [MIMEBuilder.Attachment]
+        let replacingDraft: Message?
+    }
+
+    @Published private(set) var pendingSend: PendingSend?
+    private var pendingSendTimer: Timer?
+    static let undoSendWindow: TimeInterval = 10
+
+    /// Queue a message: it actually sends after `undoSendWindow` unless undone.
+    func queueSend(_ pending: PendingSend) {
+        // A second send flushes the first immediately — one window at a time.
+        if let previous = takePendingSend() {
+            Task { await self.performSend(previous) }
+        }
+        pendingSend = pending
+        undoTimer?.invalidate()
+        undoAction = UndoAction(label: "Sending…") { [weak self] in self?.cancelPendingSend() }
+        pendingSendTimer = Timer.scheduledTimer(withTimeInterval: Self.undoSendWindow,
+                                                repeats: false) { [weak self] _ in
+            Task { @MainActor in await self?.flushPendingSend() }
+        }
+    }
+
+    /// Undo: pull the message back into compose, nothing sent.
+    func cancelPendingSend() {
+        guard let p = takePendingSend() else { return }
+        undoAction = nil
+        composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
+                                        editDraft: p.replacingDraft, restore: p)
+    }
+
+    /// Send the queued message now (window elapsed, or the app is quitting).
+    func flushPendingSend() async {
+        guard let p = takePendingSend() else { return }
+        undoAction = nil
+        await performSend(p)
+    }
+
+    private func takePendingSend() -> PendingSend? {
+        pendingSendTimer?.invalidate()
+        pendingSendTimer = nil
+        defer { pendingSend = nil }
+        return pendingSend
+    }
+
+    private func performSend(_ p: PendingSend) async {
+        do {
+            try await send(from: p.accountId, to: p.to, cc: p.cc, bcc: p.bcc,
+                           subject: p.subject, body: p.body, replyTo: p.replyTo,
+                           attachments: p.attachments, replacingDraft: p.replacingDraft)
+            showNotice("Sent")
+        } catch {
+            // Bring the message back so nothing is lost.
+            lastError = "Send failed: \(error.localizedDescription)"
+            composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
+                                            editDraft: p.replacingDraft, restore: p)
+        }
+    }
 
     func send(from accountId: String, to: String, cc: String, bcc: String = "", subject: String,
               body: String, replyTo message: Message? = nil,

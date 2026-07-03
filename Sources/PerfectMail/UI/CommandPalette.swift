@@ -21,7 +21,7 @@ struct CommandPalette: View {
                 .onTapGesture { store.showCommandPalette = false }
 
             VStack(spacing: 0) {
-                TextField("Search mail or type a command…", text: $query)
+                TextField("Search mail (from: label: has:attachment) or type a command…", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16))
                     .padding(14)

@@ -27,8 +27,9 @@ struct ComposeView: View {
     @State private var subject: String = ""
     @State private var body_: String = ""
     @State private var attachmentURLs: [URL] = []
+    /// Attachments carried back from an undone send (data already loaded).
+    @State private var restoredAttachments: [MIMEBuilder.Attachment] = []
     @State private var showFilePicker = false
-    @State private var sending = false
     @State private var drafting = false
     @State private var error: String?
     @FocusState private var bodyFocused: Bool
@@ -45,6 +46,7 @@ struct ComposeView: View {
             || body_.trimmingCharacters(in: .whitespacesAndNewlines)
                 != initialBody.trimmingCharacters(in: .whitespacesAndNewlines)
             || !attachmentURLs.isEmpty
+            || !restoredAttachments.isEmpty
     }
 
     /// Close and keep the work: unsent content becomes a real Gmail draft.
@@ -164,9 +166,21 @@ struct ComposeView: View {
                 .padding(.top, 8)
                 .frame(minHeight: 120, maxHeight: .infinity)
 
-            if !attachmentURLs.isEmpty {
+            if !attachmentURLs.isEmpty || !restoredAttachments.isEmpty {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
+                        ForEach(Array(restoredAttachments.enumerated()), id: \.offset) { idx, att in
+                            HStack(spacing: 4) {
+                                Image(systemName: "paperclip").font(.caption)
+                                Text(att.filename).font(.caption)
+                                Button {
+                                    restoredAttachments.remove(at: idx)
+                                } label: { Image(systemName: "xmark.circle.fill").font(.caption2) }
+                                    .buttonStyle(.plain)
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .background(Color.secondary.opacity(0.12), in: Capsule())
+                        }
                         ForEach(attachmentURLs, id: \.self) { url in
                             HStack(spacing: 4) {
                                 Image(systemName: "paperclip").font(.caption)
@@ -230,12 +244,13 @@ struct ComposeView: View {
                 Button {
                     send()
                 } label: {
-                    Text(sending ? "Sending…" : "Send")
+                    Text("Send")
                         .padding(.horizontal, 10)
                 }
                 .keyboardShortcut(.return, modifiers: .command)
                 .buttonStyle(.borderedProminent)
-                .disabled(sending || fromAccount.isEmpty
+                .help("Send (10s undo window)")
+                .disabled(fromAccount.isEmpty
                           || (toTokens.isEmpty && !toDraft.contains("@")
                               && bccTokens.isEmpty && !bccDraft.contains("@")))
             }
@@ -268,6 +283,22 @@ struct ComposeView: View {
     }
 
     private func prefill() {
+        // Undone send: restore exactly what was about to go out.
+        if let r = request.restore {
+            fromAccount = r.accountId
+            toTokens = MessageParser.splitAddresses(r.to).filter { $0.contains("@") }
+            ccTokens = MessageParser.splitAddresses(r.cc).filter { $0.contains("@") }
+            if !ccTokens.isEmpty { showCc = true }
+            bccTokens = MessageParser.splitAddresses(r.bcc).filter { $0.contains("@") }
+            if !bccTokens.isEmpty { showBcc = true }
+            subject = r.subject
+            body_ = r.body
+            restoredAttachments = r.attachments
+            initialBody = ""   // an undone send always counts as content
+            bodyFocused = true
+            return
+        }
+
         // Editing an existing Gmail draft: load its fields verbatim.
         if let draft = editingDraft {
             fromAccount = draft.accountId
@@ -386,31 +417,31 @@ struct ComposeView: View {
         toDraft = ""; ccDraft = ""; bccDraft = ""
         guard !toTokens.isEmpty || !bccTokens.isEmpty else { return }
 
-        sending = true
         error = nil
-        Task {
-            do {
-                var attachments: [MIMEBuilder.Attachment] = []
-                for url in attachmentURLs {
-                    let access = url.startAccessingSecurityScopedResource()
-                    defer { if access { url.stopAccessingSecurityScopedResource() } }
-                    let data = try Data(contentsOf: url)
-                    let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
-                        ?? "application/octet-stream"
-                    attachments.append(.init(filename: url.lastPathComponent, mimeType: mime, data: data))
-                }
-                try await store.send(from: fromAccount,
-                                     to: toTokens.joined(separator: ", "),
-                                     cc: ccTokens.joined(separator: ", "),
-                                     bcc: bccTokens.joined(separator: ", "),
-                                     subject: subject, body: body_, replyTo: replyTo,
-                                     attachments: attachments,
-                                     replacingDraft: editingDraft)
-                close()
-            } catch {
-                self.error = error.localizedDescription
+        do {
+            // Load attachment data now — the compose card closes immediately
+            // and the actual send happens after the undo window.
+            var attachments = restoredAttachments
+            for url in attachmentURLs {
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                let data = try Data(contentsOf: url)
+                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                    ?? "application/octet-stream"
+                attachments.append(.init(filename: url.lastPathComponent, mimeType: mime, data: data))
             }
-            sending = false
+            store.queueSend(MailStore.PendingSend(
+                accountId: fromAccount,
+                to: toTokens.joined(separator: ", "),
+                cc: ccTokens.joined(separator: ", "),
+                bcc: bccTokens.joined(separator: ", "),
+                subject: subject, body: body_,
+                replyTo: replyTo, forward: request.forward,
+                attachments: attachments,
+                replacingDraft: editingDraft))
+            close()
+        } catch {
+            self.error = error.localizedDescription
         }
     }
 }
