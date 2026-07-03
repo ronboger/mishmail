@@ -789,6 +789,11 @@ final class MailStore: ObservableObject {
         }
     }
 
+    /// Set right before a keyboard-driven selection change (j/k, arrows) so
+    /// the UI can keep the reading pane closed while browsing; a mouse click
+    /// (which never sets it) reopens the pane. Cleared after each change.
+    var selectionViaKeyboard = false
+
     func moveSelection(_ delta: Int) {
         guard !threads.isEmpty else { return }
         let idx = threads.firstIndex { $0.id == selectedThreadId } ?? (delta > 0 ? -1 : 0)

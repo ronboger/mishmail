@@ -28,9 +28,12 @@ struct ContentView: View {
         }
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         .onChange(of: store.searchText) { store.reloadThreads() }
-        // Selecting a thread reopens the reading pane after Esc closed it.
+        // A clicked (not keyboard-browsed) selection reopens the reading pane.
         .onChange(of: store.selectedThreadId) {
-            if store.selectedThreadId != nil { readingPaneHidden = false }
+            if store.selectedThreadId != nil, !store.selectionViaKeyboard {
+                readingPaneHidden = false
+            }
+            store.selectionViaKeyboard = false
         }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
@@ -168,16 +171,14 @@ struct ContentView: View {
                     break
                 }
             }
-            // Esc closes the open thread AND the reading pane (Notion
-            // Mail-style): the list takes the full center. Selecting a
-            // thread brings the pane back. Skipped while typing so Esc
-            // still cancels field editing / autocomplete.
+            // Esc closes the reading pane (Notion Mail-style) but KEEPS the
+            // selection, so you stay where you are in the list. Skipped
+            // while typing so Esc still cancels field editing.
             if event.keyCode == 53,
                store.composeRequest == nil, store.editingView == nil,
                !(event.window?.firstResponder is NSTextView),
                !(event.window?.firstResponder is NSTextField),
-               store.selectedThreadId != nil || !readingPaneHidden {
-                store.selectedThreadId = nil
+               !readingPaneHidden {
                 readingPaneHidden = true
                 return nil
             }
@@ -187,9 +188,27 @@ struct ContentView: View {
                   store.composeRequest == nil,
                   store.editingView == nil,
                   !(event.window?.firstResponder is NSTextView),
-                  !(event.window?.firstResponder is NSTextField),
-                  let chars = event.charactersIgnoringModifiers
+                  !(event.window?.firstResponder is NSTextField)
             else { return event }
+            // Arrow keys browse the list without opening the pane; Enter
+            // (or a click) opens the selected thread.
+            switch event.keyCode {
+            case 125:  // down
+                store.selectionViaKeyboard = true
+                store.moveSelection(1)
+                return nil
+            case 126:  // up
+                store.selectionViaKeyboard = true
+                store.moveSelection(-1)
+                return nil
+            case 36:   // return
+                if store.selectedThreadId != nil { readingPaneHidden = false }
+                return nil
+            default:
+                break
+            }
+            guard let chars = event.charactersIgnoringModifiers else { return event }
+            if chars == "j" || chars == "k" { store.selectionViaKeyboard = true }
             return store.handleKey(chars) ? nil : event
         }
     }

@@ -103,7 +103,7 @@ struct ThreadDetailView: View {
             // Notion Mail-style left cluster: close the pane, prev/next thread.
             ToolbarItemGroup(placement: .navigation) {
                 Button {
-                    store.selectedThreadId = nil
+                    // Keep the selection so the list stays where you are.
                     readingPaneHidden = true
                 } label: {
                     Label("Close", systemImage: "chevron.right.2")
