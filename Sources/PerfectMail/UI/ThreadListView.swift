@@ -117,7 +117,7 @@ struct ThreadListView: View {
                         Text(group.0)
                             .font(.system(size: 12 * fontScale, weight: .semibold))
                             .foregroundStyle(.primary.opacity(0.7))
-                            .padding(.top, (index == 0 ? 36 : 32) * fontScale)
+                            .padding(.top, (index == 0 ? 34 : 32) * fontScale)
                     }
                 }
             }
