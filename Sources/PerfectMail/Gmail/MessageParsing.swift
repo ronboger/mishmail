@@ -1,20 +1,22 @@
 import Foundation
 
-/// Converts a Gmail API `GMessage` (format=full) into our local `Message` row.
+/// Converts a Gmail API `GMessage` (format=full) into our local rows.
 enum MessageParser {
-    static func parse(_ g: GMessage, accountId: String) -> Message {
+    static func parse(_ g: GMessage, accountId: String) -> (Message, [AttachmentRow]) {
         func header(_ name: String) -> String {
             g.payload?.headers?.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value ?? ""
         }
         var text = ""
         var html: String?
-        collectBodies(g.payload, text: &text, html: &html)
+        var attachments: [AttachmentRow] = []
+        let localId = "\(accountId):\(g.id)"
+        collectParts(g.payload, messageId: localId, text: &text, html: &html, attachments: &attachments)
         if text.isEmpty, let html { text = Self.stripHTML(html) }
 
         let millis = Double(g.internalDate ?? "0") ?? 0
         let labels = g.labelIds ?? []
-        return Message(
-            id: "\(accountId):\(g.id)",
+        let message = Message(
+            id: localId,
             accountId: accountId,
             gmailId: g.id,
             threadId: "\(accountId):\(g.threadId)",
@@ -29,27 +31,42 @@ enum MessageParser {
             messageIdHeader: header("Message-ID"),
             referencesHeader: header("References"),
             labelIds: labels.joined(separator: " "),
-            isUnread: labels.contains("UNREAD")
+            isUnread: labels.contains("UNREAD"),
+            hasAttachment: !attachments.isEmpty
         )
+        return (message, attachments)
     }
 
-    private static func collectBodies(_ part: GMessage.Part?, text: inout String, html: inout String?) {
+    private static func collectParts(_ part: GMessage.Part?, messageId: String,
+                                     text: inout String, html: inout String?,
+                                     attachments: inout [AttachmentRow]) {
         guard let part else { return }
-        if let data = part.body?.data, let decoded = decodeBase64URL(data) {
+        if let filename = part.filename, !filename.isEmpty,
+           let attachmentId = part.body?.attachmentId {
+            attachments.append(AttachmentRow(
+                id: nil, messageId: messageId, gmailAttachmentId: attachmentId,
+                filename: filename, mimeType: part.mimeType ?? "application/octet-stream",
+                size: part.body?.size ?? 0))
+        } else if let data = part.body?.data, let decoded = decodeBase64URL(data) {
             switch part.mimeType {
             case "text/plain" where text.isEmpty: text = decoded
             case "text/html" where html == nil: html = decoded
             default: break
             }
         }
-        for child in part.parts ?? [] { collectBodies(child, text: &text, html: &html) }
+        for child in part.parts ?? [] {
+            collectParts(child, messageId: messageId, text: &text, html: &html, attachments: &attachments)
+        }
     }
 
     static func decodeBase64URL(_ s: String) -> String? {
+        decodeBase64URLData(s).flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    static func decodeBase64URLData(_ s: String) -> Data? {
         var b64 = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         while b64.count % 4 != 0 { b64 += "=" }
-        guard let data = Data(base64Encoded: b64) else { return nil }
-        return String(data: data, encoding: .utf8)
+        return Data(base64Encoded: b64)
     }
 
     static func stripHTML(_ html: String) -> String {
@@ -78,11 +95,19 @@ enum MessageParser {
     }
 }
 
-/// Builds RFC 2822 messages for sending/replying.
+/// Builds RFC 2822 messages for sending/replying, optionally multipart/mixed
+/// with attachments.
 enum MIMEBuilder {
+    struct Attachment {
+        let filename: String
+        let mimeType: String
+        let data: Data
+    }
+
     static func build(from: String, to: String, cc: String = "",
                       subject: String, bodyText: String,
-                      inReplyTo: String? = nil, references: String? = nil) -> Data {
+                      inReplyTo: String? = nil, references: String? = nil,
+                      attachments: [Attachment] = []) -> Data {
         var lines: [String] = []
         lines.append("From: \(from)")
         lines.append("To: \(to)")
@@ -94,10 +119,32 @@ enum MIMEBuilder {
             lines.append("References: \(refs)")
         }
         lines.append("MIME-Version: 1.0")
-        lines.append("Content-Type: text/plain; charset=UTF-8")
-        lines.append("Content-Transfer-Encoding: base64")
-        lines.append("")
-        lines.append(Data(bodyText.utf8).base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed]))
+
+        let textB64 = Data(bodyText.utf8).base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed])
+        if attachments.isEmpty {
+            lines.append("Content-Type: text/plain; charset=UTF-8")
+            lines.append("Content-Transfer-Encoding: base64")
+            lines.append("")
+            lines.append(textB64)
+        } else {
+            let boundary = "pm-\(UUID().uuidString)"
+            lines.append("Content-Type: multipart/mixed; boundary=\"\(boundary)\"")
+            lines.append("")
+            lines.append("--\(boundary)")
+            lines.append("Content-Type: text/plain; charset=UTF-8")
+            lines.append("Content-Transfer-Encoding: base64")
+            lines.append("")
+            lines.append(textB64)
+            for att in attachments {
+                lines.append("--\(boundary)")
+                lines.append("Content-Type: \(att.mimeType); name=\"\(att.filename)\"")
+                lines.append("Content-Disposition: attachment; filename=\"\(att.filename)\"")
+                lines.append("Content-Transfer-Encoding: base64")
+                lines.append("")
+                lines.append(att.data.base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed]))
+            }
+            lines.append("--\(boundary)--")
+        }
         return Data(lines.joined(separator: "\r\n").utf8)
     }
 

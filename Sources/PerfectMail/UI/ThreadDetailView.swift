@@ -50,6 +50,7 @@ struct ThreadDetailView: View {
 }
 
 struct MessageCard: View {
+    @EnvironmentObject var store: MailStore
     let message: Message
     let isLast: Bool
     let onReply: () -> Void
@@ -102,6 +103,28 @@ struct MessageCard: View {
                         .font(.system(size: 13))
                         .textSelection(.enabled)
                 }
+                let attachments = store.attachments(for: message.id)
+                if !attachments.isEmpty {
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 6) {
+                            ForEach(attachments) { att in
+                                Button {
+                                    store.openAttachment(att, message: message)
+                                } label: {
+                                    HStack(spacing: 4) {
+                                        Image(systemName: "paperclip").font(.caption)
+                                        Text(att.filename).font(.caption).lineLimit(1)
+                                        Text(byteSize(att.size)).font(.caption2).foregroundStyle(.secondary)
+                                    }
+                                    .padding(.horizontal, 8).padding(.vertical, 5)
+                                    .background(Color.secondary.opacity(0.12), in: Capsule())
+                                }
+                                .buttonStyle(.plain)
+                                .help("Download and open")
+                            }
+                        }
+                    }
+                }
             } else {
                 Text(message.snippet)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
@@ -111,6 +134,10 @@ struct MessageCard: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+    }
+
+    private func byteSize(_ bytes: Int) -> String {
+        ByteCountFormatter.string(fromByteCount: Int64(bytes), countStyle: .file)
     }
 }
 

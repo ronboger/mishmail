@@ -40,6 +40,12 @@ actor SyncEngine {
         try await db.write { db in try updated.update(db) }
     }
 
+    /// Recomputes every thread row for this account from its messages.
+    /// Used after schema upgrades that add derived thread columns.
+    func rebuildAllThreadMetadata() async throws {
+        try await rebuildThreads()
+    }
+
     // MARK: - Labels
 
     private func syncLabels() async throws {
@@ -126,8 +132,12 @@ actor SyncEngine {
     // MARK: - Local writes
 
     private func upsert(_ g: GMessage) async throws {
-        let message = MessageParser.parse(g, accountId: accountId)
-        try await db.write { db in try message.save(db) }
+        let (message, attachments) = MessageParser.parse(g, accountId: accountId)
+        try await db.write { db in
+            try message.save(db)
+            try AttachmentRow.filter(Column("messageId") == message.id).deleteAll(db)
+            for var att in attachments { try att.insert(db) }
+        }
         try await upsertThread(threadKey: message.threadId, gmailThreadId: g.threadId)
     }
 
@@ -139,6 +149,17 @@ actor SyncEngine {
                 .fetchAll(db)
             guard let newest = messages.first else { return }
             let allLabels = Set(messages.flatMap { $0.labelIds.split(separator: " ").map(String.init) })
+
+            // Participants in chronological order, deduped, own account as "me".
+            var seen = Set<String>()
+            var participants: [String] = []
+            for m in messages.reversed() {
+                let sender = MessageParser.emailAddress(m.fromHeader)
+                let name = sender == accountId ? "me" : MessageParser.displayName(fromHeader: m.fromHeader)
+                let short = name.split(separator: " ").first.map(String.init) ?? name
+                if seen.insert(short).inserted { participants.append(short) }
+            }
+
             let existing = try MailThread.fetchOne(db, key: threadKey)
             let thread = MailThread(
                 id: threadKey,
@@ -153,7 +174,11 @@ actor SyncEngine {
                 inInbox: allLabels.contains("INBOX"),
                 inTrash: allLabels.contains("TRASH"),
                 labelIds: allLabels.sorted().joined(separator: " "),
-                snoozeUntil: existing?.snoozeUntil
+                snoozeUntil: existing?.snoozeUntil,
+                participants: participants.joined(separator: " .. "),
+                messageCount: messages.count,
+                hasAttachment: messages.contains { $0.hasAttachment },
+                reminderAt: existing?.reminderAt
             )
             try thread.save(db)
         }

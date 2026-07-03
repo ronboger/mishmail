@@ -26,6 +26,10 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var inTrash: Bool
     var labelIds: String    // space-separated Gmail label ids
     var snoozeUntil: Date?  // local snooze (client-side feature)
+    var participants: String  // " .. "-joined display names, "me" for own sends
+    var messageCount: Int
+    var hasAttachment: Bool
+    var reminderAt: Date?   // local follow-up reminder
 
     var labels: [String] { labelIds.split(separator: " ").map(String.init) }
 }
@@ -48,6 +52,40 @@ struct Message: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     var referencesHeader: String
     var labelIds: String
     var isUnread: Bool
+    var hasAttachment: Bool
+}
+
+struct AttachmentRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "attachment"
+    var id: Int64?
+    var messageId: String   // FK to Message.id
+    var gmailAttachmentId: String
+    var filename: String
+    var mimeType: String
+    var size: Int
+    mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+}
+
+struct SavedView: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "savedView"
+    var id: Int64?
+    var name: String
+    var accountId: String?      // nil = all accounts
+    var labelId: String?        // Gmail label id
+    var unreadOnly: Bool
+    var starredOnly: Bool
+    var hasAttachmentOnly: Bool
+    var senderContains: String
+    var showArchived: Bool
+    var excludePromotions: Bool
+    var category: String?       // CATEGORY_PROMOTIONS / _SOCIAL / _UPDATES / _FORUMS
+    mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+
+    static func empty() -> SavedView {
+        SavedView(id: nil, name: "", accountId: nil, labelId: nil, unreadOnly: false,
+                  starredOnly: false, hasAttachmentOnly: false, senderContains: "",
+                  showArchived: false, excludePromotions: false, category: nil)
+    }
 }
 
 struct Snippet: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
@@ -145,6 +183,39 @@ final class AppDatabase {
                 t.column("subject")
                 t.column("fromHeader")
                 t.column("bodyText")
+            }
+        }
+        m.registerMigration("v2") { db in
+            try db.alter(table: "thread") { t in
+                t.add(column: "participants", .text).notNull().defaults(to: "")
+                t.add(column: "messageCount", .integer).notNull().defaults(to: 1)
+                t.add(column: "hasAttachment", .boolean).notNull().defaults(to: false)
+                t.add(column: "reminderAt", .datetime)
+            }
+            try db.alter(table: "message") { t in
+                t.add(column: "hasAttachment", .boolean).notNull().defaults(to: false)
+            }
+            try db.create(table: "attachment") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("messageId", .text).notNull().indexed()
+                    .references("message", onDelete: .cascade)
+                t.column("gmailAttachmentId", .text).notNull()
+                t.column("filename", .text).notNull()
+                t.column("mimeType", .text).notNull()
+                t.column("size", .integer).notNull()
+            }
+            try db.create(table: "savedView") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("name", .text).notNull()
+                t.column("accountId", .text)
+                t.column("labelId", .text)
+                t.column("unreadOnly", .boolean).notNull().defaults(to: false)
+                t.column("starredOnly", .boolean).notNull().defaults(to: false)
+                t.column("hasAttachmentOnly", .boolean).notNull().defaults(to: false)
+                t.column("senderContains", .text).notNull().defaults(to: "")
+                t.column("showArchived", .boolean).notNull().defaults(to: false)
+                t.column("excludePromotions", .boolean).notNull().defaults(to: false)
+                t.column("category", .text)
             }
         }
         return m

@@ -172,4 +172,14 @@ actor GmailClient {
         if let threadId { body["threadId"] = threadId }
         let _: GMessage = try await request("POST", "/messages/send", jsonBody: body)
     }
+
+    /// Downloads an attachment's bytes.
+    func getAttachment(messageId: String, attachmentId: String) async throws -> Data {
+        struct Body: Decodable { let data: String? }
+        let body: Body = try await request("GET", "/messages/\(messageId)/attachments/\(attachmentId)")
+        guard let b64 = body.data, let data = MessageParser.decodeBase64URLData(b64) else {
+            throw GmailError.http(0, "attachment payload missing")
+        }
+        return data
+    }
 }

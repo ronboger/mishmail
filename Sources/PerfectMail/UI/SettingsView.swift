@@ -46,8 +46,33 @@ struct SettingsView: View {
 
             SnippetsSettings()
                 .tabItem { Label("Snippets", systemImage: "text.badge.plus") }
+
+            AISettings()
+                .tabItem { Label("AI", systemImage: "sparkles") }
         }
-        .frame(width: 520, height: 360)
+        .frame(width: 520, height: 380)
+    }
+}
+
+struct AISettings: View {
+    @State private var url: String = Ollama.baseURL
+    @State private var model: String = Ollama.model
+
+    var body: some View {
+        Form {
+            Section {
+                TextField("Ollama URL", text: $url)
+                    .onChange(of: url) { Ollama.baseURL = url }
+                TextField("Model", text: $model)
+                    .onChange(of: model) { Ollama.model = model }
+            } header: {
+                Text("Local AI drafting (Ollama)")
+            } footer: {
+                Text("AI drafting runs entirely on this Mac via Ollama. Install from ollama.com, then run: ollama pull \(model). The Draft with AI button appears when replying.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+        }
+        .formStyle(.grouped)
     }
 }
 
