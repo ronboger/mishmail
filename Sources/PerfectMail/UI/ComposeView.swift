@@ -115,22 +115,24 @@ struct ComposeView: View {
                 .padding(.bottom, 6)
             }
 
-            // From row
-            HStack {
+            // From row — laid out like the address rows (30pt label gutter)
+            // so the account text lines up with the To/Cc/Bcc fields.
+            HStack(alignment: .center, spacing: 6) {
+                Text("From")
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 30, alignment: .leading)
                 Menu {
                     ForEach(store.accounts) { account in
                         Button(menuTitle(account)) { fromAccount = account.id }
                     }
                 } label: {
                     HStack(spacing: 5) {
-                        Text("From").font(.system(size: 12)).foregroundStyle(.tertiary)
                         Text(fromAccount.isEmpty ? "Select account" : fromAccount)
                             .font(.system(size: 13, weight: .medium))
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
                     }
-                    .padding(.horizontal, 8).padding(.vertical, 4)
-                    .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 6))
                     .contentShape(Rectangle())
                 }
                 // .button + .plain renders custom labels reliably on macOS
@@ -141,20 +143,23 @@ struct ComposeView: View {
                 .fixedSize()
                 Spacer()
             }
-            .padding(.bottom, 4)
+            .padding(.vertical, 7)
+            Divider()
 
             TokenAddressField(label: "To", tokens: $toTokens, draft: $toDraft,
                               autoFocus: original == nil && editingDraft == nil)
                 .overlay(alignment: .trailing) {
                     // Cc/Bcc live on the To row, Gmail-style.
                     HStack(spacing: 8) {
+                        // Either button reveals both fields — Ron expects
+                        // Cc/Bcc to open together.
                         if !showCc {
-                            Button("Cc") { showCc = true }
+                            Button("Cc") { showCc = true; showBcc = true }
                                 .buttonStyle(.plain)
                                 .font(.system(size: 12)).foregroundStyle(.secondary)
                         }
                         if !showBcc {
-                            Button("Bcc") { showBcc = true }
+                            Button("Bcc") { showCc = true; showBcc = true }
                                 .buttonStyle(.plain)
                                 .font(.system(size: 12)).foregroundStyle(.secondary)
                         }

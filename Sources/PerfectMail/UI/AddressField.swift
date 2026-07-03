@@ -73,6 +73,9 @@ struct TokenAddressField: View {
                                 return .handled
                             }
                     }
+                    // Fixed row height tall enough for chips, so adding the
+                    // first recipient doesn't grow the row.
+                    .frame(height: 22)
                 }
             }
             .padding(.vertical, 7)
@@ -109,7 +112,7 @@ struct TokenAddressField: View {
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
                 .shadow(radius: 10)
-                .offset(x: 36, y: 34)
+                .offset(x: 36, y: 38)
             }
         }
         .zIndex(focused ? 10 : 0)
