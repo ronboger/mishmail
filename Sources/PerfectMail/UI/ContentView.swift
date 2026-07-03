@@ -122,6 +122,10 @@ struct ContentView: View {
                 store.showCommandPalette.toggle()
                 return nil
             }
+            if mods == .control, event.charactersIgnoringModifiers == "f" {
+                store.showFilterMenu.toggle()
+                return nil
+            }
             if store.showCommandPalette, event.keyCode == 53 {  // esc
                 store.showCommandPalette = false
                 return nil

@@ -40,8 +40,9 @@ enum MailboxView: Hashable {
 /// Notion Mail-style category filter: a set of Gmail categories that the
 /// inbox either must not contain (default) or must contain.
 struct CategoryFilter: Equatable {
-    var exclude = true                 // true = "do not contain"
-    var categories: Set<String> = []   // empty = no category filtering
+    var exclude = true                 // which set the Categories popover edits
+    var show: Set<String> = []         // must contain any of these
+    var hide: Set<String> = []         // must contain none of these
 
     static let names = [
         "CATEGORY_PROMOTIONS": "Promotions",
@@ -50,12 +51,37 @@ struct CategoryFilter: Equatable {
         "CATEGORY_FORUMS": "Forums",
     ]
 
-    var isActive: Bool { !categories.isEmpty }
+    var isActive: Bool { !show.isEmpty || !hide.isEmpty }
+
+    /// The set the Categories popover is currently editing.
+    var categories: Set<String> {
+        get { exclude ? hide : show }
+        set { if exclude { hide = newValue } else { show = newValue } }
+    }
 
     var title: String {
         guard isActive else { return "All" }
-        let list = categories.map { Self.names[$0] ?? $0 }.sorted().joined(separator: ", ")
-        return exclude ? "Not \(list)" : list
+        var parts: [String] = []
+        if !show.isEmpty {
+            parts.append(show.map { Self.names[$0] ?? $0 }.sorted().joined(separator: ", "))
+        }
+        if !hide.isEmpty {
+            parts.append("Not " + hide.map { Self.names[$0] ?? $0 }.sorted().joined(separator: ", "))
+        }
+        return parts.joined(separator: "; ")
+    }
+}
+
+/// Relative received-date window for the filter bar.
+enum DateWindow: Int, CaseIterable {
+    case today = 1, week = 7, month = 30
+
+    var title: String {
+        switch self {
+        case .today: return "Today"
+        case .week: return "Last 7 days"
+        case .month: return "Last 30 days"
+        }
     }
 }
 
@@ -71,6 +97,16 @@ struct FilterChips: Equatable {
     var senderContains = ""
     var senderExclude = false     // "does not contain" mode for the sender
     var hasAttachmentOnly = false
+    var noAttachmentOnly = false
+    var readOnly = false          // isUnread == false
+    var showSent = false          // widen inbox to include SENT threads
+    var toContains = ""
+    var ccContains = ""
+    var bccContains = ""
+    var subjectContains = ""
+    var dateWindow: DateWindow?   // received within the last N days
+    var calendarOnly = false      // only threads with a calendar invite (.ics)
+    var hideCalendar = false      // hide threads with a calendar invite
 
     /// Default chips for a given view (inbox hides Promotions/Social).
     static func defaults(for view: MailboxView) -> FilterChips {
@@ -79,7 +115,7 @@ struct FilterChips: Equatable {
         case .inbox, .account:
             chips.category = CategoryFilter(
                 exclude: true,
-                categories: ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"])
+                hide: ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"])
         default:
             break
         }
@@ -106,6 +142,7 @@ final class MailStore: ObservableObject {
     @Published var editingAccountLabels = false
     @Published var showLabelPicker = false
     @Published var showCommandPalette = false
+    @Published var showFilterMenu = false   // "+ Filter" popover (Ctrl-F)
     @Published var unreadCounts: [String: Int] = [:]   // sidebar badges
     @Published var notice: String?                      // transient confirmation toast
     private var noticeTimer: Timer?
@@ -294,36 +331,62 @@ final class MailStore: ObservableObject {
             }
             guard let self else { return [] }
             var q = Self.baseQuery(for: view, savedViews: self.savedViews)
+            if chips.showArchived || chips.showSent {
+                // Widen from inbox-only before layering the other chips.
+                q = Self.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
+            }
             // Layer transient chips on top.
-            if chips.category.isActive {
-                if chips.category.exclude {
-                    for cat in chips.category.categories {
-                        q = q.filter(!Column("labelIds").like("%\(cat)%"))
-                    }
-                } else {
-                    // Contains any of the selected categories (values bound, not interpolated).
-                    let conditions = chips.category.categories
-                        .map { _ in "labelIds LIKE ?" }
-                        .joined(separator: " OR ")
-                    let patterns = chips.category.categories.map { "%\($0)%" }
-                    q = q.filter(sql: conditions, arguments: StatementArguments(patterns))
-                }
+            for cat in chips.category.hide {
+                q = q.filter(!Column("labelIds").like("%\(cat)%"))
+            }
+            if !chips.category.show.isEmpty {
+                // Contains any of the selected categories (values bound, not interpolated).
+                let conditions = chips.category.show
+                    .map { _ in "labelIds LIKE ?" }
+                    .joined(separator: " OR ")
+                let patterns = chips.category.show.map { "%\($0)%" }
+                q = q.filter(sql: conditions, arguments: StatementArguments(patterns))
             }
             if chips.unreadOnly { q = q.filter(Column("isUnread") == true) }
-            if chips.showArchived {
-                // Widen from inbox-only to everything not trashed.
-                q = Self.widenArchived(q, for: view)
-            }
+            if chips.readOnly { q = q.filter(Column("isUnread") == false) }
             if let labelId = chips.labelId {
                 let match = Column("labelIds").like("%\(labelId)%")
                 q = chips.labelExclude ? q.filter(!match) : q.filter(match)
             }
             if chips.hasAttachmentOnly { q = q.filter(Column("hasAttachment") == true) }
+            if chips.noAttachmentOnly { q = q.filter(Column("hasAttachment") == false) }
             if !chips.senderContains.isEmpty {
                 let pattern = "%\(chips.senderContains)%"
                 let condition = "(fromDisplay LIKE ? OR participants LIKE ?)"
                 q = q.filter(sql: chips.senderExclude ? "NOT \(condition)" : condition,
                              arguments: [pattern, pattern])
+            }
+            for (header, value) in [("toHeader", chips.toContains),
+                                    ("ccHeader", chips.ccContains),
+                                    ("bccHeader", chips.bccContains)] where !value.isEmpty {
+                q = q.filter(sql: """
+                    EXISTS (SELECT 1 FROM message
+                            WHERE message.threadId = thread.id AND message.\(header) LIKE ?)
+                    """, arguments: ["%\(value)%"])
+            }
+            if !chips.subjectContains.isEmpty {
+                q = q.filter(sql: "subject LIKE ?", arguments: ["%\(chips.subjectContains)%"])
+            }
+            if let window = chips.dateWindow {
+                let cutoff = Calendar.current.startOfDay(
+                    for: Date().addingTimeInterval(Double(-(window.rawValue - 1)) * 86400))
+                q = q.filter(Column("lastDate") >= cutoff)
+            }
+            if chips.calendarOnly || chips.hideCalendar {
+                let invite = """
+                    EXISTS (SELECT 1 FROM message
+                            JOIN attachment ON attachment.messageId = message.id
+                            WHERE message.threadId = thread.id
+                              AND (attachment.mimeType LIKE 'text/calendar%'
+                                   OR attachment.filename LIKE '%.ics'))
+                    """
+                if chips.calendarOnly { q = q.filter(sql: invite) }
+                if chips.hideCalendar { q = q.filter(sql: "NOT \(invite)") }
             }
             if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
             return try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
@@ -384,15 +447,20 @@ final class MailStore: ObservableObject {
         return q
     }
 
-    private static func widenArchived(_ q: QueryInterfaceRequest<MailThread>, for view: MailboxView) -> QueryInterfaceRequest<MailThread> {
+    private static func widen(_ q: QueryInterfaceRequest<MailThread>, for view: MailboxView,
+                              archived: Bool, sent: Bool) -> QueryInterfaceRequest<MailThread> {
         // Rebuild without the inbox constraint for views where it applies.
+        // "Show archived" widens to everything not trashed; "Show sent" alone
+        // widens to inbox-or-sent. (Category chips are layered on afterwards.)
+        func widened(_ w: QueryInterfaceRequest<MailThread>) -> QueryInterfaceRequest<MailThread> {
+            if archived { return w }
+            return w.filter(Column("inInbox") == true || Column("labelIds").like("%SENT%"))
+        }
         switch view {
         case .inbox:
-            var w = MailThread.filter(Column("inTrash") == false)
-            for cat in categoryLabels { w = w.filter(!Column("labelIds").like("%\(cat)%")) }
-            return w
+            return widened(MailThread.filter(Column("inTrash") == false))
         case .account(let a):
-            return MailThread.filter(Column("accountId") == a && Column("inTrash") == false)
+            return widened(MailThread.filter(Column("accountId") == a && Column("inTrash") == false))
         default:
             return q
         }
