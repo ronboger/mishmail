@@ -160,28 +160,44 @@ struct MessageCard: View {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
                             ForEach(attachments) { att in
-                                Button {
-                                    store.openAttachment(att, message: message)
-                                } label: {
-                                    HStack(spacing: 8) {
-                                        Image(systemName: iconName(for: att.mimeType))
-                                            .font(.system(size: 20))
-                                            .foregroundStyle(Color.stable(for: att.filename))
-                                        VStack(alignment: .leading, spacing: 1) {
-                                            Text(att.filename)
-                                                .font(.system(size: 12.5, weight: .medium))
-                                                .lineLimit(1)
-                                            Text(byteSize(att.size))
-                                                .font(.system(size: 11)).foregroundStyle(.secondary)
+                                HStack(spacing: 8) {
+                                    Button {
+                                        store.openAttachment(att, message: message)
+                                    } label: {
+                                        HStack(spacing: 8) {
+                                            Image(systemName: iconName(for: att.mimeType))
+                                                .font(.system(size: 20))
+                                                .foregroundStyle(Color.stable(for: att.filename))
+                                            VStack(alignment: .leading, spacing: 1) {
+                                                Text(att.filename)
+                                                    .font(.system(size: 12.5, weight: .medium))
+                                                    .lineLimit(1)
+                                                Text(byteSize(att.size))
+                                                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                                            }
                                         }
                                     }
-                                    .padding(.horizontal, 12).padding(.vertical, 8)
-                                    .background(Color.secondary.opacity(0.1),
-                                                in: RoundedRectangle(cornerRadius: 8))
-                                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+                                    .buttonStyle(.plain)
+                                    .help("Open (uses a private temporary file)")
+
+                                    Button {
+                                        store.saveAttachment(att, message: message)
+                                    } label: {
+                                        Image(systemName: "arrow.down.circle")
+                                            .font(.system(size: 16))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Save As… (you choose where)")
                                 }
-                                .buttonStyle(.plain)
-                                .help("Download and open")
+                                .padding(.horizontal, 12).padding(.vertical, 8)
+                                .background(Color.secondary.opacity(0.1),
+                                            in: RoundedRectangle(cornerRadius: 8))
+                                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+                                .contextMenu {
+                                    Button("Open") { store.openAttachment(att, message: message) }
+                                    Button("Save As…") { store.saveAttachment(att, message: message) }
+                                }
                             }
                         }
                         .padding(.vertical, 2)

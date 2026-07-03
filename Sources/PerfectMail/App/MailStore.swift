@@ -730,6 +730,8 @@ final class MailStore: ObservableObject {
 
     // MARK: - Attachments
 
+    /// Opens in the default app via a private temp file inside the sandbox
+    /// (macOS purges it; nothing is written to user folders).
     func openAttachment(_ attachment: AttachmentRow, message: Message) {
         Task {
             do {
@@ -741,6 +743,27 @@ final class MailStore: ObservableObject {
                 let url = dir.appendingPathComponent(attachment.filename)
                 try data.write(to: url)
                 await MainActor.run { NSWorkspace.shared.open(url) }
+            } catch {
+                await MainActor.run { self.lastError = error.localizedDescription }
+            }
+        }
+    }
+
+    /// Save As… — the user picks the destination via the system save panel,
+    /// which is the only place outside the sandbox the app can write.
+    func saveAttachment(_ attachment: AttachmentRow, message: Message) {
+        let panel = NSSavePanel()
+        panel.nameFieldStringValue = attachment.filename
+        panel.canCreateDirectories = true
+        guard panel.runModal() == .OK, let destination = panel.url else { return }
+        Task {
+            do {
+                let data = try await client(for: message.accountId)
+                    .getAttachment(messageId: message.gmailId, attachmentId: attachment.gmailAttachmentId)
+                try data.write(to: destination)
+                await MainActor.run {
+                    NSWorkspace.shared.activateFileViewerSelecting([destination])
+                }
             } catch {
                 await MainActor.run { self.lastError = error.localizedDescription }
             }
