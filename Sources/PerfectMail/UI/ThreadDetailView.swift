@@ -4,6 +4,7 @@ import WebKit
 struct ThreadDetailView: View {
     @EnvironmentObject var store: MailStore
     @AppStorage("fontScale") private var fontScale = 1.0
+    @AppStorage("readingPaneHidden") private var readingPaneHidden = false
     let thread: MailThread
     let onReply: (Message) -> Void
 
@@ -99,6 +100,24 @@ struct ThreadDetailView: View {
             .padding(.vertical)
         }
         .toolbar {
+            // Notion Mail-style left cluster: close the pane, prev/next thread.
+            ToolbarItemGroup(placement: .navigation) {
+                Button {
+                    store.selectedThreadId = nil
+                    readingPaneHidden = true
+                } label: {
+                    Label("Close", systemImage: "chevron.right.2")
+                }
+                .help("Close (esc)")
+                Button { store.moveSelection(-1) } label: {
+                    Label("Previous", systemImage: "chevron.up")
+                }
+                .help("Previous thread (k)")
+                Button { store.moveSelection(1) } label: {
+                    Label("Next", systemImage: "chevron.down")
+                }
+                .help("Next thread (j)")
+            }
             ToolbarItemGroup {
                 Button { store.archive(thread) } label: {
                     Label("Archive", systemImage: "archivebox")
@@ -117,6 +136,15 @@ struct ThreadDetailView: View {
                     Button { onReply(last) } label: {
                         Label("Reply", systemImage: "arrowshape.turn.up.left")
                     }
+                }
+                Menu {
+                    Button {
+                        store.markSpam(thread)
+                    } label: {
+                        Label("Mark as spam", systemImage: "exclamationmark.octagon")
+                    }
+                } label: {
+                    Label("More", systemImage: "ellipsis")
                 }
             }
         }

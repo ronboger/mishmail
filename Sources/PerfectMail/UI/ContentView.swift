@@ -28,6 +28,10 @@ struct ContentView: View {
         }
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         .onChange(of: store.searchText) { store.reloadThreads() }
+        // Selecting a thread reopens the reading pane after Esc closed it.
+        .onChange(of: store.selectedThreadId) {
+            if store.selectedThreadId != nil { readingPaneHidden = false }
+        }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
             store.chips = FilterChips.defaults(for: store.selectedView)
@@ -164,15 +168,17 @@ struct ContentView: View {
                     break
                 }
             }
-            // Esc closes the open thread (Notion Mail-style): back to the
-            // list, full emails in the center. Skipped while typing so Esc
+            // Esc closes the open thread AND the reading pane (Notion
+            // Mail-style): the list takes the full center. Selecting a
+            // thread brings the pane back. Skipped while typing so Esc
             // still cancels field editing / autocomplete.
             if event.keyCode == 53,
                store.composeRequest == nil, store.editingView == nil,
                !(event.window?.firstResponder is NSTextView),
                !(event.window?.firstResponder is NSTextField),
-               store.selectedThreadId != nil {
+               store.selectedThreadId != nil || !readingPaneHidden {
                 store.selectedThreadId = nil
+                readingPaneHidden = true
                 return nil
             }
             guard mods.isEmpty,

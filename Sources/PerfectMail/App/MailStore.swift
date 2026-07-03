@@ -844,6 +844,21 @@ final class MailStore: ObservableObject {
         }
     }
 
+    /// Gmail moves the whole thread to Spam; it leaves the inbox locally
+    /// right away and the next sync drops it from All Mail views too.
+    func markSpam(_ thread: MailThread) {
+        mutateThread(thread) { $0.inInbox = false } remote: { client, id in
+            try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
+        }
+        offerUndo("Marked as spam") { [weak self] in
+            guard let self else { return }
+            self.mutateThread(thread) { $0.inInbox = true } remote: { client, id in
+                try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
+            }
+            self.undoAction = nil
+        }
+    }
+
     func trash(_ thread: MailThread) {
         mutateThread(thread) { $0.inTrash = true; $0.inInbox = false } remote: { client, id in
             try await client.trashThread(id: id)
