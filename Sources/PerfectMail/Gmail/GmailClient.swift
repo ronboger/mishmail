@@ -150,6 +150,15 @@ actor GmailClient {
         try await request("GET", "/labels/\(id)")
     }
 
+    /// The account's display name from the Google profile.
+    func userName() async throws -> String? {
+        var req = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!)
+        req.setValue("Bearer \(try await validToken())", forHTTPHeaderField: "Authorization")
+        struct Info: Decodable { let name: String? }
+        let (data, _) = try await URLSession.shared.data(for: req)
+        return try JSONDecoder().decode(Info.self, from: data).name
+    }
+
     func listMessages(query: String? = nil, labelIds: [String] = [],
                       pageToken: String? = nil, maxResults: Int = 100) async throws -> GMessageList {
         var q: [String: String] = ["maxResults": String(maxResults)]

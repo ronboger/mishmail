@@ -122,7 +122,8 @@ struct ComposeView: View {
             }
             .padding(.bottom, 4)
 
-            TokenAddressField(label: "To", tokens: $toTokens, draft: $toDraft)
+            TokenAddressField(label: "To", tokens: $toTokens, draft: $toDraft,
+                              autoFocus: original == nil && editingDraft == nil)
                 .zIndex(3)
             if showCc || !ccTokens.isEmpty {
                 TokenAddressField(label: "Cc", tokens: $ccTokens, draft: $ccDraft)

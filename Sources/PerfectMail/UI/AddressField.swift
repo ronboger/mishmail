@@ -7,6 +7,7 @@ struct TokenAddressField: View {
     let label: String
     @Binding var tokens: [String]
     @Binding var draft: String
+    var autoFocus = false
     @FocusState private var focused: Bool
     @State private var highlighted = 0
 
@@ -113,6 +114,11 @@ struct TokenAddressField: View {
             }
         }
         .zIndex(focused ? 10 : 0)
+        .onAppear {
+            if autoFocus {
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { focused = true }
+            }
+        }
     }
 
     private var suggestions: [MailStore.Contact] {

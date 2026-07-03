@@ -238,18 +238,25 @@ struct AccountLabelsEditor: View {
     @EnvironmentObject var store: MailStore
     @Environment(\.dismiss) private var dismiss
     @State private var labels: [String: String] = [:]
+    @State private var senderNames: [String: String] = [:]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            Text("Account Labels")
+            Text("Accounts")
                 .font(.headline)
                 .padding(.bottom, 10)
             Form {
                 ForEach(store.accounts) { account in
-                    TextField(account.id, text: .init(
-                        get: { labels[account.id] ?? account.displayName },
-                        set: { labels[account.id] = $0 }
-                    ), prompt: Text("e.g. Personal"))
+                    Section(account.id) {
+                        TextField("Label (only you see this)", text: .init(
+                            get: { labels[account.id] ?? account.displayName },
+                            set: { labels[account.id] = $0 }
+                        ), prompt: Text("e.g. Personal"))
+                        TextField("Send as (recipients see this)", text: .init(
+                            get: { senderNames[account.id] ?? account.senderName },
+                            set: { senderNames[account.id] = $0 }
+                        ), prompt: Text("e.g. Ron Boger"))
+                    }
                 }
             }
             .formStyle(.grouped)
@@ -259,6 +266,7 @@ struct AccountLabelsEditor: View {
                     .keyboardShortcut(.cancelAction)
                 Button("Save") {
                     for (id, label) in labels { store.renameAccount(id, label: label) }
+                    for (id, name) in senderNames { store.setSenderName(id, name: name) }
                     dismiss()
                 }
                 .keyboardShortcut(.defaultAction)
@@ -267,6 +275,6 @@ struct AccountLabelsEditor: View {
             .padding(.top, 8)
         }
         .padding(16)
-        .frame(width: 400)
+        .frame(width: 420)
     }
 }

@@ -150,6 +150,24 @@ struct MessageCard: View {
                         .buttonStyle(.link).font(.caption)
                         .help("Remote images are blocked by default (they can track opens)")
                 }
+                if expanded {
+                    Button {
+                        store.composeRequest = .init(replyTo: message)
+                    } label: {
+                        Image(systemName: "arrowshape.turn.up.left")
+                            .font(.system(size: 12 * fontScale))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help("Reply (r)")
+                    Button {
+                        store.composeRequest = .init(replyTo: message, forward: true)
+                    } label: {
+                        Image(systemName: "arrowshape.turn.up.right")
+                            .font(.system(size: 12 * fontScale))
+                    }
+                    .buttonStyle(.plain).foregroundStyle(.secondary)
+                    .help("Forward (f)")
+                }
                 Text(message.date, format: .dateTime.month(.abbreviated).day().hour().minute())
                     .font(.caption).foregroundStyle(.secondary)
                 Button {
@@ -234,6 +252,26 @@ struct MessageCard: View {
                         }
                         .padding(.vertical, 2)
                     }
+                }
+                // Notion Mail-style action bar on the newest message.
+                if isLast {
+                    HStack(spacing: 8) {
+                        Button {
+                            store.composeRequest = .init(replyTo: message)
+                        } label: {
+                            Label("Reply", systemImage: "arrowshape.turn.up.left")
+                                .font(.system(size: 12.5 * fontScale))
+                        }
+                        .buttonStyle(.bordered)
+                        Button {
+                            store.composeRequest = .init(replyTo: message, forward: true)
+                        } label: {
+                            Label("Forward", systemImage: "arrowshape.turn.up.right")
+                                .font(.system(size: 12.5 * fontScale))
+                        }
+                        .buttonStyle(.bordered)
+                    }
+                    .padding(.top, 4)
                 }
             } else {
                 Text(message.snippet)

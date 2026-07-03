@@ -130,6 +130,17 @@ final class MailStore: ObservableObject {
         reloadAccounts()
     }
 
+    /// Name recipients see on outgoing mail ("Ron Boger <ron@…>").
+    func setSenderName(_ id: String, name: String) {
+        try? db.write { db in
+            if var account = try Account.fetchOne(db, key: id) {
+                account.senderName = name.trimmingCharacters(in: .whitespaces)
+                try account.update(db)
+            }
+        }
+        reloadAccounts()
+    }
+
     struct ComposeRequest: Identifiable {
         let id = UUID()
         let replyTo: Message?
@@ -465,7 +476,8 @@ final class MailStore: ObservableObject {
 
                 try Keychain.set(refresh, forKey: "refreshToken.\(info.email)")
                 let account = Account(id: info.email, displayName: info.name ?? info.email,
-                                      historyId: nil, lastSyncAt: nil)
+                                      historyId: nil, lastSyncAt: nil,
+                                      senderName: info.name ?? "")
                 try await db.write { db in try account.save(db) }
                 reloadAccounts()
                 await sync(accountId: info.email)
@@ -512,6 +524,7 @@ final class MailStore: ObservableObject {
             }
             syncStatus = ""
             await refreshApiCounts(accountId: accountId)
+            await backfillSenderNameIfNeeded(accountId: accountId)
             reloadAccounts()
             reloadThreads()
         } catch {
@@ -522,6 +535,24 @@ final class MailStore: ObservableObject {
 
     /// Gmail's own unread counts, so the sidebar matches gmail.com exactly.
     private var apiCounts: [String: [String: Int]] = [:]   // account → label → threadsUnread
+
+    /// Accounts added before senderName existed get it from the profile.
+    private func backfillSenderNameIfNeeded(accountId: String) async {
+        guard var account = accounts.first(where: { $0.id == accountId }),
+              account.senderName.isEmpty,
+              let name = try? await client(for: accountId).userName(),
+              let realName = name, !realName.isEmpty else { return }
+        account.senderName = realName
+        let updated = account
+        try? db.write { db in try updated.update(db) }
+    }
+
+    /// RFC 2822 From value: "Ron Boger <ron@x.com>" when a name is known.
+    func fromHeader(for accountId: String) -> String {
+        guard let account = accounts.first(where: { $0.id == accountId }),
+              !account.senderName.isEmpty else { return accountId }
+        return "\(account.senderName) <\(accountId)>"
+    }
 
     private func refreshApiCounts(accountId: String) async {
         let client = client(for: accountId)
@@ -757,7 +788,7 @@ final class MailStore: ObservableObject {
               attachments: [MIMEBuilder.Attachment] = [],
               replacingDraft draft: Message? = nil) async throws {
         let raw = MIMEBuilder.build(
-            from: accountId, to: to, cc: cc, subject: subject, bodyText: body,
+            from: fromHeader(for: accountId), to: to, cc: cc, subject: subject, bodyText: body,
             inReplyTo: message?.messageIdHeader,
             references: message?.referencesHeader ?? draft?.referencesHeader,
             attachments: attachments
@@ -775,7 +806,7 @@ final class MailStore: ObservableObject {
                    body: String, replyTo message: Message? = nil,
                    replacing draft: Message? = nil) async {
         let raw = MIMEBuilder.build(
-            from: accountId, to: to, cc: cc, subject: subject, bodyText: body,
+            from: fromHeader(for: accountId), to: to, cc: cc, subject: subject, bodyText: body,
             inReplyTo: message?.messageIdHeader,
             references: message?.referencesHeader ?? draft?.referencesHeader
         )

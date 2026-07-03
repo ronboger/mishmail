@@ -6,9 +6,10 @@ import GRDB
 struct Account: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "account"
     var id: String          // email address
-    var displayName: String
+    var displayName: String // user-facing label ("Personal", "Fund", …)
     var historyId: String?  // last synced Gmail historyId
     var lastSyncAt: Date?
+    var senderName: String = ""   // real name shown to recipients on outgoing mail
 }
 
 struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
@@ -264,6 +265,11 @@ final class AppDatabase {
                 t.column("showArchived", .boolean).notNull().defaults(to: false)
                 t.column("excludePromotions", .boolean).notNull().defaults(to: false)
                 t.column("category", .text)
+            }
+        }
+        m.registerMigration("v3") { db in
+            try db.alter(table: "account") { t in
+                t.add(column: "senderName", .text).notNull().defaults(to: "")
             }
         }
         return m
