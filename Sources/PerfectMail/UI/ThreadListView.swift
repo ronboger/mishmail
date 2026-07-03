@@ -93,32 +93,38 @@ struct ThreadListView: View {
             Divider()
             List(selection: $store.selectedThreadId) {
                 ForEach(grouped, id: \.0) { title, threads in
-                    // Headers are plain rows (not Section headers) so every
-                    // group gets EXACTLY the same gap — List's own
-                    // inter-section spacing made them subtly unequal.
-                    Text(title)
-                        .font(.system(size: 12 * fontScale, weight: .semibold))
-                        .foregroundStyle(.primary.opacity(0.7))
-                        .padding(.top, 32 * fontScale)
-                        .selectionDisabled()
-                    ForEach(threads) { thread in
-                        ThreadRow(thread: thread)
-                            .tag(thread.id)
-                            .listRowBackground(thread.isUnread
-                                ? Color.primary.opacity(0.05) : Color.clear)
-                            .swipeActions(edge: .trailing) {
-                                Button { store.archive(thread) } label: {
-                                    Label("Archive", systemImage: "archivebox")
-                                }.tint(.green)
-                                Button(role: .destructive) { store.trash(thread) } label: {
-                                    Label("Trash", systemImage: "trash")
+                    Section {
+                        ForEach(threads) { thread in
+                            ThreadRow(thread: thread)
+                                .tag(thread.id)
+                                .listRowBackground(thread.isUnread
+                                    ? Color.primary.opacity(0.05) : Color.clear)
+                                .swipeActions(edge: .trailing) {
+                                    Button { store.archive(thread) } label: {
+                                        Label("Archive", systemImage: "archivebox")
+                                    }.tint(.green)
+                                    Button(role: .destructive) { store.trash(thread) } label: {
+                                        Label("Trash", systemImage: "trash")
+                                    }
                                 }
-                            }
-                            .contextMenu { threadMenu(thread) }
+                                .contextMenu { threadMenu(thread) }
+                        }
+                    } header: {
+                        // Compact so the pinned (sticky) header stays a thin
+                        // line while scrolling.
+                        Text(title)
+                            .font(.system(size: 12 * fontScale, weight: .semibold))
+                            .foregroundStyle(.primary.opacity(0.7))
+                    } footer: {
+                        // The air lives AFTER each group, so every gap between
+                        // groups is this exact height.
+                        Color.clear.frame(height: 32 * fontScale)
                     }
                 }
             }
             .listStyle(.plain)
+            // Matching air above the first group.
+            .contentMargins(.top, 32 * fontScale, for: .scrollContent)
         }
         .navigationTitle(store.selectedView.title)
         .overlay {
