@@ -34,19 +34,6 @@ struct ThreadListView: View {
                 }
         }
         .navigationTitle(store.selectedView.title)
-        // Keyboard shortcuts on the focused list selection.
-        .background {
-            Group {
-                shortcutButton("e") { selected.map(store.archive) }
-                shortcutButton("#") { selected.map(store.trash) }
-                shortcutButton("s") { selected.map(store.toggleStar) }
-                shortcutButton("u") { if let t = selected { store.setRead(t, read: t.isUnread) } }
-                shortcutButton("h") { if let t = selected { store.snooze(t, until: snoozeDate(hour: 8, addDays: 1)) } }
-                shortcutButton("j") { moveSelection(1) }
-                shortcutButton("k") { moveSelection(-1) }
-            }
-            .opacity(0)
-        }
         .overlay {
             if store.threads.isEmpty {
                 ContentUnavailableView(
@@ -64,28 +51,9 @@ struct ThreadListView: View {
         store.threads.first { $0.id == store.selectedThreadId }
     }
 
-    private func moveSelection(_ delta: Int) {
-        guard !store.threads.isEmpty else { return }
-        let idx = store.threads.firstIndex { $0.id == store.selectedThreadId } ?? -delta.signum().clamped()
-        let next = min(max(idx + delta, 0), store.threads.count - 1)
-        store.selectedThreadId = store.threads[next].id
-    }
-
-    private func shortcutButton(_ key: Character, action: @escaping () -> Void) -> some View {
-        Button(action: action) { EmptyView() }
-            .keyboardShortcut(KeyEquivalent(key), modifiers: [])
-    }
-
     private func snoozeDate(hour: Int, addDays: Int = 0) -> Date {
-        var cal = Calendar.current
-        cal.timeZone = .current
-        let base = cal.date(byAdding: .day, value: addDays, to: Date())!
-        return cal.date(bySettingHour: hour, minute: 0, second: 0, of: base)!
+        MailStore.snoozeDate(hour: hour, addDays: addDays)
     }
-}
-
-private extension Int {
-    func clamped() -> Int { self < 0 ? 0 : self }
 }
 
 struct ThreadRow: View {

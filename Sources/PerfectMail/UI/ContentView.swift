@@ -2,8 +2,7 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject var store: MailStore
-    @State private var showingCompose = false
-    @State private var replyContext: Message?
+    @State private var keyMonitor: Any?
 
     var body: some View {
         NavigationSplitView {
@@ -15,8 +14,7 @@ struct ContentView: View {
             if let id = store.selectedThreadId,
                let thread = store.threads.first(where: { $0.id == id }) {
                 ThreadDetailView(thread: thread, onReply: { msg in
-                    replyContext = msg
-                    showingCompose = true
+                    store.composeRequest = .init(replyTo: msg)
                 })
             } else {
                 Text("Select a conversation")
@@ -29,6 +27,11 @@ struct ContentView: View {
             store.selectedThreadId = nil
             store.reloadThreads()
         }
+        .onAppear { installKeyMonitor() }
+        .onDisappear {
+            if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+            keyMonitor = nil
+        }
         .toolbar {
             ToolbarItemGroup {
                 if !store.syncStatus.isEmpty {
@@ -36,8 +39,7 @@ struct ContentView: View {
                     Text(store.syncStatus).font(.caption).foregroundStyle(.secondary)
                 }
                 Button {
-                    replyContext = nil
-                    showingCompose = true
+                    store.composeRequest = .init(replyTo: nil)
                 } label: { Label("Compose", systemImage: "square.and.pencil") }
                     .keyboardShortcut("n", modifiers: .command)
                 Button {
@@ -46,8 +48,8 @@ struct ContentView: View {
                     .keyboardShortcut("r", modifiers: [.command, .shift])
             }
         }
-        .sheet(isPresented: $showingCompose) {
-            ComposeView(replyTo: replyContext)
+        .sheet(item: $store.composeRequest) { request in
+            ComposeView(replyTo: request.replyTo)
         }
         .alert("Error", isPresented: .init(
             get: { store.lastError != nil },
@@ -56,6 +58,22 @@ struct ContentView: View {
             Button("OK") { store.lastError = nil }
         } message: {
             Text(store.lastError ?? "")
+        }
+    }
+
+    /// Gmail-style single-key shortcuts. Ignores events when a text field,
+    /// the search bar, or the compose sheet has focus, and any modified keys.
+    private func installKeyMonitor() {
+        guard keyMonitor == nil else { return }
+        keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak store] event in
+            guard let store else { return event }
+            guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+                  store.composeRequest == nil,
+                  !(event.window?.firstResponder is NSTextView),
+                  !(event.window?.firstResponder is NSTextField),
+                  let chars = event.charactersIgnoringModifiers
+            else { return event }
+            return store.handleKey(chars) ? nil : event
         }
     }
 }

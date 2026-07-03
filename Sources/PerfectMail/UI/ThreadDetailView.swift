@@ -13,6 +13,7 @@ struct ThreadDetailView: View {
             LazyVStack(alignment: .leading, spacing: 12) {
                 Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
                     .font(.title3.weight(.semibold))
+                    .textSelection(.enabled)
                     .padding(.horizontal)
                 ForEach(messages) { message in
                     MessageCard(message: message,
@@ -38,7 +39,6 @@ struct ThreadDetailView: View {
                     Button { onReply(last) } label: {
                         Label("Reply", systemImage: "arrowshape.turn.up.left")
                     }
-                    .keyboardShortcut("r", modifiers: [])
                 }
             }
         }
@@ -54,6 +54,8 @@ struct MessageCard: View {
     let isLast: Bool
     let onReply: () -> Void
     @State private var expanded: Bool
+    @State private var htmlHeight: CGFloat = 120
+    @State private var loadRemoteImages = false
 
     init(message: Message, isLast: Bool, onReply: @escaping () -> Void) {
         self.message = message
@@ -68,22 +70,33 @@ struct MessageCard: View {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(MessageParser.displayName(fromHeader: message.fromHeader))
                         .font(.system(size: 13, weight: .semibold))
+                        .textSelection(.enabled)
                     if expanded {
                         Text("to \(message.toHeader)")
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            .textSelection(.enabled)
                     }
                 }
                 Spacer()
+                if expanded, message.bodyHTML != nil, !loadRemoteImages {
+                    Button("Load images") { loadRemoteImages = true }
+                        .buttonStyle(.link).font(.caption)
+                        .help("Remote images are blocked by default (they can track opens)")
+                }
                 Text(message.date, format: .dateTime.month(.abbreviated).day().hour().minute())
                     .font(.caption).foregroundStyle(.secondary)
+                Button {
+                    withAnimation { expanded.toggle() }
+                } label: {
+                    Image(systemName: expanded ? "chevron.up" : "chevron.down")
+                }
+                .buttonStyle(.plain).foregroundStyle(.secondary)
             }
-            .contentShape(Rectangle())
-            .onTapGesture { withAnimation { expanded.toggle() } }
 
             if expanded {
                 if let html = message.bodyHTML, !html.isEmpty {
-                    HTMLBodyView(html: html)
-                        .frame(minHeight: 120)
+                    HTMLBodyView(html: html, allowRemoteImages: loadRemoteImages, height: $htmlHeight)
+                        .frame(height: htmlHeight)
                 } else {
                     Text(message.bodyText)
                         .font(.system(size: 13))
@@ -92,6 +105,8 @@ struct MessageCard: View {
             } else {
                 Text(message.snippet)
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .contentShape(Rectangle())
+                    .onTapGesture { withAnimation { expanded = true } }
             }
         }
         .padding(12)
@@ -99,10 +114,13 @@ struct MessageCard: View {
     }
 }
 
-/// Sandboxed HTML rendering: no JavaScript, remote images blocked by CSP.
+/// Sandboxed HTML rendering: page JavaScript disabled; remote content blocked
+/// by CSP unless the user opts in per message. Sizes itself to its content.
 /// External links open in the default browser.
 struct HTMLBodyView: NSViewRepresentable {
     let html: String
+    let allowRemoteImages: Bool
+    @Binding var height: CGFloat
 
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
@@ -114,10 +132,16 @@ struct HTMLBodyView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data: cid:; style-src 'unsafe-inline'\">"
+        let key = "\(allowRemoteImages):\(html.hashValue)"
+        guard context.coordinator.loadedKey != key else { return }
+        context.coordinator.loadedKey = key
+        context.coordinator.setHeight = { self.height = $0 }
+        let imgSrc = allowRemoteImages ? "data: cid: https: http:" : "data: cid:"
+        let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src \(imgSrc); style-src 'unsafe-inline'\">"
         let style = """
             <style>
             body { font: 13px -apple-system, sans-serif; color: canvastext; margin: 0; }
+            img { max-width: 100%; height: auto; }
             @media (prefers-color-scheme: dark) { body { color: #ddd; } a { color: #6cb2ff; } }
             </style>
             """
@@ -127,6 +151,28 @@ struct HTMLBodyView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
+        var loadedKey: String?
+        var setHeight: ((CGFloat) -> Void)?
+
+        func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            measure(webView, attempt: 0)
+        }
+
+        /// Content (images, layout) can settle after didFinish; re-measure a
+        /// few times and keep the tallest stable value.
+        private func measure(_ webView: WKWebView, attempt: Int) {
+            webView.evaluateJavaScript("document.documentElement.scrollHeight") { [weak self] result, _ in
+                if let h = result as? CGFloat, h > 0 {
+                    DispatchQueue.main.async { self?.setHeight?(max(h, 40)) }
+                }
+                if attempt < 3 {
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
+                        self?.measure(webView, attempt: attempt + 1)
+                    }
+                }
+            }
+        }
+
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
             if navigationAction.navigationType == .linkActivated, let url = navigationAction.request.url {

@@ -34,6 +34,16 @@ final class MailStore: ObservableObject {
     @Published var searchText: String = ""
     @Published var syncStatus: String = ""
     @Published var lastError: String?
+    @Published var composeRequest: ComposeRequest?
+
+    struct ComposeRequest: Identifiable {
+        let id = UUID()
+        let replyTo: Message?
+    }
+
+    var selectedThread: MailThread? {
+        threads.first { $0.id == selectedThreadId }
+    }
 
     private let db = AppDatabase.shared.dbQueue
     private var syncTimer: Timer?
@@ -226,6 +236,41 @@ final class MailStore: ObservableObject {
         let updated = copy
         try? db.write { db in try updated.save(db) }
         reloadThreads()
+    }
+
+    // MARK: - Keyboard shortcuts (dispatched from an NSEvent monitor so
+    // bare letters work reliably, unlike SwiftUI bare-key shortcuts)
+
+    /// Returns true if the key was handled.
+    func handleKey(_ chars: String) -> Bool {
+        switch chars {
+        case "e": selectedThread.map(archive)
+        case "#": selectedThread.map(trash)
+        case "s": selectedThread.map(toggleStar)
+        case "u": if let t = selectedThread { setRead(t, read: t.isUnread) }
+        case "h": if let t = selectedThread { snooze(t, until: Self.snoozeDate(hour: 8, addDays: 1)) }
+        case "j": moveSelection(1)
+        case "k": moveSelection(-1)
+        case "r": if let t = selectedThread {
+                      composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last)
+                  }
+        case "c": composeRequest = ComposeRequest(replyTo: nil)
+        default: return false
+        }
+        return true
+    }
+
+    func moveSelection(_ delta: Int) {
+        guard !threads.isEmpty else { return }
+        let idx = threads.firstIndex { $0.id == selectedThreadId } ?? (delta > 0 ? -1 : 0)
+        let next = min(max(idx + delta, 0), threads.count - 1)
+        selectedThreadId = threads[next].id
+    }
+
+    static func snoozeDate(hour: Int, addDays: Int = 0) -> Date {
+        let cal = Calendar.current
+        let base = cal.date(byAdding: .day, value: addDays, to: Date())!
+        return cal.date(bySettingHour: hour, minute: 0, second: 0, of: base)!
     }
 
     // MARK: - Sending
