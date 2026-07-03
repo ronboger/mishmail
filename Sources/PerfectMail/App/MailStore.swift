@@ -783,12 +783,12 @@ final class MailStore: ObservableObject {
 
     // MARK: - Sending
 
-    func send(from accountId: String, to: String, cc: String, subject: String,
+    func send(from accountId: String, to: String, cc: String, bcc: String = "", subject: String,
               body: String, replyTo message: Message? = nil,
               attachments: [MIMEBuilder.Attachment] = [],
               replacingDraft draft: Message? = nil) async throws {
         let raw = MIMEBuilder.build(
-            from: fromHeader(for: accountId), to: to, cc: cc, subject: subject, bodyText: body,
+            from: fromHeader(for: accountId), to: to, cc: cc, bcc: bcc, subject: subject, bodyText: body,
             inReplyTo: message?.messageIdHeader,
             references: message?.referencesHeader ?? draft?.referencesHeader,
             attachments: attachments
@@ -802,11 +802,11 @@ final class MailStore: ObservableObject {
 
     /// Saves compose state as a real Gmail draft (shows up in Gmail too).
     /// Replaces `replacing` when re-saving an edited draft.
-    func saveDraft(from accountId: String, to: String, cc: String, subject: String,
+    func saveDraft(from accountId: String, to: String, cc: String, bcc: String = "", subject: String,
                    body: String, replyTo message: Message? = nil,
                    replacing draft: Message? = nil) async {
         let raw = MIMEBuilder.build(
-            from: fromHeader(for: accountId), to: to, cc: cc, subject: subject, bodyText: body,
+            from: fromHeader(for: accountId), to: to, cc: cc, bcc: bcc, subject: subject, bodyText: body,
             inReplyTo: message?.messageIdHeader,
             references: message?.referencesHeader ?? draft?.referencesHeader
         )

@@ -33,3 +33,41 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         ENABLE_HARDENED_RUNTIME: false
+  # Standalone unit tests over the non-UI core (parsers, MIME, DB schema,
+  # sync derivation). Compiles those sources directly — no app host, so no
+  # keychain prompts, no network, no real database.
+  PerfectMailTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources:
+      - Tests/PerfectMailTests
+      - Sources/PerfectMail/Gmail
+      - Sources/PerfectMail/Store/Database.swift
+      - Sources/PerfectMail/Support/Keychain.swift
+      - Sources/PerfectMail/Auth/OAuth.swift
+    dependencies:
+      - package: GRDB
+    settings:
+      base:
+        CODE_SIGN_IDENTITY: "Apple Development"
+        CODE_SIGN_STYLE: Automatic
+        DEVELOPMENT_TEAM: 47T79PSL25
+        SWIFT_VERSION: 5.10
+        GENERATE_INFOPLIST_FILE: true
+schemes:
+  PerfectMail:
+    build:
+      targets:
+        PerfectMail: all
+    run:
+      config: Debug
+    archive:
+      config: Release
+  PerfectMailTests:
+    build:
+      targets:
+        PerfectMailTests: [test]
+    test:
+      config: Debug
+      targets:
+        - PerfectMailTests
