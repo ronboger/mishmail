@@ -31,7 +31,7 @@ struct ComposeView: View {
     @State private var restoredAttachments: [MIMEBuilder.Attachment] = []
     @State private var showFilePicker = false
     @State private var showSnippets = false
-    @State private var showSchedule = false
+    @State private var showScheduleSheet = false
     @State private var drafting = false
     @State private var error: String?
     @FocusState private var bodyFocused: Bool
@@ -229,25 +229,36 @@ struct ComposeView: View {
                     .padding(.bottom, 4)
             }
 
+            // Snippets live in an inline panel, not a popover — always
+            // visible where you write, reliable inside the docked card.
+            if showSnippets {
+                SnippetsPanel(insert: { snippet in
+                    insertSnippet(snippet)
+                    withAnimation(.easeOut(duration: 0.12)) { showSnippets = false }
+                }, saveDraftAsSnippet: {
+                    saveCurrentAsSnippet()
+                }, close: {
+                    withAnimation(.easeOut(duration: 0.12)) { showSnippets = false }
+                })
+                .environmentObject(store)
+                .padding(.bottom, 8)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             HStack(spacing: 10) {
                 footerButton("paperclip", help: "Attach files") { showFilePicker = true }
 
                 Button {
-                    showSnippets = true
+                    withAnimation(.easeOut(duration: 0.12)) { showSnippets.toggle() }
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "text.badge.plus")
                         Text("Snippets").font(.system(size: 12))
                     }
-                    .foregroundStyle(.secondary)
+                    .foregroundStyle(showSnippets ? Color.accentColor : Color.secondary)
                 }
                 .buttonStyle(.plain)
                 .help("Insert a saved snippet")
-                .popover(isPresented: $showSnippets, arrowEdge: .top) {
-                    SnippetsPopover(insert: { insertSnippet($0) },
-                                    saveDraftAsSnippet: { saveCurrentAsSnippet() })
-                        .environmentObject(store)
-                }
 
                 if original != nil, !request.forward {
                     footerButton(drafting ? "hourglass" : "sparkles",
@@ -271,36 +282,60 @@ struct ComposeView: View {
                 Button("Cancel") { saveAndClose() }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help(hasContent ? "Close (saves as draft)" : "Close")
-                // Split send button: Send now | schedule for later.
+
+                // Split send button: Send now | schedule menu. Drawn by hand
+                // so both halves match; the presets are a native menu (a
+                // popover can fail to present from the docked card's edge).
                 HStack(spacing: 1) {
                     Button {
                         send()
                     } label: {
                         Text("Send")
-                            .padding(.horizontal, 10)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 12)
+                            .frame(height: 22)
+                            .background(UnevenRoundedRectangle(
+                                topLeadingRadius: 6, bottomLeadingRadius: 6,
+                                bottomTrailingRadius: 0, topTrailingRadius: 0)
+                                .fill(Color.accentColor))
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(.plain)
                     .keyboardShortcut(.return, modifiers: .command)
                     .help("Send (10s undo window)")
 
-                    Button {
-                        showSchedule = true
+                    Menu {
+                        ForEach(SendSchedule.allCases, id: \.self) { preset in
+                            let date = preset.date()
+                            Button("\(preset.title)  (\(date.formatted(.dateTime.weekday(.abbreviated).hour().minute())))") {
+                                scheduleSend(at: date)
+                            }
+                        }
+                        Divider()
+                        Button("Pick date & time…") { showScheduleSheet = true }
                     } label: {
                         Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold))
-                            .padding(.horizontal, 2)
+                            .font(.system(size: 9, weight: .bold))
+                            .foregroundStyle(.white)
+                            .padding(.horizontal, 7)
+                            .frame(height: 22)
+                            .background(UnevenRoundedRectangle(
+                                topLeadingRadius: 0, bottomLeadingRadius: 0,
+                                bottomTrailingRadius: 6, topTrailingRadius: 6)
+                                .fill(Color.accentColor))
+                            .contentShape(Rectangle())
                     }
+                    // .button + .plain renders custom labels reliably on
+                    // macOS (same recipe as the From menu).
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
                     .help("Schedule send")
-                    .popover(isPresented: $showSchedule, arrowEdge: .top) {
-                        SchedulePopover { date in
-                            showSchedule = false
-                            scheduleSend(at: date)
-                        }
-                    }
                 }
-                .buttonStyle(.borderedProminent)
-                .disabled(fromAccount.isEmpty
-                          || (toTokens.isEmpty && !toDraft.contains("@")
-                              && bccTokens.isEmpty && !bccDraft.contains("@")))
+                .opacity(cannotSend ? 0.5 : 1)
+                .disabled(cannotSend)
             }
             .padding(.top, 8)
         }
@@ -312,10 +347,19 @@ struct ComposeView: View {
                 fromAccount = store.activeAccountId ?? store.accounts.first?.id ?? ""
             }
         }
+        .sheet(isPresented: $showScheduleSheet) {
+            ScheduleSendSheet { date in scheduleSend(at: date) }
+        }
         .fileImporter(isPresented: $showFilePicker,
                       allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { attachmentURLs.append(contentsOf: urls) }
         }
+    }
+
+    private var cannotSend: Bool {
+        fromAccount.isEmpty
+            || (toTokens.isEmpty && !toDraft.contains("@")
+                && bccTokens.isEmpty && !bccDraft.contains("@"))
     }
 
     private func menuTitle(_ account: Account) -> String {
