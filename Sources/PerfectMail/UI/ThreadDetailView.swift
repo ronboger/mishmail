@@ -16,6 +16,41 @@ struct ThreadDetailView: View {
                     .font(.system(size: 19 * fontScale, weight: .semibold))
                     .textSelection(.enabled)
                     .padding(.horizontal)
+
+                // Labels on this thread, with add/remove. "l" opens the picker.
+                HStack(spacing: 6) {
+                    ForEach(userLabelIds, id: \.self) { labelId in
+                        let name = store.labelName(labelId, account: thread.accountId) ?? labelId
+                        HStack(spacing: 4) {
+                            Circle().fill(Color.stable(for: name)).frame(width: 7, height: 7)
+                            Text(name).font(.system(size: 11.5 * fontScale))
+                            Button {
+                                store.toggleLabel(thread, labelId: labelId)
+                            } label: {
+                                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                            }
+                            .buttonStyle(.plain).foregroundStyle(.secondary)
+                        }
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Color.stable(for: name).opacity(0.15), in: Capsule())
+                    }
+                    Button {
+                        store.showLabelPicker = true
+                    } label: {
+                        HStack(spacing: 3) {
+                            Image(systemName: "tag")
+                            Text(userLabelIds.isEmpty ? "Add label" : "")
+                        }
+                        .font(.system(size: 11 * fontScale))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.1), in: Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Label this thread (l)")
+                }
+                .padding(.horizontal)
+
                 ForEach(messages) { message in
                     MessageCard(message: message,
                                 isLast: message.id == messages.last?.id,
@@ -32,6 +67,10 @@ struct ThreadDetailView: View {
                 }
                 Button { store.toggleStar(thread) } label: {
                     Label("Star", systemImage: thread.isStarred ? "star.fill" : "star")
+                        .foregroundStyle(thread.isStarred ? .yellow : .primary)
+                }
+                Button { store.showLabelPicker = true } label: {
+                    Label("Label", systemImage: "tag")
                 }
                 Button(role: .destructive) { store.trash(thread) } label: {
                     Label("Trash", systemImage: "trash")
@@ -46,6 +85,15 @@ struct ThreadDetailView: View {
         .task(id: thread.id) {
             messages = store.messages(inThread: thread.id)
             if thread.isUnread { store.setRead(thread, read: true) }
+        }
+    }
+
+    /// User-created labels on this thread (system labels stay hidden).
+    private var userLabelIds: [String] {
+        let known = Set(store.userLabels(forAccount: thread.accountId).map(\.gmailLabelId))
+        return thread.labels.filter { known.contains($0) }.sorted {
+            (store.labelName($0, account: thread.accountId) ?? $0)
+                < (store.labelName($1, account: thread.accountId) ?? $1)
         }
     }
 }
@@ -72,11 +120,11 @@ struct MessageCard: View {
             HStack {
                 VStack(alignment: .leading, spacing: 1) {
                     Text(MessageParser.displayName(fromHeader: message.fromHeader))
-                        .font(.system(size: 13 * fontScale, weight: .semibold))
+                        .font(.system(size: 14 * fontScale, weight: .semibold))
                         .textSelection(.enabled)
                     if expanded {
                         Text("to \(message.toHeader)")
-                            .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                            .font(.system(size: 12 * fontScale)).foregroundStyle(.secondary).lineLimit(1)
                             .textSelection(.enabled)
                     }
                 }
@@ -103,7 +151,8 @@ struct MessageCard: View {
                         .frame(height: htmlHeight)
                 } else {
                     Text(message.bodyText)
-                        .font(.system(size: 13 * fontScale))
+                        .font(.system(size: 14.5 * fontScale))
+                        .lineSpacing(3)
                         .textSelection(.enabled)
                 }
                 let attachments = store.attachments(for: message.id)
@@ -140,7 +189,7 @@ struct MessageCard: View {
                 }
             } else {
                 Text(message.snippet)
-                    .font(.caption).foregroundStyle(.secondary).lineLimit(1)
+                    .font(.system(size: 12.5 * fontScale)).foregroundStyle(.secondary).lineLimit(1)
                     .contentShape(Rectangle())
                     .onTapGesture { withAnimation { expanded = true } }
             }
@@ -199,7 +248,7 @@ struct HTMLBodyView: NSViewRepresentable {
         let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src \(imgSrc); style-src 'unsafe-inline'\">"
         let style = """
             <style>
-            body { font: \(Int(13 * fontScale))px -apple-system, sans-serif; color: canvastext; margin: 0; }
+            body { font: \(Int(14.5 * fontScale))px -apple-system, sans-serif; color: canvastext; margin: 0; }
             img { max-width: 100%; height: auto; }
             @media (prefers-color-scheme: dark) { body { color: #ddd; } a { color: #6cb2ff; } }
             </style>

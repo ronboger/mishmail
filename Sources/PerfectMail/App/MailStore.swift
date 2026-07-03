@@ -104,6 +104,7 @@ final class MailStore: ObservableObject {
     @Published var undoAction: UndoAction?
     @Published var editingView: SavedView?
     @Published var editingAccountLabels = false
+    @Published var showLabelPicker = false
     @Published var showCommandPalette = false
     @Published var unreadCounts: [String: Int] = [:]   // sidebar badges
 
@@ -122,7 +123,8 @@ final class MailStore: ObservableObject {
     struct ComposeRequest: Identifiable {
         let id = UUID()
         let replyTo: Message?
-        var aiIntent: String? = nil
+        var replyAll = false
+        var forward = false
     }
 
     struct UndoAction: Identifiable {
@@ -550,7 +552,7 @@ final class MailStore: ObservableObject {
 
     // MARK: - Keyboard shortcuts
 
-    /// Returns true if the key was handled.
+    /// Returns true if the key was handled. Gmail-style single keys.
     func handleKey(_ chars: String) -> Bool {
         switch chars {
         case "e": selectedThread.map(archive)
@@ -563,10 +565,41 @@ final class MailStore: ObservableObject {
         case "r": if let t = selectedThread {
                       composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last)
                   }
+        case "a": if let t = selectedThread {
+                      composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, replyAll: true)
+                  }
+        case "f": if let t = selectedThread {
+                      composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, forward: true)
+                  }
+        case "l": if selectedThread != nil { showLabelPicker = true }
+        case "z": if let undo = undoAction { undo.undo() }
         case "c": composeRequest = ComposeRequest(replyTo: nil)
         default: return false
         }
         return true
+    }
+
+    // MARK: - Labels on threads
+
+    /// User labels available for a thread's account.
+    func userLabels(forAccount accountId: String) -> [LabelRow] {
+        labelsByAccount[accountId] ?? []
+    }
+
+    func labelName(_ labelId: String, account accountId: String) -> String? {
+        labelsByAccount[accountId]?.first { $0.gmailLabelId == labelId }?.name
+    }
+
+    func toggleLabel(_ thread: MailThread, labelId: String) {
+        let has = thread.labels.contains(labelId)
+        mutateThread(thread) { t in
+            var labels = Set(t.labelIds.split(separator: " ").map(String.init))
+            if has { labels.remove(labelId) } else { labels.insert(labelId) }
+            t.labelIds = labels.sorted().joined(separator: " ")
+        } remote: { client, id in
+            try await client.modifyThread(id: id, add: has ? [] : [labelId],
+                                          remove: has ? [labelId] : [])
+        }
     }
 
     func moveSelection(_ delta: Int) {

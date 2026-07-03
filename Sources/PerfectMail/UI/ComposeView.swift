@@ -6,7 +6,12 @@ import UniformTypeIdentifiers
 struct ComposeView: View {
     @EnvironmentObject var store: MailStore
 
-    let replyTo: Message?
+    let request: MailStore.ComposeRequest
+
+    /// The message being replied to (nil for new mail and forwards' threading).
+    private var replyTo: Message? { request.forward ? nil : request.replyTo }
+    /// The original message, whatever the mode.
+    private var original: Message? { request.replyTo }
 
     @State private var fromAccount: String = ""
     @State private var toTokens: [String] = []
@@ -23,12 +28,17 @@ struct ComposeView: View {
     @State private var error: String?
     @FocusState private var bodyFocused: Bool
 
+    @State private var initialBody = ""
+
     private func close() {
         store.composeRequest = nil
     }
 
+    /// Content the user actually authored (quoted prefill doesn't count).
     private var hasContent: Bool {
-        !body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty || !attachmentURLs.isEmpty
+        body_.trimmingCharacters(in: .whitespacesAndNewlines)
+            != initialBody.trimmingCharacters(in: .whitespacesAndNewlines)
+            || !attachmentURLs.isEmpty
     }
 
     /// Close and keep the work: unsent content becomes a real Gmail draft.
@@ -65,12 +75,14 @@ struct ComposeView: View {
             }
             .padding(.bottom, 6)
 
-            // Reply context — you're inside this Gmail thread.
-            if let replyTo {
+            // Reply/forward context — you're inside this Gmail thread.
+            if let original {
                 HStack(spacing: 5) {
-                    Image(systemName: "arrowshape.turn.up.left")
+                    Image(systemName: request.forward ? "arrowshape.turn.up.right" : "arrowshape.turn.up.left")
                         .font(.system(size: 10))
-                    Text("Replying to \(MessageParser.displayName(fromHeader: replyTo.fromHeader)) — same thread in Gmail")
+                    Text(request.forward
+                         ? "Forwarding message from \(MessageParser.displayName(fromHeader: original.fromHeader))"
+                         : "Replying to \(MessageParser.displayName(fromHeader: original.fromHeader)) — same thread in Gmail")
                         .font(.system(size: 11))
                         .lineLimit(1)
                 }
@@ -168,7 +180,7 @@ struct ComposeView: View {
                 .menuStyle(.borderlessButton).fixedSize()
                 .help("Snippets")
 
-                if replyTo != nil {
+                if original != nil, !request.forward {
                     footerButton(drafting ? "hourglass" : "sparkles",
                                  help: "Draft with local AI (Ollama)") { draftWithAI() }
                         .disabled(drafting)
@@ -222,28 +234,62 @@ struct ComposeView: View {
     }
 
     private func prefill() {
-        fromAccount = replyTo?.accountId ?? store.accounts.first?.id ?? ""
-        if let replyTo {
-            toTokens = [MessageParser.emailAddress(replyTo.fromHeader)]
-            let subj = replyTo.subject
+        fromAccount = original?.accountId ?? store.accounts.first?.id ?? ""
+        guard let original else { return }
+        let ownAddresses = Set(store.accounts.map { $0.id.lowercased() })
+        let sender = MessageParser.emailAddress(original.fromHeader)
+
+        if request.forward {
+            let subj = original.subject
+            subject = subj.lowercased().hasPrefix("fwd:") ? subj : "Fwd: \(subj)"
+        } else {
+            toTokens = [sender]
+            if request.replyAll {
+                // Everyone on the original except me and the sender goes to Cc.
+                let others = MessageParser.splitAddresses(original.toHeader + "," + original.ccHeader)
+                    .map { MessageParser.emailAddress($0) }
+                    .filter { $0.contains("@") }
+                    .filter { !ownAddresses.contains($0.lowercased()) && $0.lowercased() != sender.lowercased() }
+                var seen = Set<String>()
+                ccTokens = others.filter { seen.insert($0.lowercased()).inserted }
+                if !ccTokens.isEmpty { showCc = true }
+            }
+            let subj = original.subject
             subject = subj.lowercased().hasPrefix("re:") ? subj : "Re: \(subj)"
-            bodyFocused = true
         }
+
+        // Quote the previous message so the context travels with the draft.
+        let when = original.date.formatted(date: .abbreviated, time: .shortened)
+        let who = "\(MessageParser.displayName(fromHeader: original.fromHeader)) <\(sender)>"
+        let quoted = original.bodyText
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { "> \($0)" }
+            .joined(separator: "\n")
+        body_ = "\n\n\nOn \(when), \(who) wrote:\n\(quoted)"
+        initialBody = body_
+        bodyFocused = true
     }
 
     private func draftWithAI() {
-        guard let replyTo else { return }
+        guard let original else { return }
         drafting = true
         error = nil
-        let intent = body_
+        // Only the part above the quote counts as intent.
+        let intent = String(body_.split(separator: "\nOn ", maxSplits: 1,
+                                        omittingEmptySubsequences: false).first ?? "")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
         Task {
             do {
                 let prompt = Ollama.draftReply(
-                    originalFrom: replyTo.fromHeader,
-                    originalBody: replyTo.bodyText,
+                    originalFrom: original.fromHeader,
+                    originalBody: original.bodyText,
                     intent: intent,
                     userEmail: fromAccount)
-                body_ = try await Ollama.generate(prompt: prompt)
+                let draft = try await Ollama.generate(prompt: prompt)
+                // Keep the quoted context below the AI draft.
+                let quoteStart = body_.range(of: "\nOn ")
+                let quote = quoteStart.map { String(body_[$0.lowerBound...]) } ?? ""
+                body_ = draft + "\n" + quote
             } catch {
                 self.error = error.localizedDescription
             }

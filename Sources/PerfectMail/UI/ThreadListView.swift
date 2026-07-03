@@ -1,9 +1,54 @@
 import SwiftUI
 
+enum GroupBy: String, CaseIterable {
+    case date, starred, important, sender, label, unread
+
+    var title: String {
+        switch self {
+        case .date: return "Date"
+        case .starred: return "Starred"
+        case .important: return "Important"
+        case .sender: return "Email or domain"
+        case .label: return "Labels"
+        case .unread: return "Unread"
+        }
+    }
+
+    var icon: String {
+        switch self {
+        case .date: return "calendar"
+        case .starred: return "star"
+        case .important: return "exclamationmark.circle"
+        case .sender: return "at"
+        case .label: return "tag"
+        case .unread: return "envelope.badge"
+        }
+    }
+}
+
 struct ThreadListView: View {
     @EnvironmentObject var store: MailStore
+    @AppStorage("groupBy") private var groupByRaw = GroupBy.date.rawValue
+
+    private var groupBy: GroupBy { GroupBy(rawValue: groupByRaw) ?? .date }
 
     private var grouped: [(String, [MailThread])] {
+        switch groupBy {
+        case .date: return groupedByDate
+        case .starred: return partition("Starred", "Everything else") { $0.isStarred }
+        case .important: return partition("Important", "Everything else") { $0.labels.contains("IMPORTANT") }
+        case .unread: return partition("Unread", "Read") { $0.isUnread }
+        case .sender: return groupedBy { $0.fromDisplay }
+        case .label: return groupedBy { thread in
+            let userLabel = thread.labels
+                .compactMap { store.labelName($0, account: thread.accountId) }
+                .sorted().first
+            return userLabel ?? "No label"
+        }
+        }
+    }
+
+    private var groupedByDate: [(String, [MailThread])] {
         let cal = Calendar.current
         let now = Date()
         var groups: [(String, [MailThread])] = []
@@ -22,6 +67,23 @@ struct ThreadListView: View {
             groups.append((key, buckets[key]!))
         }
         return groups
+    }
+
+    private func partition(_ yes: String, _ no: String,
+                           test: (MailThread) -> Bool) -> [(String, [MailThread])] {
+        let hits = store.threads.filter(test)
+        let misses = store.threads.filter { !test($0) }
+        var out: [(String, [MailThread])] = []
+        if !hits.isEmpty { out.append((yes, hits)) }
+        if !misses.isEmpty { out.append((no, misses)) }
+        return out
+    }
+
+    private func groupedBy(_ key: (MailThread) -> String) -> [(String, [MailThread])] {
+        let buckets = Dictionary(grouping: store.threads, by: key)
+        return buckets
+            .sorted { ($0.value.first?.lastDate ?? .distantPast) > ($1.value.first?.lastDate ?? .distantPast) }
+            .map { ($0.key, $0.value) }
     }
 
     var body: some View {
@@ -113,22 +175,27 @@ struct FilterBar: View {
     @State private var senderDraft = ""
     @State private var showFilterPopover = false
     @State private var showCategoriesPopover = false
+    @AppStorage("groupBy") private var groupByRaw = GroupBy.date.rawValue
+    @AppStorage("showCategoryChip") private var showCategoryChip = true
+    @AppStorage("showFilterChip") private var showFilterChip = true
 
     private var defaultChips: FilterChips { FilterChips.defaults(for: store.selectedView) }
 
     var body: some View {
         HStack(spacing: 8) {
             // Categories — the one always-visible chip, like Notion Mail.
-            Button {
-                showCategoriesPopover = true
-            } label: {
-                chipLabel("Categories: \(store.chips.category.title)",
-                          icon: "bookmark",
-                          active: store.chips.category != defaultChips.category)
-            }
-            .buttonStyle(.plain)
-            .popover(isPresented: $showCategoriesPopover, arrowEdge: .bottom) {
-                CategoriesPopover()
+            if showCategoryChip {
+                Button {
+                    showCategoriesPopover = true
+                } label: {
+                    chipLabel("Categories: \(store.chips.category.title)",
+                              icon: "bookmark",
+                              active: store.chips.category != defaultChips.category)
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showCategoriesPopover, arrowEdge: .bottom) {
+                    CategoriesPopover()
+                }
             }
 
             // Chips for whatever filters are active, each removable.
@@ -147,17 +214,37 @@ struct FilterBar: View {
             }
 
             // Everything else lives behind one "+ Filter".
-            Button {
-                showFilterPopover = true
-            } label: {
-                chipLabel("Filter", icon: "plus", active: false)
-            }
-            .buttonStyle(.plain)
-            .popover(isPresented: $showFilterPopover, arrowEdge: .bottom) {
-                filterPopover
+            if showFilterChip {
+                Button {
+                    showFilterPopover = true
+                } label: {
+                    chipLabel("Filter", icon: "plus", active: false)
+                }
+                .buttonStyle(.plain)
+                .popover(isPresented: $showFilterPopover, arrowEdge: .bottom) {
+                    filterPopover
+                }
             }
 
             Spacer(minLength: 4)
+
+            // View options: grouping + which chips to show.
+            Menu {
+                Picker("Group by", selection: $groupByRaw) {
+                    ForEach(GroupBy.allCases, id: \.rawValue) { g in
+                        Label(g.title, systemImage: g.icon).tag(g.rawValue)
+                    }
+                }
+                .pickerStyle(.inline)
+                Divider()
+                Toggle("Show Categories filter", isOn: $showCategoryChip)
+                Toggle("Show + Filter", isOn: $showFilterChip)
+            } label: {
+                Image(systemName: "slider.horizontal.3")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            .menuStyle(.borderlessButton).fixedSize()
+            .help("Group and display options")
 
             // Click to update.
             Button {
@@ -344,13 +431,16 @@ struct ThreadRow: View {
             ZStack(alignment: .trailing) {
                 HStack(spacing: 5) {
                     if thread.hasAttachment {
-                        Image(systemName: "paperclip").font(.caption2).foregroundStyle(.secondary)
+                        Image(systemName: "paperclip")
+                            .font(.system(size: 12 * fontScale)).foregroundStyle(.secondary)
                     }
                     if thread.reminderAt != nil {
-                        Image(systemName: "bell.fill").font(.caption2).foregroundStyle(.orange)
+                        Image(systemName: "bell.fill")
+                            .font(.system(size: 12 * fontScale)).foregroundStyle(.orange)
                     }
                     if thread.isStarred {
-                        Image(systemName: "star.fill").font(.caption2).foregroundStyle(.yellow)
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 12 * fontScale)).foregroundStyle(.yellow)
                     }
                     Text(thread.lastDate, format: relativeFormat)
                         .font(.system(size: 12 * fontScale)).foregroundStyle(.secondary)
@@ -393,10 +483,11 @@ struct ThreadRow: View {
     private func hoverButton(_ icon: String, filled: Bool = false, action: @escaping () -> Void) -> some View {
         Button(action: action) {
             Image(systemName: filled ? "\(icon).fill" : icon)
-                .font(.system(size: 11))
+                .font(.system(size: 13 * fontScale))
+                .foregroundStyle(filled && icon == "star" ? .yellow : .secondary)
         }
         .buttonStyle(.plain)
-        .padding(2)
+        .padding(3)
     }
 
     private var relativeFormat: Date.FormatStyle {

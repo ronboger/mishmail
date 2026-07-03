@@ -46,7 +46,7 @@ struct ContentView: View {
         // stays fully usable behind it.
         .overlay(alignment: .bottomTrailing) {
             if let request = store.composeRequest {
-                ComposeView(replyTo: request.replyTo)
+                ComposeView(request: request)
                     .id(request.id)
                     .frame(width: 620, height: 500)
                     .background(Color(nsColor: .windowBackgroundColor))
@@ -64,6 +64,9 @@ struct ContentView: View {
         .overlay {
             if store.showCommandPalette {
                 CommandPalette()
+            }
+            if store.showLabelPicker {
+                LabelPicker()
             }
         }
         .alert("Error", isPresented: .init(
@@ -91,8 +94,13 @@ struct ContentView: View {
                 store.showCommandPalette = false
                 return nil
             }
+            if store.showLabelPicker, event.keyCode == 53 {  // esc
+                store.showLabelPicker = false
+                return nil
+            }
             guard mods.isEmpty,
                   !store.showCommandPalette,
+                  !store.showLabelPicker,
                   store.composeRequest == nil,
                   store.editingView == nil,
                   !(event.window?.firstResponder is NSTextView),
