@@ -131,7 +131,7 @@ enum MessageParser {
 /// Builds RFC 2822 messages for sending/replying, optionally multipart/mixed
 /// with attachments.
 enum MIMEBuilder {
-    struct Attachment {
+    struct Attachment: Codable {
         let filename: String
         let mimeType: String
         let data: Data

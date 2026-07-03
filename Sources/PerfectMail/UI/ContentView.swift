@@ -13,13 +13,13 @@ struct ContentView: View {
                 NavigationSplitView {
                     Sidebar()
                 } detail: {
-                    ThreadListView()
+                    listColumn
                 }
             } else {
                 NavigationSplitView {
                     Sidebar()
                 } content: {
-                    ThreadListView()
+                    listColumn
                         .navigationSplitViewColumnWidth(min: 420, ideal: 560)
                 } detail: {
                     detailPane
@@ -29,11 +29,19 @@ struct ContentView: View {
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         .onChange(of: store.searchText) { store.reloadThreads() }
         // A clicked (not keyboard-browsed) selection reopens the reading pane.
+        // Clicking a pure draft skips the pane entirely and hops straight
+        // into compose at the bottom (Notion Mail-style).
         .onChange(of: store.selectedThreadId) {
-            if store.selectedThreadId != nil, !store.selectionViaKeyboard {
+            defer { store.selectionViaKeyboard = false }
+            guard store.selectedThreadId != nil else { return }
+            if !store.selectionViaKeyboard {
+                if let thread = store.selectedThread, store.isDraftOnly(thread) {
+                    store.editDraft(inThread: thread)
+                    store.selectedThreadId = nil
+                    return
+                }
                 readingPaneHidden = false
             }
-            store.selectionViaKeyboard = false
         }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
@@ -79,7 +87,8 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.easeOut(duration: 0.15), value: store.composeRequest?.id)
+        // A touch of spring makes the draft→compose hop legible.
+        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: store.composeRequest?.id)
         // Undo/notice toast: centered on the bottom of the whole window.
         .overlay(alignment: .bottom) {
             if let undo = store.undoAction {
@@ -126,6 +135,15 @@ struct ContentView: View {
             Button("OK") { store.lastError = nil }
         } message: {
             Text(store.lastError ?? "")
+        }
+    }
+
+    @ViewBuilder
+    private var listColumn: some View {
+        if store.selectedView == .scheduled {
+            ScheduledListView()
+        } else {
+            ThreadListView()
         }
     }
 
@@ -212,7 +230,14 @@ struct ContentView: View {
                 store.moveSelection(-1)
                 return nil
             case 36:   // return
-                if store.selectedThreadId != nil { readingPaneHidden = false }
+                if let thread = store.selectedThread {
+                    if store.isDraftOnly(thread) {
+                        store.editDraft(inThread: thread)
+                        store.selectedThreadId = nil
+                    } else {
+                        readingPaneHidden = false
+                    }
+                }
                 return nil
             default:
                 break
@@ -296,6 +321,11 @@ struct Sidebar: View {
                     sidebarItem(.allMail, icon: "archivebox")
                     sidebarItem(.sent, icon: "paperplane")
                     sidebarItem(.drafts, icon: "doc.text")
+                    // Only surfaces once something is scheduled (Gmail-style).
+                    if !store.scheduledSends.isEmpty || store.selectedView == .scheduled {
+                        sidebarItem(.scheduled, icon: "calendar.badge.clock",
+                                    badge: store.scheduledSends.count)
+                    }
                     sidebarItem(.reminders, icon: "bell", badge: store.unreadCounts["reminders"])
                     sidebarItem(.trash, icon: "trash")
                 }

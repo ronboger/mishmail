@@ -98,6 +98,35 @@ struct Snippet: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 }
 
+/// A composed message waiting for its send time. Gmail has no schedule-send
+/// API, so the schedule is local: the app sends the message when it's due
+/// (overdue ones go out on next launch).
+struct ScheduledSend: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "scheduledSend"
+    var id: Int64?
+    var accountId: String
+    var toHeader: String
+    var ccHeader: String
+    var bccHeader: String
+    var subject: String
+    var body: String
+    var sendAt: Date
+    var replyToMessageId: String?   // Message.id, for reply threading
+    var forward: Bool
+    var replacingDraftId: String?   // Message.id of the Gmail draft this replaces
+    var attachmentsJSON: Data       // JSON-encoded [MIMEBuilder.Attachment]
+    var createdAt: Date
+    mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+
+    var attachments: [MIMEBuilder.Attachment] {
+        (try? JSONDecoder().decode([MIMEBuilder.Attachment].self, from: attachmentsJSON)) ?? []
+    }
+
+    static func encodeAttachments(_ attachments: [MIMEBuilder.Attachment]) -> Data {
+        (try? JSONEncoder().encode(attachments)) ?? Data("[]".utf8)
+    }
+}
+
 struct LabelRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "label"
     var id: String          // "<account>:<labelId>"
@@ -277,6 +306,23 @@ final class AppDatabase {
         m.registerMigration("v4") { db in
             try db.alter(table: "message") { t in
                 t.add(column: "bccHeader", .text).notNull().defaults(to: "")
+            }
+        }
+        m.registerMigration("v5") { db in
+            try db.create(table: "scheduledSend") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("accountId", .text).notNull()
+                t.column("toHeader", .text).notNull()
+                t.column("ccHeader", .text).notNull()
+                t.column("bccHeader", .text).notNull()
+                t.column("subject", .text).notNull()
+                t.column("body", .text).notNull()
+                t.column("sendAt", .datetime).notNull().indexed()
+                t.column("replyToMessageId", .text)
+                t.column("forward", .boolean).notNull().defaults(to: false)
+                t.column("replacingDraftId", .text)
+                t.column("attachmentsJSON", .blob).notNull()
+                t.column("createdAt", .datetime).notNull()
             }
         }
         return m

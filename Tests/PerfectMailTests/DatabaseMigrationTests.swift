@@ -9,7 +9,7 @@ final class DatabaseMigrationTests: XCTestCase {
         try AppDatabase.migrator.migrate(q)
         try q.read { db in
             for table in ["account", "thread", "message", "label", "snippet",
-                          "attachment", "savedView"] {
+                          "attachment", "savedView", "scheduledSend"] {
                 XCTAssertTrue(try db.tableExists(table), "missing table \(table)")
             }
             XCTAssertTrue(try db.tableExists("message_fts"))
@@ -42,6 +42,46 @@ final class DatabaseMigrationTests: XCTestCase {
         XCTAssertNotNil(message)
         XCTAssertEqual(message?.bccHeader, "")
         XCTAssertEqual(message?.subject, "Old mail")
+    }
+
+    /// A database created before v5 (real upgrade path) gains the
+    /// scheduledSend table without touching existing rows.
+    func testUpgradeFromV4AddsScheduledSends() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v4")
+        try q.write { db in
+            try db.execute(sql: "INSERT INTO account (id, displayName, senderName) VALUES ('ron@x.com', 'Personal', '')")
+            XCTAssertFalse(try db.tableExists("scheduledSend"))
+        }
+        try AppDatabase.migrator.migrate(q)
+        try q.read { db in
+            XCTAssertTrue(try db.tableExists("scheduledSend"))
+            XCTAssertEqual(try Account.fetchCount(db), 1)
+        }
+    }
+
+    /// Scheduled sends round-trip, including their JSON-packed attachments.
+    func testScheduledSendRoundTrip() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q)
+        let attachments = [MIMEBuilder.Attachment(filename: "a.pdf", mimeType: "application/pdf",
+                                                  data: Data([1, 2, 3]))]
+        let row = ScheduledSend(
+            id: nil, accountId: "ron@x.com", toHeader: "jane@y.com",
+            ccHeader: "", bccHeader: "", subject: "Later", body: "see you monday",
+            sendAt: Date(timeIntervalSince1970: 1_800_000_000),
+            replyToMessageId: nil, forward: false, replacingDraftId: "ron@x.com:d1",
+            attachmentsJSON: ScheduledSend.encodeAttachments(attachments),
+            createdAt: Date(timeIntervalSince1970: 1_751_500_000))
+        try q.write { db in try row.insert(db) }
+
+        let fetched = try q.read { db in try ScheduledSend.fetchOne(db) }
+        XCTAssertNotNil(fetched?.id)
+        XCTAssertEqual(fetched?.subject, "Later")
+        XCTAssertEqual(fetched?.replacingDraftId, "ron@x.com:d1")
+        XCTAssertEqual(fetched?.attachments.count, 1)
+        XCTAssertEqual(fetched?.attachments.first?.filename, "a.pdf")
+        XCTAssertEqual(fetched?.attachments.first?.data, Data([1, 2, 3]))
     }
 
     /// Records round-trip through the schema (catches record/column drift).

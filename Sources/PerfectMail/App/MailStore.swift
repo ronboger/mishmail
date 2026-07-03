@@ -11,6 +11,7 @@ enum MailboxView: Hashable {
     case snoozed
     case reminders
     case drafts
+    case scheduled      // locally scheduled sends (not Gmail threads)
     case sent
     case allMail
     case trash
@@ -27,6 +28,7 @@ enum MailboxView: Hashable {
         case .snoozed: return "Snoozed"
         case .reminders: return "Reminders"
         case .drafts: return "Drafts"
+        case .scheduled: return "Scheduled"
         case .sent: return "Sent"
         case .allMail: return "All Mail"
         case .trash: return "Trash"
@@ -219,6 +221,9 @@ final class MailStore: ObservableObject {
         reloadAccounts()
         reloadSavedViews()
         reloadThreads()
+        reloadScheduledSends()
+        // Anything that came due while the app was closed goes out now.
+        Task { await self.fireDueScheduledSends() }
         knownUnreadInboxIds = currentUnreadInboxIds()
         notifiedThreadIds = knownUnreadInboxIds
         Notifier.requestPermission()
@@ -444,6 +449,9 @@ final class MailStore: ObservableObject {
             q = q.filter(Column("reminderAt") != nil)
         case .drafts:
             q = q.filter(Column("labelIds").like("%DRAFT%") && Column("inTrash") == false)
+        case .scheduled:
+            // Scheduled sends aren't threads; ScheduledListView renders them.
+            q = q.none()
         case .sent:
             q = q.filter(Column("labelIds").like("%SENT%") && Column("inTrash") == false)
         case .allMail:
@@ -605,6 +613,8 @@ final class MailStore: ObservableObject {
             Task { @MainActor in
                 await self?.syncAll()
                 self?.fireDueReminders()
+                // Backstop for the one-shot timer (sleep/wake can eat it).
+                await self?.fireDueScheduledSends()
             }
         }
     }
@@ -973,6 +983,95 @@ final class MailStore: ObservableObject {
         }
     }
 
+    // MARK: - Scheduled sends (send later)
+
+    @Published private(set) var scheduledSends: [ScheduledSend] = []
+    private var scheduledSendTimer: Timer?
+
+    func reloadScheduledSends() {
+        scheduledSends = (try? db.read {
+            try ScheduledSend.order(Column("sendAt")).fetchAll($0)
+        }) ?? []
+        armScheduledSendTimer()
+    }
+
+    /// Persist a composed message to go out at `date`. Survives relaunch;
+    /// anything overdue sends on next launch.
+    func scheduleSend(_ p: PendingSend, at date: Date) {
+        let row = ScheduledSend(
+            id: nil, accountId: p.accountId, toHeader: p.to, ccHeader: p.cc,
+            bccHeader: p.bcc, subject: p.subject, body: p.body, sendAt: date,
+            replyToMessageId: p.replyTo?.id, forward: p.forward,
+            replacingDraftId: p.replacingDraft?.id,
+            attachmentsJSON: ScheduledSend.encodeAttachments(p.attachments),
+            createdAt: Date())
+        try? db.write { db in try row.insert(db) }
+        reloadScheduledSends()
+        showNotice("Scheduled — sends \(SendSchedule.describe(date))")
+    }
+
+    /// Pull a scheduled message back into compose (nothing is lost).
+    func editScheduledSend(_ s: ScheduledSend) {
+        let p = pendingSend(from: s)
+        try? db.write { db in _ = try ScheduledSend.deleteOne(db, key: s.id) }
+        reloadScheduledSends()
+        composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
+                                        editDraft: p.replacingDraft, restore: p)
+    }
+
+    /// Skip the wait: goes through the normal undo-send window.
+    func sendScheduledNow(_ s: ScheduledSend) {
+        let p = pendingSend(from: s)
+        try? db.write { db in _ = try ScheduledSend.deleteOne(db, key: s.id) }
+        reloadScheduledSends()
+        queueSend(p)
+    }
+
+    func discardScheduledSend(_ s: ScheduledSend) {
+        try? db.write { db in _ = try ScheduledSend.deleteOne(db, key: s.id) }
+        reloadScheduledSends()
+        showNotice("Scheduled message discarded")
+    }
+
+    private func pendingSend(from s: ScheduledSend) -> PendingSend {
+        // The referenced messages may have been pruned since; threading
+        // headers then simply fall away.
+        let replyTo = s.replyToMessageId.flatMap { id in
+            (try? db.read { try Message.fetchOne($0, key: id) }) ?? nil
+        }
+        let draft = s.replacingDraftId.flatMap { id in
+            (try? db.read { try Message.fetchOne($0, key: id) }) ?? nil
+        }
+        return PendingSend(accountId: s.accountId, to: s.toHeader, cc: s.ccHeader,
+                           bcc: s.bccHeader, subject: s.subject, body: s.body,
+                           replyTo: replyTo, forward: s.forward,
+                           attachments: s.attachments, replacingDraft: draft)
+    }
+
+    private func armScheduledSendTimer() {
+        scheduledSendTimer?.invalidate()
+        scheduledSendTimer = nil
+        guard let next = scheduledSends.map(\.sendAt).min() else { return }
+        scheduledSendTimer = Timer.scheduledTimer(withTimeInterval: max(next.timeIntervalSinceNow, 1),
+                                                  repeats: false) { [weak self] _ in
+            Task { @MainActor in await self?.fireDueScheduledSends() }
+        }
+    }
+
+    func fireDueScheduledSends() async {
+        let due = scheduledSends.filter { $0.sendAt <= Date() }
+        guard !due.isEmpty else { return }
+        for s in due {
+            let p = pendingSend(from: s)
+            _ = try? await db.write { db in try ScheduledSend.deleteOne(db, key: s.id) }
+            await performSend(p)
+            Notifier.notify(title: "Scheduled message sent",
+                            body: s.subject.isEmpty ? s.toHeader : s.subject,
+                            id: "scheduled.\(s.id ?? 0)")
+        }
+        reloadScheduledSends()
+    }
+
     func send(from accountId: String, to: String, cc: String, bcc: String = "", subject: String,
               body: String, replyTo message: Message? = nil,
               attachments: [MIMEBuilder.Attachment] = [],
@@ -1012,6 +1111,15 @@ final class MailStore: ObservableObject {
     }
 
     // MARK: - Draft management
+
+    /// A thread that is nothing but an unsent draft — opening it should hop
+    /// straight into compose (Notion Mail-style), not the reading pane.
+    /// Draft replies inside real conversations still open the thread.
+    func isDraftOnly(_ thread: MailThread) -> Bool {
+        guard thread.labels.contains("DRAFT") else { return false }
+        let msgs = messages(inThread: thread.id)
+        return !msgs.isEmpty && msgs.allSatisfy { $0.labelIds.contains("DRAFT") }
+    }
 
     /// Opens an existing draft back into compose.
     func editDraft(inThread thread: MailThread) {

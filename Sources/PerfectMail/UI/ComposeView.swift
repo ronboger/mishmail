@@ -30,6 +30,8 @@ struct ComposeView: View {
     /// Attachments carried back from an undone send (data already loaded).
     @State private var restoredAttachments: [MIMEBuilder.Attachment] = []
     @State private var showFilePicker = false
+    @State private var showSnippets = false
+    @State private var showSchedule = false
     @State private var drafting = false
     @State private var error: String?
     @FocusState private var bodyFocused: Bool
@@ -230,20 +232,22 @@ struct ComposeView: View {
             HStack(spacing: 10) {
                 footerButton("paperclip", help: "Attach files") { showFilePicker = true }
 
-                Menu {
-                    let snippets = store.snippets()
-                    if snippets.isEmpty { Text("No snippets yet") }
-                    ForEach(snippets) { s in
-                        Button(s.name) { body_ += s.body }
-                    }
-                    Divider()
-                    Button("Save body as snippet…") { saveCurrentAsSnippet() }
+                Button {
+                    showSnippets = true
                 } label: {
-                    Image(systemName: "text.badge.plus")
-                        .foregroundStyle(.secondary)
+                    HStack(spacing: 4) {
+                        Image(systemName: "text.badge.plus")
+                        Text("Snippets").font(.system(size: 12))
+                    }
+                    .foregroundStyle(.secondary)
                 }
-                .menuStyle(.borderlessButton).fixedSize()
-                .help("Snippets")
+                .buttonStyle(.plain)
+                .help("Insert a saved snippet")
+                .popover(isPresented: $showSnippets, arrowEdge: .top) {
+                    SnippetsPopover(insert: { insertSnippet($0) },
+                                    saveDraftAsSnippet: { saveCurrentAsSnippet() })
+                        .environmentObject(store)
+                }
 
                 if original != nil, !request.forward {
                     footerButton(drafting ? "hourglass" : "sparkles",
@@ -267,15 +271,33 @@ struct ComposeView: View {
                 Button("Cancel") { saveAndClose() }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help(hasContent ? "Close (saves as draft)" : "Close")
-                Button {
-                    send()
-                } label: {
-                    Text("Send")
-                        .padding(.horizontal, 10)
+                // Split send button: Send now | schedule for later.
+                HStack(spacing: 1) {
+                    Button {
+                        send()
+                    } label: {
+                        Text("Send")
+                            .padding(.horizontal, 10)
+                    }
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .help("Send (10s undo window)")
+
+                    Button {
+                        showSchedule = true
+                    } label: {
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 9, weight: .semibold))
+                            .padding(.horizontal, 2)
+                    }
+                    .help("Schedule send")
+                    .popover(isPresented: $showSchedule, arrowEdge: .top) {
+                        SchedulePopover { date in
+                            showSchedule = false
+                            scheduleSend(at: date)
+                        }
+                    }
                 }
-                .keyboardShortcut(.return, modifiers: .command)
                 .buttonStyle(.borderedProminent)
-                .help("Send (10s undo window)")
                 .disabled(fromAccount.isEmpty
                           || (toTokens.isEmpty && !toDraft.contains("@")
                               && bccTokens.isEmpty && !bccDraft.contains("@")))
@@ -425,6 +447,21 @@ struct ComposeView: View {
         }
     }
 
+    /// Inserts a snippet where the user writes: above the quoted original on
+    /// a reply/forward, appended (with clean spacing) otherwise.
+    private func insertSnippet(_ snippet: Snippet) {
+        if let quote = body_.range(of: #"\n+On .+ wrote:\n"#, options: .regularExpression) {
+            var head = String(body_[..<quote.lowerBound])
+            while head.hasSuffix("\n") { head.removeLast() }
+            let written = head.isEmpty ? snippet.body : head + "\n" + snippet.body
+            body_ = written + "\n" + String(body_[quote.lowerBound...])
+        } else if body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body_ = snippet.body
+        } else {
+            body_ += (body_.hasSuffix("\n") ? "" : "\n") + snippet.body
+        }
+    }
+
     private func saveCurrentAsSnippet() {
         let alert = NSAlert()
         alert.messageText = "Snippet name"
@@ -437,7 +474,10 @@ struct ComposeView: View {
         }
     }
 
-    private func send() {
+    /// Commits typed-but-uncommitted recipients and packages the message
+    /// (attachment data loaded now — the card closes before the send).
+    /// Returns nil (with `error` set where relevant) when not sendable.
+    private func buildPendingSend() -> MailStore.PendingSend? {
         // Typed-but-uncommitted addresses count as recipients.
         for (draft, tokens) in [(toDraft, $toTokens), (ccDraft, $ccTokens), (bccDraft, $bccTokens)] {
             let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
@@ -446,12 +486,10 @@ struct ComposeView: View {
             }
         }
         toDraft = ""; ccDraft = ""; bccDraft = ""
-        guard !toTokens.isEmpty || !bccTokens.isEmpty else { return }
+        guard !toTokens.isEmpty || !bccTokens.isEmpty else { return nil }
 
         error = nil
         do {
-            // Load attachment data now — the compose card closes immediately
-            // and the actual send happens after the undo window.
             var attachments = restoredAttachments
             for url in attachmentURLs {
                 let access = url.startAccessingSecurityScopedResource()
@@ -461,7 +499,7 @@ struct ComposeView: View {
                     ?? "application/octet-stream"
                 attachments.append(.init(filename: url.lastPathComponent, mimeType: mime, data: data))
             }
-            store.queueSend(MailStore.PendingSend(
+            return MailStore.PendingSend(
                 accountId: fromAccount,
                 to: toTokens.joined(separator: ", "),
                 cc: ccTokens.joined(separator: ", "),
@@ -469,10 +507,22 @@ struct ComposeView: View {
                 subject: subject, body: body_,
                 replyTo: replyTo, forward: request.forward,
                 attachments: attachments,
-                replacingDraft: editingDraft))
-            close()
+                replacingDraft: editingDraft)
         } catch {
             self.error = error.localizedDescription
+            return nil
         }
+    }
+
+    private func send() {
+        guard let pending = buildPendingSend() else { return }
+        store.queueSend(pending)
+        close()
+    }
+
+    private func scheduleSend(at date: Date) {
+        guard let pending = buildPendingSend() else { return }
+        store.scheduleSend(pending, at: date)
+        close()
     }
 }
