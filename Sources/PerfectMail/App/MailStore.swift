@@ -105,6 +105,10 @@ final class MailStore: ObservableObject {
     @Published var editingView: SavedView?
     @Published var editingAccountLabels = false
     @Published var showLabelPicker = false
+    // Arrow-key highlight for the label picker. Driven by the window-level
+    // key monitor (the picker's text field eats arrow events before SwiftUI's
+    // onKeyPress sees them); the view clamps it to the filtered list.
+    @Published var labelPickerHighlight = 0
     @Published var showCommandPalette = false
     @Published var unreadCounts: [String: Int] = [:]   // sidebar badges
     @Published var notice: String?                      // transient confirmation toast
@@ -686,7 +690,7 @@ final class MailStore: ObservableObject {
         case "f": if let t = selectedThread {
                       composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, forward: true)
                   }
-        case "l": if selectedThread != nil { showLabelPicker = true }
+        case "l": if selectedThread != nil { labelPickerHighlight = 0; showLabelPicker = true }
         case "z": if let undo = undoAction { undo.undo() }
         case "c": composeRequest = ComposeRequest(replyTo: nil)
         default: return false

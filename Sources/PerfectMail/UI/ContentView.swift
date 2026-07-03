@@ -154,9 +154,20 @@ struct ContentView: View {
                 store.showCommandPalette = false
                 return nil
             }
-            if store.showLabelPicker, event.keyCode == 53 {  // esc
-                store.showLabelPicker = false
-                return nil
+            if store.showLabelPicker {
+                switch event.keyCode {
+                case 53:  // esc
+                    store.showLabelPicker = false
+                    return nil
+                case 125:  // down — picker clamps to the filtered list
+                    store.labelPickerHighlight += 1
+                    return nil
+                case 126:  // up
+                    store.labelPickerHighlight = max(store.labelPickerHighlight - 1, 0)
+                    return nil
+                default:
+                    break
+                }
             }
             guard mods.isEmpty,
                   !store.showCommandPalette,
