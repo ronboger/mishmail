@@ -35,14 +35,21 @@ struct ComposeView: View {
     @FocusState private var bodyFocused: Bool
 
     @State private var initialBody = ""
+    @State private var initialSubject = ""
+    @State private var initialRecipients: [String] = []
 
     private func close() {
         store.composeRequest = nil
     }
 
-    /// Content the user actually authored (quoted prefill doesn't count).
+    /// Content the user actually authored (quoted/reply prefill doesn't count).
     private var hasContent: Bool {
         editingDraft != nil
+            || toTokens + ccTokens + bccTokens != initialRecipients
+            || !toDraft.trimmingCharacters(in: .whitespaces).isEmpty
+            || !ccDraft.trimmingCharacters(in: .whitespaces).isEmpty
+            || !bccDraft.trimmingCharacters(in: .whitespaces).isEmpty
+            || subject != initialSubject
             || body_.trimmingCharacters(in: .whitespacesAndNewlines)
                 != initialBody.trimmingCharacters(in: .whitespacesAndNewlines)
             || !attachmentURLs.isEmpty
@@ -51,6 +58,14 @@ struct ComposeView: View {
 
     /// Close and keep the work: unsent content becomes a real Gmail draft.
     private func saveAndClose() {
+        // Typed-but-uncommitted addresses count too.
+        for (draft, tokens) in [(toDraft, $toTokens), (ccDraft, $ccTokens), (bccDraft, $bccTokens)] {
+            let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
+            if cleaned.contains("@"), !tokens.wrappedValue.contains(cleaned) {
+                tokens.wrappedValue.append(cleaned)
+            }
+        }
+        toDraft = ""; ccDraft = ""; bccDraft = ""
         if hasContent {
             let (from, to, cc, bcc, subj, body, reply, old) =
                 (fromAccount, toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
@@ -233,15 +248,17 @@ struct ComposeView: View {
 
                 Spacer()
 
-                if hasContent {
-                    Button {
-                        close()   // discard: no draft
-                    } label: {
-                        Image(systemName: "trash").foregroundStyle(.secondary)
+                Button {
+                    // Discard: no draft saved; editing an existing draft deletes it.
+                    if let draft = editingDraft {
+                        Task { await store.deleteUnderlyingDraft(draft) }
                     }
-                    .buttonStyle(.plain)
-                    .help("Discard without saving")
+                    close()
+                } label: {
+                    Image(systemName: "trash").foregroundStyle(.secondary)
                 }
+                .buttonStyle(.plain)
+                .help(editingDraft != nil ? "Discard (deletes this draft)" : "Discard without saving")
                 Button("Cancel") { saveAndClose() }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help(hasContent ? "Close (saves as draft)" : "Close")
@@ -325,6 +342,11 @@ struct ComposeView: View {
         // the account currently in view, falling back to the primary account.
         fromAccount = original?.accountId ?? store.activeAccountId
             ?? store.accounts.first?.id ?? ""
+        defer {
+            // Prefill (reply recipients, "Re:" subject, quote) isn't authored content.
+            initialSubject = subject
+            initialRecipients = toTokens + ccTokens + bccTokens
+        }
         guard let original else { return }
         let ownAddresses = Set(store.accounts.map { $0.id.lowercased() })
         let sender = MessageParser.emailAddress(original.fromHeader)

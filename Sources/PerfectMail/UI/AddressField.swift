@@ -10,6 +10,9 @@ struct TokenAddressField: View {
     var autoFocus = false
     @FocusState private var focused: Bool
     @State private var highlighted = 0
+    /// Backspace never reaches onKeyPress — the field editor eats it —
+    /// so an NSEvent monitor (active only while focused) pops the last chip.
+    @State private var keyMonitor: Any?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,7 +20,7 @@ struct TokenAddressField: View {
                 Text(label)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
-                    .frame(width: 52, alignment: .leading)
+                    .frame(width: 30, alignment: .leading)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
                         ForEach(tokens, id: \.self) { token in
@@ -45,6 +48,7 @@ struct TokenAddressField: View {
                             .onChange(of: focused) {
                                 // Leaving the field turns typed text into a chip.
                                 if !focused { commitDraft() }
+                                syncKeyMonitor()
                             }
                             .onSubmit { commitDraft() }
                             .onKeyPress(.downArrow) {
@@ -66,11 +70,6 @@ struct TokenAddressField: View {
                                 guard focused, !draft.isEmpty else { return .ignored }
                                 if let pick = suggestions[safe: highlighted] { accept(pick) }
                                 else { commitDraft() }
-                                return .handled
-                            }
-                            .onKeyPress(.delete) {
-                                guard focused, draft.isEmpty, !tokens.isEmpty else { return .ignored }
-                                tokens.removeLast()
                                 return .handled
                             }
                     }
@@ -110,7 +109,7 @@ struct TokenAddressField: View {
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
                 .shadow(radius: 10)
-                .offset(x: 58, y: 34)
+                .offset(x: 36, y: 34)
             }
         }
         .zIndex(focused ? 10 : 0)
@@ -119,6 +118,29 @@ struct TokenAddressField: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { focused = true }
             }
         }
+        .onDisappear { removeKeyMonitor() }
+    }
+
+    /// Installs the backspace monitor while this field is focused.
+    private func syncKeyMonitor() {
+        if focused {
+            guard keyMonitor == nil else { return }
+            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+                guard event.keyCode == 51,   // delete (backspace)
+                      event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
+                      draft.isEmpty, !tokens.isEmpty
+                else { return event }
+                tokens.removeLast()
+                return nil
+            }
+        } else {
+            removeKeyMonitor()
+        }
+    }
+
+    private func removeKeyMonitor() {
+        if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
+        keyMonitor = nil
     }
 
     private var suggestions: [MailStore.Contact] {
