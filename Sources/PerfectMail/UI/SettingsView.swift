@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Notion Mail-style settings window: a slim sidebar of panes on the left,
 /// the selected pane on the right. Opens with Cmd-, or from the app sidebar.
@@ -518,6 +519,8 @@ struct SnippetsSettings: View {
     // Cached so search keystrokes and store publishes don't re-query
     // SQLite; reloaded after every create/edit/delete.
     @State private var all: [Snippet] = []
+    @State private var showImporter = false
+    @State private var importResult: String?
 
     private var filtered: [Snippet] {
         all.filter { $0.matches(search) }
@@ -533,6 +536,13 @@ struct SnippetsSettings: View {
 
                     Spacer()
 
+                    if let importResult {
+                        Text(importResult)
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    }
+                    Button("Import…") { showImporter = true }
+                        .help("Import snippets from a JSON file: [{\"name\", \"body\", \"movesToBcc\"}]")
                     Button("Create new") {
                         editing = Snippet(id: nil, name: "", body: "")
                     }
@@ -576,6 +586,23 @@ struct SnippetsSettings: View {
         .onAppear { all = store.snippets() }
         .sheet(item: $editing, onDismiss: { all = store.snippets() }) { snippet in
             SnippetEditor(snippet: snippet)
+        }
+        .fileImporter(isPresented: $showImporter,
+                      allowedContentTypes: [.json]) { result in
+            switch result {
+            case .success(let url):
+                do {
+                    let counts = try store.importSnippets(from: url)
+                    all = store.snippets()
+                    importResult = counts.skipped == 0
+                        ? "Imported \(counts.added)"
+                        : "Imported \(counts.added), skipped \(counts.skipped) existing"
+                } catch {
+                    importResult = "Import failed: \(error.localizedDescription)"
+                }
+            case .failure:
+                break
+            }
         }
     }
 }
@@ -638,11 +665,10 @@ private struct SnippetEditor: View {
             Text(snippet.id == nil ? "New snippet" : "Edit snippet")
                 .font(.headline)
             TextField("Shortcut name (typed after /)", text: $name)
-            TextEditor(text: $body_)
-                .font(.system(size: 13))
+            TemplateTextEditor(text: $body_)
                 .frame(minHeight: 140)
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
-            Text("Variables: {first_name} {name} {email} {date} {my_first_name} {my_name} — and for move-to-Bcc snippets, {bcc_first_name} {bcc_name} for the introducer.")
+            Text("Type { for variables: {first_name} {name} {email} {date} {my_first_name} {my_name} — and on move-to-Bcc snippets, {bcc_first_name} for the introducer. Anything else in braces stays as a fill-in prompt.")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)

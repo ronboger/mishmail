@@ -64,6 +64,27 @@ final class SnippetExpanderTests: XCTestCase {
         XCTAssertEqual(SnippetExpander.expand("— {{my_name}}", fullCtx), "— Ron Boger")
     }
 
+    func testEveryCatalogVariableExpands() {
+        // The autocomplete catalog and the expander must not drift apart:
+        // every offered token expands to something under a full context.
+        var full = fullCtx
+        full.date = "Jul 5, 2026"
+        for (token, _) in SnippetExpander.variables {
+            XCTAssertNotEqual(SnippetExpander.expand(token, full), token,
+                              "catalog token \(token) did not expand")
+        }
+    }
+
+    func testPlaceholderScanner() {
+        let found = SnippetExpander.placeholders(
+            in: "Hi {first_name}, re {{key_point_1}} and {zoom_link}")
+        XCTAssertEqual(found.map(\.name), ["first_name", "key_point_1", "zoom_link"])
+        XCTAssertEqual(found.map(\.known), [true, false, false])
+        let ns = "Hi {first_name}, re {{key_point_1}} and {zoom_link}" as NSString
+        XCTAssertEqual(ns.substring(with: found[0].range), "{first_name}")
+        XCTAssertEqual(ns.substring(with: found[1].range), "{{key_point_1}}")
+    }
+
     func testBccPersonVariables() {
         XCTAssertEqual(
             SnippetExpander.expand(
