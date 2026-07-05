@@ -29,35 +29,45 @@ struct SlashSnippetPicker: View {
                     .foregroundStyle(.secondary)
                     .padding(.horizontal, 10).padding(.bottom, 8)
             } else {
-                ScrollView {
-                    LazyVStack(alignment: .leading, spacing: 1) {
-                        ForEach(Array(snippets.enumerated()), id: \.element.id) { idx, snippet in
-                            Button { choose(snippet) } label: {
-                                HStack(spacing: 6) {
-                                    Text("/\(snippet.name)")
-                                        .font(.system(size: 12, weight: .medium))
-                                        .lineLimit(1)
-                                    if snippet.movesToBcc {
-                                        MovesToBccBadge()
+                // Reader keeps the ↑/↓ highlight visible: arrowing past the
+                // fold scrolls the list to follow the selection.
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVStack(alignment: .leading, spacing: 1) {
+                            ForEach(Array(snippets.enumerated()), id: \.element.id) { idx, snippet in
+                                Button { choose(snippet) } label: {
+                                    HStack(spacing: 6) {
+                                        Text("/\(snippet.name)")
+                                            .font(.system(size: 12, weight: .medium))
+                                            .lineLimit(1)
+                                        if snippet.movesToBcc {
+                                            MovesToBccBadge()
+                                        }
+                                        Text(snippet.previewLine)
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.secondary)
+                                            .lineLimit(1)
+                                        Spacer(minLength: 0)
                                     }
-                                    Text(snippet.previewLine)
-                                        .font(.system(size: 11))
-                                        .foregroundStyle(.secondary)
-                                        .lineLimit(1)
-                                    Spacer(minLength: 0)
+                                    .padding(.horizontal, 8).padding(.vertical, 4)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .background(idx == selection ? Color.notionAccent.opacity(0.14) : .clear,
+                                                in: RoundedRectangle(cornerRadius: 5))
+                                    .contentShape(Rectangle())
                                 }
-                                .padding(.horizontal, 8).padding(.vertical, 4)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .background(idx == selection ? Color.notionAccent.opacity(0.14) : .clear,
-                                            in: RoundedRectangle(cornerRadius: 5))
-                                .contentShape(Rectangle())
+                                .buttonStyle(.plain)
+                                .id(idx)
                             }
-                            .buttonStyle(.plain)
+                        }
+                        .padding(4)
+                    }
+                    .frame(maxHeight: 132)
+                    .onChange(of: selection) {
+                        withAnimation(.easeOut(duration: 0.1)) {
+                            proxy.scrollTo(selection)
                         }
                     }
-                    .padding(4)
                 }
-                .frame(maxHeight: 132)
 
                 Divider()
                 Text("↑↓ choose · ⏎ insert · esc dismiss")
