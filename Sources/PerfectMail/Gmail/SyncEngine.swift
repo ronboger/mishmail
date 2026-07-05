@@ -294,7 +294,8 @@ actor SyncEngine {
             participants: participants.joined(separator: " .. "),
             messageCount: messages.count,
             hasAttachment: messages.contains { $0.hasAttachment },
-            reminderAt: existing?.reminderAt
+            reminderAt: existing?.reminderAt,
+            reminderSetAt: existing?.reminderSetAt
         )
     }
 

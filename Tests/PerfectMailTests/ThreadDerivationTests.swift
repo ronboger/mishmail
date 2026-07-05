@@ -69,12 +69,16 @@ final class ThreadDerivationTests: XCTestCase {
 
     func testLocalStateSurvivesRederivation() throws {
         // Snooze and reminders are local-only; a sync must not wipe them.
+        // (reminderSetAt is the "remind if no reply" activity cutoff — losing it
+        // on rederivation would make the reminder fire even after a reply.)
         let snooze = Date(timeIntervalSinceNow: 3600)
         let reminder = Date(timeIntervalSinceNow: 7200)
+        let reminderSet = Date(timeIntervalSinceNow: -600)
         let existing = try XCTUnwrap(derive([msg(id: "m1", from: "a@b.com", daysAgo: 1)]))
         var withState = existing
         withState.snoozeUntil = snooze
         withState.reminderAt = reminder
+        withState.reminderSetAt = reminderSet
 
         let rederived = try XCTUnwrap(derive(
             [msg(id: "m2", from: "a@b.com", daysAgo: 0),
@@ -82,6 +86,7 @@ final class ThreadDerivationTests: XCTestCase {
             existing: withState))
         XCTAssertEqual(rederived.snoozeUntil, snooze)
         XCTAssertEqual(rederived.reminderAt, reminder)
+        XCTAssertEqual(rederived.reminderSetAt, reminderSet)
     }
 
     func testTrashedThread() throws {
