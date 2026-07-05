@@ -1368,20 +1368,8 @@ final class MailStore: ObservableObject {
         // For a forward, `message` is the forwarded original: it supplies the
         // HTML body below, but must not thread the send into its conversation.
         let threadParent = forward ? nil : message
-        var bodyHTML: String?
-        if forward, let orig = message, let html = orig.bodyHTML, !html.isEmpty {
-            let block = ForwardComposer.forwardBlock(
-                fromHeader: orig.fromHeader, date: orig.date, subject: orig.subject,
-                toHeader: orig.toHeader, ccHeader: orig.ccHeader, bodyText: orig.bodyText)
-            // Only when the quoted plain text is untouched — an edited quote
-            // must not silently diverge from what HTML recipients see.
-            if let userText = ForwardComposer.userText(inBody: body, expectedBlock: block) {
-                bodyHTML = ForwardComposer.htmlBody(
-                    userText: userText, fromHeader: orig.fromHeader, date: orig.date,
-                    subject: orig.subject, toHeader: orig.toHeader, ccHeader: orig.ccHeader,
-                    originalHTML: html)
-            }
-        }
+        let bodyHTML = htmlAlternative(body: body, forwardOf: forward ? message : nil,
+                                       draft: draft)
         let raw = MIMEBuilder.build(
             from: fromHeader(for: accountId), to: to, cc: cc, bcc: bcc, subject: subject,
             bodyText: body, bodyHTML: bodyHTML,
@@ -1396,19 +1384,47 @@ final class MailStore: ObservableObject {
         await sync(accountId: accountId)
     }
 
+    /// The HTML alternative an outgoing message can carry without ever
+    /// diverging from its plain text: a forward whose quoted block is
+    /// untouched (the user's text goes on top of the original HTML), or a
+    /// draft re-saved/sent with its body unedited (its stored HTML still
+    /// matches). Nil means plain text only.
+    private func htmlAlternative(body: String, forwardOf original: Message?,
+                                 draft: Message?) -> String? {
+        if let orig = original, let html = orig.bodyHTML, !html.isEmpty {
+            let block = ForwardComposer.forwardBlock(
+                fromHeader: orig.fromHeader, date: orig.date, subject: orig.subject,
+                toHeader: orig.toHeader, ccHeader: orig.ccHeader, bodyText: orig.bodyText)
+            if let userText = ForwardComposer.userText(inBody: body, expectedBlock: block) {
+                return ForwardComposer.htmlBody(
+                    userText: userText, fromHeader: orig.fromHeader, date: orig.date,
+                    subject: orig.subject, toHeader: orig.toHeader, ccHeader: orig.ccHeader,
+                    originalHTML: html)
+            }
+        }
+        if let draft, let html = draft.bodyHTML, !html.isEmpty, body == draft.bodyText {
+            return html
+        }
+        return nil
+    }
+
     /// Saves compose state as a real Gmail draft (shows up in Gmail too).
     /// Replaces `replacing` when re-saving an edited draft.
     func saveDraft(from accountId: String, to: String, cc: String, bcc: String = "", subject: String,
-                   body: String, replyTo message: Message? = nil,
+                   body: String, replyTo message: Message? = nil, forward: Bool = false,
                    attachments: [MIMEBuilder.Attachment] = [],
                    replacing draft: Message? = nil) async {
+        // Same rules as send(): a forward's original doesn't thread the
+        // draft, but supplies the HTML body when the quote is untouched.
+        let threadParent = forward ? nil : message
         let raw = MIMEBuilder.build(
             from: fromHeader(for: accountId), to: to, cc: cc, bcc: bcc, subject: subject, bodyText: body,
-            inReplyTo: message?.messageIdHeader,
-            references: message?.referencesHeader ?? draft?.referencesHeader,
+            bodyHTML: htmlAlternative(body: body, forwardOf: forward ? message : nil, draft: draft),
+            inReplyTo: threadParent?.messageIdHeader,
+            references: threadParent?.referencesHeader ?? draft?.referencesHeader,
             attachments: attachments
         )
-        let gmailThreadId = ((message ?? draft).map { String($0.threadId.split(separator: ":").last!) })
+        let gmailThreadId = ((threadParent ?? draft).map { String($0.threadId.split(separator: ":").last!) })
         do {
             try await client(for: accountId).createDraft(raw: raw, threadId: gmailThreadId)
             if let draft { await deleteUnderlyingDraft(draft, silent: true) }

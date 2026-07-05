@@ -19,6 +19,10 @@ minor versions may still change behavior.
 - **Drafts keep their attachments** — closing compose (save-as-draft) now
   uploads the attached files with the draft, and reopening a draft brings its
   attachments back as chips, so nothing is silently dropped on a re-save.
+- **Drafts keep HTML formatting** — a forward saved as a draft stores the
+  original's HTML alongside the plain text (it looks right in Gmail too), and
+  any draft re-saved or sent with an unedited body keeps its stored HTML —
+  including rich drafts started in Gmail on the web.
 - **On-device AI triage** — "Sort Inbox with AI" (Cmd-K) classifies threads into
   local buckets (Reply needed / FYI / Newsletter / Receipt / Other) via Ollama;
   results show as row tags, a new "AI category" grouping, and persist in their
