@@ -331,6 +331,25 @@ struct Sidebar: View {
                 }
             }
             .listStyle(.sidebar)
+
+            // Settings pinned at the bottom (also Cmd-, from anywhere).
+            Divider()
+            SettingsLink {
+                HStack(spacing: 7) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12))
+                    Text("Settings")
+                        .font(.system(size: 12.5))
+                    Spacer()
+                    Text("⌘,")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .help("Settings (⌘,)")
         }
     }
 

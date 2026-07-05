@@ -505,7 +505,7 @@ final class MailStore: ObservableObject {
     private func refreshCountsAndBadge() {
         // Local counts (fallback + reminders, which Gmail doesn't know about).
         let activeAccount = activeAccountId
-        let local: [String: Int] = (try? db.read { db in
+        let (local, badgeTotal): ([String: Int], Int) = (try? db.read { db in
             func count(_ q: QueryInterfaceRequest<MailThread>) -> Int {
                 var q = q
                 if let a = activeAccount { q = q.filter(Column("accountId") == a) }
@@ -516,13 +516,16 @@ final class MailStore: ObservableObject {
             for cat in Self.categoryLabels {
                 inboxUnread = inboxUnread.filter(!Column("labelIds").like("%\(cat)%"))
             }
-            return [
+            let counts = [
                 "inbox": count(inboxUnread),
                 "promotions": count(unread.filter(Column("labelIds").like("%CATEGORY_PROMOTIONS%"))),
                 "social": count(unread.filter(Column("labelIds").like("%CATEGORY_SOCIAL%"))),
                 "reminders": count(MailThread.filter(Column("reminderAt") != nil)),
             ]
-        }) ?? [:]
+            // The dock badge always covers every account, so it doesn't
+            // shrink just because one inbox is focused in the sidebar.
+            return (counts, (try? inboxUnread.fetchCount(db)) ?? 0)
+        }) ?? ([:], 0)
 
         var counts = local
         // Inbox badge always uses the local count: it applies the exact same
@@ -537,7 +540,7 @@ final class MailStore: ObservableObject {
             counts["social"] = scoped.values.reduce(0) { $0 + ($1["CATEGORY_SOCIAL"] ?? 0) }
         }
         unreadCounts = counts
-        Notifier.setBadge(counts["inbox"] ?? 0)
+        Notifier.setBadge(badgeTotal)
     }
 
     func messages(inThread threadId: String) -> [Message] {
@@ -1234,6 +1237,11 @@ final class MailStore: ObservableObject {
 
     func deleteSnippet(_ s: Snippet) {
         try? db.write { db in _ = try Snippet.deleteOne(db, key: s.id) }
+        objectWillChange.send()
+    }
+
+    func updateSnippet(_ s: Snippet) {
+        try? db.write { db in try s.update(db) }
         objectWillChange.send()
     }
 }
