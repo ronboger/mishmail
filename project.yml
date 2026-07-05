@@ -21,6 +21,15 @@ targets:
         com.apple.security.network.client: true
         com.apple.security.network.server: true
         com.apple.security.files.user-selected.read-write: true
+        # The tracked signing default is ad-hoc + hardened runtime. Hardened
+        # runtime turns on library validation, which requires every loaded
+        # library to share the app's Team ID — but the SPM-built GRDB.framework
+        # gets its own separate ad-hoc signature, so dyld rejects it at launch
+        # ("different Team IDs") and the app crashes. Disabling library
+        # validation lets the ad-hoc app load its embedded framework. It's a
+        # no-op once you sign with a real Developer ID (Xcode re-signs the
+        # framework with your team, so validation passes anyway).
+        com.apple.security.cs.disable-library-validation: true
     # Signing lives in Config/Signing.xcconfig (portable ad-hoc default; drop a
     # Config/Local.xcconfig to sign with your own team). Keep it out of the
     # per-target settings so the xcconfig actually wins.
