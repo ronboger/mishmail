@@ -11,7 +11,9 @@ minor versions may still change behavior.
   "---------- Forwarded message ---------" block and, when the quoted text is
   left untouched, sends a `multipart/alternative` message that carries the
   original HTML formatting alongside the plain text. Editing inside the quote
-  falls back to plain text so the two versions never disagree.
+  falls back to plain text so the two versions never disagree. The original's
+  attachments come along too (shown as removable chips; Send waits until
+  they've downloaded).
 - **Forward focuses To** — pressing the forward shortcut opens compose with the
   cursor in the To field, ready to type a recipient.
 - **On-device AI triage** — "Sort Inbox with AI" (Cmd-K) classifies threads into

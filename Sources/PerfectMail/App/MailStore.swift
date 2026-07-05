@@ -1487,6 +1487,19 @@ final class MailStore: ObservableObject {
 
     // MARK: - Attachments
 
+    /// Downloads a message's attachments as sendable MIME parts — used to
+    /// carry the original files along on a forward, like Gmail does.
+    func loadAttachments(for message: Message) async throws -> [MIMEBuilder.Attachment] {
+        var out: [MIMEBuilder.Attachment] = []
+        for att in attachments(for: message.id) {
+            let data = try await client(for: message.accountId)
+                .getAttachment(messageId: message.gmailId, attachmentId: att.gmailAttachmentId)
+            out.append(.init(filename: MessageParser.safeFilename(att.filename),
+                             mimeType: att.mimeType, data: data))
+        }
+        return out
+    }
+
     /// Opens in the default app via a private temp file inside the sandbox
     /// (macOS purges it; nothing is written to user folders). The file is
     /// namespaced by message id (so same-named attachments never collide) and
