@@ -182,12 +182,38 @@ final class AppDatabase {
         if FileManager.default.fileExists(atPath: path), Self.isPlaintext(path) {
             try Self.encryptInPlace(path: path, passphrase: passphrase)
         }
+        do {
+            dbQueue = try Self.openAndMigrate(path: path, passphrase: passphrase)
+        } catch {
+            // The cache can't be opened — wrong key (keychain item lost or
+            // rotated, e.g. a backup restore) or a corrupt file. Everything in
+            // it resyncs from Gmail, so set it aside and start fresh instead
+            // of crashing at launch.
+            NSLog("PerfectMail: mail cache unreadable (%@); resetting", "\(error)")
+            try Self.setAsideUnreadable(path: path)
+            dbQueue = try Self.openAndMigrate(path: path, passphrase: passphrase)
+        }
+    }
+
+    private static func openAndMigrate(path: String, passphrase: String) throws -> DatabaseQueue {
         var config = Configuration()
         config.prepareDatabase { db in
             try db.usePassphrase(passphrase)
         }
-        dbQueue = try DatabaseQueue(path: path, configuration: config)
-        try Self.migrator.migrate(dbQueue)
+        let queue = try DatabaseQueue(path: path, configuration: config)
+        try migrator.migrate(queue)
+        return queue
+    }
+
+    /// Moves an unreadable database out of the way (kept as .unreadable for
+    /// post-mortems, replacing any previous one) along with its WAL sidecars.
+    private static func setAsideUnreadable(path: String) throws {
+        let fm = FileManager.default
+        try? fm.removeItem(atPath: path + ".unreadable")
+        try fm.moveItem(atPath: path, toPath: path + ".unreadable")
+        for sidecar in ["-wal", "-shm"] {
+            try? fm.removeItem(atPath: path + sidecar)
+        }
     }
 
     /// Random 256-bit key, hex-encoded, generated once and kept in the Keychain.
