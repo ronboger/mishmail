@@ -101,6 +101,18 @@ struct Snippet: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     var name: String
     var body: String
     mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+
+    /// Case-insensitive name-or-body match, shared by the compose panel and
+    /// the settings page so their search behavior can't drift apart.
+    func matches(_ query: String) -> Bool {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        return q.isEmpty
+            || name.localizedCaseInsensitiveContains(q)
+            || body.localizedCaseInsensitiveContains(q)
+    }
+
+    /// One-line preview for list rows.
+    var previewLine: String { body.replacingOccurrences(of: "\n", with: " ") }
 }
 
 /// A composed message waiting for its send time. Gmail has no schedule-send

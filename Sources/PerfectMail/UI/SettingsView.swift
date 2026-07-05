@@ -3,9 +3,7 @@ import SwiftUI
 /// Notion Mail-style settings window: a slim sidebar of panes on the left,
 /// the selected pane on the right. Opens with Cmd-, or from the app sidebar.
 struct SettingsView: View {
-    @EnvironmentObject var store: MailStore
-
-    enum Pane: String, CaseIterable, Identifiable {
+    enum Pane: String, Identifiable {
         case accounts, googleAPI, filters, snippets, appearance, ai, updates
 
         var id: String { rawValue }
@@ -85,8 +83,8 @@ struct SettingsView: View {
         case .googleAPI: GoogleAPISettings()
         case .filters: GmailFiltersSettings()
         case .snippets: SnippetsSettings()
-        case .appearance: PaneScaffold(title: "Appearance") { AppearanceSettings() }
-        case .ai: PaneScaffold(title: "AI") { AISettings() }
+        case .appearance: AppearanceSettings()
+        case .ai: AISettings()
         case .updates: UpdatesSettings()
         }
     }
@@ -119,7 +117,9 @@ struct GoogleAPISettings: View {
     // Start in edit mode only when nothing is saved yet; otherwise show the
     // saved credentials read-only behind an explicit Edit button.
     @State private var editing = !OAuthConfig.isConfigured
-    @State private var justSaved = false
+
+    private var trimmedID: String { clientID.trimmingCharacters(in: .whitespacesAndNewlines) }
+    private var trimmedSecret: String { clientSecret.trimmingCharacters(in: .whitespacesAndNewlines) }
 
     var body: some View {
         PaneScaffold(title: "Google API") {
@@ -138,15 +138,14 @@ struct GoogleAPISettings: View {
                                 }
                             }
                             Button("Save") {
-                                OAuthConfig.clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
-                                OAuthConfig.clientSecret = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
-                                clientID = OAuthConfig.clientID
-                                clientSecret = OAuthConfig.clientSecret
+                                OAuthConfig.clientID = trimmedID
+                                OAuthConfig.clientSecret = trimmedSecret
+                                clientID = trimmedID
+                                clientSecret = trimmedSecret
                                 editing = false
-                                justSaved = true
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                            .disabled(trimmedID.isEmpty)
                         }
                     } header: {
                         Text("Google OAuth (Desktop app client)")
@@ -167,8 +166,7 @@ struct GoogleAPISettings: View {
                                 .foregroundStyle(.secondary)
                         }
                         HStack {
-                            Label(justSaved ? "Saved" : "Configured",
-                                  systemImage: "checkmark.circle.fill")
+                            Label("Configured", systemImage: "checkmark.circle.fill")
                                 .font(.system(size: 12))
                                 .foregroundStyle(.green)
                             Spacer()
@@ -188,10 +186,9 @@ struct GoogleAPISettings: View {
         // navigates away mid-paste — keep what they typed instead of
         // silently dropping it (the pane's @State dies with the pane).
         .onDisappear {
-            if editing, !OAuthConfig.isConfigured,
-               !clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                OAuthConfig.clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
-                OAuthConfig.clientSecret = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+            if editing, !OAuthConfig.isConfigured, !trimmedID.isEmpty {
+                OAuthConfig.clientID = trimmedID
+                OAuthConfig.clientSecret = trimmedSecret
             }
         }
     }
@@ -295,8 +292,13 @@ struct AccountsSettings: View {
 
 struct GmailFiltersSettings: View {
     @EnvironmentObject var store: MailStore
-    @State private var filtersByAccount: [String: [GFilter]] = [:]
-    @State private var errorsByAccount: [String: String] = [:]
+    // One value per account with exactly two cases, so filters and errors
+    // can't drift out of sync.
+    private enum LoadState {
+        case loaded([GFilter])
+        case failed(String)
+    }
+    @State private var results: [String: LoadState] = [:]
     @State private var loading = false
 
     var body: some View {
@@ -337,13 +339,12 @@ struct GmailFiltersSettings: View {
 
     @ViewBuilder
     private func accountSection(_ accountId: String) -> some View {
-        if let error = errorsByAccount[accountId] {
-            VStack(alignment: .leading, spacing: 6) {
-                Label(error, systemImage: "exclamationmark.triangle")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-            }
-            .padding(.horizontal, 20).padding(.vertical, 10)
-        } else if let filters = filtersByAccount[accountId] {
+        switch results[accountId] {
+        case .failed(let error):
+            Label(error, systemImage: "exclamationmark.triangle")
+                .font(.system(size: 12)).foregroundStyle(.secondary)
+                .padding(.horizontal, 20).padding(.vertical, 10)
+        case .loaded(let filters):
             if filters.isEmpty {
                 Text("No filters set up in Gmail for this account.")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
@@ -353,6 +354,8 @@ struct GmailFiltersSettings: View {
                 FilterRowView(filter: filter, accountId: accountId)
                 Divider().padding(.leading, 20)
             }
+        case nil:
+            EmptyView()
         }
     }
 
@@ -373,13 +376,12 @@ struct GmailFiltersSettings: View {
             for await (id, result) in group {
                 switch result {
                 case .success(let filters):
-                    filtersByAccount[id] = filters
-                    errorsByAccount[id] = nil
+                    results[id] = .loaded(filters)
                 case .failure(GmailError.http(403, _)):
-                    errorsByAccount[id] =
-                        "PerfectMail doesn't have permission to read this account's filters yet. Remove and re-add the account (Accounts pane) to grant it."
+                    results[id] = .failed(
+                        "PerfectMail doesn't have permission to read this account's filters yet. Remove and re-add the account (Accounts pane) to grant it.")
                 case .failure(let error):
-                    errorsByAccount[id] = error.localizedDescription
+                    results[id] = .failed(error.localizedDescription)
                 }
             }
         }
@@ -512,11 +514,7 @@ struct SnippetsSettings: View {
     @State private var all: [Snippet] = []
 
     private var filtered: [Snippet] {
-        guard !search.isEmpty else { return all }
-        return all.filter {
-            $0.name.localizedCaseInsensitiveContains(search)
-                || $0.body.localizedCaseInsensitiveContains(search)
-        }
+        all.filter { $0.matches(search) }
     }
 
     var body: some View {
@@ -524,15 +522,8 @@ struct SnippetsSettings: View {
                      subtitle: "Reusable text you can drop into any email by typing / in compose") {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) {
-                    HStack(spacing: 5) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 12)).foregroundStyle(.secondary)
-                        TextField("Search snippets…", text: $search)
-                            .textFieldStyle(.plain)
-                    }
-                    .padding(.horizontal, 8).padding(.vertical, 6)
-                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                    .frame(maxWidth: 280)
+                    SearchField(prompt: "Search snippets…", text: $search)
+                        .frame(maxWidth: 280)
 
                     Spacer()
 
@@ -595,7 +586,7 @@ private struct SnippetTableRow: View {
                 .font(.system(size: 13, weight: .medium))
                 .lineLimit(1)
                 .frame(width: 170, alignment: .leading)
-            Text(snippet.body.replacingOccurrences(of: "\n", with: " "))
+            Text(snippet.previewLine)
                 .font(.system(size: 12.5))
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
@@ -670,21 +661,23 @@ struct AppearanceSettings: View {
     @AppStorage("fontScale") private var fontScale = 1.0
 
     var body: some View {
-        Form {
-            Section {
-                Picker("Text size", selection: $fontScale) {
-                    Text("Small").tag(0.9)
-                    Text("Default").tag(1.0)
-                    Text("Large").tag(1.15)
-                    Text("Extra Large").tag(1.3)
+        PaneScaffold(title: "Appearance") {
+            Form {
+                Section {
+                    Picker("Text size", selection: $fontScale) {
+                        Text("Small").tag(0.9)
+                        Text("Default").tag(1.0)
+                        Text("Large").tag(1.15)
+                        Text("Extra Large").tag(1.3)
+                    }
+                    .pickerStyle(.segmented)
+                } footer: {
+                    Text("Also adjustable anywhere with Cmd + and Cmd −.")
+                        .font(.caption).foregroundStyle(.secondary)
                 }
-                .pickerStyle(.segmented)
-            } footer: {
-                Text("Also adjustable anywhere with Cmd + and Cmd −.")
-                    .font(.caption).foregroundStyle(.secondary)
             }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
     }
 }
 
@@ -693,19 +686,21 @@ struct AISettings: View {
     @State private var model: String = Ollama.model
 
     var body: some View {
-        Form {
-            Section {
-                TextField("Ollama URL", text: $url)
-                    .onChange(of: url) { Ollama.baseURL = url }
-                TextField("Model", text: $model)
-                    .onChange(of: model) { Ollama.model = model }
-            } header: {
-                Text("Local AI drafting (Ollama)")
-            } footer: {
-                Text("AI drafting runs entirely on this Mac via Ollama. Install from ollama.com, then run: ollama pull \(model). The Draft with AI button appears when replying.")
-                    .font(.caption).foregroundStyle(.secondary)
+        PaneScaffold(title: "AI") {
+            Form {
+                Section {
+                    TextField("Ollama URL", text: $url)
+                        .onChange(of: url) { Ollama.baseURL = url }
+                    TextField("Model", text: $model)
+                        .onChange(of: model) { Ollama.model = model }
+                } header: {
+                    Text("Local AI drafting (Ollama)")
+                } footer: {
+                    Text("AI drafting runs entirely on this Mac via Ollama. Install from ollama.com, then run: ollama pull \(model). The Draft with AI button appears when replying.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
             }
+            .formStyle(.grouped)
         }
-        .formStyle(.grouped)
     }
 }

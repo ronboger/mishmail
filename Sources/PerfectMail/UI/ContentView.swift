@@ -309,28 +309,11 @@ struct Sidebar: View {
                 .help("Compose (⌘N or c)")
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-            HStack(spacing: 5) {
-                Image(systemName: "magnifyingglass")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                TextField("Search", text: $store.searchText)
-                    .textFieldStyle(.plain)
-                    .onSubmit {
-                        // Hand focus back to the list so j/k/e/etc. work.
-                        NSApp.keyWindow?.makeFirstResponder(nil)
-                        if store.selectedThreadId == nil { store.moveSelection(1) }
-                    }
-                if !store.searchText.isEmpty {
-                    Button {
-                        store.searchText = ""
-                    } label: {
-                        Image(systemName: "xmark.circle.fill")
-                            .font(.system(size: 11)).foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                }
-            }
-            .padding(.horizontal, 7).padding(.vertical, 5)
-            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+            SearchField(prompt: "Search", text: $store.searchText, onSubmit: {
+                // Hand focus back to the list so j/k/e/etc. work.
+                NSApp.keyWindow?.makeFirstResponder(nil)
+                if store.selectedThreadId == nil { store.moveSelection(1) }
+            })
             .help("Search — from: to: subject: label: has:attachment is:unread is:starred after: before:")
             .padding(.horizontal, 10).padding(.bottom, 8)
             List(selection: $store.selectedView) {

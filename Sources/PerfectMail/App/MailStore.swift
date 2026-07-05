@@ -744,15 +744,18 @@ final class MailStore: ObservableObject {
             for cat in Self.categoryLabels {
                 inboxUnread = inboxUnread.filter(!Column("labelIds").like("%\(cat)%"))
             }
+            // The dock badge always covers every account, so it doesn't
+            // shrink just because one inbox is focused in the sidebar. With
+            // no account focused it's the same query as the sidebar count —
+            // run it once.
+            let allInbox = (try? inboxUnread.fetchCount(db)) ?? 0
             let counts = [
-                "inbox": count(inboxUnread),
+                "inbox": activeAccount == nil ? allInbox : count(inboxUnread),
                 "promotions": count(unread.filter(Column("labelIds").like("%CATEGORY_PROMOTIONS%"))),
                 "social": count(unread.filter(Column("labelIds").like("%CATEGORY_SOCIAL%"))),
                 "reminders": count(MailThread.filter(Column("reminderAt") != nil)),
             ]
-            // The dock badge always covers every account, so it doesn't
-            // shrink just because one inbox is focused in the sidebar.
-            return (counts, (try? inboxUnread.fetchCount(db)) ?? 0)
+            return (counts, allInbox)
         }) ?? ([:], 0)
 
         var counts = local
