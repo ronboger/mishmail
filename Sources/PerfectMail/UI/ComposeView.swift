@@ -64,6 +64,13 @@ struct ComposeView: View {
         quotedTail.isEmpty ? body_ : body_ + "\n\n" + quotedTail
     }
 
+    /// Focuses the body editor. Setting the FocusState synchronously in
+    /// onAppear fires before the TextEditor is ready and gets dropped —
+    /// same trick as AddressField's autoFocus, delayed a beat.
+    private func focusBody() {
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { bodyFocused = true }
+    }
+
     /// Inlines the collapsed quote into the editor, making it editable.
     private func expandQuote() {
         guard !quotedTail.isEmpty else { return }
@@ -257,7 +264,9 @@ struct ComposeView: View {
                 .scrollContentBackground(.hidden)
                 .focused($bodyFocused)
                 .padding(.top, 10)
-                .frame(minHeight: 120, maxHeight: .infinity)
+                // While the quote is collapsed, don't let the editor swallow
+                // the card — keeps the "…" pill near the text, not the footer.
+                .frame(minHeight: 120, maxHeight: quotedTail.isEmpty ? .infinity : 160)
                 // The `/` picker steals ↑/↓/Return/Esc while it's showing.
                 .onKeyPress(.downArrow) {
                     guard !slashMatches.isEmpty else { return .ignored }
@@ -292,16 +301,17 @@ struct ComposeView: View {
                     expandQuote()
                 } label: {
                     Image(systemName: "ellipsis")
-                        .font(.system(size: 11, weight: .bold))
+                        .font(.system(size: 14, weight: .bold))
                         .foregroundStyle(.secondary)
-                        .padding(.horizontal, 10)
-                        .padding(.vertical, 3)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
                         .background(Color.secondary.opacity(0.15), in: Capsule())
                         .contentShape(Capsule())
                 }
                 .buttonStyle(.plain)
                 .help(request.forward ? "Show forwarded message" : "Show quoted text")
                 .padding(.bottom, 8)
+                Spacer(minLength: 0)
             }
 
             if !attachmentURLs.isEmpty || !restoredAttachments.isEmpty || loadingAttachments {
@@ -519,7 +529,7 @@ struct ComposeView: View {
             body_ = r.body
             restoredAttachments = r.attachments
             initialBody = ""   // an undone send always counts as content
-            bodyFocused = true
+            focusBody()
             return
         }
 
@@ -539,7 +549,7 @@ struct ComposeView: View {
             initialBody = ""   // a draft always counts as content
             // The draft's files come back as chips — re-saving keeps them.
             prefillAttachments(of: draft)
-            bodyFocused = true
+            focusBody()
             return
         }
 
@@ -609,7 +619,7 @@ struct ComposeView: View {
             .map { "> \($0)" }
             .joined(separator: "\n")
         quotedTail = "\nOn \(when), \(who) wrote:\n\(quoted)"
-        bodyFocused = true
+        focusBody()
     }
 
     /// Pulls a message's attachments (forwarded original, or a draft being
