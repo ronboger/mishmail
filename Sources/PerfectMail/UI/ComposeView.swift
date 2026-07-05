@@ -276,6 +276,17 @@ struct ComposeView: View {
                     if slashToken == nil { slashDismissed = false }
                 }
 
+            // The `/` picker renders directly under the editor, where the
+            // cursor is, so it reads as results for what you're typing.
+            if slashActive {
+                SlashSnippetPicker(snippets: slashMatches,
+                                   query: slashToken?.query ?? "",
+                                   selection: min(slashSelection, max(slashMatches.count - 1, 0)),
+                                   choose: { insertSlashSnippet($0) })
+                    .padding(.top, 4)
+                    .transition(.opacity)
+            }
+
             // The quoted original stays collapsed behind this pill (Gmail's
             // "…"). Clicking inlines it into the editor for viewing/editing.
             if !quotedTail.isEmpty {
@@ -339,16 +350,6 @@ struct ComposeView: View {
             if let error {
                 Text(error).font(.caption).foregroundStyle(.red).lineLimit(2)
                     .padding(.bottom, 4)
-            }
-
-            // Typing "/name" in the body pops this picker (Notion Mail-style);
-            // Enter inserts the highlighted snippet in place of the token.
-            if !slashMatches.isEmpty {
-                SlashSnippetPicker(snippets: slashMatches,
-                                   selection: min(slashSelection, slashMatches.count - 1),
-                                   choose: { insertSlashSnippet($0) })
-                    .padding(.bottom, 8)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
             // Snippets live in an inline panel, not a popover — always
@@ -686,10 +687,18 @@ struct ComposeView: View {
         SnippetInsertion.slashToken(in: String(body_[..<authoredHeadEnd]))
     }
 
-    /// Snippets matching the active slash query (empty when no trigger,
-    /// dismissed, or the body isn't focused).
+    /// Whether the `/` picker should be showing: body focused, a live slash
+    /// token, and not Esc-dismissed. Independent of whether anything matches,
+    /// so the picker can show its empty/no-match state (confirming the trigger
+    /// fired) rather than silently showing nothing.
+    private var slashActive: Bool {
+        bodyFocused && !slashDismissed && slashToken != nil
+    }
+
+    /// Snippets matching the active slash query (all of them on an empty
+    /// query — type `/` to browse everything, Claude-style).
     private var slashMatches: [Snippet] {
-        guard bodyFocused, !slashDismissed, let token = slashToken else { return [] }
+        guard let token = slashToken else { return [] }
         let q = token.query.trimmingCharacters(in: .whitespaces)
         return store.snippets().filter {
             q.isEmpty || $0.name.localizedCaseInsensitiveContains(q)
@@ -703,6 +712,13 @@ struct ComposeView: View {
         slashKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty
             else { return event }
+            guard slashActive else { return event }
+            // Esc drops the picker even when nothing matches (so the trigger
+            // is escapable); the rest only act when there's a snippet to pick.
+            if event.keyCode == 53 {  // Esc — keep the typed text
+                slashDismissed = true
+                return nil
+            }
             let matches = slashMatches
             guard !matches.isEmpty else { return event }
             switch event.keyCode {
@@ -714,9 +730,6 @@ struct ComposeView: View {
                 return nil
             case 36, 76, 48:  // Return, keypad Enter, Tab
                 insertSlashSnippet(matches[min(slashSelection, matches.count - 1)])
-                return nil
-            case 53:  // Esc — drop the picker, keep the typed text
-                slashDismissed = true
                 return nil
             default:
                 return event

@@ -78,6 +78,7 @@ targets:
       - Sources/PerfectMail/Support/SelectionAdvance.swift
       - Sources/PerfectMail/Support/SendSchedule.swift
       - Sources/PerfectMail/Support/Classifier.swift
+      - Sources/PerfectMail/Support/SnippetDefaults.swift
       - Sources/PerfectMail/Support/SnippetExpander.swift
       - Sources/PerfectMail/Support/SnippetImport.swift
       - Sources/PerfectMail/Support/SnippetInsertion.swift

@@ -377,6 +377,26 @@ final class MailStore: ObservableObject {
         startPolling()
         rebuildMetadataIfNeeded()
         rebuildContacts()
+        seedDefaultSnippetsIfNeeded()
+    }
+
+    /// One-time seed of the starter snippets, so `/` in compose has something
+    /// to show on a fresh install. Runs once (tracked in UserDefaults) and
+    /// skips names that already exist, so it never fights an import or a delete.
+    private func seedDefaultSnippetsIfNeeded() {
+        let key = "didSeedDefaultSnippets"
+        guard !UserDefaults.standard.bool(forKey: key) else { return }
+        let planned = SnippetImport.plan(SnippetDefaults.items,
+                                         existingNames: snippets().map(\.name))
+        try? db.write { db in
+            for item in planned {
+                var s = Snippet(id: nil, name: item.name, body: item.body,
+                                movesToBcc: item.movesToBcc ?? false)
+                try s.insert(db)
+            }
+        }
+        UserDefaults.standard.set(true, forKey: key)
+        if !planned.isEmpty { objectWillChange.send() }
     }
 
     // MARK: - Contacts (derived from synced mail; no extra Google scopes)

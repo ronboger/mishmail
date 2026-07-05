@@ -7,49 +7,69 @@ import SwiftUI
 /// Return inserts, Esc dismisses; clicking a row also inserts.
 struct SlashSnippetPicker: View {
     let snippets: [Snippet]
+    let query: String
     let selection: Int
     let choose: (Snippet) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    ForEach(Array(snippets.enumerated()), id: \.element.id) { idx, snippet in
-                        Button { choose(snippet) } label: {
-                            HStack(spacing: 6) {
-                                Text("/\(snippet.name)")
-                                    .font(.system(size: 12, weight: .medium))
-                                    .lineLimit(1)
-                                if snippet.movesToBcc {
-                                    MovesToBccBadge()
-                                }
-                                Text(snippet.previewLine)
-                                    .font(.system(size: 11))
-                                    .foregroundStyle(.secondary)
-                                    .lineLimit(1)
-                                Spacer(minLength: 0)
-                            }
-                            .padding(.horizontal, 8).padding(.vertical, 4)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(idx == selection ? Color.primary.opacity(0.08) : .clear,
-                                        in: RoundedRectangle(cornerRadius: 5))
-                            .contentShape(Rectangle())
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(4)
+            HStack(spacing: 6) {
+                Image(systemName: "text.badge.plus").font(.system(size: 10))
+                Text(query.isEmpty ? "Snippets" : "Snippets matching “/\(query)”")
+                    .font(.system(size: 10.5, weight: .semibold))
             }
-            .frame(maxHeight: 118)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10).padding(.top, 6).padding(.bottom, 4)
 
-            Divider()
-            Text("↑↓ choose · ⏎ insert · esc dismiss")
-                .font(.system(size: 10))
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 10).padding(.vertical, 5)
+            if snippets.isEmpty {
+                Text(query.isEmpty
+                     ? "No snippets yet — add them in Settings → Snippets."
+                     : "No snippet matches “/\(query)”. Keep typing or press esc.")
+                    .font(.system(size: 11.5))
+                    .foregroundStyle(.secondary)
+                    .padding(.horizontal, 10).padding(.bottom, 8)
+            } else {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        ForEach(Array(snippets.enumerated()), id: \.element.id) { idx, snippet in
+                            Button { choose(snippet) } label: {
+                                HStack(spacing: 6) {
+                                    Text("/\(snippet.name)")
+                                        .font(.system(size: 12, weight: .medium))
+                                        .lineLimit(1)
+                                    if snippet.movesToBcc {
+                                        MovesToBccBadge()
+                                    }
+                                    Text(snippet.previewLine)
+                                        .font(.system(size: 11))
+                                        .foregroundStyle(.secondary)
+                                        .lineLimit(1)
+                                    Spacer(minLength: 0)
+                                }
+                                .padding(.horizontal, 8).padding(.vertical, 4)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .background(idx == selection ? Color.notionAccent.opacity(0.14) : .clear,
+                                            in: RoundedRectangle(cornerRadius: 5))
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    .padding(4)
+                }
+                .frame(maxHeight: 132)
+
+                Divider()
+                Text("↑↓ choose · ⏎ insert · esc dismiss")
+                    .font(.system(size: 10))
+                    .foregroundStyle(.tertiary)
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+            }
         }
-        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color(nsColor: .textBackgroundColor),
+                    in: RoundedRectangle(cornerRadius: 8))
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+        .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
     }
 }
 

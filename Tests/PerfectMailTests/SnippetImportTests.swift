@@ -36,4 +36,16 @@ final class SnippetImportTests: XCTestCase {
     func testBadJSONThrows() {
         XCTAssertThrowsError(try SnippetImport.decode(Data("not json".utf8)))
     }
+
+    func testDefaultsAreSeedableAndSelfConsistent() {
+        let items = SnippetDefaults.items
+        XCTAssertFalse(items.isEmpty)
+        for item in items {
+            XCTAssertFalse(item.name.trimmingCharacters(in: .whitespaces).isEmpty)
+            XCTAssertFalse(item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+        }
+        XCTAssertEqual(items.filter { $0.movesToBcc == true }.map(\.name), ["intro find time"])
+        XCTAssertEqual(SnippetImport.plan(items, existingNames: []).count, items.count)
+        XCTAssertEqual(SnippetImport.plan(items, existingNames: items.map(\.name)).count, 0)
+    }
 }
