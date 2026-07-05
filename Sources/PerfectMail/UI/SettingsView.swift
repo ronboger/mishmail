@@ -6,7 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject var store: MailStore
 
     enum Pane: String, CaseIterable, Identifiable {
-        case accounts, googleAPI, filters, snippets, appearance, ai, updates
+        case accounts, googleAPI, filters, snippets, appearance, shortcuts, ai, updates
 
         var id: String { rawValue }
 
@@ -17,6 +17,7 @@ struct SettingsView: View {
             case .filters: return "Gmail filters"
             case .snippets: return "Snippets"
             case .appearance: return "Appearance"
+            case .shortcuts: return "Keyboard shortcuts"
             case .ai: return "AI"
             case .updates: return "Updates"
             }
@@ -29,6 +30,7 @@ struct SettingsView: View {
             case .filters: return "line.3.horizontal.decrease"
             case .snippets: return "curlybraces"
             case .appearance: return "textformat.size"
+            case .shortcuts: return "keyboard"
             case .ai: return "sparkles"
             case .updates: return "arrow.down.circle"
             }
@@ -49,6 +51,7 @@ struct SettingsView: View {
                 }
                 Section("App") {
                     row(.appearance)
+                    row(.shortcuts)
                     row(.ai)
                     row(.updates)
                 }
@@ -86,6 +89,7 @@ struct SettingsView: View {
         case .filters: GmailFiltersSettings()
         case .snippets: SnippetsSettings()
         case .appearance: PaneScaffold(title: "Appearance") { AppearanceSettings() }
+        case .shortcuts: ShortcutsSettings(bindings: store.keyBindings)
         case .ai: PaneScaffold(title: "AI") { AISettings() }
         case .updates: UpdatesSettings()
         }
