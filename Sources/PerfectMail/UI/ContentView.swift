@@ -450,6 +450,9 @@ struct AccountSwitcher: View {
                         Text(title)
                             .font(.system(size: 13, weight: .semibold))
                             .lineLimit(1)
+                        if let account = activeAccount, let label = labelText(account) {
+                            labelPill(label, account: account)
+                        }
                         Image(systemName: "chevron.down")
                             .font(.system(size: 8, weight: .semibold))
                             .foregroundStyle(.secondary)
@@ -509,6 +512,9 @@ struct AccountSwitcher: View {
                         .lineLimit(1)
                 }
                 Spacer(minLength: 0)
+                if let account, let label = labelText(account) {
+                    labelPill(label, account: account)
+                }
                 if selected {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .semibold))
@@ -546,15 +552,30 @@ struct AccountSwitcher: View {
     }
 
     /// Full name first, like Notion Mail's account header: the outgoing
-    /// sender name if set, then the local label, then the address — with the
-    /// local label in parentheses when it adds information ("Ron (Fund)").
+    /// sender name if set, then the local label, then the address.
     private func displayTitle(_ account: Account) -> String {
-        let base = account.senderName.isEmpty ? account.displayName : account.senderName
+        if !account.senderName.isEmpty { return account.senderName }
+        return account.displayName
+    }
+
+    /// The local label, when it adds information beyond the title/address.
+    /// Rendered as a tinted pill next to the name, never as part of it.
+    private func labelText(_ account: Account) -> String? {
+        guard !account.senderName.isEmpty else { return nil }
         let label = account.displayName
-        if !account.senderName.isEmpty, !label.isEmpty, label != account.id, label != base {
-            return "\(base) (\(label))"
-        }
-        return base
+        guard !label.isEmpty, label != account.id, label != account.senderName else { return nil }
+        return label
+    }
+
+    /// Small capsule tinted with the account's avatar color ("Fund", "Personal").
+    private func labelPill(_ label: String, account: Account) -> some View {
+        let tint = Color.stable(for: account.id)
+        return Text(label)
+            .font(.system(size: 9.5, weight: .medium))
+            .foregroundStyle(tint)
+            .padding(.horizontal, 7).padding(.vertical, 2)
+            .background(tint.opacity(0.14), in: Capsule())
+            .fixedSize()
     }
 
     private var title: String {
