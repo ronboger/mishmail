@@ -1,5 +1,6 @@
-# PerfectMail — local CI. No GitHub remote by design, so this is the gate:
-#   make test   before every commit (pre-commit hook runs it for you).
+# PerfectMail — build/test entrypoints.
+#   make test   is the gate: run it before every commit (the pre-commit hook
+#   from `make hooks` does it for you, and CI runs it on every push/PR).
 
 PROJECT = PerfectMail.xcodeproj
 

@@ -3,3 +3,14 @@
 .DS_Store
 .worktrees/
 build/
+
+# Generated / IDE
+DerivedData/
+xcuserdata/
+*.xcuserstate
+
+# Agent worktrees & scratch
+.claude/
+
+# Personal signing overrides (see Config/Signing.xcconfig)
+Config/Local.xcconfig
