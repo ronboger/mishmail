@@ -123,6 +123,9 @@ struct ContentView: View {
         .sheet(item: $store.snoozingThread) { thread in
             SnoozeSheet { store.snooze(thread, until: $0) }
         }
+        .sheet(isPresented: $store.showShortcutsHelp) {
+            ShortcutsHelpView(bindings: store.keyBindings)
+        }
         .overlay {
             if store.showCommandPalette {
                 CommandPalette()
@@ -205,6 +208,8 @@ struct ContentView: View {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak store] event in
             guard let store else { return event }
+            // Settings is capturing a key for rebinding — don't run shortcuts.
+            if store.keyBindings.capturing { return event }
             let mods = event.modifierFlags.intersection([.command, .option, .control])
             if mods == .command, event.charactersIgnoringModifiers == "k" {
                 store.showCommandPalette.toggle()
@@ -217,6 +222,19 @@ struct ContentView: View {
             if store.showCommandPalette, event.keyCode == 53 {  // esc
                 store.showCommandPalette = false
                 return nil
+            }
+            if store.showShortcutsHelp, event.keyCode == 53 {  // esc
+                store.showShortcutsHelp = false
+                return nil
+            }
+            // While the help sheet is up, ? still closes it, but no other bare
+            // key may fall through to mail actions on the background selection.
+            if store.showShortcutsHelp {
+                if event.charactersIgnoringModifiers == "?" {
+                    store.showShortcutsHelp = false
+                    return nil
+                }
+                return event
             }
             if store.showLabelPicker {
                 switch event.keyCode {
@@ -282,7 +300,9 @@ struct ContentView: View {
                 break
             }
             guard let chars = event.charactersIgnoringModifiers else { return event }
-            if chars == "j" || chars == "k" { store.selectionViaKeyboard = true }
+            if let cmd = store.keyBindings.command(for: chars), cmd == .next || cmd == .prev {
+                store.selectionViaKeyboard = true
+            }
             return store.handleKey(chars) ? nil : event
         }
     }
@@ -306,7 +326,7 @@ struct Sidebar: View {
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut("n", modifiers: .command)
-                .help("Compose (⌘N or c)")
+                .help("Compose (⌘N or \(store.keyBindings.key(for: .compose)))")
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             SearchField(prompt: "Search", text: $store.searchText, onSubmit: {

@@ -57,7 +57,7 @@ struct ThreadDetailView: View {
                         .foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .help("Show labels on this thread (l labels it)")
+                    .help("Show labels on this thread (\(store.keyBindings.key(for: .label)) labels it)")
 
                     if labelsExpanded {
                         HStack(spacing: 6) {
@@ -89,7 +89,7 @@ struct ThreadDetailView: View {
                                 .background(Color.secondary.opacity(0.1), in: Capsule())
                             }
                             .buttonStyle(.plain)
-                            .help("Label this thread (l)")
+                            .help("Label this thread (\(store.keyBindings.key(for: .label)))")
                         }
                     }
                 }
@@ -117,11 +117,11 @@ struct ThreadDetailView: View {
                 Button { store.moveSelection(-1) } label: {
                     Label("Previous", systemImage: "chevron.up")
                 }
-                .help("Previous thread (k)")
+                .help("Previous thread (\(store.keyBindings.key(for: .prev)))")
                 Button { store.moveSelection(1) } label: {
                     Label("Next", systemImage: "chevron.down")
                 }
-                .help("Next thread (j)")
+                .help("Next thread (\(store.keyBindings.key(for: .next)))")
             }
             ToolbarItemGroup {
                 Button { store.archive(thread) } label: {
@@ -281,7 +281,7 @@ struct MessageCard: View {
                             .font(.system(size: 12 * fontScale))
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .help("Reply (r)")
+                    .help("Reply (\(store.keyBindings.key(for: .reply)))")
                     Button {
                         store.composeRequest = .init(replyTo: message, forward: true)
                     } label: {
@@ -289,7 +289,7 @@ struct MessageCard: View {
                             .font(.system(size: 12 * fontScale))
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .help("Forward (f)")
+                    .help("Forward (\(store.keyBindings.key(for: .forward)))")
                 }
                 Text(message.date, format: .dateTime.month(.abbreviated).day().hour().minute())
                     .font(.caption).foregroundStyle(.secondary)

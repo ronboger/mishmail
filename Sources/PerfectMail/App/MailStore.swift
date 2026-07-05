@@ -189,6 +189,10 @@ final class MailStore: ObservableObject {
         didSet { readStateKeepIds.removeAll() }
     }
     @Published var selectedThreadId: String?
+    /// Gmail-style "?" cheat sheet.
+    @Published var showShortcutsHelp = false
+    /// User-rebindable single-key shortcuts (Settings → Keyboard shortcuts).
+    let keyBindings = KeyBindings()
     @Published var searchText: String = ""
     @Published var chips = FilterChips.initial(for: .inbox) {
         // Category picks persist per view so they're back after relaunch.
@@ -1014,29 +1018,39 @@ final class MailStore: ObservableObject {
             }
         }
         switch chars {
-        case "g": pendingGoKey = Date()
-        case "e": selectedThread.map(archive)
-        case "#": selectedThread.map(trash)
-        case "s": selectedThread.map(toggleStar)
-        case "u": if let t = selectedThread { setRead(t, read: t.isUnread) }
-        case "h": if let t = selectedThread { snooze(t, until: Self.snoozeDate(hour: 8, addDays: 1)) }
-        case "j": moveSelection(1)
-        case "k": moveSelection(-1)
-        case "r": if let t = selectedThread {
-                      composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last)
-                  }
-        case "a": if let t = selectedThread {
-                      composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, replyAll: true)
-                  }
-        case "f": if let t = selectedThread {
-                      composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, forward: true)
-                  }
-        case "l": if selectedThread != nil { labelPickerHighlight = 0; showLabelPicker = true }
-        case "z": if let undo = undoAction { undo.undo() }
-        case "c": composeRequest = ComposeRequest(replyTo: nil)
-        default: return false
+        case "g": pendingGoKey = Date(); return true
+        case "?": showShortcutsHelp.toggle(); return true
+        default: break
         }
+        guard let command = keyBindings.command(for: chars) else { return false }
+        perform(command)
         return true
+    }
+
+    /// Runs a rebindable single-key command. Kept separate from handleKey so
+    /// the key→command mapping is the only thing the registry owns.
+    func perform(_ command: ShortcutCommand) {
+        switch command {
+        case .archive: selectedThread.map(archive)
+        case .trash: selectedThread.map(trash)
+        case .toggleStar: selectedThread.map(toggleStar)
+        case .toggleRead: if let t = selectedThread { setRead(t, read: t.isUnread) }
+        case .snooze: if let t = selectedThread { snooze(t, until: Self.snoozeDate(hour: 8, addDays: 1)) }
+        case .next: moveSelection(1)
+        case .prev: moveSelection(-1)
+        case .reply: if let t = selectedThread {
+                         composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last)
+                     }
+        case .replyAll: if let t = selectedThread {
+                            composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, replyAll: true)
+                        }
+        case .forward: if let t = selectedThread {
+                           composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, forward: true)
+                       }
+        case .label: if selectedThread != nil { labelPickerHighlight = 0; showLabelPicker = true }
+        case .undo: if let undo = undoAction { undo.undo() }
+        case .compose: composeRequest = ComposeRequest(replyTo: nil)
+        }
     }
 
     // MARK: - Labels on threads
@@ -1138,8 +1152,18 @@ final class MailStore: ObservableObject {
     }
 
     func trash(_ thread: MailThread) {
+        // Gmail-style auto-advance: when the selected thread is trashed, land
+        // on the next conversation down (or the one above if it was last)
+        // instead of leaving nothing selected. Computed before the mutation
+        // removes the row from `threads`.
+        let wasSelected = selectedThreadId == thread.id
+        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
         mutateThread(thread) { $0.inTrash = true; $0.inInbox = false } remote: { client, id in
             try await client.trashThread(id: id)
+        }
+        if wasSelected, let neighbor, threads.contains(where: { $0.id == neighbor }) {
+            selectionViaKeyboard = true
+            selectedThreadId = neighbor
         }
         offerUndo("Moved to Trash") { [weak self] in
             guard let self else { return }
