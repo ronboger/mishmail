@@ -120,6 +120,9 @@ struct ContentView: View {
         .sheet(item: $store.editingView) { view in
             ViewEditor(view: view)
         }
+        .sheet(item: $store.snoozingThread) { thread in
+            SnoozeSheet { store.snooze(thread, until: $0) }
+        }
         .overlay {
             if store.showCommandPalette {
                 CommandPalette()

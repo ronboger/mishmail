@@ -176,6 +176,7 @@ struct ThreadListView: View {
             Button("This evening (6 PM)") { store.snooze(thread, until: MailStore.snoozeDate(hour: 18)) }
             Button("Tomorrow morning (8 AM)") { store.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 1)) }
             Button("Next week") { store.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 7)) }
+            Button("Pick date & time…") { store.snoozingThread = thread }
             if thread.snoozeUntil != nil {
                 Button("Unsnooze") { store.snooze(thread, until: nil) }
             }

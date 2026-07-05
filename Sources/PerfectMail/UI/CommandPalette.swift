@@ -85,6 +85,9 @@ struct CommandPalette: View {
                 Command(id: "act.snooze", title: "Snooze Until Tomorrow", icon: "clock") {
                     $0.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 1))
                 },
+                Command(id: "act.snoozeCustom", title: "Snooze Until…", icon: "calendar.badge.clock") {
+                    $0.snoozingThread = thread
+                },
                 Command(id: "act.reply", title: "Reply", icon: "arrowshape.turn.up.left") { s in
                     if let last = s.messages(inThread: thread.id).last {
                         s.composeRequest = .init(replyTo: last)
