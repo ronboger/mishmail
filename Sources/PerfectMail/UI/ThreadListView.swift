@@ -100,8 +100,11 @@ struct ThreadListView: View {
                         ForEach(threads) { thread in
                             ThreadRow(thread: thread)
                                 .tag(thread.id)
+                                // Notion Mail-style: READ rows recede on a
+                                // grey wash (adapts to dark mode); unread rows
+                                // sit on the plain background and pop.
                                 .listRowBackground(thread.isUnread
-                                    ? Color.primary.opacity(0.05) : Color.clear)
+                                    ? Color.clear : Color.primary.opacity(0.05))
                                 .swipeActions(edge: .trailing) {
                                     Button { store.archive(thread) } label: {
                                         Label("Archive", systemImage: "archivebox")
@@ -828,6 +831,7 @@ struct ThreadRow: View {
             HStack(spacing: 4) {
                 Text(participantsDisplay)
                     .font(.system(size: 14 * fontScale, weight: thread.isUnread ? .semibold : .regular))
+                    .foregroundStyle(thread.isUnread ? Color.primary : Color.primary.opacity(0.65))
                     .lineLimit(1)
                 if thread.messageCount > 1 {
                     Text("\(thread.messageCount)")
@@ -838,6 +842,7 @@ struct ThreadRow: View {
 
             (Text(thread.subject.isEmpty ? "(no subject)" : thread.subject.decodingHTMLEntities())
                 .fontWeight(thread.isUnread ? .semibold : .medium)
+                .foregroundColor(thread.isUnread ? .primary : .primary.opacity(0.65))
              + Text("  \(thread.snippet.decodingHTMLEntities())")
                 .foregroundColor(.secondary))
                 .font(.system(size: 14 * fontScale))

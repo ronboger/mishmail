@@ -110,12 +110,25 @@ DEVELOPMENT_TEAM = XXXXXXXXXX
 CODE_SIGN_IDENTITY = Apple Development
 ```
 
-### Distribution
+### Releases & updates
 
-There are no signed/notarized binary releases: because every user needs their
-own OAuth client anyway, **building from source is the intended path**. If you
-want to distribute a binary, sign with a Developer ID, keep
+PerfectMail publishes binaries to GitHub Releases (`ronboger/perfectmail`). The
+app checks once a day; when a newer version exists, an **Update app** button
+appears at the bottom of the sidebar and in **Settings → Updates** — clicking it
+downloads the release zip, then drag the new PerfectMail into Applications to
+replace the old copy.
+
+To cut a release: bump `MARKETING_VERSION` in `project.yml`, then
+
+```sh
+make release    # runs tests, builds Release, zips, gh release create v<version>
+```
+
+For a distributable binary, sign with a Developer ID, keep
 `ENABLE_HARDENED_RUNTIME` on (it already is), and notarize with `notarytool`.
+Each user still needs their own Google OAuth client (see above), so building
+from source stays a first-class path.
+
 
 ## Keyboard shortcuts
 

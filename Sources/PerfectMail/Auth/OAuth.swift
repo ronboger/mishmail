@@ -10,6 +10,10 @@ import AppKit
 struct OAuthConfig {
     static let scopes = [
         "https://www.googleapis.com/auth/gmail.modify",
+        // Read-only view of Gmail filters in Settings. Accounts added before
+        // this scope existed keep working; the filters pane just asks for a
+        // re-sign-in to show them.
+        "https://www.googleapis.com/auth/gmail.settings.basic",
         "https://www.googleapis.com/auth/userinfo.email",
         "https://www.googleapis.com/auth/userinfo.profile",
     ]

@@ -45,7 +45,7 @@ struct ContentView: View {
         }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
-            store.chips = FilterChips.defaults(for: store.selectedView)
+            store.resetChips()
             store.reloadThreads()
         }
         .onChange(of: store.chips) { store.reloadThreads() }
@@ -287,6 +287,7 @@ struct ContentView: View {
 
 struct Sidebar: View {
     @EnvironmentObject var store: MailStore
+    @ObservedObject private var updates = UpdateChecker.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -365,6 +366,43 @@ struct Sidebar: View {
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
+
+            // Settings pinned at the bottom (also Cmd-, from anywhere).
+            Divider()
+            if let release = updates.available {
+                Button {
+                    updates.openUpdate()
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.accentColor)
+                        Text("Update app to \(release.version)")
+                            .font(.system(size: 12.5, weight: .medium))
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12).padding(.top, 8)
+                .help("Download PerfectMail \(release.version) from GitHub")
+            }
+            SettingsLink {
+                HStack(spacing: 7) {
+                    Image(systemName: "gearshape")
+                        .font(.system(size: 12))
+                    Text("Settings")
+                        .font(.system(size: 12.5))
+                    Spacer()
+                    Text("⌘,")
+                        .font(.caption).foregroundStyle(.tertiary)
+                }
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 12).padding(.vertical, 8)
+            .help("Settings (⌘,)")
         }
         .background(Color.notionSidebar)
     }

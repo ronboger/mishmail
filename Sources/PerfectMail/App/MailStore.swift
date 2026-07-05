@@ -37,6 +37,29 @@ enum MailboxView: Hashable {
         case .saved(_, let name): return name
         }
     }
+
+    /// Stable key for persisting per-view preferences (category picks).
+    /// nil = the view doesn't persist them (saved views carry their own
+    /// filters; scheduled isn't a mail list).
+    var prefsKey: String? {
+        switch self {
+        case .inbox, .account: return "inbox"
+        case .promotions: return "promotions"
+        case .social: return "social"
+        case .starred: return "starred"
+        case .snoozed: return "snoozed"
+        case .reminders: return "reminders"
+        case .drafts: return "drafts"
+        case .sent: return "sent"
+        case .allMail: return "allMail"
+        case .trash: return "trash"
+        // Keyed per account: Gmail label IDs (Label_1, Label_2…) are only
+        // unique within an account, so two accounts' labels must not share
+        // a preference slot.
+        case .label(let account, let labelId, _): return "label.\(account).\(labelId)"
+        case .scheduled, .saved: return nil
+        }
+    }
 }
 
 /// Notion Mail-style category filter: a set of Gmail categories that the
@@ -110,7 +133,10 @@ struct FilterChips: Equatable, Codable {
     var calendarOnly = false      // only threads with a calendar invite (.ics)
     var hideCalendar = false      // hide threads with a calendar invite
 
-    /// Default chips for a given view (inbox hides Promotions/Social).
+    /// Built-in factory default chips for a view (inbox hides
+    /// Promotions/Social). Pure — never reads persisted state, so
+    /// "changed vs default" comparisons and Clear all mean the factory
+    /// default, and Clear all is always a way back to it.
     static func defaults(for view: MailboxView) -> FilterChips {
         var chips = FilterChips()
         switch view {
@@ -122,6 +148,34 @@ struct FilterChips: Equatable, Codable {
             break
         }
         return chips
+    }
+
+    /// What a view opens with: the factory defaults, plus the category pick
+    /// the user made earlier (persisted per view) so it survives view
+    /// switches and relaunch.
+    static func initial(for view: MailboxView) -> FilterChips {
+        var chips = defaults(for: view)
+        if let saved = savedCategory(for: view) { chips.category = saved }
+        return chips
+    }
+
+    static func savedCategory(for view: MailboxView) -> CategoryFilter? {
+        guard let key = view.prefsKey,
+              let data = UserDefaults.standard.data(forKey: "categoryFilter.\(key)")
+        else { return nil }
+        return try? JSONDecoder().decode(CategoryFilter.self, from: data)
+    }
+
+    static func saveCategory(_ category: CategoryFilter, for view: MailboxView) {
+        guard let key = view.prefsKey,
+              let data = try? JSONEncoder().encode(category) else { return }
+        // Persisting the factory default is the same as having no pick;
+        // drop the key so future built-in default changes reach the user.
+        if category == defaults(for: view).category {
+            UserDefaults.standard.removeObject(forKey: "categoryFilter.\(key)")
+        } else {
+            UserDefaults.standard.set(data, forKey: "categoryFilter.\(key)")
+        }
     }
 }
 
@@ -136,7 +190,26 @@ final class MailStore: ObservableObject {
     }
     @Published var selectedThreadId: String?
     @Published var searchText: String = ""
-    @Published var chips = FilterChips.defaults(for: .inbox)
+    @Published var chips = FilterChips.initial(for: .inbox) {
+        // Category picks persist per view so they're back after relaunch.
+        // Only user edits persist — programmatic resets (view switches) go
+        // through resetChips() so built-in defaults never get frozen into
+        // UserDefaults as if the user had chosen them.
+        didSet {
+            if !suppressChipPersistence, chips.category != oldValue.category {
+                FilterChips.saveCategory(chips.category, for: selectedView)
+            }
+        }
+    }
+    private var suppressChipPersistence = false
+
+    /// Reset the filter bar for the current view: factory defaults plus the
+    /// user's persisted category pick. Doesn't count as a user edit.
+    func resetChips() {
+        suppressChipPersistence = true
+        chips = FilterChips.initial(for: selectedView)
+        suppressChipPersistence = false
+    }
     @Published var activeAccountId: String?   // nil = all accounts (unified)
     @Published var syncStatus: String = ""
     @Published var lastError: String?
@@ -626,7 +699,7 @@ final class MailStore: ObservableObject {
     private func refreshCountsAndBadge() {
         // Local counts (fallback + reminders, which Gmail doesn't know about).
         let activeAccount = activeAccountId
-        let local: [String: Int] = (try? db.read { db in
+        let (local, badgeTotal): ([String: Int], Int) = (try? db.read { db in
             func count(_ q: QueryInterfaceRequest<MailThread>) -> Int {
                 var q = q
                 if let a = activeAccount { q = q.filter(Column("accountId") == a) }
@@ -637,13 +710,16 @@ final class MailStore: ObservableObject {
             for cat in Self.categoryLabels {
                 inboxUnread = inboxUnread.filter(!Column("labelIds").like("%\(cat)%"))
             }
-            return [
+            let counts = [
                 "inbox": count(inboxUnread),
                 "promotions": count(unread.filter(Column("labelIds").like("%CATEGORY_PROMOTIONS%"))),
                 "social": count(unread.filter(Column("labelIds").like("%CATEGORY_SOCIAL%"))),
                 "reminders": count(MailThread.filter(Column("reminderAt") != nil)),
             ]
-        }) ?? [:]
+            // The dock badge always covers every account, so it doesn't
+            // shrink just because one inbox is focused in the sidebar.
+            return (counts, (try? inboxUnread.fetchCount(db)) ?? 0)
+        }) ?? ([:], 0)
 
         var counts = local
         // Inbox badge always uses the local count: it applies the exact same
@@ -658,7 +734,7 @@ final class MailStore: ObservableObject {
             counts["social"] = scoped.values.reduce(0) { $0 + ($1["CATEGORY_SOCIAL"] ?? 0) }
         }
         unreadCounts = counts
-        Notifier.setBadge(counts["inbox"] ?? 0)
+        Notifier.setBadge(badgeTotal)
     }
 
     func messages(inThread threadId: String) -> [Message] {
@@ -1391,6 +1467,11 @@ final class MailStore: ObservableObject {
 
     func deleteSnippet(_ s: Snippet) {
         try? db.write { db in _ = try Snippet.deleteOne(db, key: s.id) }
+        objectWillChange.send()
+    }
+
+    func updateSnippet(_ s: Snippet) {
+        try? db.write { db in try s.update(db) }
         objectWillChange.send()
     }
 }
