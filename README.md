@@ -135,19 +135,32 @@ from source stays a first-class path.
 
 ## Keyboard shortcuts
 
+Press **`?`** anywhere to see the full cheat sheet, reflecting any custom
+bindings. The single-key commands below are **customizable** in **Settings →
+Keyboard shortcuts** — click a key, press the new one (conflicts are refused).
+The defaults are Gmail's:
+
+| Key | Action | | Key | Action |
+|---|---|---|---|---|
+| j / k | Next / previous thread | | r | Reply |
+| e | Archive | | a | Reply all |
+| # | Trash | | f | Forward |
+| s | Star / unstar | | l | Label… |
+| u | Toggle read / unread | | c | Compose |
+| h | Snooze until tomorrow 8 AM | | z | Undo last action |
+
+Fixed shortcuts (not customizable):
+
 | Key | Action |
 |---|---|
-| e | Archive |
-| # | Trash |
-| s | Star/unstar |
-| u | Toggle read |
-| h | Snooze until tomorrow 8 AM |
-| j / k | Next / previous thread |
-| r | Reply |
-| Cmd-N | Compose |
-| Cmd-K | Command palette |
-| Cmd-Enter | Send |
+| g then i / s / t / d / a / p | Go to Inbox / Starred / Sent / Drafts / All mail / Promotions |
+| ↑ / ↓ | Browse threads (without opening the reading pane) |
+| Return | Open selected thread · Esc closes the reading pane |
+| ? | Show the keyboard-shortcut cheat sheet |
+| Cmd-K | Command palette · Ctrl-F filter menu |
+| Cmd-N | Compose · Cmd-Enter send |
 | Cmd-Shift-R | Sync all |
+| Cmd-+ / Cmd-− / Cmd-0 | Text size |
 | Cmd-, | Settings |
 
 ## On-device AI (optional)
