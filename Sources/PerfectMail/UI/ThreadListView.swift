@@ -190,6 +190,7 @@ struct FilterBar: View {
     @EnvironmentObject var store: MailStore
     @State private var showCategoriesPopover = false
     @State private var showLabelsPopover = false
+    @State private var datePopoverTitle: String?
     @State private var editingField: FilterField?
     @State private var fieldDraft = ""
     @State private var fieldExclude = false
@@ -426,39 +427,42 @@ struct FilterBar: View {
         }
     }
 
-    /// "Date" / "Received date": a submenu of relative windows. Padding and
-    /// hover tint sit OUTSIDE the Menu so the icon/text column lines up with
-    /// the plain FilterMenuRow buttons (the borderless menu style applies its
-    /// own insets to the label, which shifted this row left of the others).
+    /// "Date" / "Received date": a plain FilterMenuRow that opens a popover of
+    /// relative windows. Using a Button (not a borderless Menu) keeps the
+    /// icon/text column pixel-aligned with the other rows — the menu style
+    /// insets its own label, which pushed this row left of the rest.
     private func dateRow(icon: String, title: String) -> some View {
-        Menu {
-            ForEach(DateWindow.allCases, id: \.rawValue) { window in
-                Button(window.title) {
-                    store.chips.dateWindow = window
-                    store.showFilterMenu = false
-                }
-            }
-            if store.chips.dateWindow != nil {
-                Divider()
-                Button("Anytime") {
-                    store.chips.dateWindow = nil
-                    store.showFilterMenu = false
-                }
-            }
-        } label: {
-            HStack(spacing: 8) {
-                Image(systemName: icon)
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
-                    .frame(width: 16)
-                Text(title).font(.system(size: 12.5)).foregroundStyle(.primary)
-            }
-            .contentShape(Rectangle())
+        FilterMenuRow(icon: icon, title: title,
+                      trailing: store.chips.dateWindow != nil ? "chevron.right" : nil) {
+            datePopoverTitle = title
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
-        .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(.horizontal, 6).padding(.vertical, 4)
-        .hoverTint()
+        .popover(isPresented: Binding(
+            get: { datePopoverTitle == title },
+            set: { if !$0 { datePopoverTitle = nil } }
+        ), arrowEdge: .trailing) {
+            VStack(alignment: .leading, spacing: 1) {
+                ForEach(DateWindow.allCases, id: \.rawValue) { window in
+                    FilterMenuRow(
+                        icon: store.chips.dateWindow == window ? "checkmark" : "circle",
+                        title: window.title
+                    ) {
+                        store.chips.dateWindow = window
+                        datePopoverTitle = nil
+                        store.showFilterMenu = false
+                    }
+                }
+                if store.chips.dateWindow != nil {
+                    Divider().padding(.vertical, 4)
+                    FilterMenuRow(icon: "xmark.circle", title: "Anytime") {
+                        store.chips.dateWindow = nil
+                        datePopoverTitle = nil
+                        store.showFilterMenu = false
+                    }
+                }
+            }
+            .padding(8)
+            .frame(width: 180)
+        }
     }
 
     /// Editor pane for text filters (From/To/Cc/Bcc/Subject) and Labels.
@@ -707,10 +711,13 @@ extension View {
     func hoverTint() -> some View { modifier(FilterRowHoverTint()) }
 }
 
-/// One row of the Notion Mail-style filter menu: icon + title, hover tint.
+/// One row of the Notion Mail-style filter menu: icon + title, hover tint,
+/// with an optional trailing glyph (e.g. a chevron for rows that open a
+/// submenu).
 struct FilterMenuRow: View {
     let icon: String
     let title: String
+    var trailing: String? = nil
     let action: () -> Void
     @State private var hovering = false
 
@@ -722,6 +729,11 @@ struct FilterMenuRow: View {
                     .frame(width: 16)
                 Text(title).font(.system(size: 12.5))
                 Spacer(minLength: 0)
+                if let trailing {
+                    Image(systemName: trailing)
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                }
             }
             .padding(.horizontal, 6).padding(.vertical, 4)
             .background(hovering ? Color.primary.opacity(0.07) : Color.clear,
