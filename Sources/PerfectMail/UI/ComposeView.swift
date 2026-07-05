@@ -26,6 +26,10 @@ struct ComposeView: View {
     @State private var showBcc = false
     @State private var subject: String = ""
     @State private var body_: String = ""
+    /// The quoted original (reply quote or forward block), kept out of the
+    /// editor behind a Gmail-style "…" button so the cursor starts at the top
+    /// and the quote can't be edited by accident. Emptied on expand.
+    @State private var quotedTail: String = ""
     @State private var attachmentURLs: [URL] = []
     /// Attachments carried back from an undone send, or pulled off the
     /// original message on a forward (data already loaded).
@@ -51,6 +55,22 @@ struct ComposeView: View {
 
     private func close() {
         store.composeRequest = nil
+    }
+
+    /// The complete message body: what's in the editor plus the collapsed
+    /// quote, joined exactly the way the old inline prefill did ("\n\n" +
+    /// quote) so the send path still recognizes an untouched forward block.
+    private var fullBody: String {
+        quotedTail.isEmpty ? body_ : body_ + "\n\n" + quotedTail
+    }
+
+    /// Inlines the collapsed quote into the editor, making it editable.
+    private func expandQuote() {
+        guard !quotedTail.isEmpty else { return }
+        body_ = fullBody
+        // The quote is still prefill, not authored content.
+        initialBody = "\n\n" + quotedTail
+        quotedTail = ""
     }
 
     /// Content the user actually authored (quoted/reply prefill doesn't count).
@@ -87,7 +107,7 @@ struct ComposeView: View {
                 ? (editingDraft ?? (request.forward ? original : nil)) : nil
             let (from, to, cc, bcc, subj, body, old) =
                 (fromAccount, toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
-                 bccTokens.joined(separator: ", "), subject, body_, editingDraft)
+                 bccTokens.joined(separator: ", "), subject, fullBody, editingDraft)
             // Like the send path, a forward's original rides along so the
             // draft keeps its HTML formatting (it won't thread the draft).
             let (reply, isForward) = (request.replyTo, request.forward)
@@ -263,6 +283,25 @@ struct ComposeView: View {
                     slashSelection = 0
                     if slashToken == nil { slashDismissed = false }
                 }
+
+            // The quoted original stays collapsed behind this pill (Gmail's
+            // "…"). Clicking inlines it into the editor for viewing/editing.
+            if !quotedTail.isEmpty {
+                Button {
+                    expandQuote()
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 11, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 10)
+                        .padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.15), in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(request.forward ? "Show forwarded message" : "Show quoted text")
+                .padding(.bottom, 8)
+            }
 
             if !attachmentURLs.isEmpty || !restoredAttachments.isEmpty || loadingAttachments {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -520,14 +559,14 @@ struct ComposeView: View {
             let subj = original.subject
             subject = subj.lowercased().hasPrefix("fwd:") ? subj : "Fwd: \(subj)"
             // Gmail-style forwarded block instead of "> " quoting. Kept
-            // verbatim: the send path recomputes this block, and an untouched
-            // one lets the send carry the original HTML formatting alongside
-            // the plain text. Focus stays on To (no recipients yet).
-            body_ = "\n\n" + ForwardComposer.forwardBlock(
+            // verbatim and collapsed behind the "…" button: the send path
+            // recomputes this block, and an untouched one lets the send carry
+            // the original HTML formatting alongside the plain text. The
+            // editor starts empty (cursor at the top); focus stays on To.
+            quotedTail = ForwardComposer.forwardBlock(
                 fromHeader: original.fromHeader, date: original.date,
                 subject: original.subject, toHeader: original.toHeader,
                 ccHeader: original.ccHeader, bodyText: original.bodyText)
-            initialBody = body_
             // Forwards carry the original's attachments (standard behavior).
             // They arrive async; Send holds until they're in.
             prefillAttachments(of: original)
@@ -559,15 +598,16 @@ struct ComposeView: View {
             subject = subj.lowercased().hasPrefix("re:") ? subj : "Re: \(subj)"
         }
 
-        // Quote the previous message so the context travels with the draft.
+        // Quote the previous message so the context travels with the draft —
+        // collapsed behind the "…" button so the editor starts empty and the
+        // cursor lands at the top.
         let when = original.date.formatted(date: .abbreviated, time: .shortened)
         let who = "\(MessageParser.displayName(fromHeader: original.fromHeader)) <\(sender)>"
         let quoted = original.bodyText
             .split(separator: "\n", omittingEmptySubsequences: false)
             .map { "> \($0)" }
             .joined(separator: "\n")
-        body_ = "\n\n\nOn \(when), \(who) wrote:\n\(quoted)"
-        initialBody = body_
+        quotedTail = "\nOn \(when), \(who) wrote:\n\(quoted)"
         bodyFocused = true
     }
 
@@ -759,7 +799,7 @@ struct ComposeView: View {
                 to: toTokens.joined(separator: ", "),
                 cc: ccTokens.joined(separator: ", "),
                 bcc: bccTokens.joined(separator: ", "),
-                subject: subject, body: body_,
+                subject: subject, body: fullBody,
                 // For forwards this is the forwarded original (supplies the
                 // HTML body at send time); the send path knows not to thread it.
                 replyTo: request.replyTo, forward: request.forward,
