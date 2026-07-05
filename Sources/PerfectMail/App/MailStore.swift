@@ -1261,6 +1261,7 @@ final class MailStore: ObservableObject {
         do {
             try await send(from: p.accountId, to: p.to, cc: p.cc, bcc: p.bcc,
                            subject: p.subject, body: p.body, replyTo: p.replyTo,
+                           forward: p.forward,
                            attachments: p.attachments, replacingDraft: p.replacingDraft)
             showNotice("Sent")
         } catch {
@@ -1361,17 +1362,35 @@ final class MailStore: ObservableObject {
     }
 
     func send(from accountId: String, to: String, cc: String, bcc: String = "", subject: String,
-              body: String, replyTo message: Message? = nil,
+              body: String, replyTo message: Message? = nil, forward: Bool = false,
               attachments: [MIMEBuilder.Attachment] = [],
               replacingDraft draft: Message? = nil) async throws {
+        // For a forward, `message` is the forwarded original: it supplies the
+        // HTML body below, but must not thread the send into its conversation.
+        let threadParent = forward ? nil : message
+        var bodyHTML: String?
+        if forward, let orig = message, let html = orig.bodyHTML, !html.isEmpty {
+            let block = ForwardComposer.forwardBlock(
+                fromHeader: orig.fromHeader, date: orig.date, subject: orig.subject,
+                toHeader: orig.toHeader, ccHeader: orig.ccHeader, bodyText: orig.bodyText)
+            // Only when the quoted plain text is untouched — an edited quote
+            // must not silently diverge from what HTML recipients see.
+            if let userText = ForwardComposer.userText(inBody: body, expectedBlock: block) {
+                bodyHTML = ForwardComposer.htmlBody(
+                    userText: userText, fromHeader: orig.fromHeader, date: orig.date,
+                    subject: orig.subject, toHeader: orig.toHeader, ccHeader: orig.ccHeader,
+                    originalHTML: html)
+            }
+        }
         let raw = MIMEBuilder.build(
-            from: fromHeader(for: accountId), to: to, cc: cc, bcc: bcc, subject: subject, bodyText: body,
-            inReplyTo: message?.messageIdHeader,
-            references: message?.referencesHeader ?? draft?.referencesHeader,
+            from: fromHeader(for: accountId), to: to, cc: cc, bcc: bcc, subject: subject,
+            bodyText: body, bodyHTML: bodyHTML,
+            inReplyTo: threadParent?.messageIdHeader,
+            references: threadParent?.referencesHeader ?? draft?.referencesHeader,
             attachments: attachments
         )
         // A reply keeps its thread; so does a draft that lives in one.
-        let gmailThreadId = (message ?? draft).map { String($0.threadId.split(separator: ":").last!) }
+        let gmailThreadId = (threadParent ?? draft).map { String($0.threadId.split(separator: ":").last!) }
         try await client(for: accountId).send(raw: raw, threadId: gmailThreadId)
         if let draft { await deleteUnderlyingDraft(draft, silent: true) }
         await sync(accountId: accountId)
