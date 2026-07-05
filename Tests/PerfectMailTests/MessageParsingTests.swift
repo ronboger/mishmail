@@ -68,6 +68,39 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertEqual(MessageParser.stripHTML(html), "Hello world & more spaces")
     }
 
+    // MARK: - HTML entity decoding
+
+    func testDecodesNumericEntities() {
+        XCTAssertEqual("won&#39;t be able".decodingHTMLEntities(), "won't be able")
+        XCTAssertEqual("caf&#233;".decodingHTMLEntities(), "café")
+        XCTAssertEqual("it&#x2019;s".decodingHTMLEntities(), "it\u{2019}s")
+        XCTAssertEqual("&#x1F600;".decodingHTMLEntities(), "😀")
+    }
+
+    func testDecodesNamedEntities() {
+        XCTAssertEqual("Tom &amp; Jerry".decodingHTMLEntities(), "Tom & Jerry")
+        XCTAssertEqual("&ldquo;hi&rdquo; &ndash; ok&hellip;".decodingHTMLEntities(),
+                       "\u{201C}hi\u{201D} \u{2013} ok\u{2026}")
+        XCTAssertEqual("a&nbsp;b".decodingHTMLEntities(), "a b")
+        XCTAssertEqual("&lt;tag&gt; &quot;q&quot; &apos;a&apos;".decodingHTMLEntities(),
+                       "<tag> \"q\" 'a'")
+    }
+
+    func testLeavesInvalidReferencesAlone() {
+        XCTAssertEqual("AT&T and R&D".decodingHTMLEntities(), "AT&T and R&D")
+        XCTAssertEqual("5 &".decodingHTMLEntities(), "5 &")
+        XCTAssertEqual("&notarealentityname;".decodingHTMLEntities(), "&notarealentityname;")
+        XCTAssertEqual("&#xZZ;".decodingHTMLEntities(), "&#xZZ;")
+        XCTAssertEqual("&#1114112;".decodingHTMLEntities(), "&#1114112;")  // > U+10FFFF
+        XCTAssertEqual("&#xD800;".decodingHTMLEntities(), "&#xD800;")      // surrogate
+    }
+
+    func testDecodesConsecutiveAndTrailingEntities() {
+        XCTAssertEqual("&amp;&amp;&#33;".decodingHTMLEntities(), "&&!")
+        XCTAssertEqual("end&hellip;".decodingHTMLEntities(), "end\u{2026}")
+        XCTAssertEqual("plain text".decodingHTMLEntities(), "plain text")
+    }
+
     // MARK: - Full message parsing (from real API-shaped JSON)
 
     private func decodeGMessage(_ json: String) throws -> GMessage {

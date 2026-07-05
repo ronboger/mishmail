@@ -10,7 +10,7 @@ struct NotionSwitchStyle: ToggleStyle {
                 configuration.label
                 Spacer(minLength: 12)
                 Capsule()
-                    .fill(configuration.isOn ? Color.accentColor : Color.secondary.opacity(0.3))
+                    .fill(configuration.isOn ? Color.notionAccent : Color.secondary.opacity(0.3))
                     .frame(width: 36, height: 21)
                     .overlay(alignment: configuration.isOn ? .trailing : .leading) {
                         Circle()
@@ -35,7 +35,7 @@ struct NotionCheckStyle: ToggleStyle {
         } label: {
             HStack(spacing: 8) {
                 RoundedRectangle(cornerRadius: 5)
-                    .fill(configuration.isOn ? Color.accentColor : Color.secondary.opacity(0.18))
+                    .fill(configuration.isOn ? Color.notionAccent : Color.secondary.opacity(0.18))
                     .frame(width: 18, height: 18)
                     .overlay {
                         if configuration.isOn {

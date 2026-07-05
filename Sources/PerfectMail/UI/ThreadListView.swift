@@ -124,9 +124,11 @@ struct ThreadListView: View {
                 }
             }
             .listStyle(.plain)
+            .scrollContentBackground(.hidden)
             // Matching air above the first group.
             .contentMargins(.top, 40 * fontScale, for: .scrollContent)
         }
+        .background(Color.notionContent)
         .navigationTitle(store.selectedView.title)
         .overlay {
             if store.threads.isEmpty {
@@ -179,6 +181,7 @@ struct ThreadListView: View {
 struct FilterBar: View {
     @EnvironmentObject var store: MailStore
     @State private var showCategoriesPopover = false
+    @State private var showLabelsPopover = false
     @State private var editingField: FilterField?
     @State private var fieldDraft = ""
     @State private var fieldExclude = false
@@ -223,15 +226,21 @@ struct FilterBar: View {
                         }
                     }
 
-                    // Chips for whatever filters are active, each removable.
-                    if let name = store.chips.labelName {
-                        activeChip("Label\(store.chips.labelExclude ? " ≠" : ":") \(name)") {
-                            store.chips.labelId = nil; store.chips.labelName = nil
-                        }
+                    // Always-visible quick filters, Notion Mail-style:
+                    // Labels dropdown, Is unread, Show archived.
+                    labelsChip
+                    quickChip("Is unread", icon: "envelope.badge",
+                              active: store.chips.unreadOnly) {
+                        store.chips.unreadOnly.toggle()
+                        if store.chips.unreadOnly { store.chips.readOnly = false }
                     }
-                    if store.chips.unreadOnly { activeChip("Unread") { store.chips.unreadOnly = false } }
+                    quickChip("Show archived", icon: "archivebox",
+                              active: store.chips.showArchived) {
+                        store.chips.showArchived.toggle()
+                    }
+
+                    // Chips for whatever other filters are active, each removable.
                     if store.chips.readOnly { activeChip("Read") { store.chips.readOnly = false } }
-                    if store.chips.showArchived { activeChip("Archived") { store.chips.showArchived = false } }
                     if store.chips.showSent { activeChip("Sent") { store.chips.showSent = false } }
                     if store.chips.hasAttachmentOnly { activeChip("Attachment") { store.chips.hasAttachmentOnly = false } }
                     if store.chips.noAttachmentOnly { activeChip("No attachment") { store.chips.noAttachmentOnly = false } }
@@ -589,7 +598,7 @@ struct FilterBar: View {
             .buttonStyle(.plain).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(Color.accentColor.opacity(0.2), in: Capsule())
+        .background(Color.notionAccent.opacity(0.2), in: Capsule())
     }
 
     private var lastSync: Date? {
@@ -602,13 +611,72 @@ struct FilterBar: View {
         return labels.filter { seen.insert($0.gmailLabelId).inserted }.sorted { $0.name < $1.name }
     }
 
+    /// A persistent toggle chip: highlighted while its filter is on.
+    private func quickChip(_ title: String, icon: String, active: Bool,
+                           toggle: @escaping () -> Void) -> some View {
+        Button(action: toggle) {
+            chipLabel(title, icon: icon, active: active)
+        }
+        .buttonStyle(.plain)
+    }
+
+    /// "Labels" dropdown chip: shows the active label filter, or opens a
+    /// picker of all user labels.
+    private var labelsChip: some View {
+        Button {
+            showLabelsPopover = true
+        } label: {
+            chipLabel(store.chips.labelName.map {
+                          "Label\(store.chips.labelExclude ? " ≠" : ":") \($0)"
+                      } ?? "Labels",
+                      icon: "tag",
+                      active: store.chips.labelName != nil)
+        }
+        .buttonStyle(.plain)
+        .popover(isPresented: $showLabelsPopover, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 1) {
+                if store.chips.labelName != nil {
+                    FilterMenuRow(icon: "xmark.circle", title: "Clear label filter") {
+                        store.chips.labelId = nil
+                        store.chips.labelName = nil
+                        showLabelsPopover = false
+                    }
+                    Divider().padding(.vertical, 4)
+                }
+                if allLabels.isEmpty {
+                    Text("No labels yet")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .padding(6)
+                }
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 1) {
+                        ForEach(allLabels, id: \.gmailLabelId) { label in
+                            FilterMenuRow(
+                                icon: store.chips.labelId == label.gmailLabelId ? "checkmark" : "tag",
+                                title: label.name
+                            ) {
+                                store.chips.labelId = label.gmailLabelId
+                                store.chips.labelName = label.name
+                                store.chips.labelExclude = false
+                                showLabelsPopover = false
+                            }
+                        }
+                    }
+                }
+                .frame(maxHeight: 280)
+            }
+            .padding(10)
+            .frame(width: 220)
+        }
+    }
+
     private func chipLabel(_ title: String, icon: String, active: Bool) -> some View {
         HStack(spacing: 4) {
             Image(systemName: icon).font(.caption)
             Text(title).font(.caption)
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(active ? Color.accentColor.opacity(0.2) : Color.secondary.opacity(0.1),
+        .background(active ? Color.notionAccent.opacity(0.2) : Color.secondary.opacity(0.1),
                     in: Capsule())
     }
 }
@@ -688,7 +756,7 @@ struct ThreadRow: View {
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
             Circle()
-                .fill(thread.isUnread ? Color.accentColor : .clear)
+                .fill(thread.isUnread ? Color.notionAccent : .clear)
                 .frame(width: 7, height: 7)
 
             HStack(spacing: 4) {
@@ -702,9 +770,9 @@ struct ThreadRow: View {
             }
             .frame(width: 180 * fontScale, alignment: .leading)
 
-            (Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
+            (Text(thread.subject.isEmpty ? "(no subject)" : thread.subject.decodingHTMLEntities())
                 .fontWeight(thread.isUnread ? .semibold : .medium)
-             + Text("  \(thread.snippet)")
+             + Text("  \(thread.snippet.decodingHTMLEntities())")
                 .foregroundColor(.secondary))
                 .font(.system(size: 14 * fontScale))
                 .lineLimit(1)
@@ -715,6 +783,15 @@ struct ThreadRow: View {
             // hover so the row never changes size.
             ZStack(alignment: .trailing) {
                 HStack(spacing: 5) {
+                    // User labels as colored pills right before the date,
+                    // Notion Mail-style.
+                    ForEach(userLabels.prefix(2), id: \.self) { name in
+                        labelPill(name)
+                    }
+                    if userLabels.count > 2 {
+                        Text("+\(userLabels.count - 2)")
+                            .font(.system(size: 11 * fontScale)).foregroundStyle(.secondary)
+                    }
                     if thread.hasAttachment {
                         Image(systemName: "paperclip")
                             .font(.system(size: 12 * fontScale)).foregroundStyle(.secondary)
@@ -758,6 +835,24 @@ struct ThreadRow: View {
 
     private var participantsDisplay: String {
         thread.participants.isEmpty ? thread.fromDisplay : thread.participants
+    }
+
+    /// User-defined label names on this thread (system labels filtered out
+    /// by the store, which only tracks type == "user" labels).
+    private var userLabels: [String] {
+        thread.labels
+            .compactMap { store.labelName($0, account: thread.accountId) }
+            .sorted()
+    }
+
+    private func labelPill(_ name: String) -> some View {
+        Text(name)
+            .font(.system(size: 10.5 * fontScale, weight: .medium))
+            .lineLimit(1)
+            .foregroundStyle(Color.stable(for: name))
+            .padding(.horizontal, 6).padding(.vertical, 2)
+            .background(Color.stable(for: name).opacity(0.18),
+                        in: RoundedRectangle(cornerRadius: 4))
     }
 
     private func hoverButton(_ icon: String, filled: Bool = false, action: @escaping () -> Void) -> some View {
@@ -823,7 +918,7 @@ struct CategoriesPopover: View {
                     .padding(6)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor.opacity(0.6)))
+                .background(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.notionAccent.opacity(0.6)))
             }
 
             VStack(alignment: .leading, spacing: 6) {

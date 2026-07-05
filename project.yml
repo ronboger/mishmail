@@ -44,6 +44,7 @@ targets:
       - Tests/PerfectMailTests
       - Sources/PerfectMail/Gmail
       - Sources/PerfectMail/Store/Database.swift
+      - Sources/PerfectMail/Support/HTMLEntities.swift
       - Sources/PerfectMail/Support/Keychain.swift
       - Sources/PerfectMail/Support/SearchQuery.swift
       - Sources/PerfectMail/Support/SendSchedule.swift

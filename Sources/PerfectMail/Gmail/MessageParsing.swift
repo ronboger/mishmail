@@ -26,7 +26,7 @@ enum MessageParser {
             bccHeader: header("Bcc"),
             subject: header("Subject"),
             date: Date(timeIntervalSince1970: millis / 1000),
-            snippet: g.snippet ?? "",
+            snippet: (g.snippet ?? "").decodingHTMLEntities(),
             bodyText: text,
             bodyHTML: html,
             messageIdHeader: header("Message-ID"),
@@ -72,8 +72,7 @@ enum MessageParser {
 
     static func stripHTML(_ html: String) -> String {
         html.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .replacingOccurrences(of: "&amp;", with: "&")
+            .decodingHTMLEntities()
             .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
