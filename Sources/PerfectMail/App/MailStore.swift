@@ -1400,11 +1400,13 @@ final class MailStore: ObservableObject {
     /// Replaces `replacing` when re-saving an edited draft.
     func saveDraft(from accountId: String, to: String, cc: String, bcc: String = "", subject: String,
                    body: String, replyTo message: Message? = nil,
+                   attachments: [MIMEBuilder.Attachment] = [],
                    replacing draft: Message? = nil) async {
         let raw = MIMEBuilder.build(
             from: fromHeader(for: accountId), to: to, cc: cc, bcc: bcc, subject: subject, bodyText: body,
             inReplyTo: message?.messageIdHeader,
-            references: message?.referencesHeader ?? draft?.referencesHeader
+            references: message?.referencesHeader ?? draft?.referencesHeader,
+            attachments: attachments
         )
         let gmailThreadId = ((message ?? draft).map { String($0.threadId.split(separator: ":").last!) })
         do {
