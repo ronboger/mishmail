@@ -36,6 +36,10 @@ struct ComposeView: View {
     @State private var loadingAttachments = false
     @State private var showFilePicker = false
     @State private var showSnippets = false
+    /// Slash trigger: highlighted row in the `/` picker, and whether the user
+    /// Esc-dismissed the current token (cleared when the token goes away).
+    @State private var slashSelection = 0
+    @State private var slashDismissed = false
     @State private var showScheduleSheet = false
     @State private var drafting = false
     @State private var error: String?
@@ -233,6 +237,32 @@ struct ComposeView: View {
                 .focused($bodyFocused)
                 .padding(.top, 8)
                 .frame(minHeight: 120, maxHeight: .infinity)
+                // The `/` picker steals ↑/↓/Return/Esc while it's showing.
+                .onKeyPress(.downArrow) {
+                    guard !slashMatches.isEmpty else { return .ignored }
+                    slashSelection = min(slashSelection + 1, slashMatches.count - 1)
+                    return .handled
+                }
+                .onKeyPress(.upArrow) {
+                    guard !slashMatches.isEmpty else { return .ignored }
+                    slashSelection = max(slashSelection - 1, 0)
+                    return .handled
+                }
+                .onKeyPress(.return) {
+                    let matches = slashMatches
+                    guard !matches.isEmpty else { return .ignored }
+                    insertSlashSnippet(matches[min(slashSelection, matches.count - 1)])
+                    return .handled
+                }
+                .onKeyPress(.escape) {
+                    guard !slashMatches.isEmpty else { return .ignored }
+                    slashDismissed = true
+                    return .handled
+                }
+                .onChange(of: body_) {
+                    slashSelection = 0
+                    if slashToken == nil { slashDismissed = false }
+                }
 
             if !attachmentURLs.isEmpty || !restoredAttachments.isEmpty || loadingAttachments {
                 ScrollView(.horizontal, showsIndicators: false) {
@@ -279,6 +309,16 @@ struct ComposeView: View {
                     .padding(.bottom, 4)
             }
 
+            // Typing "/name" in the body pops this picker (Notion Mail-style);
+            // Enter inserts the highlighted snippet in place of the token.
+            if !slashMatches.isEmpty {
+                SlashSnippetPicker(snippets: slashMatches,
+                                   selection: min(slashSelection, slashMatches.count - 1),
+                                   choose: { insertSlashSnippet($0) })
+                    .padding(.bottom, 8)
+                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+
             // Snippets live in an inline panel, not a popover — always
             // visible where you write, reliable inside the docked card.
             if showSnippets {
@@ -308,7 +348,8 @@ struct ComposeView: View {
                     .foregroundStyle(showSnippets ? Color.notionAccent : Color.secondary)
                 }
                 .buttonStyle(.plain)
-                .help("Insert a saved snippet")
+                .keyboardShortcut("/", modifiers: .command)
+                .help("Insert a saved snippet (⌘/)")
 
                 // Available for replies, forwards, and new mail — the draft is
                 // generated locally and streamed into the body.
@@ -590,11 +631,46 @@ struct ComposeView: View {
         }
     }
 
+    /// Where the quoted original starts (reply/forward), or the end of the
+    /// body. Slash triggers only count in the part the user writes in.
+    private var authoredHeadEnd: String.Index {
+        (body_.range(of: "\n" + ForwardComposer.marker)
+            ?? body_.range(of: #"\n+On .+ wrote:\n"#, options: .regularExpression))?
+            .lowerBound ?? body_.endIndex
+    }
+
+    /// The active `/query` the user is typing at the end of their text, if any.
+    private var slashToken: SnippetInsertion.SlashToken? {
+        SnippetInsertion.slashToken(in: String(body_[..<authoredHeadEnd]))
+    }
+
+    /// Snippets matching the active slash query (empty when no trigger,
+    /// dismissed, or the body isn't focused).
+    private var slashMatches: [Snippet] {
+        guard bodyFocused, !slashDismissed, let token = slashToken else { return [] }
+        let q = token.query.trimmingCharacters(in: .whitespaces)
+        return store.snippets().filter {
+            q.isEmpty || $0.name.localizedCaseInsensitiveContains(q)
+        }
+    }
+
+    /// Replaces the typed `/query` with the chosen snippet, expanded.
+    private func insertSlashSnippet(_ snippet: Snippet) {
+        let head = String(body_[..<authoredHeadEnd])
+        guard let token = SnippetInsertion.slashToken(in: head) else { return }
+        let start = head.distance(from: head.startIndex, to: token.range.lowerBound)
+        let end = head.distance(from: head.startIndex, to: token.range.upperBound)
+        let lo = body_.index(body_.startIndex, offsetBy: start)
+        let hi = body_.index(body_.startIndex, offsetBy: end)
+        body_.replaceSubrange(lo..<hi, with: expandSnippet(snippet))
+        slashSelection = 0
+    }
+
     /// Inserts a snippet where the user writes: above the quoted original on
     /// a reply/forward, appended (with clean spacing) otherwise. `{{variables}}`
     /// (first_name, name, email, date…) are filled from the first recipient.
     private func insertSnippet(_ snippet: Snippet) {
-        let text = SnippetExpander.expand(snippet.body, snippetContext())
+        let text = expandSnippet(snippet)
         if let quote = body_.range(of: "\n" + ForwardComposer.marker)
             ?? body_.range(of: #"\n+On .+ wrote:\n"#, options: .regularExpression) {
             var head = String(body_[..<quote.lowerBound])
@@ -608,25 +684,45 @@ struct ComposeView: View {
         }
     }
 
-    /// Snippet-variable context from the first To recipient.
-    private func snippetContext() -> SnippetExpander.Context {
+    /// Expands a snippet's variables — and, for move-to-bcc snippets, first
+    /// performs the intro shuffle (To → Bcc, Cc → To) so `{bcc_*}` names the
+    /// introducer and `{first_name}` names the person now in To.
+    private func expandSnippet(_ snippet: Snippet) -> String {
         var ctx = SnippetExpander.Context()
         ctx.date = SnippetExpander.today(Date())
-        guard let first = toTokens.first ?? (toDraft.contains("@") ? toDraft : nil) else { return ctx }
-        if let lt = first.firstIndex(of: "<"), let gt = first.firstIndex(of: ">"), lt < gt {
-            ctx.recipientName = String(first[..<lt])
-                .trimmingCharacters(in: CharacterSet(charactersIn: " \""))
-            ctx.recipientEmail = String(first[first.index(after: lt)..<gt])
-        } else {
-            ctx.recipientEmail = first.trimmingCharacters(in: .whitespaces)
-            // Derive a friendly name from the local part (john.doe → John Doe).
-            let local = ctx.recipientEmail.split(separator: "@").first.map(String.init) ?? ""
-            ctx.recipientName = local
-                .split(whereSeparator: { $0 == "." || $0 == "_" || $0 == "-" })
-                .map { $0.prefix(1).uppercased() + $0.dropFirst() }
-                .joined(separator: " ")
+        ctx.myName = store.accounts.first { $0.id == fromAccount }?.senderName ?? ""
+        if snippet.movesToBcc {
+            if let intro = toTokens.first {
+                (ctx.bccName, ctx.bccEmail) = person(from: intro)
+            }
+            let moved = SnippetInsertion.moveToBcc(to: toTokens, cc: ccTokens, bcc: bccTokens)
+            toTokens = moved.to
+            ccTokens = moved.cc
+            bccTokens = moved.bcc
+            if !bccTokens.isEmpty { showCc = true; showBcc = true }
+        } else if let firstBcc = bccTokens.first {
+            (ctx.bccName, ctx.bccEmail) = person(from: firstBcc)
         }
-        return ctx
+        if let first = toTokens.first ?? (toDraft.contains("@") ? toDraft : nil) {
+            (ctx.recipientName, ctx.recipientEmail) = person(from: first)
+        }
+        return SnippetExpander.expand(snippet.body, ctx)
+    }
+
+    /// Name + email from a recipient token ("Alice <a@x.com>" or bare address,
+    /// deriving a friendly name from the local part: john.doe → John Doe).
+    private func person(from token: String) -> (name: String, email: String) {
+        if let lt = token.firstIndex(of: "<"), let gt = token.firstIndex(of: ">"), lt < gt {
+            return (String(token[..<lt]).trimmingCharacters(in: CharacterSet(charactersIn: " \"")),
+                    String(token[token.index(after: lt)..<gt]))
+        }
+        let email = token.trimmingCharacters(in: .whitespaces)
+        let local = email.split(separator: "@").first.map(String.init) ?? ""
+        let name = local
+            .split(whereSeparator: { $0 == "." || $0 == "_" || $0 == "-" })
+            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+            .joined(separator: " ")
+        return (name, email)
     }
 
     private func saveCurrentAsSnippet() {

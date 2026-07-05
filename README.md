@@ -26,6 +26,9 @@ API (and, optionally, a local Ollama model that also never leaves the machine).
   mined contacts, Cc/Bcc, quote-on-reply, reply-all dedup, attachments, and
   drafts that round-trip to Gmail.
 - **Scheduled send, undo send, snooze, follow-up reminders, snippets.**
+  Snippets trigger with `/name` in the body (Notion Mail-style), fill
+  variables like `{first_name}` and `{my_first_name}`, and can move an
+  introducer to Bcc for you.
 - **Optional on-device AI** — draft and summarize with a local
   [Ollama](https://ollama.com) model. Nothing is uploaded; it works in airplane
   mode. Off unless you turn it on.
@@ -159,6 +162,8 @@ Fixed shortcuts (not customizable):
 | ? | Show the keyboard-shortcut cheat sheet |
 | Cmd-K | Command palette · Ctrl-F filter menu |
 | Cmd-N | Compose · Cmd-Enter send |
+| / (in compose body) | Snippet picker — type `/name` to filter, Return inserts |
+| Cmd-/ (in compose) | Toggle the snippets panel |
 | Cmd-Shift-R | Sync all |
 | Cmd-+ / Cmd-− / Cmd-0 | Text size |
 | Cmd-, | Settings |

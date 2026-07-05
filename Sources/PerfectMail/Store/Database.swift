@@ -100,6 +100,8 @@ struct Snippet: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     var id: Int64?
     var name: String
     var body: String
+    /// Intro etiquette: inserting this snippet moves To → Bcc and Cc → To.
+    var movesToBcc: Bool = false
     mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 
     /// Case-insensitive name-or-body match, shared by the compose panel and
@@ -369,6 +371,12 @@ final class AppDatabase {
         m.registerMigration("v8") { db in
             try db.alter(table: "thread") { t in
                 t.add(column: "reminderSetAt", .datetime)
+            }
+        }
+        // Move-to-bcc snippets (intro etiquette: To → Bcc, Cc → To on insert).
+        m.registerMigration("v9") { db in
+            try db.alter(table: "snippet") { t in
+                t.add(column: "movesToBcc", .boolean).notNull().defaults(to: false)
             }
         }
         return m

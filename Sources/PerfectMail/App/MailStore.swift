@@ -1581,9 +1581,9 @@ final class MailStore: ObservableObject {
         (try? db.read { try Snippet.order(Column("name")).fetchAll($0) }) ?? []
     }
 
-    func saveSnippet(name: String, body: String) {
+    func saveSnippet(name: String, body: String, movesToBcc: Bool = false) {
         try? db.write { db in
-            var s = Snippet(id: nil, name: name, body: body)
+            var s = Snippet(id: nil, name: name, body: body, movesToBcc: movesToBcc)
             try s.insert(db)
         }
         objectWillChange.send()

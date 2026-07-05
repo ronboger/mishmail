@@ -1,5 +1,70 @@
 import SwiftUI
 
+// MARK: - Slash snippet picker
+
+/// Compact picker that pops up while typing `/query` in the compose body.
+/// The body editor keeps focus and drives it: ↑/↓ move the highlight,
+/// Return inserts, Esc dismisses; clicking a row also inserts.
+struct SlashSnippetPicker: View {
+    let snippets: [Snippet]
+    let selection: Int
+    let choose: (Snippet) -> Void
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    ForEach(Array(snippets.enumerated()), id: \.element.id) { idx, snippet in
+                        Button { choose(snippet) } label: {
+                            HStack(spacing: 6) {
+                                Text("/\(snippet.name)")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .lineLimit(1)
+                                if snippet.movesToBcc {
+                                    MovesToBccBadge()
+                                }
+                                Text(snippet.previewLine)
+                                    .font(.system(size: 11))
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 0)
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .background(idx == selection ? Color.primary.opacity(0.08) : .clear,
+                                        in: RoundedRectangle(cornerRadius: 5))
+                            .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(4)
+            }
+            .frame(maxHeight: 118)
+
+            Divider()
+            Text("↑↓ choose · ⏎ insert · esc dismiss")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 10).padding(.vertical, 5)
+        }
+        .background(Color.primary.opacity(0.03), in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+    }
+}
+
+/// Small "→ Bcc" tag shown on snippets that move the intro to Bcc on insert.
+struct MovesToBccBadge: View {
+    var body: some View {
+        Text("→ Bcc")
+            .font(.system(size: 9.5, weight: .medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(Color.primary.opacity(0.07), in: Capsule())
+            .help("Inserting moves To recipients to Bcc and promotes Cc to To")
+    }
+}
+
 // MARK: - Snippets panel
 
 /// Inline snippet picker that slides up above the compose footer: search,
@@ -107,9 +172,12 @@ private struct SnippetRow: View {
         HStack(spacing: 8) {
             Button(action: insert) {
                 VStack(alignment: .leading, spacing: 1) {
-                    Text(snippet.name)
-                        .font(.system(size: 12, weight: .medium))
-                        .lineLimit(1)
+                    HStack(spacing: 6) {
+                        Text(snippet.name)
+                            .font(.system(size: 12, weight: .medium))
+                            .lineLimit(1)
+                        if snippet.movesToBcc { MovesToBccBadge() }
+                    }
                     Text(snippet.previewLine)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
