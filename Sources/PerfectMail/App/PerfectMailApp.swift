@@ -28,7 +28,10 @@ struct PerfectMailApp: App {
                 .environmentObject(store)
                 .tint(.notionAccent)
                 .frame(minWidth: 900, minHeight: 560)
-                .onAppear { AppDelegate.store = store }
+                .onAppear {
+                    AppDelegate.store = store
+                    UpdateChecker.shared.startPeriodicChecks()
+                }
         }
         .commands {
             CommandGroup(after: .newItem) {

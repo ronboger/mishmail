@@ -40,6 +40,28 @@ struct GLabel: Decodable {
 
 struct GLabelList: Decodable { let labels: [GLabel]? }
 
+/// A Gmail filter (settings.filters). Read-only in this app.
+struct GFilter: Decodable, Identifiable, Hashable {
+    struct Criteria: Decodable, Hashable {
+        let from: String?
+        let to: String?
+        let subject: String?
+        let query: String?
+        let negatedQuery: String?
+        let hasAttachment: Bool?
+        let size: Int?                 // bytes
+        let sizeComparison: String?    // "larger" | "smaller"
+    }
+    struct Action: Decodable, Hashable {
+        let addLabelIds: [String]?
+        let removeLabelIds: [String]?
+        let forward: String?
+    }
+    let id: String
+    let criteria: Criteria?
+    let action: Action?
+}
+
 struct GHistoryList: Decodable {
     struct Item: Decodable {
         struct MsgWrap: Decodable { let message: GMessageList.Ref }
@@ -137,6 +159,14 @@ actor GmailClient {
     func labels() async throws -> [GLabel] {
         let list: GLabelList = try await request("GET", "/labels")
         return list.labels ?? []
+    }
+
+    /// All filters the account has set up in Gmail. Requires the
+    /// gmail.settings.basic scope (403 for tokens granted before it).
+    func listFilters() async throws -> [GFilter] {
+        struct List: Decodable { let filter: [GFilter]? }
+        let list: List = try await request("GET", "/settings/filters")
+        return list.filter ?? []
     }
 
     struct GLabelDetail: Decodable {
