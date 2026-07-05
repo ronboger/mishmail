@@ -152,6 +152,15 @@ actor SyncEngine {
 
     /// Lists messages matching a query and downloads only the ones missing
     /// from the local cache.
+    /// Server-side search: downloads messages matching a Gmail query that
+    /// aren't already cached (so a search can reach mail outside the local sync
+    /// window), then rebuilds the affected threads. Gmail's `q` syntax matches
+    /// the app's search operators (from:/to:/subject:/is:/before:/after:…).
+    func searchServer(query: String, limit: Int = 50) async throws {
+        try await fetchAll(query: query, limit: limit, progress: nil)
+        try await rebuildThreads()
+    }
+
     private func fetchAll(query: String?, limit: Int,
                           progress: (@Sendable (String) -> Void)?) async throws {
         let existing = try await db.read { [accountId] db in

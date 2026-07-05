@@ -545,6 +545,39 @@ final class MailStore: ObservableObject {
         refreshCountsAndBadge()
     }
 
+    // MARK: - Server-side search
+
+    @Published var serverSearching = false
+
+    /// Local search only covers cached mail (within the sync window). This
+    /// pulls matching messages straight from Gmail so a search can reach older
+    /// mail, then reloads. Gmail's query syntax matches the app's operators, so
+    /// the raw search text is passed through as the query.
+    func searchAllGmail() {
+        let query = searchText.trimmingCharacters(in: .whitespaces)
+        guard !query.isEmpty, !serverSearching else { return }
+        serverSearching = true
+        syncStatus = "Searching all mail…"
+        let targets = activeAccountId.map { [$0] } ?? accounts.map(\.id)
+        Task {
+            for accountId in targets {
+                let engine = engines[accountId] ?? SyncEngine(accountId: accountId)
+                engines[accountId] = engine
+                do {
+                    try await engine.searchServer(query: query)
+                } catch {
+                    await MainActor.run { self.lastError = error.localizedDescription }
+                }
+            }
+            await MainActor.run {
+                serverSearching = false
+                syncStatus = ""
+                reloadThreads()
+                rebuildContacts()
+            }
+        }
+    }
+
     /// Layers the full FilterChips set onto a thread query. Shared by the live
     /// filter bar and by saved views (so "Save as view" is lossless). Does NOT
     /// apply the archived/sent *widening* (that's view-dependent) or account

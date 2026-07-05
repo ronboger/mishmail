@@ -145,16 +145,43 @@ struct ThreadListView: View {
                 Image(systemName: store.selectedView.icon)
                     .foregroundStyle(store.selectedView.iconColor)
             }
+            // While searching, let the user reach past the local cache to Gmail.
+            if !store.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                ToolbarItem(placement: .automatic) {
+                    Button { store.searchAllGmail() } label: {
+                        Label(store.serverSearching ? "Searching…" : "Search all of Gmail",
+                              systemImage: "magnifyingglass.circle")
+                    }
+                    .disabled(store.serverSearching)
+                    .help("Pull matching messages from Gmail, beyond the local cache")
+                }
+            }
         }
         .overlay {
             if store.threads.isEmpty {
-                ContentUnavailableView(
-                    store.accounts.isEmpty ? "No accounts connected" : "Nothing here",
-                    systemImage: store.accounts.isEmpty ? "person.crop.circle.badge.plus" : "tray",
-                    description: Text(store.accounts.isEmpty
-                        ? "Add a Google account from the account menu to get started."
-                        : "You're all caught up.")
-                )
+                if !store.accounts.isEmpty, !store.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                    // Local search only covers cached mail — offer the server.
+                    ContentUnavailableView {
+                        Label("No local matches", systemImage: "magnifyingglass")
+                    } description: {
+                        Text("Nothing cached matches “\(store.searchText)”. Older mail may still be on Gmail.")
+                    } actions: {
+                        Button { store.searchAllGmail() } label: {
+                            Label(store.serverSearching ? "Searching…" : "Search all of Gmail",
+                                  systemImage: "arrow.down.circle")
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .disabled(store.serverSearching)
+                    }
+                } else {
+                    ContentUnavailableView(
+                        store.accounts.isEmpty ? "No accounts connected" : "Nothing here",
+                        systemImage: store.accounts.isEmpty ? "person.crop.circle.badge.plus" : "tray",
+                        description: Text(store.accounts.isEmpty
+                            ? "Add a Google account from the account menu to get started."
+                            : "You're all caught up.")
+                    )
+                }
             }
         }
         // Undo/notice toast lives in ContentView, centered over the whole window.
