@@ -440,7 +440,11 @@ struct AccountSwitcher: View {
             showMenu = true
         } label: {
             HStack(spacing: 8) {
-                avatar(for: title, key: avatarKey, size: 28)
+                if let account = activeAccount {
+                    avatar(for: displayTitle(account), key: account.id, size: 28)
+                } else {
+                    allInboxesIcon(size: 28)
+                }
                 VStack(alignment: .leading, spacing: 0) {
                     HStack(spacing: 3) {
                         Text(title)
@@ -494,9 +498,7 @@ struct AccountSwitcher: View {
                 if let account {
                     avatar(for: displayTitle(account), key: account.id, size: 24)
                 } else {
-                    Image(systemName: "tray.2.fill")
-                        .font(.system(size: 13)).foregroundStyle(.secondary)
-                        .frame(width: 24, height: 24)
+                    allInboxesIcon(size: 24)
                 }
                 VStack(alignment: .leading, spacing: 0) {
                     Text(account.map(displayTitle) ?? "All accounts")
@@ -520,6 +522,13 @@ struct AccountSwitcher: View {
         .hoverTint()
     }
 
+    /// Stacked-trays icon for the unified "All accounts" scope.
+    private func allInboxesIcon(size: CGFloat) -> some View {
+        Image(systemName: "tray.2.fill")
+            .font(.system(size: size * 0.54)).foregroundStyle(.secondary)
+            .frame(width: size, height: size)
+    }
+
     /// Colored circle with the first initial, Notion Mail-style.
     private func avatar(for name: String, key: String, size: CGFloat) -> some View {
         Circle()
@@ -537,18 +546,19 @@ struct AccountSwitcher: View {
     }
 
     /// Full name first, like Notion Mail's account header: the outgoing
-    /// sender name if set, then the local label, then the address.
+    /// sender name if set, then the local label, then the address — with the
+    /// local label in parentheses when it adds information ("Ron (Fund)").
     private func displayTitle(_ account: Account) -> String {
-        if !account.senderName.isEmpty { return account.senderName }
-        return account.displayName
+        let base = account.senderName.isEmpty ? account.displayName : account.senderName
+        let label = account.displayName
+        if !account.senderName.isEmpty, !label.isEmpty, label != account.id, label != base {
+            return "\(base) (\(label))"
+        }
+        return base
     }
 
     private var title: String {
         activeAccount.map(displayTitle) ?? "All accounts"
-    }
-
-    private var avatarKey: String {
-        activeAccount?.id ?? store.accounts.first?.id ?? "?"
     }
 
     private var subtitle: String {
