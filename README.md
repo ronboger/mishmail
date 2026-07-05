@@ -124,6 +124,9 @@ To cut a release: bump `MARKETING_VERSION` in `project.yml`, then
 make release    # runs tests, builds Release, zips, gh release create v<version>
 ```
 
+See [docs/RELEASING.md](docs/RELEASING.md) for the full step-by-step checklist,
+tag/version rules, Developer ID signing + notarization, and troubleshooting.
+
 For a distributable binary, sign with a Developer ID, keep
 `ENABLE_HARDENED_RUNTIME` on (it already is), and notarize with `notarytool`.
 Each user still needs their own Google OAuth client (see above), so building
