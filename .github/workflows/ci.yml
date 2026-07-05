@@ -12,15 +12,12 @@ concurrency:
 jobs:
   test:
     name: Build & test
-    runs-on: macos-14
+    runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
 
       - name: Install xcodegen
         run: brew install xcodegen
-
-      - name: Select Xcode
-        run: sudo xcode-select -s /Applications/Xcode_15.4.app || true
 
       - name: Run tests
         run: make test
