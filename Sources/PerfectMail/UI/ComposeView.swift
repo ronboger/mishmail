@@ -74,13 +74,42 @@ struct ComposeView: View {
         }
         toDraft = ""; ccDraft = ""; bccDraft = ""
         if hasContent {
+            // Best effort on the files: an unreadable pick shouldn't lose the text.
+            let attachments = (try? collectAttachments()) ?? restoredAttachments
+            // Closed while the prefilled files were still downloading: their
+            // chips aren't in yet, so re-fetch them before saving — otherwise
+            // the re-saved draft would silently drop them.
+            let pendingSource = loadingAttachments
+                ? (editingDraft ?? (request.forward ? original : nil)) : nil
             let (from, to, cc, bcc, subj, body, reply, old) =
                 (fromAccount, toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
                  bccTokens.joined(separator: ", "), subject, body_, replyTo, editingDraft)
-            Task { await store.saveDraft(from: from, to: to, cc: cc, bcc: bcc, subject: subj,
-                                         body: body, replyTo: reply, replacing: old) }
+            Task {
+                var atts = attachments
+                if let source = pendingSource {
+                    atts = ((try? await store.loadAttachments(for: source)) ?? []) + atts
+                }
+                await store.saveDraft(from: from, to: to, cc: cc, bcc: bcc, subject: subj,
+                                      body: body, replyTo: reply,
+                                      attachments: atts, replacing: old)
+            }
         }
         close()
+    }
+
+    /// Everything attached right now, data loaded: chips carried in from a
+    /// forward/undo/draft plus files picked in this session.
+    private func collectAttachments() throws -> [MIMEBuilder.Attachment] {
+        var attachments = restoredAttachments
+        for url in attachmentURLs {
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            let data = try Data(contentsOf: url)
+            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                ?? "application/octet-stream"
+            attachments.append(.init(filename: url.lastPathComponent, mimeType: mime, data: data))
+        }
+        return attachments
     }
 
     var body: some View {
@@ -424,6 +453,8 @@ struct ComposeView: View {
             subject = draft.subject
             body_ = draft.bodyText
             initialBody = ""   // a draft always counts as content
+            // The draft's files come back as chips — re-saving keeps them.
+            prefillAttachments(of: draft)
             bodyFocused = true
             return
         }
@@ -455,24 +486,7 @@ struct ComposeView: View {
             initialBody = body_
             // Forwards carry the original's attachments (standard behavior).
             // They arrive async; Send holds until they're in.
-            if original.hasAttachment {
-                loadingAttachments = true
-                let message = original
-                Task {
-                    do {
-                        let atts = try await store.loadAttachments(for: message)
-                        await MainActor.run {
-                            restoredAttachments.append(contentsOf: atts)
-                            prefilledAttachmentNames = atts.map(\.filename)
-                        }
-                    } catch {
-                        await MainActor.run {
-                            self.error = "Couldn't load the original attachments: \(error.localizedDescription)"
-                        }
-                    }
-                    await MainActor.run { loadingAttachments = false }
-                }
-            }
+            prefillAttachments(of: original)
             return
         } else {
             if ownAddresses.contains(sender.lowercased()) {
@@ -511,6 +525,29 @@ struct ComposeView: View {
         body_ = "\n\n\nOn \(when), \(who) wrote:\n\(quoted)"
         initialBody = body_
         bodyFocused = true
+    }
+
+    /// Pulls a message's attachments (forwarded original, or a draft being
+    /// reopened) into the card as removable chips. They arrive async; Send
+    /// holds until the download finishes, and they don't count as authored
+    /// content for the save-on-close heuristic.
+    private func prefillAttachments(of message: Message) {
+        guard message.hasAttachment else { return }
+        loadingAttachments = true
+        Task {
+            do {
+                let atts = try await store.loadAttachments(for: message)
+                await MainActor.run {
+                    restoredAttachments.append(contentsOf: atts)
+                    prefilledAttachmentNames = atts.map(\.filename)
+                }
+            } catch {
+                await MainActor.run {
+                    self.error = "Couldn't load the attachments: \(error.localizedDescription)"
+                }
+            }
+            await MainActor.run { loadingAttachments = false }
+        }
     }
 
     private func draftWithAI() {
@@ -617,15 +654,7 @@ struct ComposeView: View {
 
         error = nil
         do {
-            var attachments = restoredAttachments
-            for url in attachmentURLs {
-                let access = url.startAccessingSecurityScopedResource()
-                defer { if access { url.stopAccessingSecurityScopedResource() } }
-                let data = try Data(contentsOf: url)
-                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
-                    ?? "application/octet-stream"
-                attachments.append(.init(filename: url.lastPathComponent, mimeType: mime, data: data))
-            }
+            let attachments = try collectAttachments()
             return MailStore.PendingSend(
                 accountId: fromAccount,
                 to: toTokens.joined(separator: ", "),

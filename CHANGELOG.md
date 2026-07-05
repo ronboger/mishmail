@@ -16,6 +16,9 @@ minor versions may still change behavior.
   they've downloaded).
 - **Forward focuses To** — pressing the forward shortcut opens compose with the
   cursor in the To field, ready to type a recipient.
+- **Drafts keep their attachments** — closing compose (save-as-draft) now
+  uploads the attached files with the draft, and reopening a draft brings its
+  attachments back as chips, so nothing is silently dropped on a re-save.
 - **On-device AI triage** — "Sort Inbox with AI" (Cmd-K) classifies threads into
   local buckets (Reply needed / FYI / Newsletter / Receipt / Other) via Ollama;
   results show as row tags, a new "AI category" grouping, and persist in their
