@@ -251,6 +251,7 @@ struct ContentView: View {
 
 struct Sidebar: View {
     @EnvironmentObject var store: MailStore
+    @ObservedObject private var updates = UpdateChecker.shared
 
     var body: some View {
         VStack(spacing: 0) {
@@ -334,6 +335,24 @@ struct Sidebar: View {
 
             // Settings pinned at the bottom (also Cmd-, from anywhere).
             Divider()
+            if let release = updates.available {
+                Button {
+                    updates.openUpdate()
+                } label: {
+                    HStack(spacing: 7) {
+                        Image(systemName: "arrow.down.circle.fill")
+                            .font(.system(size: 12))
+                            .foregroundStyle(Color.accentColor)
+                        Text("Update app to \(release.version)")
+                            .font(.system(size: 12.5, weight: .medium))
+                        Spacer()
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .padding(.horizontal, 12).padding(.top, 8)
+                .help("Download PerfectMail \(release.version) from GitHub")
+            }
             SettingsLink {
                 HStack(spacing: 7) {
                     Image(systemName: "gearshape")

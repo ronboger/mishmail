@@ -6,7 +6,7 @@ struct SettingsView: View {
     @EnvironmentObject var store: MailStore
 
     enum Pane: String, CaseIterable, Identifiable {
-        case accounts, googleAPI, filters, snippets, appearance, ai
+        case accounts, googleAPI, filters, snippets, appearance, ai, updates
 
         var id: String { rawValue }
 
@@ -18,6 +18,7 @@ struct SettingsView: View {
             case .snippets: return "Snippets"
             case .appearance: return "Appearance"
             case .ai: return "AI"
+            case .updates: return "Updates"
             }
         }
 
@@ -29,11 +30,13 @@ struct SettingsView: View {
             case .snippets: return "curlybraces"
             case .appearance: return "textformat.size"
             case .ai: return "sparkles"
+            case .updates: return "arrow.down.circle"
             }
         }
     }
 
     @State private var pane: Pane = .accounts
+    @ObservedObject private var updates = UpdateChecker.shared
 
     var body: some View {
         HStack(spacing: 0) {
@@ -47,6 +50,7 @@ struct SettingsView: View {
                 Section("App") {
                     row(.appearance)
                     row(.ai)
+                    row(.updates)
                 }
             }
             .listStyle(.sidebar)
@@ -64,7 +68,14 @@ struct SettingsView: View {
     }
 
     private func row(_ p: Pane) -> some View {
-        Label(p.title, systemImage: p.icon).tag(p)
+        HStack {
+            Label(p.title, systemImage: p.icon)
+            if p == .updates, updates.available != nil {
+                Spacer()
+                Circle().fill(Color.accentColor).frame(width: 7, height: 7)
+            }
+        }
+        .tag(p)
     }
 
     @ViewBuilder
@@ -76,6 +87,7 @@ struct SettingsView: View {
         case .snippets: SnippetsSettings()
         case .appearance: PaneScaffold(title: "Appearance") { AppearanceSettings() }
         case .ai: PaneScaffold(title: "AI") { AISettings() }
+        case .updates: UpdatesSettings()
         }
     }
 }
@@ -104,20 +116,128 @@ struct PaneScaffold<Content: View>: View {
 struct GoogleAPISettings: View {
     @State private var clientID: String = OAuthConfig.clientID
     @State private var clientSecret: String = OAuthConfig.clientSecret
+    // Start in edit mode only when nothing is saved yet; otherwise show the
+    // saved credentials read-only behind an explicit Edit button.
+    @State private var editing = !OAuthConfig.isConfigured
+    @State private var justSaved = false
 
     var body: some View {
         PaneScaffold(title: "Google API") {
             Form {
+                if editing {
+                    Section {
+                        TextField("Client ID", text: $clientID)
+                        SecureField("Client Secret", text: $clientSecret)
+                        HStack {
+                            Spacer()
+                            if OAuthConfig.isConfigured {
+                                Button("Cancel") {
+                                    clientID = OAuthConfig.clientID
+                                    clientSecret = OAuthConfig.clientSecret
+                                    editing = false
+                                }
+                            }
+                            Button("Save") {
+                                OAuthConfig.clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+                                OAuthConfig.clientSecret = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+                                clientID = OAuthConfig.clientID
+                                clientSecret = OAuthConfig.clientSecret
+                                editing = false
+                                justSaved = true
+                            }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                        }
+                    } header: {
+                        Text("Google OAuth (Desktop app client)")
+                    } footer: {
+                        Text("Create a free OAuth client in Google Cloud Console → APIs & Services → Credentials → Create Credentials → OAuth client ID → Desktop app. The secret is stored in your Keychain.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                } else {
+                    Section {
+                        LabeledContent("Client ID") {
+                            Text(clientID)
+                                .textSelection(.enabled)
+                                .lineLimit(1).truncationMode(.middle)
+                                .foregroundStyle(.secondary)
+                        }
+                        LabeledContent("Client Secret") {
+                            Text(clientSecret.isEmpty ? "Not set" : "••••••••••••")
+                                .foregroundStyle(.secondary)
+                        }
+                        HStack {
+                            Label(justSaved ? "Saved" : "Configured",
+                                  systemImage: "checkmark.circle.fill")
+                                .font(.system(size: 12))
+                                .foregroundStyle(.green)
+                            Spacer()
+                            Button("Edit") { editing = true }
+                        }
+                    } header: {
+                        Text("Google OAuth (Desktop app client)")
+                    } footer: {
+                        Text("These credentials are saved — the Client ID in app preferences, the secret in your Keychain. Click Edit to change them.")
+                            .font(.caption).foregroundStyle(.secondary)
+                    }
+                }
+            }
+            .formStyle(.grouped)
+        }
+    }
+}
+
+struct UpdatesSettings: View {
+    @ObservedObject private var updates = UpdateChecker.shared
+
+    var body: some View {
+        PaneScaffold(title: "Updates",
+                     subtitle: "Releases are published on GitHub (\(UpdateChecker.repo))") {
+            Form {
                 Section {
-                    TextField("Client ID", text: $clientID)
-                        .onChange(of: clientID) { OAuthConfig.clientID = clientID }
-                    SecureField("Client Secret", text: $clientSecret)
-                        .onChange(of: clientSecret) { OAuthConfig.clientSecret = clientSecret }
-                } header: {
-                    Text("Google OAuth (Desktop app client)")
+                    LabeledContent("Current version", value: updates.currentVersion)
+                    if let release = updates.available {
+                        LabeledContent("Latest version", value: release.version)
+                        if !release.notes.isEmpty {
+                            Text(release.notes)
+                                .font(.system(size: 12)).foregroundStyle(.secondary)
+                                .lineLimit(8)
+                        }
+                        HStack {
+                            Button("Update App") { updates.openUpdate() }
+                                .buttonStyle(.borderedProminent)
+                            Button("View on GitHub") {
+                                NSWorkspace.shared.open(release.htmlURL)
+                            }
+                        }
+                    } else if let status = updates.status {
+                        Text(status).font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
                 } footer: {
-                    Text("Create a free OAuth client in Google Cloud Console → APIs & Services → Credentials → Create Credentials → OAuth client ID → Desktop app. The secret is stored in your Keychain.")
+                    Text("Update App downloads the latest release; drag the new PerfectMail into Applications to replace this copy. The app also checks quietly once a day and shows an update button in the sidebar when one is available.")
                         .font(.caption).foregroundStyle(.secondary)
+                }
+                Section {
+                    HStack {
+                        Button {
+                            Task { await updates.check() }
+                        } label: {
+                            if updates.checking {
+                                HStack(spacing: 6) {
+                                    ProgressView().controlSize(.small)
+                                    Text("Checking…")
+                                }
+                            } else {
+                                Text("Check for Updates")
+                            }
+                        }
+                        .disabled(updates.checking)
+                        Spacer()
+                        if let last = updates.lastChecked {
+                            Text("Checked \(last, format: .relative(presentation: .named))")
+                                .font(.caption).foregroundStyle(.secondary)
+                        }
+                    }
                 }
             }
             .formStyle(.grouped)

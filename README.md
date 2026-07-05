@@ -32,6 +32,19 @@ xcodebuild -project PerfectMail.xcodeproj -scheme PerfectMail -configuration Rel
 
 Or open `PerfectMail.xcodeproj` in Xcode and hit Run.
 
+## Updates & releases
+
+The app checks GitHub Releases (`ronboger/perfectmail`) once a day. When a
+newer version exists, an **Update app** button appears at the bottom of the
+sidebar and in **Settings → Updates**; clicking it downloads the release zip —
+drag the new PerfectMail into Applications to replace the old copy.
+
+To publish a release: bump `MARKETING_VERSION` in `project.yml`, then
+
+```sh
+make release    # runs tests, builds Release, zips, gh release create v<version>
+```
+
 ## Keyboard shortcuts
 
 | Key | Action |

@@ -37,11 +37,31 @@ enum MailboxView: Hashable {
         case .saved(_, let name): return name
         }
     }
+
+    /// Stable key for persisting per-view preferences (category picks).
+    /// nil = the view doesn't persist them (saved views carry their own
+    /// filters; scheduled isn't a mail list).
+    var prefsKey: String? {
+        switch self {
+        case .inbox, .account: return "inbox"
+        case .promotions: return "promotions"
+        case .social: return "social"
+        case .starred: return "starred"
+        case .snoozed: return "snoozed"
+        case .reminders: return "reminders"
+        case .drafts: return "drafts"
+        case .sent: return "sent"
+        case .allMail: return "allMail"
+        case .trash: return "trash"
+        case .label(_, let labelId, _): return "label.\(labelId)"
+        case .scheduled, .saved: return nil
+        }
+    }
 }
 
 /// Notion Mail-style category filter: a set of Gmail categories that the
 /// inbox either must not contain (default) or must contain.
-struct CategoryFilter: Equatable {
+struct CategoryFilter: Equatable, Codable {
     var exclude = true                 // which set the Categories popover edits
     var show: Set<String> = []         // must contain any of these
     var hide: Set<String> = []         // must contain none of these
@@ -111,6 +131,8 @@ struct FilterChips: Equatable {
     var hideCalendar = false      // hide threads with a calendar invite
 
     /// Default chips for a given view (inbox hides Promotions/Social).
+    /// A category pick the user made earlier (persisted per view) overrides
+    /// the built-in default, so it survives view switches and relaunch.
     static func defaults(for view: MailboxView) -> FilterChips {
         var chips = FilterChips()
         switch view {
@@ -121,7 +143,21 @@ struct FilterChips: Equatable {
         default:
             break
         }
+        if let saved = savedCategory(for: view) { chips.category = saved }
         return chips
+    }
+
+    static func savedCategory(for view: MailboxView) -> CategoryFilter? {
+        guard let key = view.prefsKey,
+              let data = UserDefaults.standard.data(forKey: "categoryFilter.\(key)")
+        else { return nil }
+        return try? JSONDecoder().decode(CategoryFilter.self, from: data)
+    }
+
+    static func saveCategory(_ category: CategoryFilter, for view: MailboxView) {
+        guard let key = view.prefsKey,
+              let data = try? JSONEncoder().encode(category) else { return }
+        UserDefaults.standard.set(data, forKey: "categoryFilter.\(key)")
     }
 }
 
@@ -134,7 +170,14 @@ final class MailStore: ObservableObject {
     @Published var selectedView: MailboxView = .inbox
     @Published var selectedThreadId: String?
     @Published var searchText: String = ""
-    @Published var chips = FilterChips.defaults(for: .inbox)
+    @Published var chips = FilterChips.defaults(for: .inbox) {
+        // Category picks persist per view so they're back after relaunch.
+        didSet {
+            if chips.category != oldValue.category {
+                FilterChips.saveCategory(chips.category, for: selectedView)
+            }
+        }
+    }
     @Published var activeAccountId: String?   // nil = all accounts (unified)
     @Published var syncStatus: String = ""
     @Published var lastError: String?

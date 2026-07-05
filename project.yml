@@ -47,6 +47,7 @@ targets:
       - Sources/PerfectMail/Support/Keychain.swift
       - Sources/PerfectMail/Support/SearchQuery.swift
       - Sources/PerfectMail/Support/SendSchedule.swift
+      - Sources/PerfectMail/Support/UpdateChecker.swift
       - Sources/PerfectMail/Auth/OAuth.swift
     dependencies:
       - package: GRDB

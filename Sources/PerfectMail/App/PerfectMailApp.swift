@@ -27,7 +27,10 @@ struct PerfectMailApp: App {
             ContentView()
                 .environmentObject(store)
                 .frame(minWidth: 900, minHeight: 560)
-                .onAppear { AppDelegate.store = store }
+                .onAppear {
+                    AppDelegate.store = store
+                    UpdateChecker.shared.checkOnLaunch()
+                }
         }
         .commands {
             CommandGroup(after: .newItem) {
