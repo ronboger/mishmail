@@ -53,7 +53,10 @@ enum MailboxView: Hashable {
         case .sent: return "sent"
         case .allMail: return "allMail"
         case .trash: return "trash"
-        case .label(_, let labelId, _): return "label.\(labelId)"
+        // Keyed per account: Gmail label IDs (Label_1, Label_2…) are only
+        // unique within an account, so two accounts' labels must not share
+        // a preference slot.
+        case .label(let account, let labelId, _): return "label.\(account).\(labelId)"
         case .scheduled, .saved: return nil
         }
     }
@@ -130,9 +133,10 @@ struct FilterChips: Equatable {
     var calendarOnly = false      // only threads with a calendar invite (.ics)
     var hideCalendar = false      // hide threads with a calendar invite
 
-    /// Default chips for a given view (inbox hides Promotions/Social).
-    /// A category pick the user made earlier (persisted per view) overrides
-    /// the built-in default, so it survives view switches and relaunch.
+    /// Built-in factory default chips for a view (inbox hides
+    /// Promotions/Social). Pure — never reads persisted state, so
+    /// "changed vs default" comparisons and Clear all mean the factory
+    /// default, and Clear all is always a way back to it.
     static func defaults(for view: MailboxView) -> FilterChips {
         var chips = FilterChips()
         switch view {
@@ -143,6 +147,14 @@ struct FilterChips: Equatable {
         default:
             break
         }
+        return chips
+    }
+
+    /// What a view opens with: the factory defaults, plus the category pick
+    /// the user made earlier (persisted per view) so it survives view
+    /// switches and relaunch.
+    static func initial(for view: MailboxView) -> FilterChips {
+        var chips = defaults(for: view)
         if let saved = savedCategory(for: view) { chips.category = saved }
         return chips
     }
@@ -157,7 +169,13 @@ struct FilterChips: Equatable {
     static func saveCategory(_ category: CategoryFilter, for view: MailboxView) {
         guard let key = view.prefsKey,
               let data = try? JSONEncoder().encode(category) else { return }
-        UserDefaults.standard.set(data, forKey: "categoryFilter.\(key)")
+        // Persisting the factory default is the same as having no pick;
+        // drop the key so future built-in default changes reach the user.
+        if category == defaults(for: view).category {
+            UserDefaults.standard.removeObject(forKey: "categoryFilter.\(key)")
+        } else {
+            UserDefaults.standard.set(data, forKey: "categoryFilter.\(key)")
+        }
     }
 }
 
@@ -170,13 +188,25 @@ final class MailStore: ObservableObject {
     @Published var selectedView: MailboxView = .inbox
     @Published var selectedThreadId: String?
     @Published var searchText: String = ""
-    @Published var chips = FilterChips.defaults(for: .inbox) {
+    @Published var chips = FilterChips.initial(for: .inbox) {
         // Category picks persist per view so they're back after relaunch.
+        // Only user edits persist — programmatic resets (view switches) go
+        // through resetChips() so built-in defaults never get frozen into
+        // UserDefaults as if the user had chosen them.
         didSet {
-            if chips.category != oldValue.category {
+            if !suppressChipPersistence, chips.category != oldValue.category {
                 FilterChips.saveCategory(chips.category, for: selectedView)
             }
         }
+    }
+    private var suppressChipPersistence = false
+
+    /// Reset the filter bar for the current view: factory defaults plus the
+    /// user's persisted category pick. Doesn't count as a user edit.
+    func resetChips() {
+        suppressChipPersistence = true
+        chips = FilterChips.initial(for: selectedView)
+        suppressChipPersistence = false
     }
     @Published var activeAccountId: String?   // nil = all accounts (unified)
     @Published var syncStatus: String = ""

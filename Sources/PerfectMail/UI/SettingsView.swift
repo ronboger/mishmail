@@ -184,6 +184,16 @@ struct GoogleAPISettings: View {
             }
             .formStyle(.grouped)
         }
+        // First-run safety net: nothing is configured yet and the user
+        // navigates away mid-paste — keep what they typed instead of
+        // silently dropping it (the pane's @State dies with the pane).
+        .onDisappear {
+            if editing, !OAuthConfig.isConfigured,
+               !clientID.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                OAuthConfig.clientID = clientID.trimmingCharacters(in: .whitespacesAndNewlines)
+                OAuthConfig.clientSecret = clientSecret.trimmingCharacters(in: .whitespacesAndNewlines)
+            }
+        }
     }
 }
 
@@ -350,16 +360,27 @@ struct GmailFiltersSettings: View {
         guard !loading else { return }
         loading = true
         defer { loading = false }
-        for account in store.accounts {
-            do {
-                let filters = try await store.client(for: account.id).listFilters()
-                filtersByAccount[account.id] = filters
-                errorsByAccount[account.id] = nil
-            } catch let GmailError.http(code, _) where code == 403 {
-                errorsByAccount[account.id] =
-                    "PerfectMail doesn't have permission to read this account's filters yet. Remove and re-add the account (Accounts pane) to grant it."
-            } catch {
-                errorsByAccount[account.id] = error.localizedDescription
+        // Accounts fetch concurrently; results land as each one finishes.
+        await withTaskGroup(of: (String, Result<[GFilter], Error>).self) { group in
+            for account in store.accounts {
+                let id = account.id
+                let client = store.client(for: id)
+                group.addTask {
+                    do { return (id, .success(try await client.listFilters())) }
+                    catch { return (id, .failure(error)) }
+                }
+            }
+            for await (id, result) in group {
+                switch result {
+                case .success(let filters):
+                    filtersByAccount[id] = filters
+                    errorsByAccount[id] = nil
+                case .failure(GmailError.http(403, _)):
+                    errorsByAccount[id] =
+                        "PerfectMail doesn't have permission to read this account's filters yet. Remove and re-add the account (Accounts pane) to grant it."
+                case .failure(let error):
+                    errorsByAccount[id] = error.localizedDescription
+                }
             }
         }
     }
@@ -388,11 +409,14 @@ private struct FilterRowView: View {
     }
 
     private var iconName: String {
-        let actions = actionPhrases.map(\.plain).joined(separator: " ")
-        if actions.contains("Forward") { return "arrowshape.turn.up.right" }
-        if actions.contains("label") { return "tag" }
-        if actions.contains("Delete") { return "trash" }
-        if actions.contains("Spam") { return "nosign" }
+        let adds = filter.action?.addLabelIds ?? []
+        if filter.action?.forward != nil { return "arrowshape.turn.up.right" }
+        if adds.contains(where: { !["TRASH", "SPAM", "STARRED", "IMPORTANT"].contains($0)
+                                  && !$0.hasPrefix("CATEGORY_") }) { return "tag" }
+        if adds.contains("TRASH") { return "trash" }
+        if adds.contains("SPAM") || (filter.action?.removeLabelIds ?? []).contains("SPAM") {
+            return "nosign"
+        }
         return "line.3.horizontal.decrease"
     }
 
@@ -432,6 +456,12 @@ private struct FilterRowView: View {
         if let query = filter.criteria?.query { out.append(.init(plain: "matches ", value: query)) }
         if let negated = filter.criteria?.negatedQuery { out.append(.init(plain: "does not match ", value: negated)) }
         if filter.criteria?.hasAttachment == true { out.append(.init(plain: "has an attachment")) }
+        if let size = filter.criteria?.size {
+            let formatted = ByteCountFormatter.string(fromByteCount: Int64(size),
+                                                      countStyle: .binary)
+            let comparison = filter.criteria?.sizeComparison == "smaller" ? "smaller" : "larger"
+            out.append(.init(plain: "is \(comparison) than ", value: formatted))
+        }
         if out.isEmpty { out.append(.init(plain: "arrives")) }
         return out
     }
@@ -477,9 +507,11 @@ struct SnippetsSettings: View {
     @EnvironmentObject var store: MailStore
     @State private var search = ""
     @State private var editing: Snippet?
+    // Cached so search keystrokes and store publishes don't re-query
+    // SQLite; reloaded after every create/edit/delete.
+    @State private var all: [Snippet] = []
 
     private var filtered: [Snippet] {
-        let all = store.snippets()
         guard !search.isEmpty else { return all }
         return all.filter {
             $0.name.localizedCaseInsensitiveContains(search)
@@ -526,7 +558,10 @@ struct SnippetsSettings: View {
                         ForEach(filtered) { snippet in
                             SnippetTableRow(snippet: snippet,
                                             edit: { editing = snippet },
-                                            delete: { store.deleteSnippet(snippet) })
+                                            delete: {
+                                                store.deleteSnippet(snippet)
+                                                all = store.snippets()
+                                            })
                             Divider().padding(.leading, 20)
                         }
                         if filtered.isEmpty {
@@ -541,7 +576,8 @@ struct SnippetsSettings: View {
                 }
             }
         }
-        .sheet(item: $editing) { snippet in
+        .onAppear { all = store.snippets() }
+        .sheet(item: $editing, onDismiss: { all = store.snippets() }) { snippet in
             SnippetEditor(snippet: snippet)
         }
     }

@@ -45,7 +45,7 @@ struct ContentView: View {
         }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
-            store.chips = FilterChips.defaults(for: store.selectedView)
+            store.resetChips()
             store.reloadThreads()
         }
         .onChange(of: store.chips) { store.reloadThreads() }

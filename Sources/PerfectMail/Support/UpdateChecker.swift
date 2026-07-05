@@ -28,17 +28,30 @@ final class UpdateChecker: ObservableObject {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
     }
 
-    /// Quiet daily check so a new release surfaces without pestering.
-    func checkOnLaunch() {
-        let key = "updates.lastCheckAt"
-        let last = UserDefaults.standard.double(forKey: key)
+    private var timer: Timer?
+    private static let lastCheckKey = "updates.lastCheckAt"
+
+    /// Quiet daily checks: once now if a day has passed, then hourly ticks
+    /// that re-check when the window lapses — a mail app stays open for
+    /// days, so launch-only checking would never surface anything.
+    func startPeriodicChecks() {
+        checkIfDue()
+        timer?.invalidate()
+        timer = Timer.scheduledTimer(withTimeInterval: 3_600, repeats: true) { _ in
+            Task { @MainActor in UpdateChecker.shared.checkIfDue() }
+        }
+    }
+
+    private func checkIfDue() {
+        let last = UserDefaults.standard.double(forKey: Self.lastCheckKey)
         guard Date().timeIntervalSince1970 - last > 86_400 else { return }
-        UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: key)
         Task { await check(quietly: true) }
     }
 
     func check(quietly: Bool = false) async {
-        guard !checking else { return }
+        // Quiet checks yield to one already in flight; an explicit click
+        // still runs (and reports) even if a quiet check is racing it.
+        guard !(checking && quietly) else { return }
         checking = true
         defer { checking = false; lastChecked = Date() }
         do {
@@ -46,12 +59,21 @@ final class UpdateChecker: ObservableObject {
                 url: URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!)
             req.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
             let (data, resp) = try await URLSession.shared.data(for: req)
-            guard (resp as? HTTPURLResponse)?.statusCode == 200 else {
-                // 404 = no releases published yet.
-                available = nil
-                if !quietly { status = "No releases have been published on GitHub yet." }
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            guard code == 200 else {
+                if code == 404 {
+                    // Genuinely no releases published yet.
+                    available = nil
+                    if !quietly { status = "No releases have been published on GitHub yet." }
+                } else if !quietly {
+                    // Rate limit / server hiccup: keep any known update.
+                    status = "GitHub returned an error (HTTP \(code)). Try again later."
+                }
                 return
             }
+            // The 24h throttle only counts checks that actually reached
+            // GitHub — an offline launch shouldn't burn the day's slot.
+            UserDefaults.standard.set(Date().timeIntervalSince1970, forKey: Self.lastCheckKey)
             struct GHRelease: Decodable {
                 struct Asset: Decodable { let name: String; let browser_download_url: URL }
                 let tag_name: String

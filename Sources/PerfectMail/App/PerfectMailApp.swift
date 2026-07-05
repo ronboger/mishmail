@@ -29,7 +29,7 @@ struct PerfectMailApp: App {
                 .frame(minWidth: 900, minHeight: 560)
                 .onAppear {
                     AppDelegate.store = store
-                    UpdateChecker.shared.checkOnLaunch()
+                    UpdateChecker.shared.startPeriodicChecks()
                 }
         }
         .commands {

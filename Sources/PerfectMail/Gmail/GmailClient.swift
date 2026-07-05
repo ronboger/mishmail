@@ -49,6 +49,8 @@ struct GFilter: Decodable, Identifiable, Hashable {
         let query: String?
         let negatedQuery: String?
         let hasAttachment: Bool?
+        let size: Int?                 // bytes
+        let sizeComparison: String?    // "larger" | "smaller"
     }
     struct Action: Decodable, Hashable {
         let addLabelIds: [String]?
