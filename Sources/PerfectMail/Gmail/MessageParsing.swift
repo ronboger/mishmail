@@ -127,6 +127,70 @@ enum MessageParser {
     }
 }
 
+/// Builds the quoted block for forwarded messages — Gmail-style, with a
+/// recognizable marker line instead of `> ` quoting, so the original text
+/// survives readably and the send path can tell user text from quote.
+///
+/// The compose editor is plain text, but most mail is HTML. To forward
+/// without losing formatting, the send path recomputes this block from the
+/// original message: if the composed body still ends with it verbatim, the
+/// message is upgraded to multipart/alternative with the user's (escaped)
+/// text on top of the original HTML. If the user edited inside the quoted
+/// block, we send plain text only — the two parts must never disagree.
+enum ForwardComposer {
+    static let marker = "---------- Forwarded message ---------"
+
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.dateFormat = "EEE, MMM d, yyyy 'at' h:mm a"
+        return f
+    }()
+
+    /// The plain-text quoted block: marker, original headers, original body.
+    static func forwardBlock(fromHeader: String, date: Date, subject: String,
+                             toHeader: String, ccHeader: String,
+                             bodyText: String) -> String {
+        var lines = [marker,
+                     "From: \(fromHeader)",
+                     "Date: \(dateFormatter.string(from: date))",
+                     "Subject: \(subject)",
+                     "To: \(toHeader)"]
+        if !ccHeader.isEmpty { lines.append("Cc: \(ccHeader)") }
+        return lines.joined(separator: "\n") + "\n\n" + bodyText
+    }
+
+    /// The text the user authored above the quoted block, or nil when the
+    /// block was edited or removed (→ caller must send plain text only).
+    static func userText(inBody body: String, expectedBlock block: String) -> String? {
+        guard body.hasSuffix(block) else { return nil }
+        return String(body.dropLast(block.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// HTML alternative: escaped user text, header block, original HTML.
+    static func htmlBody(userText: String, fromHeader: String, date: Date,
+                         subject: String, toHeader: String, ccHeader: String,
+                         originalHTML: String) -> String {
+        var out = ""
+        if !userText.isEmpty {
+            out += "<div>\(escapeHTML(userText))</div><br>"
+        }
+        var header = "\(marker)<br>From: \(escapeHTML(fromHeader))<br>"
+            + "Date: \(escapeHTML(dateFormatter.string(from: date)))<br>"
+            + "Subject: \(escapeHTML(subject))<br>To: \(escapeHTML(toHeader))<br>"
+        if !ccHeader.isEmpty { header += "Cc: \(escapeHTML(ccHeader))<br>" }
+        out += "<div class=\"gmail_quote\"><div>\(header)</div><br>\(originalHTML)</div>"
+        return out
+    }
+
+    private static func escapeHTML(_ s: String) -> String {
+        s.replacingOccurrences(of: "&", with: "&amp;")
+            .replacingOccurrences(of: "<", with: "&lt;")
+            .replacingOccurrences(of: ">", with: "&gt;")
+            .replacingOccurrences(of: "\n", with: "<br>")
+    }
+}
+
 /// Builds RFC 2822 messages for sending/replying, optionally multipart/mixed
 /// with attachments.
 enum MIMEBuilder {
@@ -137,7 +201,7 @@ enum MIMEBuilder {
     }
 
     static func build(from: String, to: String, cc: String = "", bcc: String = "",
-                      subject: String, bodyText: String,
+                      subject: String, bodyText: String, bodyHTML: String? = nil,
                       inReplyTo: String? = nil, references: String? = nil,
                       attachments: [Attachment] = []) -> Data {
         var lines: [String] = []
@@ -153,21 +217,31 @@ enum MIMEBuilder {
         }
         lines.append("MIME-Version: 1.0")
 
-        let textB64 = Data(bodyText.utf8).base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed])
+        // The body: text/plain alone, or multipart/alternative when an HTML
+        // version exists (formatted forwards). Content-type header + parts.
+        func bodyPart(_ contentType: String, _ content: String) -> [String] {
+            ["Content-Type: \(contentType); charset=UTF-8",
+             "Content-Transfer-Encoding: base64",
+             "",
+             Data(content.utf8).base64EncodedString(options: [.lineLength76Characters, .endLineWithLineFeed])]
+        }
+        func bodyLines() -> [String] {
+            guard let bodyHTML else { return bodyPart("text/plain", bodyText) }
+            let alt = "pm-alt-\(UUID().uuidString)"
+            return ["Content-Type: multipart/alternative; boundary=\"\(alt)\"", "",
+                    "--\(alt)"] + bodyPart("text/plain", bodyText)
+                + ["--\(alt)"] + bodyPart("text/html", bodyHTML)
+                + ["--\(alt)--"]
+        }
+
         if attachments.isEmpty {
-            lines.append("Content-Type: text/plain; charset=UTF-8")
-            lines.append("Content-Transfer-Encoding: base64")
-            lines.append("")
-            lines.append(textB64)
+            lines.append(contentsOf: bodyLines())
         } else {
             let boundary = "pm-\(UUID().uuidString)"
             lines.append("Content-Type: multipart/mixed; boundary=\"\(boundary)\"")
             lines.append("")
             lines.append("--\(boundary)")
-            lines.append("Content-Type: text/plain; charset=UTF-8")
-            lines.append("Content-Transfer-Encoding: base64")
-            lines.append("")
-            lines.append(textB64)
+            lines.append(contentsOf: bodyLines())
             for att in attachments {
                 let name = quotable(att.filename)
                 lines.append("--\(boundary)")

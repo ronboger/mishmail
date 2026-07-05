@@ -27,8 +27,13 @@ struct ComposeView: View {
     @State private var subject: String = ""
     @State private var body_: String = ""
     @State private var attachmentURLs: [URL] = []
-    /// Attachments carried back from an undone send (data already loaded).
+    /// Attachments carried back from an undone send, or pulled off the
+    /// original message on a forward (data already loaded).
     @State private var restoredAttachments: [MIMEBuilder.Attachment] = []
+    /// Filenames prefilled by a forward — not user-authored content.
+    @State private var prefilledAttachmentNames: [String] = []
+    /// Original attachments still downloading (forwards) — send waits.
+    @State private var loadingAttachments = false
     @State private var showFilePicker = false
     @State private var showSnippets = false
     @State private var showScheduleSheet = false
@@ -55,7 +60,7 @@ struct ComposeView: View {
             || body_.trimmingCharacters(in: .whitespacesAndNewlines)
                 != initialBody.trimmingCharacters(in: .whitespacesAndNewlines)
             || !attachmentURLs.isEmpty
-            || !restoredAttachments.isEmpty
+            || restoredAttachments.map(\.filename) != prefilledAttachmentNames
     }
 
     /// Close and keep the work: unsent content becomes a real Gmail draft.
@@ -149,7 +154,12 @@ struct ComposeView: View {
             Divider()
 
             TokenAddressField(label: "To", tokens: $toTokens, draft: $toDraft,
-                              autoFocus: original == nil && editingDraft == nil)
+                              // New mail and forwards start with no recipients,
+                              // so typing lands in To. A restored (undone) send
+                              // has recipients — the body keeps focus there.
+                              autoFocus: request.restore == nil
+                                  && (request.forward
+                                      || (original == nil && editingDraft == nil)))
                 .overlay(alignment: .trailing) {
                     // Cc/Bcc live on the To row, Gmail-style.
                     HStack(spacing: 8) {
@@ -192,9 +202,17 @@ struct ComposeView: View {
                 .padding(.top, 8)
                 .frame(minHeight: 120, maxHeight: .infinity)
 
-            if !attachmentURLs.isEmpty || !restoredAttachments.isEmpty {
+            if !attachmentURLs.isEmpty || !restoredAttachments.isEmpty || loadingAttachments {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack {
+                        if loadingAttachments {
+                            HStack(spacing: 4) {
+                                ProgressView().controlSize(.mini)
+                                Text("Loading attachments…").font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            .padding(.horizontal, 8).padding(.vertical, 4)
+                        }
                         ForEach(Array(restoredAttachments.enumerated()), id: \.offset) { idx, att in
                             HStack(spacing: 4) {
                                 Image(systemName: "paperclip").font(.caption)
@@ -358,6 +376,7 @@ struct ComposeView: View {
 
     private var cannotSend: Bool {
         fromAccount.isEmpty
+            || loadingAttachments   // forwarded files still downloading
             || (toTokens.isEmpty && !toDraft.contains("@")
                 && bccTokens.isEmpty && !bccDraft.contains("@"))
     }
@@ -425,6 +444,36 @@ struct ComposeView: View {
         if request.forward {
             let subj = original.subject
             subject = subj.lowercased().hasPrefix("fwd:") ? subj : "Fwd: \(subj)"
+            // Gmail-style forwarded block instead of "> " quoting. Kept
+            // verbatim: the send path recomputes this block, and an untouched
+            // one lets the send carry the original HTML formatting alongside
+            // the plain text. Focus stays on To (no recipients yet).
+            body_ = "\n\n" + ForwardComposer.forwardBlock(
+                fromHeader: original.fromHeader, date: original.date,
+                subject: original.subject, toHeader: original.toHeader,
+                ccHeader: original.ccHeader, bodyText: original.bodyText)
+            initialBody = body_
+            // Forwards carry the original's attachments (standard behavior).
+            // They arrive async; Send holds until they're in.
+            if original.hasAttachment {
+                loadingAttachments = true
+                let message = original
+                Task {
+                    do {
+                        let atts = try await store.loadAttachments(for: message)
+                        await MainActor.run {
+                            restoredAttachments.append(contentsOf: atts)
+                            prefilledAttachmentNames = atts.map(\.filename)
+                        }
+                    } catch {
+                        await MainActor.run {
+                            self.error = "Couldn't load the original attachments: \(error.localizedDescription)"
+                        }
+                    }
+                    await MainActor.run { loadingAttachments = false }
+                }
+            }
+            return
         } else {
             if ownAddresses.contains(sender.lowercased()) {
                 // Replying to my own message: target its recipients, not me.
@@ -469,7 +518,8 @@ struct ComposeView: View {
         error = nil
         // Split off any quoted original: everything above it is the "intent",
         // the quote is preserved below the streamed draft.
-        let quoteStart = body_.range(of: "\nOn ")
+        let quoteStart = body_.range(of: "\n" + ForwardComposer.marker)
+            ?? body_.range(of: "\nOn ")
         let quote = quoteStart.map { String(body_[$0.lowerBound...]) } ?? ""
         let intent = String(quoteStart.map { body_[..<$0.lowerBound] } ?? Substring(body_))
             .trimmingCharacters(in: .whitespacesAndNewlines)
@@ -505,7 +555,8 @@ struct ComposeView: View {
     /// (first_name, name, email, date…) are filled from the first recipient.
     private func insertSnippet(_ snippet: Snippet) {
         let text = SnippetExpander.expand(snippet.body, snippetContext())
-        if let quote = body_.range(of: #"\n+On .+ wrote:\n"#, options: .regularExpression) {
+        if let quote = body_.range(of: "\n" + ForwardComposer.marker)
+            ?? body_.range(of: #"\n+On .+ wrote:\n"#, options: .regularExpression) {
             var head = String(body_[..<quote.lowerBound])
             while head.hasSuffix("\n") { head.removeLast() }
             let written = head.isEmpty ? text : head + "\n" + text
@@ -581,7 +632,9 @@ struct ComposeView: View {
                 cc: ccTokens.joined(separator: ", "),
                 bcc: bccTokens.joined(separator: ", "),
                 subject: subject, body: body_,
-                replyTo: replyTo, forward: request.forward,
+                // For forwards this is the forwarded original (supplies the
+                // HTML body at send time); the send path knows not to thread it.
+                replyTo: request.replyTo, forward: request.forward,
                 attachments: attachments,
                 replacingDraft: editingDraft)
         } catch {

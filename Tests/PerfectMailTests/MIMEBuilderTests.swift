@@ -101,6 +101,58 @@ final class MIMEBuilderTests: XCTestCase {
         XCTAssertEqual(decodedBody(of: raw), body)
     }
 
+    // MARK: - HTML alternative (formatted forwards)
+
+    /// Decodes the base64 payload of the part introduced by `contentType`.
+    private func decodedPart(of data: Data, contentType: String) -> String? {
+        let all = lines(of: data)
+        guard let ct = all.firstIndex(where: { $0 == "Content-Type: \(contentType); charset=UTF-8" }),
+              let blank = all[ct...].firstIndex(of: "")
+        else { return nil }
+        let b64 = all[(blank + 1)...].prefix { !$0.hasPrefix("--") }.joined()
+        return Data(base64Encoded: b64, options: .ignoreUnknownCharacters)
+            .flatMap { String(data: $0, encoding: .utf8) }
+    }
+
+    func testHTMLBodyProducesMultipartAlternative() {
+        let raw = MIMEBuilder.build(from: "a@b.com", to: "c@d.com", subject: "s",
+                                    bodyText: "plain version",
+                                    bodyHTML: "<div><b>rich</b> version</div>")
+        let all = lines(of: raw)
+        guard let ctLine = all.first(where: { $0.hasPrefix("Content-Type: multipart/alternative; boundary=\"") })
+        else { return XCTFail("missing multipart/alternative content type") }
+        let boundary = ctLine.components(separatedBy: "\"")[1]
+        XCTAssertEqual(all.filter { $0 == "--\(boundary)" }.count, 2)
+        XCTAssertEqual(all.filter { $0 == "--\(boundary)--" }.count, 1)
+        XCTAssertEqual(decodedPart(of: raw, contentType: "text/plain"), "plain version")
+        XCTAssertEqual(decodedPart(of: raw, contentType: "text/html"),
+                       "<div><b>rich</b> version</div>")
+    }
+
+    func testHTMLBodyWithAttachmentsNestsAlternativeInsideMixed() {
+        let raw = MIMEBuilder.build(
+            from: "a@b.com", to: "c@d.com", subject: "s",
+            bodyText: "plain", bodyHTML: "<p>rich</p>",
+            attachments: [.init(filename: "r.pdf", mimeType: "application/pdf",
+                                data: Data("PDF".utf8))])
+        let text = String(data: raw, encoding: .utf8)!
+        let all = lines(of: raw)
+        guard let mixLine = all.first(where: { $0.hasPrefix("Content-Type: multipart/mixed; boundary=\"") }),
+              let altLine = all.first(where: { $0.hasPrefix("Content-Type: multipart/alternative; boundary=\"") })
+        else { return XCTFail("missing multipart structure") }
+        let mix = mixLine.components(separatedBy: "\"")[1]
+        let alt = altLine.components(separatedBy: "\"")[1]
+        XCTAssertNotEqual(mix, alt)
+        // Mixed: alternative part + attachment; alternative: text + html.
+        XCTAssertEqual(all.filter { $0 == "--\(mix)" }.count, 2)
+        XCTAssertEqual(all.filter { $0 == "--\(mix)--" }.count, 1)
+        XCTAssertEqual(all.filter { $0 == "--\(alt)" }.count, 2)
+        XCTAssertEqual(all.filter { $0 == "--\(alt)--" }.count, 1)
+        XCTAssertEqual(decodedPart(of: raw, contentType: "text/plain"), "plain")
+        XCTAssertEqual(decodedPart(of: raw, contentType: "text/html"), "<p>rich</p>")
+        XCTAssertTrue(text.contains("Content-Disposition: attachment; filename=\"r.pdf\""))
+    }
+
     // MARK: - Header injection (CRLF) hardening
 
     func testCRLFInHeaderValuesCannotInjectHeaders() {
