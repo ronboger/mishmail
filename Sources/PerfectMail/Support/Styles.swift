@@ -45,6 +45,39 @@ struct NotionSwitchStyle: ToggleStyle {
     }
 }
 
+/// Notion Mail-style inline search field: magnifier + plain text field on a
+/// subtle rounded background, clear button when non-empty. `compact` is the
+/// smaller variant for tight spots like the compose snippets panel.
+struct SearchField: View {
+    let prompt: String
+    @Binding var text: String
+    var compact = false
+    var onSubmit: () -> Void = {}
+
+    var body: some View {
+        HStack(spacing: compact ? 4 : 5) {
+            Image(systemName: "magnifyingglass")
+                .font(.system(size: compact ? 9 : 12)).foregroundStyle(.secondary)
+            TextField(prompt, text: $text)
+                .textFieldStyle(.plain)
+                .font(compact ? .system(size: 11.5) : .body)
+                .onSubmit(onSubmit)
+            if !text.isEmpty {
+                Button {
+                    text = ""
+                } label: {
+                    Image(systemName: "xmark.circle.fill")
+                        .font(.system(size: compact ? 9 : 11)).foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(.horizontal, compact ? 6 : 7).padding(.vertical, compact ? 3 : 5)
+        .background(Color.primary.opacity(0.06),
+                    in: RoundedRectangle(cornerRadius: compact ? 5 : 6))
+    }
+}
+
 /// Notion Mail-style checkbox: bigger rounded square with a bold check.
 struct NotionCheckStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {

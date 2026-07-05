@@ -20,12 +20,7 @@ struct SnippetsPanel: View {
         return store.snippets()
     }
     private var filtered: [Snippet] {
-        let q = query.trimmingCharacters(in: .whitespaces)
-        guard !q.isEmpty else { return snippets }
-        return snippets.filter {
-            $0.name.localizedCaseInsensitiveContains(q)
-                || $0.body.localizedCaseInsensitiveContains(q)
-        }
+        snippets.filter { $0.matches(query) }
     }
 
     var body: some View {
@@ -36,16 +31,8 @@ struct SnippetsPanel: View {
                     .font(.system(size: 11, weight: .semibold))
                     .foregroundStyle(.secondary)
                 if snippets.count > 4 {
-                    HStack(spacing: 4) {
-                        Image(systemName: "magnifyingglass")
-                            .font(.system(size: 9)).foregroundStyle(.secondary)
-                        TextField("Search", text: $query)
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 11.5))
-                            .frame(maxWidth: 160)
-                    }
-                    .padding(.horizontal, 6).padding(.vertical, 3)
-                    .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 5))
+                    SearchField(prompt: "Search", text: $query, compact: true)
+                        .frame(maxWidth: 180)
                 }
                 Spacer()
                 Button(action: close) {
@@ -123,7 +110,7 @@ private struct SnippetRow: View {
                     Text(snippet.name)
                         .font(.system(size: 12, weight: .medium))
                         .lineLimit(1)
-                    Text(snippet.body.replacingOccurrences(of: "\n", with: " "))
+                    Text(snippet.previewLine)
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
