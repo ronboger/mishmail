@@ -205,6 +205,8 @@ struct ContentView: View {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { [weak store] event in
             guard let store else { return event }
+            // Settings is capturing a key for rebinding — don't run shortcuts.
+            if store.keyBindings.capturing { return event }
             let mods = event.modifierFlags.intersection([.command, .option, .control])
             if mods == .command, event.charactersIgnoringModifiers == "k" {
                 store.showCommandPalette.toggle()
@@ -216,6 +218,10 @@ struct ContentView: View {
             }
             if store.showCommandPalette, event.keyCode == 53 {  // esc
                 store.showCommandPalette = false
+                return nil
+            }
+            if store.showShortcutsHelp, event.keyCode == 53 {  // esc
+                store.showShortcutsHelp = false
                 return nil
             }
             if store.showLabelPicker {
@@ -282,7 +288,9 @@ struct ContentView: View {
                 break
             }
             guard let chars = event.charactersIgnoringModifiers else { return event }
-            if chars == "j" || chars == "k" { store.selectionViaKeyboard = true }
+            if let cmd = store.keyBindings.command(for: chars), cmd == .next || cmd == .prev {
+                store.selectionViaKeyboard = true
+            }
             return store.handleKey(chars) ? nil : event
         }
     }
