@@ -4,7 +4,10 @@ import Security
 /// Minimal Keychain wrapper for storing per-account OAuth refresh tokens.
 /// Everything stays in the local login keychain; nothing syncs to iCloud.
 enum Keychain {
-    private static let service = "dev.ronboger.PerfectMail"
+    // Keyed by bundle id so "PerfectMail Debug" (dev.ronboger.PerfectMail.debug)
+    // keeps its own items instead of tripping keychain prompts by reading the
+    // release app's — each app only ever touches items it created itself.
+    private static let service = Bundle.main.bundleIdentifier ?? "dev.ronboger.PerfectMail"
 
     static func set(_ value: String, forKey key: String) throws {
         let data = Data(value.utf8)
