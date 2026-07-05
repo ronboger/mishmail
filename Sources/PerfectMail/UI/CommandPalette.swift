@@ -38,7 +38,7 @@ struct CommandPalette: View {
                                 Spacer()
                             }
                             .padding(.horizontal, 14).padding(.vertical, 7)
-                            .background(idx == highlighted ? Color.accentColor.opacity(0.2) : .clear)
+                            .background(idx == highlighted ? Color.notionAccent.opacity(0.2) : .clear)
                             .contentShape(Rectangle())
                             .onTapGesture { run(cmd) }
                             .onHover { if $0 { highlighted = idx } }

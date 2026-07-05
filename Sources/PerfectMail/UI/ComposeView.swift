@@ -255,7 +255,7 @@ struct ComposeView: View {
                         Image(systemName: "text.badge.plus")
                         Text("Snippets").font(.system(size: 12))
                     }
-                    .foregroundStyle(showSnippets ? Color.accentColor : Color.secondary)
+                    .foregroundStyle(showSnippets ? Color.notionAccent : Color.secondary)
                 }
                 .buttonStyle(.plain)
                 .help("Insert a saved snippet")
@@ -298,7 +298,7 @@ struct ComposeView: View {
                             .background(UnevenRoundedRectangle(
                                 topLeadingRadius: 6, bottomLeadingRadius: 6,
                                 bottomTrailingRadius: 0, topTrailingRadius: 0)
-                                .fill(Color.accentColor))
+                                .fill(Color.notionAccent))
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
@@ -323,7 +323,7 @@ struct ComposeView: View {
                             .background(UnevenRoundedRectangle(
                                 topLeadingRadius: 0, bottomLeadingRadius: 0,
                                 bottomTrailingRadius: 6, topTrailingRadius: 6)
-                                .fill(Color.accentColor))
+                                .fill(Color.notionAccent))
                             .contentShape(Rectangle())
                     }
                     // .button + .plain renders custom labels reliably on

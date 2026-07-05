@@ -131,7 +131,9 @@ final class MailStore: ObservableObject {
     @Published var labelsByAccount: [String: [LabelRow]] = [:]
     @Published var threads: [MailThread] = []
     @Published var savedViews: [SavedView] = []
-    @Published var selectedView: MailboxView = .inbox
+    @Published var selectedView: MailboxView = .inbox {
+        didSet { readStateKeepIds.removeAll() }
+    }
     @Published var selectedThreadId: String?
     @Published var searchText: String = ""
     @Published var chips = FilterChips.defaults(for: .inbox)
@@ -261,6 +263,7 @@ final class MailStore: ObservableObject {
     func setActiveAccount(_ id: String?) {
         activeAccountId = id
         selectedThreadId = nil
+        readStateKeepIds.removeAll()
         reloadThreads()
     }
 
@@ -271,6 +274,17 @@ final class MailStore: ObservableObject {
     private var clients: [String: GmailClient] = [:]
     private var knownUnreadInboxIds: Set<String> = []
     private var notifiedThreadIds: Set<String> = []
+    // Threads whose read state changed while an unread/read filter was active.
+    // They stay listed (so opening an unread thread doesn't yank it out from
+    // under the reading pane) until the filter is dropped or the view changes.
+    private var readStateKeepIds: Set<String> = []
+
+    private var readStateFilterActive: Bool {
+        if chips.unreadOnly || chips.readOnly { return true }
+        if case .saved(let id, _) = selectedView,
+           savedViews.first(where: { $0.id == id })?.unreadOnly == true { return true }
+        return false
+    }
 
     init() {
         reloadAccounts()
@@ -382,6 +396,8 @@ final class MailStore: ObservableObject {
         let search = searchText.trimmingCharacters(in: .whitespaces)
         let chips = chips
         let activeAccount = activeAccountId
+        if !readStateFilterActive { readStateKeepIds.removeAll() }
+        let keepIds = Array(readStateKeepIds)
         let allLabels = labelsByAccount.values.flatMap { $0 }
         threads = (try? db.read { [weak self] db -> [MailThread] in
             if !search.isEmpty {
@@ -442,12 +458,12 @@ final class MailStore: ObservableObject {
                 return try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
             }
             guard let self else { return [] }
-            var q = Self.baseQuery(for: view, savedViews: self.savedViews)
+            var q = Self.baseQuery(for: view, savedViews: self.savedViews, keepIds: keepIds)
             if chips.showArchived || chips.showSent {
                 // Widen from inbox-only before layering the other chips.
                 q = Self.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
             }
-            q = Self.applyChips(q, chips)
+            q = Self.applyChips(q, chips, keepIds: keepIds)
             if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
             return try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
         }) ?? []
@@ -459,8 +475,11 @@ final class MailStore: ObservableObject {
     /// filter bar and by saved views (so "Save as view" is lossless). Does NOT
     /// apply the archived/sent *widening* (that's view-dependent) or account
     /// scoping (applied by the caller).
-    static func applyChips(_ query: QueryInterfaceRequest<MailThread>, _ chips: FilterChips)
-        -> QueryInterfaceRequest<MailThread> {
+    /// `keepIds` are threads that must stay visible even if they no longer match
+    /// the read-state chip (e.g. a thread you just marked read under an
+    /// unread-only filter), so the row doesn't vanish under your cursor.
+    static func applyChips(_ query: QueryInterfaceRequest<MailThread>, _ chips: FilterChips,
+                           keepIds: [String] = []) -> QueryInterfaceRequest<MailThread> {
         var q = query
         for cat in chips.category.hide {
             q = q.filter(!Column("labelIds").like("%\(cat)%"))
@@ -473,8 +492,8 @@ final class MailStore: ObservableObject {
             let patterns = chips.category.show.map { "%\($0)%" }
             q = q.filter(sql: conditions, arguments: StatementArguments(patterns))
         }
-        if chips.unreadOnly { q = q.filter(Column("isUnread") == true) }
-        if chips.readOnly { q = q.filter(Column("isUnread") == false) }
+        if chips.unreadOnly { q = q.filter(Column("isUnread") == true || keepIds.contains(Column("id"))) }
+        if chips.readOnly { q = q.filter(Column("isUnread") == false || keepIds.contains(Column("id"))) }
         if let labelId = chips.labelId {
             let match = Column("labelIds").like("%\(labelId)%")
             q = chips.labelExclude ? q.filter(!match) : q.filter(match)
@@ -517,7 +536,8 @@ final class MailStore: ObservableObject {
         return q
     }
 
-    private static func baseQuery(for view: MailboxView, savedViews: [SavedView]) -> QueryInterfaceRequest<MailThread> {
+    private static func baseQuery(for view: MailboxView, savedViews: [SavedView],
+                                  keepIds: [String] = []) -> QueryInterfaceRequest<MailThread> {
         var q = MailThread.all()
         let now = Date()
         func notSnoozed(_ q: QueryInterfaceRequest<MailThread>) -> QueryInterfaceRequest<MailThread> {
@@ -562,14 +582,14 @@ final class MailStore: ObservableObject {
                 if !chips.showArchived { q = notSnoozed(q.filter(Column("inInbox") == true)) }
                 if let a = v.accountId { q = q.filter(Column("accountId") == a) }
                 if v.starredOnly { q = q.filter(Column("isStarred") == true) }
-                q = applyChips(q, chips)
+                q = applyChips(q, chips, keepIds: keepIds)
                 break
             }
             // Legacy path: views built in the ViewEditor form (structured fields).
             if !v.showArchived { q = notSnoozed(q.filter(Column("inInbox") == true)) }
             if let a = v.accountId { q = q.filter(Column("accountId") == a) }
             if let label = v.labelId { q = q.filter(Column("labelIds").like("%\(label)%")) }
-            if v.unreadOnly { q = q.filter(Column("isUnread") == true) }
+            if v.unreadOnly { q = q.filter(Column("isUnread") == true || keepIds.contains(Column("id"))) }
             if v.starredOnly { q = q.filter(Column("isStarred") == true) }
             if v.hasAttachmentOnly { q = q.filter(Column("hasAttachment") == true) }
             if !v.senderContains.isEmpty {
@@ -1013,6 +1033,7 @@ final class MailStore: ObservableObject {
     }
 
     func setRead(_ thread: MailThread, read: Bool) {
+        if readStateFilterActive { readStateKeepIds.insert(thread.id) }
         mutateThread(thread) { $0.isUnread = !read } remote: { client, id in
             try await client.modifyThread(id: id, add: read ? [] : ["UNREAD"],
                                           remove: read ? ["UNREAD"] : [])

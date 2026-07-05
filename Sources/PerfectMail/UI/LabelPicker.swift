@@ -41,14 +41,14 @@ struct LabelPicker: View {
                                     let applied = thread.labels.contains(label.gmailLabelId)
                                     HStack(spacing: 8) {
                                         Image(systemName: applied ? "checkmark.square.fill" : "square")
-                                            .foregroundStyle(applied ? Color.accentColor : .secondary)
+                                            .foregroundStyle(applied ? Color.notionAccent : .secondary)
                                         Circle().fill(Color.stable(for: label.name))
                                             .frame(width: 8, height: 8)
                                         Text(label.name).font(.system(size: 13))
                                         Spacer()
                                     }
                                     .padding(.horizontal, 12).padding(.vertical, 6)
-                                    .background(idx == highlighted ? Color.accentColor.opacity(0.18) : .clear)
+                                    .background(idx == highlighted ? Color.notionAccent.opacity(0.18) : .clear)
                                     .contentShape(Rectangle())
                                     .onTapGesture { store.toggleLabel(thread, labelId: label.gmailLabelId) }
                                     .onHover { if $0 { store.labelPickerHighlight = idx } }

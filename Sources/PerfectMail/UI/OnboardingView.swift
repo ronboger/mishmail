@@ -90,7 +90,7 @@ struct OnboardingView: View {
                 .font(.system(size: 13, weight: .bold))
                 .foregroundStyle(.white)
                 .frame(width: 24, height: 24)
-                .background(Color.accentColor, in: Circle())
+                .background(Color.notionAccent, in: Circle())
             VStack(alignment: .leading, spacing: PMSpacing.sm) {
                 Text(title).font(PMFont.body().weight(.semibold))
                 content()
