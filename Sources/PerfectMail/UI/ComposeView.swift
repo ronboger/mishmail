@@ -44,6 +44,10 @@ struct ComposeView: View {
     /// Esc-dismissed the current token (cleared when the token goes away).
     @State private var slashSelection = 0
     @State private var slashDismissed = false
+    /// Local keyDown monitor that steals ↑/↓/Return/Tab/Esc while the `/`
+    /// picker is up — the NSTextView behind TextEditor consumes those keys
+    /// before SwiftUI's onKeyPress ever sees them.
+    @State private var slashKeyMonitor: Any?
     @State private var showScheduleSheet = false
     @State private var drafting = false
     @State private var error: String?
@@ -267,28 +271,6 @@ struct ComposeView: View {
                 // While the quote is collapsed, don't let the editor swallow
                 // the card — keeps the "…" pill near the text, not the footer.
                 .frame(minHeight: 120, maxHeight: quotedTail.isEmpty ? .infinity : 160)
-                // The `/` picker steals ↑/↓/Return/Esc while it's showing.
-                .onKeyPress(.downArrow) {
-                    guard !slashMatches.isEmpty else { return .ignored }
-                    slashSelection = min(slashSelection + 1, slashMatches.count - 1)
-                    return .handled
-                }
-                .onKeyPress(.upArrow) {
-                    guard !slashMatches.isEmpty else { return .ignored }
-                    slashSelection = max(slashSelection - 1, 0)
-                    return .handled
-                }
-                .onKeyPress(.return) {
-                    let matches = slashMatches
-                    guard !matches.isEmpty else { return .ignored }
-                    insertSlashSnippet(matches[min(slashSelection, matches.count - 1)])
-                    return .handled
-                }
-                .onKeyPress(.escape) {
-                    guard !slashMatches.isEmpty else { return .ignored }
-                    slashDismissed = true
-                    return .handled
-                }
                 .onChange(of: body_) {
                     slashSelection = 0
                     if slashToken == nil { slashDismissed = false }
@@ -481,7 +463,16 @@ struct ComposeView: View {
             .padding(.top, 8)
         }
         .padding(14)
-        .onAppear { prefill() }
+        .onAppear {
+            prefill()
+            installSlashKeyMonitor()
+        }
+        .onDisappear {
+            if let monitor = slashKeyMonitor {
+                NSEvent.removeMonitor(monitor)
+                slashKeyMonitor = nil
+            }
+        }
         .onChange(of: store.accounts) {
             // Accounts can finish loading after the card appears — backfill From.
             if fromAccount.isEmpty {
@@ -702,6 +693,34 @@ struct ComposeView: View {
         let q = token.query.trimmingCharacters(in: .whitespaces)
         return store.snippets().filter {
             q.isEmpty || $0.name.localizedCaseInsensitiveContains(q)
+        }
+    }
+
+    /// Routes ↑/↓/Return/Tab/Esc to the `/` picker while it's showing.
+    /// Unmodified keys only — ⌘-Return (send) and friends pass through.
+    private func installSlashKeyMonitor() {
+        guard slashKeyMonitor == nil else { return }
+        slashKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
+            guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty
+            else { return event }
+            let matches = slashMatches
+            guard !matches.isEmpty else { return event }
+            switch event.keyCode {
+            case 125:  // ↓
+                slashSelection = min(slashSelection + 1, matches.count - 1)
+                return nil
+            case 126:  // ↑
+                slashSelection = max(slashSelection - 1, 0)
+                return nil
+            case 36, 76, 48:  // Return, keypad Enter, Tab
+                insertSlashSnippet(matches[min(slashSelection, matches.count - 1)])
+                return nil
+            case 53:  // Esc — drop the picker, keep the typed text
+                slashDismissed = true
+                return nil
+            default:
+                return event
+            }
         }
     }
 

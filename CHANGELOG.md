@@ -14,6 +14,12 @@ minor versions may still change behavior.
   `{{first_name}}`, plus new variables: `{my_name}` / `{my_first_name}` (the
   sending account) and `{bcc_name}` / `{bcc_first_name}` / `{bcc_email}` (the
   person a move-to-Bcc snippet moved out of To).
+- **Snippet editor upgrades** — `{variables}` highlight live as you type
+  (accent for ones the app fills, orange for fill-in-yourself prompts like
+  `{key_point_1}`), and typing `{` pops an autocomplete of every variable.
+- **Snippet import** — Settings → Snippets → Import… reads a JSON file
+  (`[{"name", "body", "movesToBcc"}]`), skipping names you already have —
+  an easy landing pad for a Notion Mail snippet export.
 - **Move-to-Bcc snippets** — a per-snippet toggle for intro etiquette:
   inserting the snippet moves To (the introducer) to Bcc and promotes Cc to
   To, so "Thanks {bcc_first_name} for the intro! Hi {first_name}, …" fills in

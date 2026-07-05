@@ -1664,4 +1664,22 @@ final class MailStore: ObservableObject {
         try? db.write { db in try s.update(db) }
         objectWillChange.send()
     }
+
+    /// Imports snippets from a JSON file (`[{"name", "body", "movesToBcc"}]`),
+    /// skipping any whose name already exists so re-importing is harmless.
+    func importSnippets(from url: URL) throws -> (added: Int, skipped: Int) {
+        let access = url.startAccessingSecurityScopedResource()
+        defer { if access { url.stopAccessingSecurityScopedResource() } }
+        let items = try SnippetImport.decode(Data(contentsOf: url))
+        let planned = SnippetImport.plan(items, existingNames: snippets().map(\.name))
+        try db.write { db in
+            for item in planned {
+                var s = Snippet(id: nil, name: item.name.trimmingCharacters(in: .whitespaces),
+                                body: item.body, movesToBcc: item.movesToBcc ?? false)
+                try s.insert(db)
+            }
+        }
+        objectWillChange.send()
+        return (planned.count, items.count - planned.count)
+    }
 }
