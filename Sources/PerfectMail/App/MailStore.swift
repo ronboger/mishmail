@@ -1123,10 +1123,25 @@ final class MailStore: ObservableObject {
         }
     }
 
+    /// Gmail-style auto-advance: after archiving/trashing/spamming the
+    /// selected thread, land on the neighbor computed before the mutation —
+    /// but only if the row actually left the list (e.g. not when a "show
+    /// archived" chip keeps it visible).
+    private func advanceSelection(after thread: MailThread, wasSelected: Bool, neighbor: String?) {
+        guard wasSelected, let neighbor,
+              !threads.contains(where: { $0.id == thread.id }),
+              threads.contains(where: { $0.id == neighbor }) else { return }
+        selectionViaKeyboard = true
+        selectedThreadId = neighbor
+    }
+
     func archive(_ thread: MailThread) {
+        let wasSelected = selectedThreadId == thread.id
+        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
         mutateThread(thread) { $0.inInbox = false } remote: { client, id in
             try await client.modifyThread(id: id, remove: ["INBOX"])
         }
+        advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
         offerUndo("Archived") { [weak self] in
             guard let self else { return }
             self.mutateThread(thread) { $0.inInbox = true } remote: { client, id in
@@ -1139,9 +1154,12 @@ final class MailStore: ObservableObject {
     /// Gmail moves the whole thread to Spam; it leaves the inbox locally
     /// right away and the next sync drops it from All Mail views too.
     func markSpam(_ thread: MailThread) {
+        let wasSelected = selectedThreadId == thread.id
+        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
         mutateThread(thread) { $0.inInbox = false } remote: { client, id in
             try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
         }
+        advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
         offerUndo("Marked as spam") { [weak self] in
             guard let self else { return }
             self.mutateThread(thread) { $0.inInbox = true } remote: { client, id in
@@ -1161,10 +1179,7 @@ final class MailStore: ObservableObject {
         mutateThread(thread) { $0.inTrash = true; $0.inInbox = false } remote: { client, id in
             try await client.trashThread(id: id)
         }
-        if wasSelected, let neighbor, threads.contains(where: { $0.id == neighbor }) {
-            selectionViaKeyboard = true
-            selectedThreadId = neighbor
-        }
+        advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
         offerUndo("Moved to Trash") { [weak self] in
             guard let self else { return }
             self.mutateThread(thread) { $0.inTrash = false; $0.inInbox = true } remote: { client, id in
