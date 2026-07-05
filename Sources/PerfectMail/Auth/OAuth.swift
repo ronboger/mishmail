@@ -39,6 +39,7 @@ struct TokenResponse: Decodable {
 enum OAuthError: LocalizedError {
     case notConfigured
     case badRedirect
+    case authorizationDenied(String)
     case tokenExchangeFailed(String)
     case cancelled
 
@@ -46,6 +47,7 @@ enum OAuthError: LocalizedError {
         switch self {
         case .notConfigured: return "Set your Google OAuth Client ID in Settings first."
         case .badRedirect: return "The sign-in redirect was malformed."
+        case .authorizationDenied(let reason): return "Google declined the sign-in: \(reason)."
         case .tokenExchangeFailed(let body): return "Token exchange failed: \(body)"
         case .cancelled: return "Sign-in was cancelled."
         }
@@ -154,6 +156,7 @@ final class OAuthService {
                     }
                     let code = items.first { $0.name == "code" }?.value
                     let state = items.first { $0.name == "state" }?.value
+                    let errorParam = items.first { $0.name == "error" }?.value
                     let ok = code != nil && state == expectedState
                     let html = ok
                         ? "<html><body style='font-family:-apple-system'><h2>Signed in.</h2>You can close this tab and return to PerfectMail.</body></html>"
@@ -161,8 +164,15 @@ final class OAuthService {
                     let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n\(html)"
                     conn.send(content: Data(response.utf8), completion: .contentProcessed { _ in
                         conn.cancel()
-                        if ok, let code { continuation.yield(code); continuation.finish() }
-                        else { continuation.finish(throwing: OAuthError.badRedirect) }
+                        if ok, let code {
+                            continuation.yield(code); continuation.finish()
+                        } else if let errorParam {
+                            // Surface Google's actual reason (e.g. access_denied)
+                            // rather than a generic malformed-redirect message.
+                            continuation.finish(throwing: OAuthError.authorizationDenied(errorParam))
+                        } else {
+                            continuation.finish(throwing: OAuthError.badRedirect)
+                        }
                     })
                 }
             }

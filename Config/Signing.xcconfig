@@ -1,0 +1,20 @@
+// Signing configuration for PerfectMail.
+//
+// The tracked default is ad-hoc "Sign to Run Locally": it builds and runs on
+// any Mac with no Apple Developer account (so `make build`, CI, and strangers
+// cloning the repo all work out of the box).
+//
+// To sign with your own Apple Developer team — required for notarization, and
+// nice for a stable identity that stops the Keychain re-prompting on every
+// rebuild — create Config/Local.xcconfig (git-ignored) with, e.g.:
+//
+//     CODE_SIGN_STYLE = Automatic
+//     DEVELOPMENT_TEAM = XXXXXXXXXX
+//     CODE_SIGN_IDENTITY = Apple Development
+//
+// The optional include below picks it up automatically when present.
+
+CODE_SIGN_STYLE = Manual
+CODE_SIGN_IDENTITY = -
+
+#include? "Local.xcconfig"

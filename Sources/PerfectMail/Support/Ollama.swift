@@ -16,13 +16,27 @@ enum Ollama {
 
     enum OllamaError: LocalizedError {
         case unreachable
+        case insecureEndpoint
         var errorDescription: String? {
-            "Couldn't reach Ollama at \(Ollama.baseURL). Install it from ollama.com and run: ollama pull \(Ollama.model)"
+            switch self {
+            case .unreachable:
+                return "Couldn't reach Ollama at \(Ollama.baseURL). Install it from ollama.com and run: ollama pull \(Ollama.model)"
+            case .insecureEndpoint:
+                return "Ollama endpoint \(Ollama.baseURL) is neither local nor HTTPS. Your email content won't be sent over an unencrypted connection to a remote host — use http://127.0.0.1:11434 or an https:// URL."
+            }
         }
+    }
+
+    /// True when the configured endpoint is this machine.
+    static var isLoopback: Bool {
+        guard let host = URL(string: baseURL)?.host?.lowercased() else { return false }
+        return host == "127.0.0.1" || host == "localhost" || host == "::1"
     }
 
     static func generate(prompt: String) async throws -> String {
         guard let url = URL(string: "\(baseURL)/api/generate") else { throw OllamaError.unreachable }
+        // Never send message content in cleartext to a non-local host.
+        if !isLoopback, url.scheme?.lowercased() != "https" { throw OllamaError.insecureEndpoint }
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 120

@@ -21,19 +21,22 @@ targets:
         com.apple.security.network.client: true
         com.apple.security.network.server: true
         com.apple.security.files.user-selected.read-write: true
+    # Signing lives in Config/Signing.xcconfig (portable ad-hoc default; drop a
+    # Config/Local.xcconfig to sign with your own team). Keep it out of the
+    # per-target settings so the xcconfig actually wins.
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
     settings:
       base:
         MARKETING_VERSION: 0.1.0
         CURRENT_PROJECT_VERSION: 1
-        CODE_SIGN_IDENTITY: "Apple Development"
-        CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 47T79PSL25
         SWIFT_VERSION: 5.10
         GENERATE_INFOPLIST_FILE: true
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
-        ENABLE_HARDENED_RUNTIME: false
+        ENABLE_HARDENED_RUNTIME: true
   # Standalone unit tests over the non-UI core (parsers, MIME, DB schema,
   # sync derivation). Compiles those sources directly — no app host, so no
   # keychain prompts, no network, no real database.

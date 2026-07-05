@@ -390,6 +390,9 @@ struct HTMLBodyView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
+        // Ephemeral store: any remote image an email is allowed to load can't
+        // drop cookies/cache that persist or bleed across accounts.
+        config.websiteDataStore = .nonPersistent()
         let webView = PassthroughWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
@@ -440,16 +443,32 @@ struct HTMLBodyView: NSViewRepresentable {
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
                      decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+            let url = navigationAction.request.url
+
+            // A user clicking a link is handed to the OS (real browser / mail
+            // client); we never navigate the message pane itself. A crafted
+            // file:// or app-scheme link stays inert.
             if navigationAction.navigationType == .linkActivated {
-                // Only hand expected schemes to the OS; a crafted file:// or
-                // app-scheme link in an email stays inert.
-                if let url = navigationAction.request.url,
-                   ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
+                if let url, ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
                     NSWorkspace.shared.open(url)
                 }
                 decisionHandler(.cancel)
-            } else {
+                return
+            }
+
+            // Default-deny for everything else. The only navigation an email is
+            // allowed to perform is the synthetic initial document load from
+            // loadHTMLString (URL is nil or about:blank). This blocks
+            // meta-refresh, form submission, JS/redirect, and iframe loads —
+            // all of which would otherwise let crafted HTML reach the network
+            // (defeating remote-image blocking) or replace the body with a
+            // phishing page. Remote images, when opted in, are resource loads,
+            // not navigations, so they are unaffected.
+            let scheme = url?.scheme?.lowercased()
+            if url == nil || scheme == "about" {
                 decisionHandler(.allow)
+            } else {
+                decisionHandler(.cancel)
             }
         }
     }

@@ -1164,7 +1164,9 @@ final class MailStore: ObservableObject {
                 for att in attachments {
                     let data = try await client(for: message.accountId)
                         .getAttachment(messageId: message.gmailId, attachmentId: att.gmailAttachmentId)
-                    try data.write(to: dir.appendingPathComponent(MessageParser.safeFilename(att.filename)))
+                    let dest = dir.appendingPathComponent(MessageParser.safeFilename(att.filename))
+                    try data.write(to: dest)
+                    Self.markQuarantined(dest)
                 }
                 await MainActor.run {
                     showNotice("Saved \(attachments.count) attachments")
@@ -1179,7 +1181,9 @@ final class MailStore: ObservableObject {
     // MARK: - Attachments
 
     /// Opens in the default app via a private temp file inside the sandbox
-    /// (macOS purges it; nothing is written to user folders).
+    /// (macOS purges it; nothing is written to user folders). The file is
+    /// namespaced by message id (so same-named attachments never collide) and
+    /// tagged with the quarantine attribute so Gatekeeper still gates it.
     func openAttachment(_ attachment: AttachmentRow, message: Message) {
         Task {
             do {
@@ -1187,13 +1191,27 @@ final class MailStore: ObservableObject {
                     .getAttachment(messageId: message.gmailId, attachmentId: attachment.gmailAttachmentId)
                 let dir = FileManager.default.temporaryDirectory
                     .appendingPathComponent("PerfectMailAttachments", isDirectory: true)
+                    .appendingPathComponent(MessageParser.safeFilename(message.gmailId), isDirectory: true)
                 try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
                 let url = dir.appendingPathComponent(MessageParser.safeFilename(attachment.filename))
                 try data.write(to: url)
+                Self.markQuarantined(url)
                 await MainActor.run { NSWorkspace.shared.open(url) }
             } catch {
                 await MainActor.run { self.lastError = error.localizedDescription }
             }
+        }
+    }
+
+    /// Tags a written-out attachment with `com.apple.quarantine`. The flags
+    /// deliberately omit the "user approved" bit, so an email attachment still
+    /// triggers Gatekeeper's "downloaded from the Internet" first-open warning
+    /// and any handling app's own web-content checks. Best-effort.
+    static func markQuarantined(_ url: URL) {
+        let stamp = String(format: "%08x", UInt32(truncatingIfNeeded: Int(Date().timeIntervalSince1970)))
+        let value = "0001;\(stamp);PerfectMail;\(UUID().uuidString)"
+        value.withCString { cstr in
+            _ = setxattr(url.path, "com.apple.quarantine", cstr, strlen(cstr), 0, 0)
         }
     }
 
@@ -1209,6 +1227,7 @@ final class MailStore: ObservableObject {
                 let data = try await client(for: message.accountId)
                     .getAttachment(messageId: message.gmailId, attachmentId: attachment.gmailAttachmentId)
                 try data.write(to: destination)
+                Self.markQuarantined(destination)
                 await MainActor.run {
                     NSWorkspace.shared.activateFileViewerSelecting([destination])
                 }

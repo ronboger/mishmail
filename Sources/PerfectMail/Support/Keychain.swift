@@ -19,6 +19,10 @@ enum Keychain {
             var add = query
             add[kSecValueData as String] = data
             add[kSecAttrSynchronizable as String] = false
+            // Device-bound and available after first unlock: refresh tokens and
+            // the DB master key never leave this Mac and are excluded from
+            // Keychain backups/migration.
+            add[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
             let addStatus = SecItemAdd(add as CFDictionary, nil)
             guard addStatus == errSecSuccess else { throw KeychainError.status(addStatus) }
         } else {
