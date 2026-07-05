@@ -123,6 +123,19 @@ struct ContentView: View {
         .sheet(item: $store.snoozingThread) { thread in
             SnoozeSheet { store.snooze(thread, until: $0) }
         }
+        .alert(
+            "Delete this draft?",
+            isPresented: Binding(
+                get: { store.confirmingDraftDelete != nil },
+                set: { if !$0 { store.confirmingDraftDelete = nil } }
+            ),
+            presenting: store.confirmingDraftDelete
+        ) { thread in
+            Button("Delete", role: .destructive) { store.deleteDraft(inThread: thread) }
+            Button("Cancel", role: .cancel) {}
+        } message: { _ in
+            Text("This can't be undone.")
+        }
         .sheet(isPresented: $store.showShortcutsHelp) {
             ShortcutsHelpView(bindings: store.keyBindings)
         }

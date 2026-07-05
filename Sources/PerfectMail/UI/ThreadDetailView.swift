@@ -34,7 +34,7 @@ struct ThreadDetailView: View {
                         }
                         .buttonStyle(.borderedProminent)
                         Button("Delete Draft", role: .destructive) {
-                            store.deleteDraft(inThread: thread)
+                            store.confirmingDraftDelete = thread
                         }
                     }
                     .padding(.horizontal)
