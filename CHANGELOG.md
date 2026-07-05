@@ -7,6 +7,17 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Added
+- **Slash-trigger snippets** — type `/` in the compose body (Notion Mail-style)
+  to pop a snippet picker; keep typing to filter, ↑/↓ to choose, Return to
+  insert, Esc to dismiss. `⌘/` toggles the snippets panel.
+- **Single-brace snippet variables** — `{first_name}` now works alongside
+  `{{first_name}}`, plus new variables: `{my_name}` / `{my_first_name}` (the
+  sending account) and `{bcc_name}` / `{bcc_first_name}` / `{bcc_email}` (the
+  person a move-to-Bcc snippet moved out of To).
+- **Move-to-Bcc snippets** — a per-snippet toggle for intro etiquette:
+  inserting the snippet moves To (the introducer) to Bcc and promotes Cc to
+  To, so "Thanks {bcc_first_name} for the intro! Hi {first_name}, …" fills in
+  both people correctly. Marked with a "→ Bcc" badge in snippet lists.
 - **Formatted forwards** — forwarding now uses a Gmail-style
   "---------- Forwarded message ---------" block and, when the quoted text is
   left untouched, sends a `multipart/alternative` message that carries the

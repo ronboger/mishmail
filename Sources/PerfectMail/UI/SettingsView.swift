@@ -588,10 +588,13 @@ private struct SnippetTableRow: View {
 
     var body: some View {
         HStack(spacing: 0) {
-            Text("/\(snippet.name)")
-                .font(.system(size: 13, weight: .medium))
-                .lineLimit(1)
-                .frame(width: 170, alignment: .leading)
+            HStack(spacing: 6) {
+                Text("/\(snippet.name)")
+                    .font(.system(size: 13, weight: .medium))
+                    .lineLimit(1)
+                if snippet.movesToBcc { MovesToBccBadge() }
+            }
+            .frame(width: 170, alignment: .leading)
             Text(snippet.previewLine)
                 .font(.system(size: 12.5))
                 .foregroundStyle(.secondary)
@@ -621,11 +624,13 @@ private struct SnippetEditor: View {
     let snippet: Snippet
     @State private var name: String
     @State private var body_: String
+    @State private var movesToBcc: Bool
 
     init(snippet: Snippet) {
         self.snippet = snippet
         _name = State(initialValue: snippet.name)
         _body_ = State(initialValue: snippet.body)
+        _movesToBcc = State(initialValue: snippet.movesToBcc)
     }
 
     var body: some View {
@@ -637,17 +642,29 @@ private struct SnippetEditor: View {
                 .font(.system(size: 13))
                 .frame(minHeight: 140)
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
+            Text("Variables: {first_name} {name} {email} {date} {my_first_name} {my_name} — and for move-to-Bcc snippets, {bcc_first_name} {bcc_name} for the introducer.")
+                .font(.system(size: 11))
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            VStack(alignment: .leading, spacing: 2) {
+                Toggle("Move recipients to Bcc when inserted", isOn: $movesToBcc)
+                    .font(.system(size: 12.5))
+                Text("Intro etiquette: To (the introducer) moves to Bcc, Cc moves up to To.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+            }
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
                 Button("Save") {
                     if snippet.id == nil {
-                        store.saveSnippet(name: name, body: body_)
+                        store.saveSnippet(name: name, body: body_, movesToBcc: movesToBcc)
                     } else {
                         var updated = snippet
                         updated.name = name
                         updated.body = body_
+                        updated.movesToBcc = movesToBcc
                         store.updateSnippet(updated)
                     }
                     dismiss()
