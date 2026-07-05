@@ -257,6 +257,8 @@ struct ComposeView: View {
                 .scrollContentBackground(.hidden)
                 .focused($bodyFocused)
                 .padding(.top, 10)
+                .padding(.horizontal, 6)
+                .padding(.bottom, 6)
                 .frame(minHeight: 120, maxHeight: .infinity)
                 // The `/` picker steals ↑/↓/Return/Esc while it's showing.
                 .onKeyPress(.downArrow) {
