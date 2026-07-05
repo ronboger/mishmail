@@ -26,6 +26,7 @@ struct PerfectMailApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
+                .tint(.notionAccent)
                 .frame(minWidth: 900, minHeight: 560)
                 .onAppear { AppDelegate.store = store }
         }

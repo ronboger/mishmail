@@ -101,7 +101,7 @@ struct TokenAddressField: View {
                                 Spacer()
                             }
                             .padding(.horizontal, 8).padding(.vertical, 5)
-                            .background(idx == highlighted ? Color.accentColor.opacity(0.18) : .clear)
+                            .background(idx == highlighted ? Color.notionAccent.opacity(0.18) : .clear)
                             .contentShape(Rectangle())
                         }
                         .buttonStyle(.plain)

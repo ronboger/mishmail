@@ -262,7 +262,7 @@ struct MessageCard: View {
                                             .font(.system(size: 12, weight: .medium))
                                     }
                                     .padding(.horizontal, 10).padding(.vertical, 8)
-                                    .background(Color.accentColor.opacity(0.15),
+                                    .background(Color.notionAccent.opacity(0.15),
                                                 in: RoundedRectangle(cornerRadius: 8))
                                 }
                                 .buttonStyle(.plain)
@@ -331,7 +331,7 @@ struct MessageCard: View {
                 }
                 .padding(.top, 4)
             } else {
-                Text(message.snippet)
+                Text(message.snippet.decodingHTMLEntities())
                     .font(.system(size: 12.5 * fontScale)).foregroundStyle(.secondary).lineLimit(1)
             }
         }

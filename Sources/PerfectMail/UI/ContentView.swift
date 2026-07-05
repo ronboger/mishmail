@@ -149,15 +149,19 @@ struct ContentView: View {
 
     @ViewBuilder
     private var detailPane: some View {
-        if let id = store.selectedThreadId,
-           let thread = store.threads.first(where: { $0.id == id }) {
-            ThreadDetailView(thread: thread, onReply: { msg in
-                store.composeRequest = .init(replyTo: msg)
-            })
-        } else {
-            Text("Select a conversation")
-                .foregroundStyle(.secondary)
+        Group {
+            if let id = store.selectedThreadId,
+               let thread = store.threads.first(where: { $0.id == id }) {
+                ThreadDetailView(thread: thread, onReply: { msg in
+                    store.composeRequest = .init(replyTo: msg)
+                })
+            } else {
+                Text("Select a conversation")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    .foregroundStyle(.secondary)
+            }
         }
+        .background(Color.notionContent)
     }
 
     /// Gmail-style single-key shortcuts plus Cmd-K. Ignores events when a
@@ -331,7 +335,9 @@ struct Sidebar: View {
                 }
             }
             .listStyle(.sidebar)
+            .scrollContentBackground(.hidden)
         }
+        .background(Color.notionSidebar)
     }
 
     @ViewBuilder
@@ -369,8 +375,15 @@ struct AccountSwitcher: View {
             Button("Edit Account Labels…") { store.editingAccountLabels = true }
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: "person.crop.circle.fill")
-                    .font(.title2).foregroundStyle(.secondary)
+                // Notion Mail-style avatar: colored circle with the initial.
+                Circle()
+                    .fill(Color.stable(for: avatarKey))
+                    .frame(width: 26, height: 26)
+                    .overlay {
+                        Text(String(title.prefix(1)).uppercased())
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.white)
+                    }
                 VStack(alignment: .leading, spacing: 0) {
                     Text(title)
                         .font(.system(size: 13, weight: .semibold))
@@ -395,12 +408,22 @@ struct AccountSwitcher: View {
         account.displayName == account.id ? account.id : "\(account.displayName) — \(account.id)"
     }
 
+    private var activeAccount: Account? {
+        store.activeAccountId.flatMap { id in store.accounts.first { $0.id == id } }
+    }
+
+    /// Full name first, like Notion Mail's account header: the outgoing
+    /// sender name if set, then the local label, then the address.
     private var title: String {
-        if let active = store.activeAccountId,
-           let account = store.accounts.first(where: { $0.id == active }) {
+        if let account = activeAccount {
+            if !account.senderName.isEmpty { return account.senderName }
             return account.displayName
         }
         return "All accounts"
+    }
+
+    private var avatarKey: String {
+        activeAccount?.id ?? store.accounts.map(\.id).joined()
     }
 
     private var subtitle: String {
