@@ -223,6 +223,7 @@ final class MailStore: ObservableObject {
     @Published var editingAccountLabels = false
     @Published var showLabelPicker = false
     @Published var snoozingThread: MailThread?   // custom snooze date sheet
+    @Published var confirmingDraftDelete: MailThread?   // delete-draft confirmation alert
     // Arrow-key highlight for the label picker. Driven by the window-level
     // key monitor (the picker's text field eats arrow events before SwiftUI's
     // onKeyPress sees them); the view clamps it to the filtered list.
