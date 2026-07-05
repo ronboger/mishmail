@@ -268,6 +268,8 @@ struct ComposeView: View {
                 .scrollContentBackground(.hidden)
                 .focused($bodyFocused)
                 .padding(.top, 10)
+                .padding(.horizontal, 6)
+                .padding(.bottom, 6)
                 // While the quote is collapsed, don't let the editor swallow
                 // the card — keeps the "…" pill near the text, not the footer.
                 .frame(minHeight: 120, maxHeight: quotedTail.isEmpty ? .infinity : 160)
