@@ -46,6 +46,21 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         ENABLE_HARDENED_RUNTIME: true
+      # Debug and Release build two DISTINCT apps so a throwaway test build is
+      # never confused with — or able to corrupt — the real one you use daily:
+      #   Release  → "PerfectMail",       dev.ronboger.PerfectMail        (make install → /Applications)
+      #   Debug    → "PerfectMail Debug", dev.ronboger.PerfectMail.debug  (make run, launched in place)
+      # The different bundle id gives Debug its own sandbox container + keychain,
+      # so it syncs into a separate local database (sign in once; tokens persist
+      # across rebuilds) and can't touch the real app's data. They coexist.
+      configs:
+        Debug:
+          PRODUCT_NAME: PerfectMail Debug
+          PRODUCT_BUNDLE_IDENTIFIER: dev.ronboger.PerfectMail.debug
+          INFOPLIST_KEY_CFBundleDisplayName: PerfectMail Debug
+        Release:
+          PRODUCT_NAME: PerfectMail
+          PRODUCT_BUNDLE_IDENTIFIER: dev.ronboger.PerfectMail
   # Standalone unit tests over the non-UI core (parsers, MIME, DB schema,
   # sync derivation). Compiles those sources directly — no app host, so no
   # keychain prompts, no network, no real database.
