@@ -807,41 +807,8 @@ struct FaviconView: View {
     }
 }
 
-/// Colored initials avatar for a sender/participant. Deterministic color per
-/// sender (Color.stable) so the same person always looks the same.
-struct AvatarView: View {
-    let name: String
-    var size: CGFloat = 20
-
-    var body: some View {
-        Circle()
-            .fill(Color.stable(for: seed).gradient)
-            .frame(width: size, height: size)
-            .overlay(
-                Text(initials)
-                    .font(.system(size: size * 0.42, weight: .semibold))
-                    .foregroundStyle(.white)
-            )
-    }
-
-    // Color/initials key off the first participant only.
-    private var seed: String {
-        String(name.split(separator: " .. ").first ?? Substring(name))
-            .trimmingCharacters(in: .whitespaces)
-    }
-
-    private var initials: String {
-        let words = seed.split(whereSeparator: { $0 == " " || $0 == "." || $0 == "@" })
-        let letters = words.prefix(2).compactMap { $0.first(where: \.isLetter) }
-        if letters.isEmpty {
-            return String(seed.first(where: \.isLetter).map { Character($0.uppercased()) } ?? "?")
-        }
-        return letters.map { $0.uppercased() }.joined()
-    }
-}
-
 /// Dense Notion Mail-style single-line row:
-/// [dot] avatar participants   subject  snippet…………  [ai] [icons] time
+/// [dot] participants   subject  snippet…………  [ai] [icons] time
 struct ThreadRow: View {
     @EnvironmentObject var store: MailStore
     @AppStorage("fontScale") private var fontScale = 1.0
@@ -853,8 +820,6 @@ struct ThreadRow: View {
             Circle()
                 .fill(thread.isUnread ? Color.notionAccent : .clear)
                 .frame(width: 7, height: 7)
-
-            AvatarView(name: participantsDisplay, size: 20 * fontScale)
 
             HStack(spacing: 4) {
                 Text(participantsDisplay)
