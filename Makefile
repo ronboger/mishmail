@@ -15,28 +15,34 @@
 #   make release   build Release, zip the app, publish a GitHub release
 #                  (the in-app update checker looks at these releases).
 #
-# Everything lands in ./build (git-ignored); nothing is scattered in DerivedData.
+# All build output lands in ./build/dd.noindex (git-ignored). The `.noindex`
+# suffix is the one mechanism macOS reliably honors: Spotlight skips any path
+# with a `.noindex` component (it's how Xcode hides its own Index.noindex), so
+# throwaway Debug/Release builds never show up in the launcher or search. You
+# launch the test app via `make run`; only the real /Applications app is indexed.
+# `make clean` reclaims it all.
 
 PROJECT = PerfectMail.xcodeproj
 # Single source of truth for the version: MARKETING_VERSION in project.yml.
 VERSION = $(shell awk '/MARKETING_VERSION:/ {print $$2}' project.yml)
-DEBUG_APP = build/Build/Products/Debug/PerfectMail Debug.app
-RELEASE_APP = build/Build/Products/Release/PerfectMail.app
+# Derived data path — the .noindex suffix keeps every product out of Spotlight.
+DD = build/dd.noindex
+DEBUG_APP = $(DD)/Build/Products/Debug/PerfectMail Debug.app
+RELEASE_APP = $(DD)/Build/Products/Release/PerfectMail.app
 
-.PHONY: test build run install gen hooks release
+.PHONY: test build run install gen hooks release clean
 
 gen:
 	xcodegen generate
-	@mkdir -p build && touch build/.metadata_never_index  # keep build products out of Spotlight/launcher
 
 test: gen
 	xcodebuild test -project $(PROJECT) -scheme PerfectMailTests \
-		-destination 'platform=macOS' -derivedDataPath build -quiet
+		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet
 
 # The throwaway test app (Debug identity, isolated data).
 build: gen
 	xcodebuild build -project $(PROJECT) -scheme PerfectMail -configuration Debug \
-		-destination 'platform=macOS' -derivedDataPath build -quiet
+		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet
 
 # Build the test app and launch it in place — the "let me look at my change" verb.
 run: build
@@ -46,7 +52,7 @@ run: build
 # my machine" verb. Replaces whatever PerfectMail.app is there.
 install: gen
 	xcodebuild build -project $(PROJECT) -scheme PerfectMail -configuration Release \
-		-destination 'platform=macOS' -derivedDataPath build -quiet
+		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet
 	rm -rf /Applications/PerfectMail.app
 	ditto "$(RELEASE_APP)" /Applications/PerfectMail.app
 	@echo "Installed PerfectMail.app → /Applications (your daily driver)."
@@ -57,13 +63,20 @@ install: gen
 # Bump MARKETING_VERSION in project.yml first; requires the gh CLI.
 release: test
 	xcodebuild build -project $(PROJECT) -scheme PerfectMail -configuration Release \
-		-destination 'platform=macOS' -derivedDataPath build -quiet
-	cd build/Build/Products/Release && \
+		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet
+	cd $(DD)/Build/Products/Release && \
 		ditto -c -k --keepParent PerfectMail.app PerfectMail-$(VERSION).zip
 	gh release create v$(VERSION) \
-		build/Build/Products/Release/PerfectMail-$(VERSION).zip \
+		$(DD)/Build/Products/Release/PerfectMail-$(VERSION).zip \
 		--title "PerfectMail $(VERSION)" --generate-notes
 	@echo "Released v$(VERSION) — running apps will offer the update within a day."
+
+# Reclaim all build output — the local ./build tree plus any stray per-project
+# DerivedData caches Xcode may have left in ~/Library.
+clean:
+	rm -rf build
+	rm -rf ~/Library/Developer/Xcode/DerivedData/PerfectMail-*
+	@echo "Cleaned ./build and ~/Library DerivedData/PerfectMail-* caches."
 
 # Install the pre-commit hook (run once per clone).
 hooks:
