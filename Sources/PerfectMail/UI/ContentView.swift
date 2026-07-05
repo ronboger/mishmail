@@ -227,6 +227,15 @@ struct ContentView: View {
                 store.showShortcutsHelp = false
                 return nil
             }
+            // While the help sheet is up, ? still closes it, but no other bare
+            // key may fall through to mail actions on the background selection.
+            if store.showShortcutsHelp {
+                if event.charactersIgnoringModifiers == "?" {
+                    store.showShortcutsHelp = false
+                    return nil
+                }
+                return event
+            }
             if store.showLabelPicker {
                 switch event.keyCode {
                 case 53:  // esc
@@ -317,7 +326,7 @@ struct Sidebar: View {
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut("n", modifiers: .command)
-                .help("Compose (⌘N or c)")
+                .help("Compose (⌘N or \(store.keyBindings.key(for: .compose)))")
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             HStack(spacing: 5) {

@@ -62,6 +62,7 @@ struct ShortcutsSettings: View {
 
     private func startListening(_ command: ShortcutCommand) {
         stopListening()
+        warning = nil
         listening = command
         bindings.capturing = true
         monitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in

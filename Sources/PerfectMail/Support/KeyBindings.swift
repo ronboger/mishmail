@@ -92,7 +92,7 @@ final class KeyBindings: ObservableObject {
             return .rejected("\"\(key)\" is reserved.")
         }
         if self.key(for: command) == key { return .ok }
-        if let other = self.command(for: key) { return .conflict(other) }  // `self.` — `command` is shadowed by the parameter
+        if let other = self.command(for: key) { return .conflict(other) }
         overrides[command] = key
         persist()
         return .ok
