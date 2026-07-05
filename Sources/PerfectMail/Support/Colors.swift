@@ -19,4 +19,15 @@ extension Color {
         default: return .gray
         }
     }
+
+    /// Accent for an on-device AI triage bucket (Classifier.categories).
+    static func aiCategory(_ name: String) -> Color {
+        switch name {
+        case "Reply needed": return .red
+        case "FYI": return .blue
+        case "Newsletter": return .purple
+        case "Receipt": return .teal
+        default: return .gray
+        }
+    }
 }

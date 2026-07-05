@@ -81,12 +81,16 @@ struct SavedView: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
     var showArchived: Bool
     var excludePromotions: Bool
     var category: String?       // CATEGORY_PROMOTIONS / _SOCIAL / _UPDATES / _FORUMS
+    /// Full FilterChips serialized as JSON. Present for views created via
+    /// "Save as view…" (lossless); nil for views built in the ViewEditor form,
+    /// which fall back to the structured fields above.
+    var chipsJSON: Data? = nil
     mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 
     static func empty() -> SavedView {
         SavedView(id: nil, name: "", accountId: nil, labelId: nil, unreadOnly: false,
                   starredOnly: false, hasAttachmentOnly: false, senderContains: "",
-                  showArchived: false, excludePromotions: false, category: nil)
+                  showArchived: false, excludePromotions: false, category: nil, chipsJSON: nil)
     }
 }
 
@@ -125,6 +129,14 @@ struct ScheduledSend: Codable, Identifiable, Hashable, FetchableRecord, Persista
     static func encodeAttachments(_ attachments: [MIMEBuilder.Attachment]) -> Data {
         (try? JSONEncoder().encode(attachments)) ?? Data("[]".utf8)
     }
+}
+
+/// On-device AI triage result for a thread (see MailStore.classifyInbox).
+struct ThreadAICategory: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "threadAI"
+    var threadId: String
+    var category: String
+    var id: String { threadId }
 }
 
 struct LabelRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
@@ -323,6 +335,20 @@ final class AppDatabase {
                 t.column("replacingDraftId", .text)
                 t.column("attachmentsJSON", .blob).notNull()
                 t.column("createdAt", .datetime).notNull()
+            }
+        }
+        // Local, on-device AI triage. Kept in its own table so re-deriving
+        // thread metadata during sync never wipes a classification.
+        m.registerMigration("v6") { db in
+            try db.create(table: "threadAI") { t in
+                t.column("threadId", .text).primaryKey()
+                t.column("category", .text).notNull()
+            }
+        }
+        // Lossless saved views: the full filter set, serialized as JSON.
+        m.registerMigration("v7") { db in
+            try db.alter(table: "savedView") { t in
+                t.add(column: "chipsJSON", .blob)
             }
         }
         return m

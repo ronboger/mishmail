@@ -10,6 +10,9 @@ struct ThreadDetailView: View {
 
     @State private var messages: [Message] = []
     @State private var labelsExpanded = false
+    @State private var aiSummary: String?
+    @State private var summarizing = false
+    @State private var summaryError: String?
 
     var body: some View {
         ScrollView {
@@ -18,6 +21,8 @@ struct ThreadDetailView: View {
                     .font(.system(size: 19 * fontScale, weight: .semibold))
                     .textSelection(.enabled)
                     .padding(.horizontal)
+
+                summarySection
 
                 // Draft threads get an obvious way back into compose.
                 if thread.labels.contains("DRAFT") {
@@ -150,7 +155,74 @@ struct ThreadDetailView: View {
         }
         .task(id: thread.id) {
             messages = store.messages(inThread: thread.id)
+            aiSummary = nil; summaryError = nil; summarizing = false
             if thread.isUnread { store.setRead(thread, read: true) }
+        }
+    }
+
+    /// On-device AI summary. Only offered for multi-message threads (a single
+    /// short message doesn't need one). Collapses to a one-line affordance
+    /// until asked; the summary streams in locally.
+    @ViewBuilder
+    private var summarySection: some View {
+        if messages.count >= 2 || (messages.first?.bodyText.count ?? 0) > 800 {
+            VStack(alignment: .leading, spacing: 6) {
+                if let aiSummary {
+                    HStack(alignment: .top, spacing: 8) {
+                        Image(systemName: "sparkles")
+                            .font(.system(size: 11 * fontScale))
+                            .foregroundStyle(.tint)
+                        Text(aiSummary)
+                            .font(.system(size: 12.5 * fontScale))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(10)
+                    .background(Color.accentColor.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                } else {
+                    Button { summarizeThread() } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: summarizing ? "hourglass" : "sparkles")
+                            Text(summarizing ? "Summarizing…" : "Summarize with AI")
+                        }
+                        .font(.system(size: 11 * fontScale))
+                        .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(summarizing)
+                    .help("Generate a local, private TL;DR of this thread (Ollama)")
+                }
+                if let summaryError {
+                    Text(summaryError)
+                        .font(.system(size: 11 * fontScale))
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    private func summarizeThread() {
+        summarizing = true
+        summaryError = nil
+        aiSummary = nil
+        let body = messages.map(\.bodyText).joined(separator: "\n\n---\n\n")
+        let prompt = Ollama.summarize(subject: thread.subject, body: body)
+        Task {
+            do {
+                var accumulated = ""
+                for try await piece in Ollama.generateStream(prompt: prompt) {
+                    accumulated += piece
+                    let snapshot = accumulated
+                    await MainActor.run { aiSummary = snapshot }
+                }
+                if accumulated.isEmpty {
+                    await MainActor.run { summaryError = "No summary was produced." }
+                }
+            } catch {
+                await MainActor.run { summaryError = error.localizedDescription }
+            }
+            await MainActor.run { summarizing = false }
         }
     }
 

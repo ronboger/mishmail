@@ -260,11 +260,11 @@ struct ComposeView: View {
                 .buttonStyle(.plain)
                 .help("Insert a saved snippet")
 
-                if original != nil, !request.forward {
-                    footerButton(drafting ? "hourglass" : "sparkles",
-                                 help: "Draft with local AI (Ollama)") { draftWithAI() }
-                        .disabled(drafting)
-                }
+                // Available for replies, forwards, and new mail — the draft is
+                // generated locally and streamed into the body.
+                footerButton(drafting ? "hourglass" : "sparkles",
+                             help: "Draft with local AI (Ollama)") { draftWithAI() }
+                    .disabled(drafting)
 
                 Spacer()
 
@@ -465,45 +465,77 @@ struct ComposeView: View {
     }
 
     private func draftWithAI() {
-        guard let original else { return }
         drafting = true
         error = nil
-        // Only the part above the quote counts as intent.
-        let intent = String(body_.split(separator: "\nOn ", maxSplits: 1,
-                                        omittingEmptySubsequences: false).first ?? "")
+        // Split off any quoted original: everything above it is the "intent",
+        // the quote is preserved below the streamed draft.
+        let quoteStart = body_.range(of: "\nOn ")
+        let quote = quoteStart.map { String(body_[$0.lowerBound...]) } ?? ""
+        let intent = String(quoteStart.map { body_[..<$0.lowerBound] } ?? Substring(body_))
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        let prompt: String
+        if let original {
+            prompt = Ollama.draftReply(
+                originalFrom: original.fromHeader,
+                originalBody: original.bodyText,
+                intent: intent,
+                userEmail: fromAccount)
+        } else {
+            prompt = Ollama.draftNew(intent: intent, userEmail: fromAccount)
+        }
+        let quoteTail = quote.isEmpty ? "" : "\n" + quote
         Task {
             do {
-                let prompt = Ollama.draftReply(
-                    originalFrom: original.fromHeader,
-                    originalBody: original.bodyText,
-                    intent: intent,
-                    userEmail: fromAccount)
-                let draft = try await Ollama.generate(prompt: prompt)
-                // Keep the quoted context below the AI draft.
-                let quoteStart = body_.range(of: "\nOn ")
-                let quote = quoteStart.map { String(body_[$0.lowerBound...]) } ?? ""
-                body_ = draft + "\n" + quote
+                // Stream tokens in as the local model produces them.
+                var accumulated = ""
+                for try await piece in Ollama.generateStream(prompt: prompt) {
+                    accumulated += piece
+                    let snapshot = accumulated
+                    await MainActor.run { body_ = snapshot + quoteTail }
+                }
             } catch {
-                self.error = error.localizedDescription
+                await MainActor.run { self.error = error.localizedDescription }
             }
-            drafting = false
+            await MainActor.run { drafting = false }
         }
     }
 
     /// Inserts a snippet where the user writes: above the quoted original on
-    /// a reply/forward, appended (with clean spacing) otherwise.
+    /// a reply/forward, appended (with clean spacing) otherwise. `{{variables}}`
+    /// (first_name, name, email, date…) are filled from the first recipient.
     private func insertSnippet(_ snippet: Snippet) {
+        let text = SnippetExpander.expand(snippet.body, snippetContext())
         if let quote = body_.range(of: #"\n+On .+ wrote:\n"#, options: .regularExpression) {
             var head = String(body_[..<quote.lowerBound])
             while head.hasSuffix("\n") { head.removeLast() }
-            let written = head.isEmpty ? snippet.body : head + "\n" + snippet.body
+            let written = head.isEmpty ? text : head + "\n" + text
             body_ = written + "\n" + String(body_[quote.lowerBound...])
         } else if body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            body_ = snippet.body
+            body_ = text
         } else {
-            body_ += (body_.hasSuffix("\n") ? "" : "\n") + snippet.body
+            body_ += (body_.hasSuffix("\n") ? "" : "\n") + text
         }
+    }
+
+    /// Snippet-variable context from the first To recipient.
+    private func snippetContext() -> SnippetExpander.Context {
+        var ctx = SnippetExpander.Context()
+        ctx.date = SnippetExpander.today(Date())
+        guard let first = toTokens.first ?? (toDraft.contains("@") ? toDraft : nil) else { return ctx }
+        if let lt = first.firstIndex(of: "<"), let gt = first.firstIndex(of: ">"), lt < gt {
+            ctx.recipientName = String(first[..<lt])
+                .trimmingCharacters(in: CharacterSet(charactersIn: " \""))
+            ctx.recipientEmail = String(first[first.index(after: lt)..<gt])
+        } else {
+            ctx.recipientEmail = first.trimmingCharacters(in: .whitespaces)
+            // Derive a friendly name from the local part (john.doe → John Doe).
+            let local = ctx.recipientEmail.split(separator: "@").first.map(String.init) ?? ""
+            ctx.recipientName = local
+                .split(whereSeparator: { $0 == "." || $0 == "_" || $0 == "-" })
+                .map { $0.prefix(1).uppercased() + $0.dropFirst() }
+                .joined(separator: " ")
+        }
+        return ctx
     }
 
     private func saveCurrentAsSnippet() {

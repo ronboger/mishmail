@@ -28,6 +28,24 @@ struct OAuthConfig {
         set { try? Keychain.set(newValue, forKey: "oauth.clientSecret") }
     }
     static var isConfigured: Bool { !clientID.isEmpty }
+
+    /// Parses Google's downloaded `client_secret_*.json` (Desktop-app clients
+    /// use the `installed` key; `web` is tolerated too). Returns nil for
+    /// anything that isn't a recognizable Google client credentials file.
+    static func parseCredentialsJSON(_ data: Data) -> (clientID: String, clientSecret: String)? {
+        struct Wrapper: Decodable {
+            struct Client: Decodable {
+                let client_id: String
+                let client_secret: String?
+            }
+            let installed: Client?
+            let web: Client?
+        }
+        guard let wrapper = try? JSONDecoder().decode(Wrapper.self, from: data),
+              let client = wrapper.installed ?? wrapper.web,
+              !client.client_id.isEmpty else { return nil }
+        return (client.client_id, client.client_secret ?? "")
+    }
 }
 
 struct TokenResponse: Decodable {

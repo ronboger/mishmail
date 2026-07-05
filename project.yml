@@ -50,14 +50,16 @@ targets:
       - Sources/PerfectMail/Support/Keychain.swift
       - Sources/PerfectMail/Support/SearchQuery.swift
       - Sources/PerfectMail/Support/SendSchedule.swift
+      - Sources/PerfectMail/Support/Classifier.swift
+      - Sources/PerfectMail/Support/SnippetExpander.swift
       - Sources/PerfectMail/Auth/OAuth.swift
     dependencies:
       - package: GRDB
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
     settings:
       base:
-        CODE_SIGN_IDENTITY: "Apple Development"
-        CODE_SIGN_STYLE: Automatic
-        DEVELOPMENT_TEAM: 47T79PSL25
         SWIFT_VERSION: 5.10
         GENERATE_INFOPLIST_FILE: true
 schemes:

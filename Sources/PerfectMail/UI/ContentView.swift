@@ -128,13 +128,45 @@ struct ContentView: View {
                 LabelPicker()
             }
         }
-        .alert("Error", isPresented: .init(
-            get: { store.lastError != nil },
-            set: { if !$0 { store.lastError = nil } }
-        )) {
-            Button("OK") { store.lastError = nil }
-        } message: {
-            Text(store.lastError ?? "")
+        // Non-modal error banner (a background sync hiccup shouldn't interrupt
+        // you). Sits above the undo/notice toast; stays until dismissed.
+        .overlay(alignment: .bottom) {
+            if let error = store.lastError {
+                HStack(spacing: 12) {
+                    Image(systemName: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                    Text(error)
+                        .font(.system(size: 13))
+                        .lineLimit(3)
+                        .frame(maxWidth: 360, alignment: .leading)
+                    Button("Sync") {
+                        store.lastError = nil
+                        Task { await store.syncAll() }
+                    }
+                    .buttonStyle(.borderless)
+                    Button {
+                        store.lastError = nil
+                    } label: {
+                        Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                }
+                .padding(.horizontal, 18).padding(.vertical, 12)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
+                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.orange.opacity(0.4)))
+                .shadow(radius: 10)
+                .padding(.bottom, 76)
+                .transition(.move(edge: .bottom).combined(with: .opacity))
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: store.lastError)
+        // First-run: guide the Google setup instead of dead-ending on an empty
+        // inbox. Disappears the moment an account connects.
+        .overlay {
+            if store.accounts.isEmpty {
+                OnboardingView()
+            }
         }
     }
 
@@ -281,7 +313,7 @@ struct Sidebar: View {
                 }
                 .padding(.horizontal, 7).padding(.vertical, 5)
                 .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                .help("Search all mail — from: label: has:attachment")
+                .help("Search — from: to: subject: label: has:attachment is:unread is:starred after: before:")
 
                 Button {
                     store.composeRequest = .init(replyTo: nil)
@@ -430,7 +462,7 @@ struct AccountLabelsEditor: View {
                         TextField("Send as (recipients see this)", text: .init(
                             get: { senderNames[account.id] ?? account.senderName },
                             set: { senderNames[account.id] = $0 }
-                        ), prompt: Text("e.g. Ron Boger"))
+                        ), prompt: Text("e.g. Jane Doe"))
                     }
                 }
             }

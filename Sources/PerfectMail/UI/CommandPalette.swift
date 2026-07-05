@@ -21,7 +21,7 @@ struct CommandPalette: View {
                 .onTapGesture { store.showCommandPalette = false }
 
             VStack(spacing: 0) {
-                TextField("Search mail (from: label: has:attachment) or type a command…", text: $query)
+                TextField("Search mail (from: to: subject: is:unread…) or type a command…", text: $query)
                     .textFieldStyle(.plain)
                     .font(.system(size: 16))
                     .padding(14)
@@ -69,10 +69,30 @@ struct CommandPalette: View {
             Command(id: "sync", title: "Sync All Accounts", icon: "arrow.clockwise") { s in
                 Task { await s.syncAll() }
             },
+            Command(id: "aisort", title: "Sort Inbox with AI", icon: "sparkles") { $0.classifyInbox() },
             Command(id: "newview", title: "Add View…", icon: "plus") {
                 $0.editingView = SavedView.empty()
             },
         ]
+        // Context actions on the selected thread, so Cmd-K can drive the
+        // keyboard-first flow end to end (Notion Mail-style).
+        if let thread = store.selectedThread {
+            cmds.append(contentsOf: [
+                Command(id: "act.archive", title: "Archive Conversation", icon: "archivebox") { $0.archive(thread) },
+                Command(id: "act.trash", title: "Trash Conversation", icon: "trash") { $0.trash(thread) },
+                Command(id: "act.star", title: thread.isStarred ? "Unstar Conversation" : "Star Conversation",
+                        icon: thread.isStarred ? "star.slash" : "star") { $0.toggleStar(thread) },
+                Command(id: "act.snooze", title: "Snooze Until Tomorrow", icon: "clock") {
+                    $0.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 1))
+                },
+                Command(id: "act.reply", title: "Reply", icon: "arrowshape.turn.up.left") { s in
+                    if let last = s.messages(inThread: thread.id).last {
+                        s.composeRequest = .init(replyTo: last)
+                    }
+                },
+                Command(id: "act.label", title: "Label Conversation…", icon: "tag") { $0.showLabelPicker = true },
+            ])
+        }
         let builtins: [MailboxView] = [.inbox, .promotions, .social, .starred, .snoozed,
                                        .reminders, .drafts, .sent, .allMail, .trash]
         for v in builtins {
@@ -104,7 +124,38 @@ struct CommandPalette: View {
                 if s.selectedThreadId == nil { s.moveSelection(1) }
             }
         }
-        return [search] + commands.filter { $0.title.lowercased().contains(q) }
+        // Fuzzy subsequence match, ranked so tighter matches float up.
+        let scored = commands
+            .compactMap { cmd -> (Command, Int)? in
+                guard let score = Self.fuzzyScore(q, cmd.title.lowercased()) else { return nil }
+                return (cmd, score)
+            }
+            .sorted { $0.1 < $1.1 }
+            .map(\.0)
+        return [search] + scored
+    }
+
+    /// Returns nil when `query`'s characters don't appear in order in `text`;
+    /// otherwise a score where lower is a tighter (more contiguous, earlier)
+    /// match.
+    static func fuzzyScore(_ query: String, _ text: String) -> Int? {
+        guard !query.isEmpty else { return 0 }
+        var qi = query.startIndex
+        var firstHit: Int?
+        var lastHit = 0
+        var gaps = 0
+        for (offset, ch) in text.enumerated() {
+            if ch == query[qi] {
+                if firstHit == nil { firstHit = offset }
+                if let _ = firstHit, offset - lastHit > 1, firstHit != offset { gaps += offset - lastHit - 1 }
+                lastHit = offset
+                qi = query.index(after: qi)
+                if qi == query.endIndex {
+                    return (firstHit ?? 0) + gaps
+                }
+            }
+        }
+        return nil
     }
 
     private func run(_ cmd: Command?) {

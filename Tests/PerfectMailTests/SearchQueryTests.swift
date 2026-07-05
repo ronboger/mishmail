@@ -68,4 +68,60 @@ final class SearchQueryTests: XCTestCase {
         let q = SearchQuery.parse("re: meeting 10:30")
         XCTAssertEqual(q.text, "re: meeting 10:30")
     }
+
+    func testToAndSubjectOperators() {
+        let q = SearchQuery.parse("to:bob@x.com subject:\"Q3 numbers\" draft")
+        XCTAssertEqual(q.to, "bob@x.com")
+        XCTAssertEqual(q.subject, "Q3 numbers")
+        XCTAssertEqual(q.text, "draft")
+    }
+
+    func testIsUnreadReadStarred() {
+        XCTAssertEqual(SearchQuery.parse("is:unread").unread, true)
+        XCTAssertEqual(SearchQuery.parse("is:read").unread, false)
+        XCTAssertNil(SearchQuery.parse("hello").unread)
+        XCTAssertTrue(SearchQuery.parse("is:starred").starred)
+        XCTAssertTrue(SearchQuery.parse("is:unread is:starred").isFilterOnly)
+    }
+
+    func testUnknownIsValueStaysText() {
+        let q = SearchQuery.parse("is:coffee")
+        XCTAssertNil(q.unread)
+        XCTAssertFalse(q.starred)
+        XCTAssertEqual(q.text, "is:coffee")
+    }
+
+    func testDateOperatorsParse() {
+        let q = SearchQuery.parse("after:2026/07/01 before:2026-07-31 report")
+        XCTAssertEqual(q.text, "report")
+        let cal = Calendar.current
+        let a = try? XCTUnwrap(q.after)
+        let b = try? XCTUnwrap(q.before)
+        XCTAssertEqual(cal.dateComponents([.year, .month, .day], from: a!),
+                       DateComponents(year: 2026, month: 7, day: 1))
+        XCTAssertEqual(cal.dateComponents([.year, .month, .day], from: b!),
+                       DateComponents(year: 2026, month: 7, day: 31))
+        // Start-of-day normalization.
+        XCTAssertEqual(cal.component(.hour, from: a!), 0)
+    }
+
+    func testInvalidDateStaysText() {
+        let q = SearchQuery.parse("after:notadate before:2026/13/40")
+        XCTAssertNil(q.after)
+        XCTAssertNil(q.before)
+        XCTAssertEqual(q.text, "after:notadate before:2026/13/40")
+    }
+
+    func testImpossibleDaysAreRejectedNotRolledOver() {
+        // Calendar.date(from:) silently rolls Feb 30 → Mar 2; parseDate must
+        // reject these so a typo becomes free text instead of a wrong bound.
+        for bad in ["after:2026/02/30", "after:2026/04/31", "after:2026/06/31",
+                    "after:2026/02/29", "after:2026/00/10", "after:2026/07/00"] {
+            let q = SearchQuery.parse(bad)
+            XCTAssertNil(q.after, "\(bad) should not parse to a date")
+            XCTAssertEqual(q.text, bad, "\(bad) should remain free text")
+        }
+        // A real leap day still parses.
+        XCTAssertNotNil(SearchQuery.parse("after:2028/02/29").after)
+    }
 }

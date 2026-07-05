@@ -41,7 +41,7 @@ enum MailboxView: Hashable {
 
 /// Notion Mail-style category filter: a set of Gmail categories that the
 /// inbox either must not contain (default) or must contain.
-struct CategoryFilter: Equatable {
+struct CategoryFilter: Equatable, Codable {
     var exclude = true                 // which set the Categories popover edits
     var show: Set<String> = []         // must contain any of these
     var hide: Set<String> = []         // must contain none of these
@@ -75,7 +75,7 @@ struct CategoryFilter: Equatable {
 }
 
 /// Relative received-date window for the filter bar.
-enum DateWindow: Int, CaseIterable {
+enum DateWindow: Int, CaseIterable, Codable {
     case today = 1, week = 7, month = 30
 
     var title: String {
@@ -89,7 +89,7 @@ enum DateWindow: Int, CaseIterable {
 
 /// Transient filter chips layered on top of the current view (the bar above
 /// the thread list). Reset when the view changes.
-struct FilterChips: Equatable {
+struct FilterChips: Equatable, Codable {
     var category = CategoryFilter()
     var unreadOnly = false
     var showArchived = false
@@ -158,6 +158,61 @@ final class MailStore: ObservableObject {
         noticeTimer?.invalidate()
         noticeTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
             Task { @MainActor in self?.notice = nil }
+        }
+    }
+
+    // MARK: - On-device AI triage
+
+    @Published var aiCategories: [String: String] = [:]   // threadId → category
+    @Published var classifying = false
+
+    func loadAICategories() {
+        let rows = (try? db.read { try ThreadAICategory.fetchAll($0) }) ?? []
+        aiCategories = Dictionary(rows.map { ($0.threadId, $0.category) }) { _, last in last }
+    }
+
+    /// Classifies the currently loaded threads into local AI buckets. Manual
+    /// and sequential (a small local model), skipping already-classified
+    /// threads. Results persist in their own table so sync never wipes them.
+    func classifyInbox() {
+        guard !classifying else { return }
+        let targets = threads.filter { aiCategories[$0.id] == nil }
+        guard !targets.isEmpty else {
+            showNotice("All caught up — nothing new to sort.")
+            return
+        }
+        classifying = true
+        Task {
+            var done = 0
+            for thread in targets {
+                let from = thread.participants.isEmpty ? thread.fromDisplay : thread.participants
+                let prompt = Ollama.classify(subject: thread.subject, from: from,
+                                             snippet: thread.snippet, categories: Classifier.categories)
+                do {
+                    let raw = try await Ollama.generate(prompt: prompt)
+                    let category = Classifier.normalize(raw)
+                    try? await db.write { database in
+                        try ThreadAICategory(threadId: thread.id, category: category).save(database)
+                    }
+                    await MainActor.run {
+                        aiCategories[thread.id] = category
+                        done += 1
+                        syncStatus = "Sorting with AI… \(done)/\(targets.count)"
+                    }
+                } catch {
+                    await MainActor.run {
+                        classifying = false
+                        syncStatus = ""
+                        showNotice(error.localizedDescription)
+                    }
+                    return
+                }
+            }
+            await MainActor.run {
+                classifying = false
+                syncStatus = ""
+                showNotice("Sorted \(done) thread\(done == 1 ? "" : "s") with AI.")
+            }
         }
     }
 
@@ -346,6 +401,30 @@ final class MailStore: ObservableObject {
                     q = q.filter(sql: "(fromDisplay LIKE ? OR participants LIKE ?)",
                                  arguments: [pattern, pattern])
                 }
+                if let to = parsed.to {
+                    // Recipient headers live on messages, so match via EXISTS.
+                    q = q.filter(sql: """
+                        EXISTS (SELECT 1 FROM message
+                                WHERE message.threadId = thread.id
+                                  AND (message.toHeader LIKE ? OR message.ccHeader LIKE ?
+                                       OR message.bccHeader LIKE ?))
+                        """, arguments: ["%\(to)%", "%\(to)%", "%\(to)%"])
+                }
+                if let subject = parsed.subject {
+                    q = q.filter(sql: "subject LIKE ?", arguments: ["%\(subject)%"])
+                }
+                if let unread = parsed.unread {
+                    q = q.filter(Column("isUnread") == unread)
+                }
+                if parsed.starred {
+                    q = q.filter(Column("labelIds").like("%STARRED%"))
+                }
+                if let after = parsed.after {
+                    q = q.filter(Column("lastDate") >= after)
+                }
+                if let before = parsed.before {
+                    q = q.filter(Column("lastDate") < before)
+                }
                 for name in parsed.labels {
                     // A label name resolves to Gmail label ids (it can exist on
                     // several accounts); unknown names fall back to the raw
@@ -368,63 +447,74 @@ final class MailStore: ObservableObject {
                 // Widen from inbox-only before layering the other chips.
                 q = Self.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
             }
-            // Layer transient chips on top.
-            for cat in chips.category.hide {
-                q = q.filter(!Column("labelIds").like("%\(cat)%"))
-            }
-            if !chips.category.show.isEmpty {
-                // Contains any of the selected categories (values bound, not interpolated).
-                let conditions = chips.category.show
-                    .map { _ in "labelIds LIKE ?" }
-                    .joined(separator: " OR ")
-                let patterns = chips.category.show.map { "%\($0)%" }
-                q = q.filter(sql: conditions, arguments: StatementArguments(patterns))
-            }
-            if chips.unreadOnly { q = q.filter(Column("isUnread") == true) }
-            if chips.readOnly { q = q.filter(Column("isUnread") == false) }
-            if let labelId = chips.labelId {
-                let match = Column("labelIds").like("%\(labelId)%")
-                q = chips.labelExclude ? q.filter(!match) : q.filter(match)
-            }
-            if chips.hasAttachmentOnly { q = q.filter(Column("hasAttachment") == true) }
-            if chips.noAttachmentOnly { q = q.filter(Column("hasAttachment") == false) }
-            if !chips.senderContains.isEmpty {
-                let pattern = "%\(chips.senderContains)%"
-                let condition = "(fromDisplay LIKE ? OR participants LIKE ?)"
-                q = q.filter(sql: chips.senderExclude ? "NOT \(condition)" : condition,
-                             arguments: [pattern, pattern])
-            }
-            for (header, value) in [("toHeader", chips.toContains),
-                                    ("ccHeader", chips.ccContains),
-                                    ("bccHeader", chips.bccContains)] where !value.isEmpty {
-                q = q.filter(sql: """
-                    EXISTS (SELECT 1 FROM message
-                            WHERE message.threadId = thread.id AND message.\(header) LIKE ?)
-                    """, arguments: ["%\(value)%"])
-            }
-            if !chips.subjectContains.isEmpty {
-                q = q.filter(sql: "subject LIKE ?", arguments: ["%\(chips.subjectContains)%"])
-            }
-            if let window = chips.dateWindow {
-                let cutoff = Calendar.current.startOfDay(
-                    for: Date().addingTimeInterval(Double(-(window.rawValue - 1)) * 86400))
-                q = q.filter(Column("lastDate") >= cutoff)
-            }
-            if chips.calendarOnly || chips.hideCalendar {
-                let invite = """
-                    EXISTS (SELECT 1 FROM message
-                            JOIN attachment ON attachment.messageId = message.id
-                            WHERE message.threadId = thread.id
-                              AND (attachment.mimeType LIKE 'text/calendar%'
-                                   OR attachment.filename LIKE '%.ics'))
-                    """
-                if chips.calendarOnly { q = q.filter(sql: invite) }
-                if chips.hideCalendar { q = q.filter(sql: "NOT \(invite)") }
-            }
+            q = Self.applyChips(q, chips)
             if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
             return try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
         }) ?? []
+        loadAICategories()
         refreshCountsAndBadge()
+    }
+
+    /// Layers the full FilterChips set onto a thread query. Shared by the live
+    /// filter bar and by saved views (so "Save as view" is lossless). Does NOT
+    /// apply the archived/sent *widening* (that's view-dependent) or account
+    /// scoping (applied by the caller).
+    static func applyChips(_ query: QueryInterfaceRequest<MailThread>, _ chips: FilterChips)
+        -> QueryInterfaceRequest<MailThread> {
+        var q = query
+        for cat in chips.category.hide {
+            q = q.filter(!Column("labelIds").like("%\(cat)%"))
+        }
+        if !chips.category.show.isEmpty {
+            // Contains any of the selected categories (values bound, not interpolated).
+            let conditions = chips.category.show
+                .map { _ in "labelIds LIKE ?" }
+                .joined(separator: " OR ")
+            let patterns = chips.category.show.map { "%\($0)%" }
+            q = q.filter(sql: conditions, arguments: StatementArguments(patterns))
+        }
+        if chips.unreadOnly { q = q.filter(Column("isUnread") == true) }
+        if chips.readOnly { q = q.filter(Column("isUnread") == false) }
+        if let labelId = chips.labelId {
+            let match = Column("labelIds").like("%\(labelId)%")
+            q = chips.labelExclude ? q.filter(!match) : q.filter(match)
+        }
+        if chips.hasAttachmentOnly { q = q.filter(Column("hasAttachment") == true) }
+        if chips.noAttachmentOnly { q = q.filter(Column("hasAttachment") == false) }
+        if !chips.senderContains.isEmpty {
+            let pattern = "%\(chips.senderContains)%"
+            let condition = "(fromDisplay LIKE ? OR participants LIKE ?)"
+            q = q.filter(sql: chips.senderExclude ? "NOT \(condition)" : condition,
+                         arguments: [pattern, pattern])
+        }
+        for (header, value) in [("toHeader", chips.toContains),
+                                ("ccHeader", chips.ccContains),
+                                ("bccHeader", chips.bccContains)] where !value.isEmpty {
+            q = q.filter(sql: """
+                EXISTS (SELECT 1 FROM message
+                        WHERE message.threadId = thread.id AND message.\(header) LIKE ?)
+                """, arguments: ["%\(value)%"])
+        }
+        if !chips.subjectContains.isEmpty {
+            q = q.filter(sql: "subject LIKE ?", arguments: ["%\(chips.subjectContains)%"])
+        }
+        if let window = chips.dateWindow {
+            let cutoff = Calendar.current.startOfDay(
+                for: Date().addingTimeInterval(Double(-(window.rawValue - 1)) * 86400))
+            q = q.filter(Column("lastDate") >= cutoff)
+        }
+        if chips.calendarOnly || chips.hideCalendar {
+            let invite = """
+                EXISTS (SELECT 1 FROM message
+                        JOIN attachment ON attachment.messageId = message.id
+                        WHERE message.threadId = thread.id
+                          AND (attachment.mimeType LIKE 'text/calendar%'
+                               OR attachment.filename LIKE '%.ics'))
+                """
+            if chips.calendarOnly { q = q.filter(sql: invite) }
+            if chips.hideCalendar { q = q.filter(sql: "NOT \(invite)") }
+        }
+        return q
     }
 
     private static func baseQuery(for view: MailboxView, savedViews: [SavedView]) -> QueryInterfaceRequest<MailThread> {
@@ -465,6 +555,17 @@ final class MailStore: ObservableObject {
         case .saved(let id, _):
             guard let v = savedViews.first(where: { $0.id == id }) else { break }
             q = q.filter(Column("inTrash") == false)
+            // Lossless path: a "Save as view" snapshot carries the full chip
+            // set as JSON. Apply the base (inbox unless archived) + account
+            // scope, then layer every chip dimension via the shared helper.
+            if let chips = v.chipsJSON.flatMap({ try? JSONDecoder().decode(FilterChips.self, from: $0) }) {
+                if !chips.showArchived { q = notSnoozed(q.filter(Column("inInbox") == true)) }
+                if let a = v.accountId { q = q.filter(Column("accountId") == a) }
+                if v.starredOnly { q = q.filter(Column("isStarred") == true) }
+                q = applyChips(q, chips)
+                break
+            }
+            // Legacy path: views built in the ViewEditor form (structured fields).
             if !v.showArchived { q = notSnoozed(q.filter(Column("inInbox") == true)) }
             if let a = v.accountId { q = q.filter(Column("accountId") == a) }
             if let label = v.labelId { q = q.filter(Column("labelIds").like("%\(label)%")) }
@@ -555,9 +656,25 @@ final class MailStore: ObservableObject {
     // MARK: - Saved views
 
     func saveView(_ view: SavedView) {
+        var v = view
+        // If this is a lossless (chips-backed) view, fold any edits made to the
+        // ViewEditor's structured fields back into the JSON so chipsJSON stays
+        // authoritative and form edits still take effect.
+        if var chips = v.chipsJSON.flatMap({ try? JSONDecoder().decode(FilterChips.self, from: $0) }) {
+            chips.labelId = v.labelId
+            chips.unreadOnly = v.unreadOnly
+            chips.showArchived = v.showArchived
+            chips.hasAttachmentOnly = v.hasAttachmentOnly
+            chips.senderContains = v.senderContains
+            if v.excludePromotions {
+                chips.category.hide.formUnion(["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"])
+            }
+            if let cat = v.category { chips.category.show = [cat] }
+            v.chipsJSON = try? JSONEncoder().encode(chips)
+        }
         try? db.write { db in
-            var v = view
-            try v.save(db)
+            var toSave = v
+            try toSave.save(db)
         }
         reloadSavedViews()
     }

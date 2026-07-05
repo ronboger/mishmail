@@ -1,7 +1,7 @@
 import SwiftUI
 
 enum GroupBy: String, CaseIterable {
-    case date, starred, important, sender, label, unread
+    case date, starred, important, sender, label, unread, aiCategory
 
     var title: String {
         switch self {
@@ -11,6 +11,7 @@ enum GroupBy: String, CaseIterable {
         case .sender: return "Email or domain"
         case .label: return "Labels"
         case .unread: return "Unread"
+        case .aiCategory: return "AI category"
         }
     }
 
@@ -22,6 +23,7 @@ enum GroupBy: String, CaseIterable {
         case .sender: return "at"
         case .label: return "tag"
         case .unread: return "envelope.badge"
+        case .aiCategory: return "sparkles"
         }
     }
 }
@@ -46,6 +48,7 @@ struct ThreadListView: View {
                 .sorted().first
             return userLabel ?? "No label"
         }
+        case .aiCategory: return groupedBy { store.aiCategories[$0.id] ?? "Unsorted" }
         }
     }
 
@@ -126,6 +129,8 @@ struct ThreadListView: View {
             .listStyle(.plain)
             // Matching air above the first group.
             .contentMargins(.top, 40 * fontScale, for: .scrollContent)
+            // Archived/trashed rows slide out instead of blinking away.
+            .animation(.easeOut(duration: 0.2), value: store.threads)
         }
         .navigationTitle(store.selectedView.title)
         .overlay {
@@ -564,18 +569,22 @@ struct FilterBar: View {
     private func saveAsView() {
         var v = SavedView.empty()
         v.name = store.selectedView.title + " (filtered)"
+        v.accountId = store.activeAccountId
+        // Structured fields keep the ViewEditor form usable; chipsJSON captures
+        // the FULL filter set (to/cc/bcc, subject, date, calendar, exclude
+        // modes…) so the saved view is lossless.
         v.labelId = store.chips.labelId
         v.unreadOnly = store.chips.unreadOnly
         v.showArchived = store.chips.showArchived
         v.hasAttachmentOnly = store.chips.hasAttachmentOnly
         v.senderContains = store.chips.senderContains
-        v.accountId = store.activeAccountId
         if store.chips.category.hide.isSuperset(of: ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"]) {
             v.excludePromotions = true
         }
         if let cat = store.chips.category.show.first {
             v.category = cat
         }
+        v.chipsJSON = try? JSONEncoder().encode(store.chips)
         store.showFilterMenu = false
         store.editingView = v
     }
@@ -677,8 +686,41 @@ struct FaviconView: View {
     }
 }
 
+/// Colored initials avatar for a sender/participant. Deterministic color per
+/// sender (Color.stable) so the same person always looks the same.
+struct AvatarView: View {
+    let name: String
+    var size: CGFloat = 20
+
+    var body: some View {
+        Circle()
+            .fill(Color.stable(for: seed).gradient)
+            .frame(width: size, height: size)
+            .overlay(
+                Text(initials)
+                    .font(.system(size: size * 0.42, weight: .semibold))
+                    .foregroundStyle(.white)
+            )
+    }
+
+    // Color/initials key off the first participant only.
+    private var seed: String {
+        String(name.split(separator: " .. ").first ?? Substring(name))
+            .trimmingCharacters(in: .whitespaces)
+    }
+
+    private var initials: String {
+        let words = seed.split(whereSeparator: { $0 == " " || $0 == "." || $0 == "@" })
+        let letters = words.prefix(2).compactMap { $0.first(where: \.isLetter) }
+        if letters.isEmpty {
+            return String(seed.first(where: \.isLetter).map { Character($0.uppercased()) } ?? "?")
+        }
+        return letters.map { $0.uppercased() }.joined()
+    }
+}
+
 /// Dense Notion Mail-style single-line row:
-/// [dot] participants   subject  snippet………………  [icons] time
+/// [dot] avatar participants   subject  snippet…………  [ai] [icons] time
 struct ThreadRow: View {
     @EnvironmentObject var store: MailStore
     @AppStorage("fontScale") private var fontScale = 1.0
@@ -691,6 +733,8 @@ struct ThreadRow: View {
                 .fill(thread.isUnread ? Color.accentColor : .clear)
                 .frame(width: 7, height: 7)
 
+            AvatarView(name: participantsDisplay, size: 20 * fontScale)
+
             HStack(spacing: 4) {
                 Text(participantsDisplay)
                     .font(.system(size: 14 * fontScale, weight: thread.isUnread ? .semibold : .regular))
@@ -700,7 +744,7 @@ struct ThreadRow: View {
                         .font(.system(size: 11.5 * fontScale)).foregroundStyle(.secondary)
                 }
             }
-            .frame(width: 180 * fontScale, alignment: .leading)
+            .frame(width: 168 * fontScale, alignment: .leading)
 
             (Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
                 .fontWeight(thread.isUnread ? .semibold : .medium)
@@ -708,6 +752,16 @@ struct ThreadRow: View {
                 .foregroundColor(.secondary))
                 .font(.system(size: 14 * fontScale))
                 .lineLimit(1)
+
+            // On-device AI triage bucket, once the thread has been sorted.
+            if let category = store.aiCategories[thread.id] {
+                Text(category)
+                    .font(.system(size: 10.5 * fontScale, weight: .medium))
+                    .foregroundStyle(Color.aiCategory(category))
+                    .padding(.horizontal, 6).padding(.vertical, 2)
+                    .background(Color.aiCategory(category).opacity(0.14), in: Capsule())
+                    .fixedSize()
+            }
 
             Spacer(minLength: 8)
 
