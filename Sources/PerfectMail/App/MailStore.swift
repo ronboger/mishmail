@@ -1135,8 +1135,18 @@ final class MailStore: ObservableObject {
     }
 
     func trash(_ thread: MailThread) {
+        // Gmail-style auto-advance: when the selected thread is trashed, land
+        // on the next conversation down (or the one above if it was last)
+        // instead of leaving nothing selected. Computed before the mutation
+        // removes the row from `threads`.
+        let wasSelected = selectedThreadId == thread.id
+        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
         mutateThread(thread) { $0.inTrash = true; $0.inInbox = false } remote: { client, id in
             try await client.trashThread(id: id)
+        }
+        if wasSelected, let neighbor, threads.contains(where: { $0.id == neighbor }) {
+            selectionViaKeyboard = true
+            selectedThreadId = neighbor
         }
         offerUndo("Moved to Trash") { [weak self] in
             guard let self else { return }
