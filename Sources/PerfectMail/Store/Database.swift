@@ -31,6 +31,7 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var messageCount: Int
     var hasAttachment: Bool
     var reminderAt: Date?   // local follow-up reminder
+    var reminderSetAt: Date? = nil  // thread activity cutoff for "remind if no reply"
 
     var labels: [String] { labelIds.split(separator: " ").map(String.init) }
 }
@@ -349,6 +350,13 @@ final class AppDatabase {
         m.registerMigration("v7") { db in
             try db.alter(table: "savedView") { t in
                 t.add(column: "chipsJSON", .blob)
+            }
+        }
+        // "Remind if no reply": remember the thread's activity level when a
+        // reminder is set, so the reminder can cancel itself if the thread moves.
+        m.registerMigration("v8") { db in
+            try db.alter(table: "thread") { t in
+                t.add(column: "reminderSetAt", .datetime)
             }
         }
         return m

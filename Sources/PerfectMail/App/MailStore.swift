@@ -922,7 +922,11 @@ final class MailStore: ObservableObject {
 
     func setReminder(_ thread: MailThread, after days: Int?) {
         var copy = thread
-        copy.reminderAt = days.map { Calendar.current.date(byAdding: .day, value: $0, to: Date())! }
+        let when = days.map { Calendar.current.date(byAdding: .day, value: $0, to: Date())! }
+        copy.reminderAt = when
+        // Snapshot the thread's current activity so the reminder can cancel
+        // itself if a newer message arrives ("remind if no reply").
+        copy.reminderSetAt = when == nil ? nil : Date()
         let updated = copy
         try? db.write { db in try updated.save(db) }
         reloadThreads()
@@ -932,16 +936,25 @@ final class MailStore: ObservableObject {
         let due = (try? db.read { db in
             try MailThread.filter(Column("reminderAt") != nil && Column("reminderAt") <= Date()).fetchAll(db)
         }) ?? []
+        var changed = false
         for thread in due {
-            Notifier.notify(title: "Follow up: \(thread.fromDisplay)",
-                            body: thread.subject.isEmpty ? thread.snippet : thread.subject,
-                            id: "reminder.\(thread.id)")
+            changed = true
             var copy = thread
             copy.reminderAt = nil
+            copy.reminderSetAt = nil
+            // "Remind if no reply": if the thread advanced after the reminder
+            // was set (a reply or any new message), the nudge is moot — clear
+            // it silently instead of firing.
+            let replied = thread.reminderSetAt.map { thread.lastDate > $0 } ?? false
+            if !replied {
+                Notifier.notify(title: "Follow up: \(thread.fromDisplay)",
+                                body: thread.subject.isEmpty ? thread.snippet : thread.subject,
+                                id: "reminder.\(thread.id)")
+            }
             let updated = copy
             try? db.write { db in try updated.save(db) }
         }
-        if !due.isEmpty { reloadThreads() }
+        if changed { reloadThreads() }
     }
 
     // MARK: - Keyboard shortcuts
