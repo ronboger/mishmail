@@ -81,16 +81,19 @@ struct ComposeView: View {
             // the re-saved draft would silently drop them.
             let pendingSource = loadingAttachments
                 ? (editingDraft ?? (request.forward ? original : nil)) : nil
-            let (from, to, cc, bcc, subj, body, reply, old) =
+            let (from, to, cc, bcc, subj, body, old) =
                 (fromAccount, toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
-                 bccTokens.joined(separator: ", "), subject, body_, replyTo, editingDraft)
+                 bccTokens.joined(separator: ", "), subject, body_, editingDraft)
+            // Like the send path, a forward's original rides along so the
+            // draft keeps its HTML formatting (it won't thread the draft).
+            let (reply, isForward) = (request.replyTo, request.forward)
             Task {
                 var atts = attachments
                 if let source = pendingSource {
                     atts = ((try? await store.loadAttachments(for: source)) ?? []) + atts
                 }
                 await store.saveDraft(from: from, to: to, cc: cc, bcc: bcc, subject: subj,
-                                      body: body, replyTo: reply,
+                                      body: body, replyTo: reply, forward: isForward,
                                       attachments: atts, replacing: old)
             }
         }
