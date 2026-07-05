@@ -18,7 +18,12 @@ enum Notifier {
 
     static func setBadge(_ count: Int) {
         DispatchQueue.main.async {
+            // Classic Dock badge: always works, no permission needed.
             NSApplication.shared.dockTile.badgeLabel = count > 0 ? String(count) : ""
         }
+        // Notification-center badge: the channel newer system UI (e.g. the
+        // Cmd-Tab switcher) reads. Needs the .badge grant requested at
+        // launch; harmless no-op if the user declined notifications.
+        UNUserNotificationCenter.current().setBadgeCount(count) { _ in }
     }
 }
