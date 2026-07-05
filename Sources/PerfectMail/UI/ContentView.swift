@@ -123,6 +123,9 @@ struct ContentView: View {
         .sheet(item: $store.snoozingThread) { thread in
             SnoozeSheet { store.snooze(thread, until: $0) }
         }
+        .sheet(isPresented: $store.showShortcutsHelp) {
+            ShortcutsHelpView(bindings: store.keyBindings)
+        }
         .overlay {
             if store.showCommandPalette {
                 CommandPalette()
