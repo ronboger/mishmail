@@ -27,10 +27,11 @@ RELEASE_APP = build/Build/Products/Release/PerfectMail.app
 
 gen:
 	xcodegen generate
+	@mkdir -p build && touch build/.metadata_never_index  # keep build products out of Spotlight/launcher
 
 test: gen
 	xcodebuild test -project $(PROJECT) -scheme PerfectMailTests \
-		-destination 'platform=macOS' -quiet
+		-destination 'platform=macOS' -derivedDataPath build -quiet
 
 # The throwaway test app (Debug identity, isolated data).
 build: gen
