@@ -734,32 +734,83 @@ final class MailStore: ObservableObject {
         }
     }
 
+    /// What the dock badge counts. Stored in UserDefaults ("badgeScope"):
+    /// every account, the inbox currently focused in the sidebar, or one
+    /// specific account ("account:<email>").
+    enum BadgeScope: RawRepresentable, Hashable {
+        case all
+        case focused
+        case account(String)
+
+        init?(rawValue: String) {
+            switch rawValue {
+            case "all": self = .all
+            case "focused": self = .focused
+            default:
+                guard rawValue.hasPrefix("account:") else { return nil }
+                self = .account(String(rawValue.dropFirst("account:".count)))
+            }
+        }
+
+        var rawValue: String {
+            switch self {
+            case .all: return "all"
+            case .focused: return "focused"
+            case .account(let id): return "account:\(id)"
+            }
+        }
+    }
+
+    static var badgeScope: BadgeScope {
+        get {
+            UserDefaults.standard.string(forKey: "badgeScope")
+                .flatMap(BadgeScope.init(rawValue:)) ?? .all
+        }
+        set { UserDefaults.standard.set(newValue.rawValue, forKey: "badgeScope") }
+    }
+
+    /// Recompute the sidebar counts and dock badge (e.g. after the badge
+    /// scope changes in Settings).
+    func refreshBadge() { refreshCountsAndBadge() }
+
     private func refreshCountsAndBadge() {
         // Local counts (fallback + reminders, which Gmail doesn't know about).
         let activeAccount = activeAccountId
+        // The account the badge counts: nil = every account. "Focused"
+        // follows the sidebar (unified view = every account).
+        let badgeAccount: String? = {
+            switch Self.badgeScope {
+            case .all: return nil
+            case .focused: return activeAccount
+            case .account(let id): return id
+            }
+        }()
         let (local, badgeTotal): ([String: Int], Int) = (try? db.read { db in
-            func count(_ q: QueryInterfaceRequest<MailThread>) -> Int {
+            func count(_ q: QueryInterfaceRequest<MailThread>,
+                       scopedTo account: String?) -> Int {
                 var q = q
-                if let a = activeAccount { q = q.filter(Column("accountId") == a) }
+                if let a = account { q = q.filter(Column("accountId") == a) }
                 return (try? q.fetchCount(db)) ?? 0
+            }
+            func count(_ q: QueryInterfaceRequest<MailThread>) -> Int {
+                count(q, scopedTo: activeAccount)
             }
             let unread = MailThread.filter(Column("isUnread") == true && Column("inTrash") == false)
             var inboxUnread = unread.filter(Column("inInbox") == true)
             for cat in Self.categoryLabels {
                 inboxUnread = inboxUnread.filter(!Column("labelIds").like("%\(cat)%"))
             }
-            // The dock badge always covers every account, so it doesn't
-            // shrink just because one inbox is focused in the sidebar. With
-            // no account focused it's the same query as the sidebar count —
-            // run it once.
-            let allInbox = (try? inboxUnread.fetchCount(db)) ?? 0
+            let inboxLocal = count(inboxUnread)
             let counts = [
-                "inbox": activeAccount == nil ? allInbox : count(inboxUnread),
+                "inbox": inboxLocal,
                 "promotions": count(unread.filter(Column("labelIds").like("%CATEGORY_PROMOTIONS%"))),
                 "social": count(unread.filter(Column("labelIds").like("%CATEGORY_SOCIAL%"))),
                 "reminders": count(MailThread.filter(Column("reminderAt") != nil)),
             ]
-            return (counts, allInbox)
+            // Same scope as the sidebar inbox count → reuse it.
+            let badge = badgeAccount == activeAccount
+                ? inboxLocal : count(inboxUnread, scopedTo: badgeAccount)
+            return (counts, badge)
         }) ?? ([:], 0)
 
         var counts = local

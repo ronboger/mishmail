@@ -681,7 +681,9 @@ private struct SnippetEditor: View {
 }
 
 struct AppearanceSettings: View {
+    @EnvironmentObject var store: MailStore
     @AppStorage("fontScale") private var fontScale = 1.0
+    @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
 
     var body: some View {
         PaneScaffold(title: "Appearance") {
@@ -696,6 +698,25 @@ struct AppearanceSettings: View {
                     .pickerStyle(.segmented)
                 } footer: {
                     Text("Also adjustable anywhere with Cmd + and Cmd −.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Picker("Unread badge counts", selection: $badgeScopeRaw) {
+                        Text("All accounts").tag(MailStore.BadgeScope.all.rawValue)
+                        Text("Focused inbox").tag(MailStore.BadgeScope.focused.rawValue)
+                        ForEach(store.accounts) { account in
+                            Text(account.displayName == account.id
+                                 ? account.id
+                                 : "\(account.displayName) — \(account.id)")
+                                .tag(MailStore.BadgeScope.account(account.id).rawValue)
+                        }
+                    }
+                    .onChange(of: badgeScopeRaw) { store.refreshBadge() }
+                } header: {
+                    Text("Dock badge")
+                } footer: {
+                    Text("What the red unread count on the app icon covers. Focused inbox follows the account picked in the sidebar (all accounts when unified). Capped at 999+.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
