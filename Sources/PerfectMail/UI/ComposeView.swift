@@ -252,10 +252,11 @@ struct ComposeView: View {
             Divider()
 
             TextEditor(text: $body_)
-                .font(.system(size: 13))
+                .font(.system(size: 14))
+                .lineSpacing(5)
                 .scrollContentBackground(.hidden)
                 .focused($bodyFocused)
-                .padding(.top, 8)
+                .padding(.top, 10)
                 .frame(minHeight: 120, maxHeight: .infinity)
                 // The `/` picker steals ↑/↓/Return/Esc while it's showing.
                 .onKeyPress(.downArrow) {
