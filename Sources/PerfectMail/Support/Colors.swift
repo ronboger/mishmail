@@ -26,6 +26,14 @@ extension Color {
     /// Sidebar background, a step warmer/lighter than the content.
     static let notionSidebar = Color(nsColor: .adaptive(light: 0xF7F7F5, dark: 0x232323))
 
+    /// Opaque color from an sRGB hex value (same in light and dark).
+    static func hex(_ hex: UInt32) -> Color {
+        Color(.sRGB,
+              red: Double((hex >> 16) & 0xFF) / 255,
+              green: Double((hex >> 8) & 0xFF) / 255,
+              blue: Double(hex & 0xFF) / 255)
+    }
+
     /// Deterministic pleasant color for a string (sender avatars, etc.).
     static func stable(for string: String) -> Color {
         var hash: UInt64 = 5381
@@ -42,6 +50,43 @@ extension Color {
         case "CATEGORY_UPDATES": return .orange
         case "CATEGORY_FORUMS": return .purple
         default: return .gray
+        }
+    }
+}
+
+/// Notion Mail-style icon + color per mailbox view: colorful for the primary
+/// views (red inbox, purple promotions, blue social…), quiet gray for the
+/// utility ones. Used by the sidebar and the list-column header.
+extension MailboxView {
+    var icon: String {
+        switch self {
+        case .inbox: return "tray.fill"
+        case .promotions: return "basket.fill"
+        case .social: return "bubble.left.fill"
+        case .starred: return "star.fill"
+        case .snoozed: return "clock.fill"
+        case .reminders: return "bell.fill"
+        case .drafts: return "doc.text"
+        case .scheduled: return "calendar.badge.clock"
+        case .sent: return "paperplane"
+        case .allMail: return "archivebox"
+        case .trash: return "trash"
+        case .account: return "person.crop.circle"
+        case .label: return "tag.fill"
+        case .saved: return "line.3.horizontal.decrease.circle"
+        }
+    }
+
+    var iconColor: Color {
+        switch self {
+        case .inbox: return .hex(0xEB5757)        // Notion red
+        case .promotions: return .hex(0x9B51E0)   // purple
+        case .social: return .hex(0x2D9CDB)       // blue
+        case .starred: return .hex(0xF2C94C)      // yellow
+        case .snoozed: return .hex(0xF2994A)      // orange
+        case .reminders: return .hex(0xF2994A)
+        case .label: return .hex(0x27AE60)        // green
+        default: return .secondary
         }
     }
 }

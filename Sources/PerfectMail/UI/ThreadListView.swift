@@ -130,6 +130,14 @@ struct ThreadListView: View {
         }
         .background(Color.notionContent)
         .navigationTitle(store.selectedView.title)
+        .toolbar {
+            // The view's colored icon next to its title, like Notion Mail's
+            // red inbox glyph.
+            ToolbarItem(placement: .navigation) {
+                Image(systemName: store.selectedView.icon)
+                    .foregroundStyle(store.selectedView.iconColor)
+            }
+        }
         .overlay {
             if store.threads.isEmpty {
                 ContentUnavailableView(
@@ -217,8 +225,8 @@ struct FilterBar: View {
                             showCategoriesPopover = true
                         } label: {
                             chipLabel("Categories: \(store.chips.category.title)",
-                                      icon: "bookmark",
-                                      active: store.chips.category != defaultChips.category)
+                                      icon: "bookmark.fill",
+                                      active: store.chips.category.isActive)
                         }
                         .buttonStyle(.plain)
                         .popover(isPresented: $showCategoriesPopover, arrowEdge: .bottom) {
@@ -675,8 +683,10 @@ struct FilterBar: View {
             Image(systemName: icon).font(.caption)
             Text(title).font(.caption)
         }
+        // Notion Mail-style active chip: blue text on a blue-tinted pill.
+        .foregroundStyle(active ? Color.notionAccent : Color.primary)
         .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(active ? Color.notionAccent.opacity(0.2) : Color.secondary.opacity(0.1),
+        .background(active ? Color.notionAccent.opacity(0.16) : Color.secondary.opacity(0.1),
                     in: Capsule())
     }
 }

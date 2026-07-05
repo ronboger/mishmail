@@ -258,35 +258,10 @@ struct Sidebar: View {
 
     var body: some View {
         VStack(spacing: 0) {
-            AccountSwitcher()
-                .padding(.horizontal, 10).padding(.vertical, 8)
-            // Notion Mail-style: search right under the account name, with
-            // compose next to it.
+            // Notion Mail-style header: account (avatar, name, address) with
+            // compose right next to it, search on its own row below.
             HStack(spacing: 6) {
-                HStack(spacing: 5) {
-                    Image(systemName: "magnifyingglass")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                    TextField("Search", text: $store.searchText)
-                        .textFieldStyle(.plain)
-                        .onSubmit {
-                            // Hand focus back to the list so j/k/e/etc. work.
-                            NSApp.keyWindow?.makeFirstResponder(nil)
-                            if store.selectedThreadId == nil { store.moveSelection(1) }
-                        }
-                    if !store.searchText.isEmpty {
-                        Button {
-                            store.searchText = ""
-                        } label: {
-                            Image(systemName: "xmark.circle.fill")
-                                .font(.system(size: 11)).foregroundStyle(.secondary)
-                        }
-                        .buttonStyle(.plain)
-                    }
-                }
-                .padding(.horizontal, 7).padding(.vertical, 5)
-                .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
-                .help("Search all mail — from: label: has:attachment")
-
+                AccountSwitcher()
                 Button {
                     store.composeRequest = .init(replyTo: nil)
                 } label: {
@@ -297,17 +272,40 @@ struct Sidebar: View {
                 .keyboardShortcut("n", modifiers: .command)
                 .help("Compose (⌘N or c)")
             }
+            .padding(.horizontal, 10).padding(.vertical, 8)
+            HStack(spacing: 5) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                TextField("Search", text: $store.searchText)
+                    .textFieldStyle(.plain)
+                    .onSubmit {
+                        // Hand focus back to the list so j/k/e/etc. work.
+                        NSApp.keyWindow?.makeFirstResponder(nil)
+                        if store.selectedThreadId == nil { store.moveSelection(1) }
+                    }
+                if !store.searchText.isEmpty {
+                    Button {
+                        store.searchText = ""
+                    } label: {
+                        Image(systemName: "xmark.circle.fill")
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                }
+            }
+            .padding(.horizontal, 7).padding(.vertical, 5)
+            .background(Color.primary.opacity(0.06), in: RoundedRectangle(cornerRadius: 6))
+            .help("Search all mail — from: label: has:attachment")
             .padding(.horizontal, 10).padding(.bottom, 8)
             List(selection: $store.selectedView) {
                 Section("Views") {
-                    sidebarItem(.inbox, icon: "tray", badge: store.unreadCounts["inbox"])
-                    sidebarItem(.promotions, icon: "tag", badge: store.unreadCounts["promotions"])
-                    sidebarItem(.social, icon: "person.2", badge: store.unreadCounts["social"])
-                    sidebarItem(.starred, icon: "star")
-                    sidebarItem(.snoozed, icon: "clock")
+                    sidebarItem(.inbox, badge: store.unreadCounts["inbox"])
+                    sidebarItem(.promotions, badge: store.unreadCounts["promotions"])
+                    sidebarItem(.social, badge: store.unreadCounts["social"])
+                    sidebarItem(.starred)
+                    sidebarItem(.snoozed)
                     ForEach(store.savedViews) { view in
-                        Label(view.name, systemImage: "line.3.horizontal.decrease.circle")
-                            .tag(MailboxView.saved(view.id ?? -1, view.name))
+                        sidebarItem(.saved(view.id ?? -1, view.name))
                             .contextMenu {
                                 Button("Edit View…") { store.editingView = view }
                                 Button("Delete View", role: .destructive) { store.deleteView(view) }
@@ -322,16 +320,15 @@ struct Sidebar: View {
                     .buttonStyle(.plain)
                 }
                 Section("Mail") {
-                    sidebarItem(.allMail, icon: "archivebox")
-                    sidebarItem(.sent, icon: "paperplane")
-                    sidebarItem(.drafts, icon: "doc.text")
+                    sidebarItem(.allMail)
+                    sidebarItem(.sent)
+                    sidebarItem(.drafts)
                     // Only surfaces once something is scheduled (Gmail-style).
                     if !store.scheduledSends.isEmpty || store.selectedView == .scheduled {
-                        sidebarItem(.scheduled, icon: "calendar.badge.clock",
-                                    badge: store.scheduledSends.count)
+                        sidebarItem(.scheduled, badge: store.scheduledSends.count)
                     }
-                    sidebarItem(.reminders, icon: "bell", badge: store.unreadCounts["reminders"])
-                    sidebarItem(.trash, icon: "trash")
+                    sidebarItem(.reminders, badge: store.unreadCounts["reminders"])
+                    sidebarItem(.trash)
                 }
             }
             .listStyle(.sidebar)
@@ -340,9 +337,15 @@ struct Sidebar: View {
         .background(Color.notionSidebar)
     }
 
+    /// Notion Mail-style row: each view keeps its own icon color.
     @ViewBuilder
-    private func sidebarItem(_ view: MailboxView, icon: String, badge: Int? = nil) -> some View {
-        Label(view.title, systemImage: icon)
+    private func sidebarItem(_ view: MailboxView, badge: Int? = nil) -> some View {
+        Label {
+            Text(view.title)
+        } icon: {
+            Image(systemName: view.icon)
+                .foregroundStyle(view.iconColor)
+        }
         .badge((badge ?? 0) > 0 ? badge! : 0)
         .tag(view)
     }
@@ -350,62 +353,107 @@ struct Sidebar: View {
 
 /// Notion Mail-style account scope switcher: unified, or one account only.
 /// Accounts carry user-defined labels ("Personal", "Fund", …).
+/// A Button + popover, NOT a Menu: macOS flattens custom views in Menu
+/// labels, which drops the avatar and name entirely.
 struct AccountSwitcher: View {
     @EnvironmentObject var store: MailStore
+    @State private var showMenu = false
 
     var body: some View {
-        Menu {
-            Button {
-                store.setActiveAccount(nil)
-            } label: {
-                if store.activeAccountId == nil { Image(systemName: "checkmark") }
-                Text("All accounts")
-            }
-            Divider()
-            ForEach(store.accounts) { account in
-                Button {
-                    store.setActiveAccount(account.id)
-                } label: {
-                    if store.activeAccountId == account.id { Image(systemName: "checkmark") }
-                    Text(menuTitle(account))
-                }
-            }
-            Divider()
-            Button("Add Google Account…") { store.addAccount() }
-            Button("Edit Account Labels…") { store.editingAccountLabels = true }
+        Button {
+            showMenu = true
         } label: {
             HStack(spacing: 8) {
-                // Notion Mail-style avatar: colored circle with the initial.
-                Circle()
-                    .fill(Color.stable(for: avatarKey))
-                    .frame(width: 26, height: 26)
-                    .overlay {
-                        Text(String(title.prefix(1)).uppercased())
-                            .font(.system(size: 13, weight: .semibold))
-                            .foregroundStyle(.white)
-                    }
+                avatar(for: title, key: avatarKey, size: 28)
                 VStack(alignment: .leading, spacing: 0) {
-                    Text(title)
-                        .font(.system(size: 13, weight: .semibold))
-                        .lineLimit(1)
+                    HStack(spacing: 3) {
+                        Text(title)
+                            .font(.system(size: 13, weight: .semibold))
+                            .lineLimit(1)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8, weight: .semibold))
+                            .foregroundStyle(.secondary)
+                    }
                     Text(subtitle)
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
-                Spacer()
-                Image(systemName: "chevron.up.chevron.down")
-                    .font(.caption2).foregroundStyle(.secondary)
+                Spacer(minLength: 0)
             }
             .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
+        .buttonStyle(.plain)
+        .popover(isPresented: $showMenu, arrowEdge: .bottom) {
+            VStack(alignment: .leading, spacing: 1) {
+                accountRow(nil)
+                ForEach(store.accounts) { account in
+                    accountRow(account)
+                }
+                Divider().padding(.vertical, 4)
+                FilterMenuRow(icon: "plus", title: "Add Google Account…") {
+                    showMenu = false
+                    store.addAccount()
+                }
+                FilterMenuRow(icon: "pencil", title: "Edit Account Labels…") {
+                    showMenu = false
+                    store.editingAccountLabels = true
+                }
+            }
+            .padding(8)
+            .frame(width: 280)
+        }
         .sheet(isPresented: $store.editingAccountLabels) {
             AccountLabelsEditor()
         }
     }
 
-    private func menuTitle(_ account: Account) -> String {
-        account.displayName == account.id ? account.id : "\(account.displayName) — \(account.id)"
+    /// One row of the account popover: avatar, name + address, checkmark.
+    private func accountRow(_ account: Account?) -> some View {
+        let selected = store.activeAccountId == account?.id
+        return Button {
+            store.setActiveAccount(account?.id)
+            showMenu = false
+        } label: {
+            HStack(spacing: 8) {
+                if let account {
+                    avatar(for: displayTitle(account), key: account.id, size: 24)
+                } else {
+                    Image(systemName: "tray.2.fill")
+                        .font(.system(size: 13)).foregroundStyle(.secondary)
+                        .frame(width: 24, height: 24)
+                }
+                VStack(alignment: .leading, spacing: 0) {
+                    Text(account.map(displayTitle) ?? "All accounts")
+                        .font(.system(size: 12.5, weight: .medium))
+                        .lineLimit(1)
+                    Text(account?.id ?? "\(store.accounts.count) inboxes")
+                        .font(.system(size: 10.5)).foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer(minLength: 0)
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.notionAccent)
+                }
+            }
+            .padding(.horizontal, 6).padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .hoverTint()
+    }
+
+    /// Colored circle with the first initial, Notion Mail-style.
+    private func avatar(for name: String, key: String, size: CGFloat) -> some View {
+        Circle()
+            .fill(Color.stable(for: key))
+            .frame(width: size, height: size)
+            .overlay {
+                Text(String(name.prefix(1)).uppercased())
+                    .font(.system(size: size * 0.48, weight: .semibold))
+                    .foregroundStyle(.white)
+            }
     }
 
     private var activeAccount: Account? {
@@ -414,16 +462,17 @@ struct AccountSwitcher: View {
 
     /// Full name first, like Notion Mail's account header: the outgoing
     /// sender name if set, then the local label, then the address.
+    private func displayTitle(_ account: Account) -> String {
+        if !account.senderName.isEmpty { return account.senderName }
+        return account.displayName
+    }
+
     private var title: String {
-        if let account = activeAccount {
-            if !account.senderName.isEmpty { return account.senderName }
-            return account.displayName
-        }
-        return "All accounts"
+        activeAccount.map(displayTitle) ?? "All accounts"
     }
 
     private var avatarKey: String {
-        activeAccount?.id ?? store.accounts.map(\.id).joined()
+        activeAccount?.id ?? store.accounts.first?.id ?? "?"
     }
 
     private var subtitle: String {
