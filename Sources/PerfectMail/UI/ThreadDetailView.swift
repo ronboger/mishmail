@@ -274,25 +274,36 @@ struct MessageCard: View {
     // pill (Gmail-style) on every message — threads repeat their history in
     // each body, so showing it all drowns the actual message.
     @State private var showQuoted = false
-    /// Head/tail split of a plain-text body around the quoted reply trail;
-    /// nil when there is nothing to collapse (always nil for HTML bodies).
-    private let textSplit: (head: String, tail: String)?
+    /// The authored text above a plain-text quoted trail; nil when there is
+    /// nothing to collapse (always nil for HTML bodies).
+    private let textHead: String?
     /// Whether this message carries a collapsible quoted trail — HTML bodies
-    /// hide it with CSS, plain text via the head/tail split. Computed once:
-    /// it scans the whole body.
+    /// hide it with CSS, plain text via `textHead`.
     private let hasQuotedTrail: Bool
+
+    /// The trail scans are whole-body regexes and the parent ForEach re-inits
+    /// every card whenever the store publishes, so results are cached per
+    /// message — bodies are immutable. Cleared wholesale when it grows past
+    /// a few threads' worth.
+    private static var trailCache: [String: (head: String?, hasTrail: Bool)] = [:]
 
     init(message: Message, isLast: Bool, onReply: @escaping () -> Void) {
         self.message = message
         self.isLast = isLast
         self.onReply = onReply
         _expanded = State(initialValue: isLast)
-        if let html = message.bodyHTML, !html.isEmpty {
-            textSplit = nil
-            hasQuotedTrail = QuotedReply.hasHTMLQuote(html)
+        if let cached = Self.trailCache[message.id] {
+            (textHead, hasQuotedTrail) = cached
         } else {
-            textSplit = QuotedReply.splitText(message.bodyText)
-            hasQuotedTrail = textSplit != nil
+            if let html = message.bodyHTML, !html.isEmpty {
+                textHead = nil
+                hasQuotedTrail = QuotedReply.hasHTMLQuote(html)
+            } else {
+                textHead = QuotedReply.splitText(message.bodyText)?.head
+                hasQuotedTrail = textHead != nil
+            }
+            if Self.trailCache.count > 512 { Self.trailCache.removeAll() }
+            Self.trailCache[message.id] = (textHead, hasQuotedTrail)
         }
     }
 
@@ -359,8 +370,7 @@ struct MessageCard: View {
                                  height: $htmlHeight)
                         .frame(height: htmlHeight)
                 } else {
-                    Text(showQuoted ? message.bodyText
-                                    : (textSplit?.head ?? message.bodyText))
+                    Text((showQuoted ? nil : textHead) ?? message.bodyText)
                         .font(.system(size: 14.5 * fontScale))
                         .lineSpacing(3)
                         .textSelection(.enabled)
@@ -369,10 +379,12 @@ struct MessageCard: View {
                     // Same pill as the compose card: the trail is one click
                     // away, and one more click tucks it back.
                     Button {
-                        // Re-measuring after a reload can't shrink the web
-                        // view below its current frame, so drop back to the
-                        // default height and let it grow to fit.
-                        htmlHeight = 120
+                        // Collapsing shrinks the content, and a reloaded web
+                        // view can't measure below its current frame — drop
+                        // back to the default height and let it grow to fit.
+                        // Expanding only grows, so the height stays put until
+                        // the new load reports in (no visible snap).
+                        if showQuoted { htmlHeight = 120 }
                         withAnimation { showQuoted.toggle() }
                     } label: {
                         Image(systemName: "ellipsis")

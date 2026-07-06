@@ -196,44 +196,55 @@ enum ForwardComposer {
 /// carries the full history below its new text; showing it all makes long
 /// threads unreadable.
 enum QuotedReply {
+    // Precompiled: these run over whole bodies every time the thread view
+    // renders a card, so per-call compilation would add up fast.
+    //
+    // The attribution may wrap onto a second line (Gmail folds long
+    // "On …, Full Name <address> wrote:" lines), hence the optional `\n.+`.
+    // One alternation, not a pattern list — the split must happen at the
+    // EARLIEST marker, not at the first pattern that matches anywhere.
+    private static let textMarker = try! NSRegularExpression(
+        pattern: #"\n+(On .+(\n.+)? wrote:\s*\n|-{2,} ?Forwarded message ?-{2,})"#)
+
+    /// The quote containers `hideQuoteCSS` hides: Gmail (`gmail_quote` class
+    /// on any element, single- or double-quoted), Outlook's reply-header div,
+    /// Apple Mail's cite blockquotes. Keep in sync with `hideQuoteCSS`.
+    private static let htmlMarker = try! NSRegularExpression(
+        pattern: #"<[^>]+class\s*=\s*["'][^"']*gmail_quote"# + "|"
+            + #"<[^>]+id\s*=\s*["']?divRplyFwdMsg"# + "|"
+            + #"<blockquote[^>]*type\s*=\s*["']?cite"#,
+        options: [.caseInsensitive])
+
     /// Splits a plain-text body at the reply attribution ("On …, X wrote:")
     /// or forwarded-message marker. Returns nil when there is no quoted trail
     /// or no authored text above it (collapsing would hide the whole message).
     static func splitText(_ body: String) -> (head: String, tail: String)? {
-        let patterns = [#"\n+On .+ wrote:\s*\n"#,
-                        #"\n+-{2,} ?Forwarded message ?-{2,}"#]
-        for pattern in patterns {
-            guard let range = body.range(of: pattern, options: .regularExpression)
-            else { continue }
-            let head = String(body[..<range.lowerBound])
-                .trimmingCharacters(in: .whitespacesAndNewlines)
-            if head.isEmpty { return nil }
-            return (head, String(body[range.lowerBound...]))
-        }
-        return nil
+        let ns = body as NSString
+        guard let match = textMarker.firstMatch(
+            in: body, range: NSRange(location: 0, length: ns.length))
+        else { return nil }
+        let head = ns.substring(to: match.range.location)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !head.isEmpty else { return nil }
+        return (head, ns.substring(from: match.range.location))
     }
 
     /// True when an HTML body carries a quoted trail that `hideQuoteCSS`
-    /// knows how to hide (Gmail, Apple Mail, Outlook containers) *and* has
-    /// authored content above it — same guard as the plain-text split.
+    /// knows how to hide *and* has authored content above it — same guard
+    /// as the plain-text split.
     static func hasHTMLQuote(_ html: String) -> Bool {
-        let markers = [#"<[^>]+class\s*=\s*"[^"]*gmail_quote"#,
-                       #"<[^>]+id\s*=\s*.?divRplyFwdMsg"#,
-                       #"<blockquote[^>]*type\s*=\s*.?cite"#]
-        let starts = markers.compactMap {
-            html.range(of: $0, options: [.regularExpression, .caseInsensitive])?.lowerBound
-        }
-        guard let first = starts.min() else { return false }
-        let head = String(html[..<first])
-            .replacingOccurrences(of: #"<[^>]*>"#, with: " ", options: .regularExpression)
-            .replacingOccurrences(of: "&nbsp;", with: " ")
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-        return !head.isEmpty
+        let ns = html as NSString
+        guard let match = htmlMarker.firstMatch(
+            in: html, range: NSRange(location: 0, length: ns.length))
+        else { return false }
+        return !MessageParser.stripHTML(ns.substring(to: match.range.location)).isEmpty
     }
 
     /// Stylesheet rule that hides those quoted trails while collapsed.
-    static let hideQuoteCSS =
-        #"div.gmail_quote, #divRplyFwdMsg, blockquote[type="cite"] { display: none; }"#
+    /// Mirrors `htmlMarker`; Outlook's quoted body follows its header div as
+    /// siblings, so everything after `#divRplyFwdMsg` goes too.
+    static let hideQuoteCSS = #"[class*="gmail_quote"], blockquote[type="cite" i], "#
+        + "#divRplyFwdMsg, #divRplyFwdMsg ~ * { display: none; }"
 }
 
 /// Builds RFC 2822 messages for sending/replying, optionally multipart/mixed

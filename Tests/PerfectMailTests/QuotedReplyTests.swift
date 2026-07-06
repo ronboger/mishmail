@@ -35,6 +35,35 @@ final class QuotedReplyTests: XCTestCase {
         XCTAssertNil(QuotedReply.splitText(body))
     }
 
+    func testSplitTextWrappedAttribution() {
+        // Gmail folds long attribution lines; the split must still fire.
+        let body = """
+        Sounds good.
+
+        On Thu, Jul 2, 2026 at 6:41 PM Ronald Bogerson
+        <ronald.bogerson@example.com> wrote:
+        > Sure!
+        """
+        XCTAssertEqual(QuotedReply.splitText(body)?.head, "Sounds good.")
+    }
+
+    func testSplitTextEarliestMarkerWins() {
+        // A forward marker above a "wrote:" line must win — splitting at the
+        // later attribution would leak the forwarded content above the pill.
+        let body = """
+        See below.
+
+        ---------- Forwarded message ---------
+        From: Alice
+
+        forwarded content
+
+        On Mon, Jun 1, 2026, Bob wrote:
+        > older
+        """
+        XCTAssertEqual(QuotedReply.splitText(body)?.head, "See below.")
+    }
+
     func testSplitTextWroteMidSentenceNotMatched() {
         // "wrote:" must sit on its own attribution line, not inside prose.
         XCTAssertNil(QuotedReply.splitText("On my desk I wrote: a note.\nThat's all."))
@@ -55,6 +84,35 @@ final class QuotedReplyTests: XCTestCase {
     func testHasHTMLQuoteOutlook() {
         let html = #"<p>reply text</p><div id="divRplyFwdMsg"><b>From:</b> x</div>"#
         XCTAssertTrue(QuotedReply.hasHTMLQuote(html))
+    }
+
+    func testHasHTMLQuoteBlockquoteGmailClass() {
+        // Some clients emit the gmail_quote class on a blockquote, not a div;
+        // detection and the hide CSS must both cover it.
+        let html = #"<div>new text</div><blockquote class="gmail_quote">old</blockquote>"#
+        XCTAssertTrue(QuotedReply.hasHTMLQuote(html))
+    }
+
+    func testHasHTMLQuoteSingleQuotedAttrs() {
+        let html = "<div>new</div><div class='gmail_quote'>old</div>"
+        XCTAssertTrue(QuotedReply.hasHTMLQuote(html))
+    }
+
+    func testHasHTMLQuoteEntityOnlyWrapperStaysVisible() {
+        // &#160; is a non-breaking space — the head is still effectively
+        // empty, so nothing would remain visible if the quote collapsed.
+        let html = #"<div>&#160; &nbsp;</div><div class="gmail_quote">old</div>"#
+        XCTAssertFalse(QuotedReply.hasHTMLQuote(html))
+    }
+
+    func testHideCSSCoversDetectedContainers() {
+        // Detection and hiding are separate encodings of the same marker
+        // list; pin the selectors so they can't silently drift apart.
+        for selector in [#"[class*="gmail_quote"]"#, "#divRplyFwdMsg ~ *",
+                         #"blockquote[type="cite" i]"#] {
+            XCTAssertTrue(QuotedReply.hideQuoteCSS.contains(selector),
+                          "hideQuoteCSS lost selector: \(selector)")
+        }
     }
 
     func testHasHTMLQuoteNoQuote() {
