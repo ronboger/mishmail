@@ -84,6 +84,31 @@ struct ComposeView: View {
         quotedTail = ""
     }
 
+    /// Where an inlined quoted original starts in the editor, if any.
+    private var quoteStartInBody: String.Index? {
+        (body_.range(of: "\n" + ForwardComposer.marker)
+            ?? body_.range(of: #"\n+On .+ wrote:\n"#, options: .regularExpression))?
+            .lowerBound
+    }
+
+    /// Splits the quoted original back out of the editor, re-collapsing it
+    /// behind the "…" pill. Inverse of expandQuote; edits the user made to
+    /// the quote while it was expanded travel with it.
+    private func collapseQuote() {
+        guard quotedTail.isEmpty, let start = quoteStartInBody else { return }
+        let untouched = body_.trimmingCharacters(in: .whitespacesAndNewlines)
+            == initialBody.trimmingCharacters(in: .whitespacesAndNewlines)
+        var tail = String(body_[start...])
+        while tail.first == "\n" { tail.removeFirst() }
+        guard !tail.isEmpty else { return }
+        quotedTail = tail
+        var head = String(body_[..<start])
+        while head.last == "\n" { head.removeLast() }
+        body_ = head
+        // A never-edited body collapses back to pure prefill.
+        if untouched { initialBody = "" }
+    }
+
     /// Content the user actually authored (quoted/reply prefill doesn't count).
     private var hasContent: Bool {
         editingDraft != nil
@@ -309,6 +334,23 @@ struct ComposeView: View {
                 .help(request.forward ? "Show forwarded message" : "Show quoted text")
                 .padding(.bottom, 8)
                 Spacer(minLength: 0)
+            } else if quoteStartInBody != nil {
+                // The quote has been inlined; let the user tuck it back
+                // behind the "…" pill (Gmail's collapse control).
+                Button {
+                    collapseQuote()
+                } label: {
+                    Image(systemName: "ellipsis")
+                        .font(.system(size: 14, weight: .bold))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 14)
+                        .padding(.vertical, 6)
+                        .background(Color.secondary.opacity(0.15), in: Capsule())
+                        .contentShape(Capsule())
+                }
+                .buttonStyle(.plain)
+                .help(request.forward ? "Hide forwarded message" : "Hide quoted text")
+                .padding(.bottom, 8)
             }
 
             if !attachmentURLs.isEmpty || !restoredAttachments.isEmpty || loadingAttachments {
