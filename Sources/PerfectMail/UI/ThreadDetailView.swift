@@ -15,12 +15,6 @@ struct ThreadDetailView: View {
     @State private var summaryError: String?
 
     var body: some View {
-        ScrollViewReader { proxy in
-            scrollContent(proxy)
-        }
-    }
-
-    private func scrollContent(_ proxy: ScrollViewProxy) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
@@ -107,7 +101,6 @@ struct ThreadDetailView: View {
                                 isLast: message.id == messages.last?.id,
                                 onReply: { onReply(message) })
                         .padding(.horizontal)
-                        .id(message.id)
                 }
             }
             .padding(.vertical)
@@ -161,26 +154,14 @@ struct ThreadDetailView: View {
                 }
             }
         }
+        // Long threads open already at the newest message — anchored, not
+        // scrolled, so there's no visible jump; the pane also stays pinned to
+        // the bottom while HTML bodies settle their real heights.
+        .defaultScrollAnchor(messages.count > 1 ? .bottom : .top)
         .task(id: thread.id) {
             messages = store.messages(inThread: thread.id)
             aiSummary = nil; summaryError = nil; summarizing = false
             if thread.isUnread { store.setRead(thread, read: true) }
-            scrollToLatest(proxy)
-        }
-    }
-
-    /// Long threads open at the newest message instead of the top. The jump
-    /// repeats a few times because expanded HTML bodies report their real
-    /// height asynchronously, which shifts the layout after the first scroll.
-    private func scrollToLatest(_ proxy: ScrollViewProxy) {
-        guard messages.count > 1, let lastId = messages.last?.id else { return }
-        let threadId = thread.id
-        proxy.scrollTo(lastId, anchor: .top)
-        for delay in [0.15, 0.4] {
-            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
-                guard self.thread.id == threadId, self.messages.last?.id == lastId else { return }
-                proxy.scrollTo(lastId, anchor: .top)
-            }
         }
     }
 
