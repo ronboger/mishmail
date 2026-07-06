@@ -32,33 +32,49 @@ struct ThreadListView: View {
     @EnvironmentObject var store: MailStore
     @AppStorage("groupBy") private var groupByRaw = GroupBy.date.rawValue
     @AppStorage("fontScale") private var fontScale = 1.0
+    @AppStorage("priorityInboxEnabled") private var priorityInboxEnabled = true
 
     private var groupBy: GroupBy { GroupBy(rawValue: groupByRaw) ?? .date }
 
     private var grouped: [(String, [MailThread])] {
+        // Superhuman-style split inbox: starred and Gmail-IMPORTANT threads
+        // pin to a Priority section on top; the chosen grouping applies to
+        // the rest. Inbox only — dedicated views (Starred, Sent…) stay flat.
+        let (priority, rest) = PrioritySplit.partition(
+            store.threads,
+            enabled: priorityInboxEnabled && store.selectedView == .inbox)
+        var out: [(String, [MailThread])] = []
+        if !priority.isEmpty { out.append((Self.prioritySection, priority)) }
+        out += groups(rest)
+        return out
+    }
+
+    private static let prioritySection = "Priority"
+
+    private func groups(_ threads: [MailThread]) -> [(String, [MailThread])] {
         switch groupBy {
-        case .date: return groupedByDate
-        case .starred: return partition("Starred", "Everything else") { $0.isStarred }
-        case .important: return partition("Important", "Everything else") { $0.labels.contains("IMPORTANT") }
-        case .unread: return partition("Unread", "Read") { $0.isUnread }
-        case .sender: return groupedBy { $0.fromDisplay }
-        case .label: return groupedBy { thread in
+        case .date: return groupedByDate(threads)
+        case .starred: return partition(threads, "Starred", "Everything else") { $0.isStarred }
+        case .important: return partition(threads, "Important", "Everything else") { $0.labels.contains("IMPORTANT") }
+        case .unread: return partition(threads, "Unread", "Read") { $0.isUnread }
+        case .sender: return groupedBy(threads) { $0.fromDisplay }
+        case .label: return groupedBy(threads) { thread in
             let userLabel = thread.labels
                 .compactMap { store.labelName($0, account: thread.accountId) }
                 .sorted().first
             return userLabel ?? "No label"
         }
-        case .aiCategory: return groupedBy { store.aiCategories[$0.id] ?? "Unsorted" }
+        case .aiCategory: return groupedBy(threads) { store.aiCategories[$0.id] ?? "Unsorted" }
         }
     }
 
-    private var groupedByDate: [(String, [MailThread])] {
+    private func groupedByDate(_ threads: [MailThread]) -> [(String, [MailThread])] {
         let cal = Calendar.current
         let now = Date()
         var groups: [(String, [MailThread])] = []
         var buckets: [String: [MailThread]] = [:]
         let order = ["Today", "Yesterday", "Last 7 days", "Last 30 days", "Older"]
-        for thread in store.threads {
+        for thread in threads {
             let key: String
             if cal.isDateInToday(thread.lastDate) { key = "Today" }
             else if cal.isDateInYesterday(thread.lastDate) { key = "Yesterday" }
@@ -73,18 +89,19 @@ struct ThreadListView: View {
         return groups
     }
 
-    private func partition(_ yes: String, _ no: String,
+    private func partition(_ threads: [MailThread], _ yes: String, _ no: String,
                            test: (MailThread) -> Bool) -> [(String, [MailThread])] {
-        let hits = store.threads.filter(test)
-        let misses = store.threads.filter { !test($0) }
+        let hits = threads.filter(test)
+        let misses = threads.filter { !test($0) }
         var out: [(String, [MailThread])] = []
         if !hits.isEmpty { out.append((yes, hits)) }
         if !misses.isEmpty { out.append((no, misses)) }
         return out
     }
 
-    private func groupedBy(_ key: (MailThread) -> String) -> [(String, [MailThread])] {
-        let buckets = Dictionary(grouping: store.threads, by: key)
+    private func groupedBy(_ threads: [MailThread],
+                           _ key: (MailThread) -> String) -> [(String, [MailThread])] {
+        let buckets = Dictionary(grouping: threads, by: key)
         return buckets
             .sorted { ($0.value.first?.lastDate ?? .distantPast) > ($1.value.first?.lastDate ?? .distantPast) }
             .map { ($0.key, $0.value) }
@@ -119,9 +136,16 @@ struct ThreadListView: View {
                         // Compact so the pinned (sticky) header stays a thin
                         // line while scrolling. Secondary gray adapts to the
                         // theme and sets headers clearly apart from thread text.
-                        Text(title)
-                            .font(.system(size: 12 * fontScale, weight: .semibold))
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 4) {
+                            if title == Self.prioritySection {
+                                Image(systemName: "star.fill")
+                                    .font(.system(size: 9 * fontScale))
+                                    .foregroundStyle(.orange)
+                            }
+                            Text(title)
+                        }
+                        .font(.system(size: 12 * fontScale, weight: .semibold))
+                        .foregroundStyle(.secondary)
                     } footer: {
                         // The air lives AFTER each group, so every gap between
                         // groups is this exact height.
