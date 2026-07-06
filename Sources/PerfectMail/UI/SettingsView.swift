@@ -710,10 +710,18 @@ struct AppearanceSettings: View {
     @EnvironmentObject var store: MailStore
     @AppStorage("fontScale") private var fontScale = 1.0
     @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
+    @AppStorage("priorityInboxEnabled") private var priorityInboxEnabled = true
 
     var body: some View {
         PaneScaffold(title: "Appearance") {
             Form {
+                Section {
+                    Toggle("Priority section in Inbox", isOn: $priorityInboxEnabled)
+                } footer: {
+                    Text("Pins starred threads and ones Gmail marks Important to the top of the Inbox.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 Section {
                     Picker("Text size", selection: $fontScale) {
                         Text("Small").tag(0.9)

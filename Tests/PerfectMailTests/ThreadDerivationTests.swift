@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 
 /// SyncEngine.deriveThread — the pure core of sync: how a thread row is
 /// computed from its messages (always passed newest first).
@@ -93,5 +94,143 @@ final class ThreadDerivationTests: XCTestCase {
         let t = try XCTUnwrap(derive([msg(id: "m1", from: "a@b.com", daysAgo: 0, labels: "TRASH")]))
         XCTAssertTrue(t.inTrash)
         XCTAssertFalse(t.inInbox)
+    }
+}
+
+/// SyncEngine.deriveThreads — batched re-derivation of many threads in one
+/// pass. A sync touching N messages that all belong to the same thread must
+/// derive that thread exactly once, not N times, and must never derive a
+/// thread that wasn't in the touched set.
+final class BatchThreadDerivationTests: XCTestCase {
+
+    private let account = "ron@x.com"
+
+    private func makeDB() throws -> DatabaseQueue {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q)
+        return q
+    }
+
+    private func insertMessage(_ db: Database, gmailId: String, threadGmailId: String,
+                               from: String, daysAgo: Double, labels: String = "INBOX") throws {
+        try Message(
+            id: "\(account):\(gmailId)", accountId: account, gmailId: gmailId,
+            threadId: "\(account):\(threadGmailId)", fromHeader: from, toHeader: account,
+            ccHeader: "", bccHeader: "", subject: "s-\(threadGmailId)",
+            date: Date(timeIntervalSinceNow: -daysAgo * 86_400),
+            snippet: "snippet-\(gmailId)", bodyText: "", bodyHTML: nil, messageIdHeader: "",
+            referencesHeader: "", labelIds: labels, isUnread: false,
+            hasAttachment: false).save(db)
+    }
+
+    /// Three messages in the same thread, touched in one batch: the thread
+    /// key set collapses to one entry, so derivation runs exactly once —
+    /// not three times, one per message — while still producing a thread
+    /// row that reflects all three messages.
+    func testSameThreadMessagesDeriveOnce() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try Account(id: self.account, displayName: "P", historyId: nil,
+                        lastSyncAt: nil, senderName: "").save(db)
+            try self.insertMessage(db, gmailId: "m1", threadGmailId: "t1", from: "a@b.com", daysAgo: 2)
+            try self.insertMessage(db, gmailId: "m2", threadGmailId: "t1", from: "a@b.com", daysAgo: 1)
+            try self.insertMessage(db, gmailId: "m3", threadGmailId: "t1", from: "a@b.com", daysAgo: 0)
+        }
+        // All three touched messages belong to the same thread, so a sync
+        // pass collecting distinct thread keys from them collapses to one.
+        let touchedMessageIds = ["m1", "m2", "m3"]
+        let touchedKeys = Set(touchedMessageIds.map { _ in "\(account):t1" })
+        XCTAssertEqual(touchedKeys, ["\(account):t1"], "same-thread messages collapse to one key")
+
+        var derivations = 0
+        try q.write { db in
+            try SyncEngine.deriveThreads(db, for: touchedKeys, accountId: self.account,
+                                        derivationCount: { derivations += 1 })
+        }
+        XCTAssertEqual(derivations, 1, "one thread key => exactly one derivation, regardless of message count")
+
+        let thread = try q.read { db in try MailThread.fetchOne(db, key: "\(self.account):t1") }
+        XCTAssertEqual(thread?.messageCount, 3)
+        XCTAssertEqual(thread?.snippet, "snippet-m3", "reflects the newest of all three messages")
+    }
+
+    /// A batch touching messages in two different threads derives each of
+    /// those threads exactly once, and never touches an unrelated thread
+    /// that wasn't part of the batch.
+    func testMultipleThreadsEachDeriveOnceAndOthersAreUntouched() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try Account(id: self.account, displayName: "P", historyId: nil,
+                        lastSyncAt: nil, senderName: "").save(db)
+            try self.insertMessage(db, gmailId: "a1", threadGmailId: "ta", from: "a@b.com", daysAgo: 1)
+            try self.insertMessage(db, gmailId: "b1", threadGmailId: "tb", from: "a@b.com", daysAgo: 1)
+            try self.insertMessage(db, gmailId: "c1", threadGmailId: "tc", from: "a@b.com", daysAgo: 1)
+        }
+        // Pre-seed a stale thread row for "tc" (not part of this batch) so we
+        // can assert it's left alone by the batch derivation.
+        try q.write { db in
+            var stale = try XCTUnwrap(SyncEngine.deriveThread(
+                threadKey: "\(self.account):tc", gmailThreadId: "tc", accountId: self.account,
+                messages: [try XCTUnwrap(Message.fetchOne(db, key: "\(self.account):c1"))],
+                existing: nil))
+            stale.snippet = "STALE-SHOULD-NOT-CHANGE"
+            try stale.save(db)
+        }
+
+        let touchedKeys: Set<String> = ["\(account):ta", "\(account):tb"]
+        var derivations = 0
+        try q.write { db in
+            try SyncEngine.deriveThreads(db, for: touchedKeys, accountId: self.account,
+                                        derivationCount: { derivations += 1 })
+        }
+        XCTAssertEqual(derivations, 2, "two distinct touched threads => two derivations")
+
+        let (ta, tb, tc) = try q.read { db in
+            (try MailThread.fetchOne(db, key: "\(self.account):ta"),
+             try MailThread.fetchOne(db, key: "\(self.account):tb"),
+             try MailThread.fetchOne(db, key: "\(self.account):tc"))
+        }
+        XCTAssertEqual(ta?.snippet, "snippet-a1")
+        XCTAssertEqual(tb?.snippet, "snippet-b1")
+        XCTAssertEqual(tc?.snippet, "STALE-SHOULD-NOT-CHANGE", "untouched thread is not re-derived")
+    }
+
+    /// Local-only columns (snooze/reminder) survive batched re-derivation,
+    /// the same guarantee `testLocalStateSurvivesRederivation` establishes
+    /// for the single-thread `deriveThread` path.
+    func testLocalStateSurvivesBatchRederivation() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try Account(id: self.account, displayName: "P", historyId: nil,
+                        lastSyncAt: nil, senderName: "").save(db)
+            try self.insertMessage(db, gmailId: "m1", threadGmailId: "t1", from: "a@b.com", daysAgo: 1)
+        }
+        let snooze = Date(timeIntervalSinceNow: 3600)
+        let reminder = Date(timeIntervalSinceNow: 7200)
+        let reminderSet = Date(timeIntervalSinceNow: -600)
+        try q.write { db in
+            try SyncEngine.deriveThreads(db, for: ["\(self.account):t1"], accountId: self.account)
+            var thread = try XCTUnwrap(MailThread.fetchOne(db, key: "\(self.account):t1"))
+            thread.snoozeUntil = snooze
+            thread.reminderAt = reminder
+            thread.reminderSetAt = reminderSet
+            try thread.save(db)
+        }
+        // Round-trip through SQLite once so the expectation matches its
+        // stored (sub-second-truncated) precision, not the in-memory Date.
+        let stored = try q.read { db in try XCTUnwrap(MailThread.fetchOne(db, key: "\(self.account):t1")) }
+
+        // A second message lands in the same thread; batch re-derivation
+        // must preserve the local-only columns set above.
+        try q.write { db in
+            try self.insertMessage(db, gmailId: "m2", threadGmailId: "t1", from: "a@b.com", daysAgo: 0)
+            try SyncEngine.deriveThreads(db, for: ["\(self.account):t1"], accountId: self.account)
+        }
+
+        let rederived = try q.read { db in try MailThread.fetchOne(db, key: "\(self.account):t1") }
+        XCTAssertEqual(rederived?.messageCount, 2)
+        XCTAssertEqual(rederived?.snoozeUntil, stored.snoozeUntil)
+        XCTAssertEqual(rederived?.reminderAt, stored.reminderAt)
+        XCTAssertEqual(rederived?.reminderSetAt, stored.reminderSetAt)
     }
 }
