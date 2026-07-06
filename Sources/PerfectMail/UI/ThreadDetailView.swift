@@ -362,6 +362,16 @@ struct MessageCard: View {
                                     .help("Open (uses a private temporary file)")
 
                                     Button {
+                                        store.quickLookAttachment(att, message: message)
+                                    } label: {
+                                        Image(systemName: "eye")
+                                            .font(.system(size: 15))
+                                            .foregroundStyle(.secondary)
+                                    }
+                                    .buttonStyle(.plain)
+                                    .help("Quick Look")
+
+                                    Button {
                                         store.saveAttachment(att, message: message)
                                     } label: {
                                         Image(systemName: "arrow.down.circle")
@@ -376,6 +386,7 @@ struct MessageCard: View {
                                             in: RoundedRectangle(cornerRadius: 8))
                                 .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
                                 .contextMenu {
+                                    Button("Quick Look") { store.quickLookAttachment(att, message: message) }
                                     Button("Open") { store.openAttachment(att, message: message) }
                                     Button("Save As…") { store.saveAttachment(att, message: message) }
                                 }

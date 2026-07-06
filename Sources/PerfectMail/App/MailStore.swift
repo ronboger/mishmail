@@ -1635,9 +1635,12 @@ final class MailStore: ObservableObject {
     /// Downloads an attachment into the per-message temp folder, reusing an
     /// already-downloaded copy so open → Quick Look → open doesn't re-fetch.
     private func attachmentTempURL(_ attachment: AttachmentRow, message: Message) async throws -> URL {
+        // Keyed by attachment row too, so two same-named attachments on one
+        // message can't serve each other's cached bytes.
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("PerfectMailAttachments", isDirectory: true)
             .appendingPathComponent(MessageParser.safeFilename(message.gmailId), isDirectory: true)
+            .appendingPathComponent(String(attachment.id ?? 0), isDirectory: true)
         let url = dir.appendingPathComponent(MessageParser.safeFilename(attachment.filename))
         if FileManager.default.fileExists(atPath: url.path) { return url }
         let data = try await client(for: message.accountId)
