@@ -76,7 +76,8 @@ actor SyncEngine {
         // mail is kept; Gmail is never touched). Always pull ALL starred mail
         // regardless of age (once).
         if UserDefaults.standard.integer(forKey: windowKey) != syncWindowDays {
-            try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
+            let touchedKeys = try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
+            try await deriveThreads(for: touchedKeys)
             if syncWindowDays != 0 {
                 progress?("Removing local mail outside the window…")
                 try await pruneLocalMail(keepingDays: syncWindowDays)
@@ -85,7 +86,8 @@ actor SyncEngine {
         }
         let starKey = "backfill.starred.\(accountId)"
         if !UserDefaults.standard.bool(forKey: starKey) {
-            try await fetchAll(query: "is:starred", limit: 3000, progress: progress)
+            let touchedKeys = try await fetchAll(query: "is:starred", limit: 3000, progress: progress)
+            try await deriveThreads(for: touchedKeys)
             UserDefaults.standard.set(true, forKey: starKey)
         }
 
@@ -116,7 +118,8 @@ actor SyncEngine {
 
     private func fullBackfill(progress: (@Sendable (String) -> Void)?) async throws -> String {
         let profile = try await client.profile()
-        try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
+        let touchedKeys = try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
+        try await deriveThreads(for: touchedKeys)
         UserDefaults.standard.set(syncWindowDays, forKey: "backfill.window.\(accountId)")
         return profile.historyId
     }
@@ -157,16 +160,21 @@ actor SyncEngine {
     /// window), then rebuilds the affected threads. Gmail's `q` syntax matches
     /// the app's search operators (from:/to:/subject:/is:/before:/after:…).
     func searchServer(query: String, limit: Int = 50) async throws {
-        try await fetchAll(query: query, limit: limit, progress: nil)
-        try await rebuildThreads()
+        let touchedKeys = try await fetchAll(query: query, limit: limit, progress: nil)
+        try await deriveThreads(for: touchedKeys)
     }
 
+    /// Downloads messages matching `query` that aren't already cached.
+    /// Returns the set of thread keys touched, so callers can batch
+    /// re-derivation instead of recomputing every thread in the account.
+    @discardableResult
     private func fetchAll(query: String?, limit: Int,
-                          progress: (@Sendable (String) -> Void)?) async throws {
+                          progress: (@Sendable (String) -> Void)?) async throws -> Set<String> {
         let existing = try await db.read { [accountId] db in
             Set(try String.fetchAll(db, sql: "SELECT gmailId FROM message WHERE accountId = ?",
                                     arguments: [accountId]))
         }
+        var touchedKeys = Set<String>()
         var pageToken: String?
         var listed = 0
         var fetched = 0
@@ -187,7 +195,7 @@ actor SyncEngine {
                 while pending > 0 {
                     let msg = try await group.next()!
                     pending -= 1
-                    try await self.upsert(msg)
+                    touchedKeys.insert(try await self.upsert(msg))
                     addNext()
                 }
             }
@@ -195,6 +203,7 @@ actor SyncEngine {
             if fetched > 0 { progress?("Downloaded \(fetched) messages…") }
             pageToken = page.nextPageToken
         } while pageToken != nil && listed < limit
+        return touchedKeys
     }
 
     // MARK: - Incremental
@@ -217,45 +226,87 @@ actor SyncEngine {
         } while pageToken != nil
 
         touched.subtract(deleted)
+
+        // Collect the distinct thread keys affected by this batch so each
+        // thread is re-derived exactly once, after all message upserts/
+        // deletes for the batch are applied (rather than once per message).
+        var touchedKeys = Set<String>()
+
         for id in deleted {
             let key = "\(accountId):\(id)"
-            _ = try await db.write { db in try Message.deleteOne(db, key: key) }
+            if let threadKey = try await db.write({ db -> String? in
+                let threadKey = try String.fetchOne(db, sql:
+                    "SELECT threadId FROM message WHERE id = ?", arguments: [key])
+                _ = try Message.deleteOne(db, key: key)
+                return threadKey
+            }) {
+                touchedKeys.insert(threadKey)
+            }
         }
         for id in touched {
             if let msg = try? await client.getMessage(id: id) {
-                try await upsert(msg)
+                touchedKeys.insert(try await upsert(msg))
             }
         }
-        // Recompute thread rows for anything affected.
-        if !touched.isEmpty || !deleted.isEmpty {
-            try await rebuildThreads()
+
+        // Recompute thread rows for anything affected, exactly once each.
+        if !touchedKeys.isEmpty {
+            try await deriveThreads(for: touchedKeys)
             progress?("Updated \(touched.count) messages")
+        }
+        // A thread can lose all its messages (e.g. every message deleted);
+        // drop those rows rather than leaving a stale thread behind.
+        if !deleted.isEmpty {
+            try await removeOrphanedThreads()
         }
         return latest
     }
 
     // MARK: - Local writes
 
-    private func upsert(_ g: GMessage) async throws {
+    /// Saves a message (and its attachments) locally. Does NOT derive the
+    /// thread row — callers batch that via `deriveThreads(for:)` once all
+    /// messages in the sync pass have been upserted. Returns the message's
+    /// thread key so callers can accumulate the affected set.
+    @discardableResult
+    private func upsert(_ g: GMessage) async throws -> String {
         let (message, attachments) = MessageParser.parse(g, accountId: accountId)
         try await db.write { db in
             try message.save(db)
             try AttachmentRow.filter(Column("messageId") == message.id).deleteAll(db)
             for var att in attachments { try att.insert(db) }
         }
-        try await upsertThread(threadKey: message.threadId, gmailThreadId: g.threadId)
+        return message.threadId
     }
 
-    private func upsertThread(threadKey: String, gmailThreadId: String) async throws {
+    /// Re-derives exactly the threads named by `keys` — once each — in a
+    /// single write transaction. This is the batched replacement for calling
+    /// per-message thread derivation once per touched message: however many
+    /// messages in the sync batch belong to a given thread, that thread's
+    /// row is fetched-and-saved exactly once. Static and takes an explicit
+    /// `derivationCount` callback (invoked once per key) so tests can verify
+    /// the collapse directly against an isolated in-memory database, the
+    /// same pattern used by `pruneMessages`.
+    private func deriveThreads(for keys: Set<String>) async throws {
+        guard !keys.isEmpty else { return }
         try await db.write { [accountId] db in
+            try Self.deriveThreads(db, for: keys, accountId: accountId)
+        }
+    }
+
+    static func deriveThreads(_ db: Database, for keys: Set<String>, accountId: String,
+                             derivationCount: (() -> Void)? = nil) throws {
+        for threadKey in keys {
+            let gmailThreadId = String(threadKey.split(separator: ":").last ?? "")
             let messages = try Message
                 .filter(Column("threadId") == threadKey)
                 .order(Column("date").desc)
                 .fetchAll(db)
             let existing = try MailThread.fetchOne(db, key: threadKey)
-            guard let thread = Self.deriveThread(
+            derivationCount?()
+            guard let thread = deriveThread(
                 threadKey: threadKey, gmailThreadId: gmailThreadId,
-                accountId: accountId, messages: messages, existing: existing) else { return }
+                accountId: accountId, messages: messages, existing: existing) else { continue }
             try thread.save(db)
         }
     }
@@ -299,26 +350,26 @@ actor SyncEngine {
         )
     }
 
+    /// Recomputes every thread row for this account from scratch (used by
+    /// schema-upgrade rebuilds and after a local prune, where the affected
+    /// set is effectively "everything").
     private func rebuildThreads() async throws {
-        let pairs = try await db.read { [accountId] db -> [(String, String)] in
-            let rows = try Row.fetchAll(db, sql: """
+        let keys = try await db.read { [accountId] db in
+            Set(try String.fetchAll(db, sql: """
                 SELECT DISTINCT threadId FROM message WHERE accountId = ?
-                """, arguments: [accountId])
-            return rows.map { row in
-                let key: String = row["threadId"]
-                let gmailId = String(key.split(separator: ":").last ?? "")
-                return (key, gmailId)
-            }
+                """, arguments: [accountId]))
         }
-        // Remove threads whose messages are all gone.
+        try await removeOrphanedThreads()
+        try await deriveThreads(for: keys)
+    }
+
+    /// Deletes thread rows whose messages are all gone.
+    private func removeOrphanedThreads() async throws {
         try await db.write { [accountId] db in
             try db.execute(sql: """
                 DELETE FROM thread WHERE accountId = ?
                 AND id NOT IN (SELECT DISTINCT threadId FROM message WHERE accountId = ?)
                 """, arguments: [accountId, accountId])
-        }
-        for (key, gmailId) in pairs {
-            try await upsertThread(threadKey: key, gmailThreadId: gmailId)
         }
     }
 }
