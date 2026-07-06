@@ -181,7 +181,7 @@ struct ComposeView: View {
                         .font(.system(size: 10))
                     Text(request.forward
                          ? "Forwarding message from \(MessageParser.displayName(fromHeader: original.fromHeader))"
-                         : "Replying to \(MessageParser.displayName(fromHeader: original.fromHeader)) — same thread in Gmail")
+                         : "Replying to \(MessageParser.displayName(fromHeader: original.fromHeader))")
                         .font(.system(size: 11))
                         .lineLimit(1)
                 }
@@ -268,7 +268,9 @@ struct ComposeView: View {
                 .scrollContentBackground(.hidden)
                 .focused($bodyFocused)
                 .padding(.top, 10)
-                .padding(.horizontal, 6)
+                // NSTextView pads each line fragment 5pt; cancel it so the
+                // body text lines up with the Subject/From/To column.
+                .padding(.horizontal, -5)
                 .padding(.bottom, 6)
                 // While the quote is collapsed, don't let the editor swallow
                 // the card — keeps the "…" pill near the text, not the footer.

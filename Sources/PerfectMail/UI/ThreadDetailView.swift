@@ -251,12 +251,41 @@ struct MessageCard: View {
     @State private var htmlHeight: CGFloat = 120
     @State private var loadRemoteImages = false
     @State private var cardCursorPushed = false
+    // The quoted reply trail below the new text stays collapsed behind a "…"
+    // pill (Gmail-style) on every message — threads repeat their history in
+    // each body, so showing it all drowns the actual message.
+    @State private var showQuoted = false
+    /// The authored text above a plain-text quoted trail; nil when there is
+    /// nothing to collapse (always nil for HTML bodies).
+    private let textHead: String?
+    /// Whether this message carries a collapsible quoted trail — HTML bodies
+    /// hide it with CSS, plain text via `textHead`.
+    private let hasQuotedTrail: Bool
+
+    /// The trail scans are whole-body regexes and the parent ForEach re-inits
+    /// every card whenever the store publishes, so results are cached per
+    /// message — bodies are immutable. Cleared wholesale when it grows past
+    /// a few threads' worth.
+    private static var trailCache: [String: (head: String?, hasTrail: Bool)] = [:]
 
     init(message: Message, isLast: Bool, onReply: @escaping () -> Void) {
         self.message = message
         self.isLast = isLast
         self.onReply = onReply
         _expanded = State(initialValue: isLast)
+        if let cached = Self.trailCache[message.id] {
+            (textHead, hasQuotedTrail) = cached
+        } else {
+            if let html = message.bodyHTML, !html.isEmpty {
+                textHead = nil
+                hasQuotedTrail = QuotedReply.hasHTMLQuote(html)
+            } else {
+                textHead = QuotedReply.splitText(message.bodyText)?.head
+                hasQuotedTrail = textHead != nil
+            }
+            if Self.trailCache.count > 512 { Self.trailCache.removeAll() }
+            Self.trailCache[message.id] = (textHead, hasQuotedTrail)
+        }
     }
 
     var body: some View {
@@ -317,13 +346,38 @@ struct MessageCard: View {
             if expanded {
                 if let html = message.bodyHTML, !html.isEmpty {
                     HTMLBodyView(html: html, allowRemoteImages: loadRemoteImages,
-                                 fontScale: fontScale, height: $htmlHeight)
+                                 fontScale: fontScale,
+                                 collapseQuote: hasQuotedTrail && !showQuoted,
+                                 height: $htmlHeight)
                         .frame(height: htmlHeight)
                 } else {
-                    Text(message.bodyText)
+                    Text((showQuoted ? nil : textHead) ?? message.bodyText)
                         .font(.system(size: 14.5 * fontScale))
                         .lineSpacing(3)
                         .textSelection(.enabled)
+                }
+                if hasQuotedTrail {
+                    // Same pill as the compose card: the trail is one click
+                    // away, and one more click tucks it back.
+                    Button {
+                        // Collapsing shrinks the content, and a reloaded web
+                        // view can't measure below its current frame — drop
+                        // back to the default height and let it grow to fit.
+                        // Expanding only grows, so the height stays put until
+                        // the new load reports in (no visible snap).
+                        if showQuoted { htmlHeight = 120 }
+                        withAnimation { showQuoted.toggle() }
+                    } label: {
+                        Image(systemName: "ellipsis")
+                            .font(.system(size: 13 * fontScale, weight: .bold))
+                            .foregroundStyle(.secondary)
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 4)
+                            .background(Color.secondary.opacity(0.15), in: Capsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help(showQuoted ? "Hide quoted text" : "Show quoted text")
                 }
                 let attachments = store.attachments(for: message.id)
                 if !attachments.isEmpty {
@@ -454,6 +508,9 @@ struct HTMLBodyView: NSViewRepresentable {
     let html: String
     let allowRemoteImages: Bool
     var fontScale: Double = 1.0
+    /// Hides the quoted reply trail (Gmail/Apple Mail/Outlook containers)
+    /// while the message card's "…" pill is collapsed.
+    var collapseQuote: Bool = false
     @Binding var height: CGFloat
 
     /// The web view is sized to its full content, so it must never trap
@@ -477,7 +534,7 @@ struct HTMLBodyView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        let key = "\(allowRemoteImages):\(fontScale):\(html.hashValue)"
+        let key = "\(allowRemoteImages):\(fontScale):\(collapseQuote):\(html.hashValue)"
         guard context.coordinator.loadedKey != key else { return }
         context.coordinator.loadedKey = key
         context.coordinator.setHeight = { self.height = $0 }
@@ -488,6 +545,7 @@ struct HTMLBodyView: NSViewRepresentable {
             body { font: \(Int(14.5 * fontScale))px -apple-system, sans-serif; color: canvastext; margin: 0; }
             img { max-width: 100%; height: auto; }
             @media (prefers-color-scheme: dark) { body { color: #ddd; } a { color: #6cb2ff; } }
+            \(collapseQuote ? QuotedReply.hideQuoteCSS : "")
             </style>
             """
         webView.loadHTMLString("<html><head>\(csp)\(style)</head><body>\(html)</body></html>", baseURL: nil)
