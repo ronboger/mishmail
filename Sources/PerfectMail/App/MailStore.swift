@@ -274,6 +274,32 @@ final class MailStore: ObservableObject {
             showNotice("All caught up — nothing new to sort.")
             return
         }
+        classify(targets, quiet: false)
+    }
+
+    /// Auto-triage: after each sync, quietly classify new inbox mail with the
+    /// local model. Quiet on purpose — Ollama may simply not be running — and
+    /// backs off ten minutes after a failure so a down server isn't retried
+    /// on every 60-second sync tick.
+    static let autoClassifyKey = "autoClassifyEnabled"
+    private var autoClassifyPausedUntil: Date?
+
+    func autoClassifyNewMail() {
+        let defaults = UserDefaults.standard
+        guard defaults.object(forKey: Self.autoClassifyKey) == nil
+                || defaults.bool(forKey: Self.autoClassifyKey) else { return }
+        if let pause = autoClassifyPausedUntil, pause > Date() { return }
+        loadAICategories()
+        let candidates = (try? db.read { db in
+            try MailThread
+                .filter(Column("inInbox") == true && Column("inTrash") == false)
+                .order(Column("lastDate").desc).limit(100).fetchAll(db)
+        }) ?? []
+        classify(candidates.filter { aiCategories[$0.id] == nil }, quiet: true)
+    }
+
+    private func classify(_ targets: [MailThread], quiet: Bool) {
+        guard !classifying, !targets.isEmpty else { return }
         classifying = true
         Task {
             var done = 0
@@ -296,7 +322,11 @@ final class MailStore: ObservableObject {
                     await MainActor.run {
                         classifying = false
                         syncStatus = ""
-                        showNotice(error.localizedDescription)
+                        if quiet {
+                            autoClassifyPausedUntil = Date().addingTimeInterval(600)
+                        } else {
+                            showNotice(error.localizedDescription)
+                        }
                     }
                     return
                 }
@@ -304,7 +334,9 @@ final class MailStore: ObservableObject {
             await MainActor.run {
                 classifying = false
                 syncStatus = ""
-                showNotice("Sorted \(done) thread\(done == 1 ? "" : "s") with AI.")
+                if !quiet {
+                    showNotice("Sorted \(done) thread\(done == 1 ? "" : "s") with AI.")
+                }
             }
         }
     }
@@ -978,6 +1010,7 @@ final class MailStore: ObservableObject {
         for account in accounts { await sync(accountId: account.id) }
         notifyNewMail()
         rebuildContacts()
+        autoClassifyNewMail()
     }
 
     func sync(accountId: String) async {

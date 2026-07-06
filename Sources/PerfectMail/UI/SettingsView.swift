@@ -710,15 +710,19 @@ struct AppearanceSettings: View {
     @EnvironmentObject var store: MailStore
     @AppStorage("fontScale") private var fontScale = 1.0
     @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
-    @AppStorage("priorityInboxEnabled") private var priorityInboxEnabled = true
+    @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
 
     var body: some View {
         PaneScaffold(title: "Appearance") {
             Form {
                 Section {
-                    Toggle("Priority section in Inbox", isOn: $priorityInboxEnabled)
+                    Picker("Priority section in Inbox", selection: $priorityModeRaw) {
+                        ForEach(PrioritySplit.Mode.allCases, id: \.rawValue) { mode in
+                            Text(mode.title).tag(mode.rawValue)
+                        }
+                    }
                 } footer: {
-                    Text("Pins starred threads and ones Gmail marks Important to the top of the Inbox.")
+                    Text("What pins to the top of the Inbox. Starred is just what you've hand-picked; Starred + Important adds everything Gmail predicts matters, which can be a lot.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -762,6 +766,7 @@ struct AppearanceSettings: View {
 struct AISettings: View {
     @State private var url: String = Ollama.baseURL
     @State private var model: String = Ollama.model
+    @AppStorage(MailStore.autoClassifyKey) private var autoClassify = true
 
     var body: some View {
         PaneScaffold(title: "AI") {
@@ -775,6 +780,13 @@ struct AISettings: View {
                     Text("Local AI drafting (Ollama)")
                 } footer: {
                     Text("AI drafting runs entirely on this Mac via Ollama. Install from ollama.com, then run: ollama pull \(model). The Draft with AI button appears when replying.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Toggle("Auto-sort new mail", isOn: $autoClassify)
+                } footer: {
+                    Text("After each sync, quietly tag new inbox threads (Reply needed, FYI, Newsletter, Receipt) with the local model. Skips silently when Ollama isn't running. A small fast model like llama3.2:3b is ideal here.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }

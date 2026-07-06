@@ -12,27 +12,36 @@ final class PrioritySplitTests: XCTestCase {
                    reminderAt: nil)
     }
 
-    func testStarredAndImportantGoToPriority() {
+    func testStarredImportantModeTakesBoth() {
         let threads = [thread("t1", starred: true),
                        thread("t2", labels: "INBOX IMPORTANT"),
                        thread("t3")]
-        let (priority, rest) = PrioritySplit.partition(threads, enabled: true)
+        let (priority, rest) = PrioritySplit.partition(threads, mode: .starredImportant)
         XCTAssertEqual(priority.map(\.gmailThreadId), ["t1", "t2"])
         XCTAssertEqual(rest.map(\.gmailThreadId), ["t3"])
+    }
+
+    func testStarredModeIgnoresImportant() {
+        let threads = [thread("t1", starred: true),
+                       thread("t2", labels: "INBOX IMPORTANT"),
+                       thread("t3")]
+        let (priority, rest) = PrioritySplit.partition(threads, mode: .starred)
+        XCTAssertEqual(priority.map(\.gmailThreadId), ["t1"])
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["t2", "t3"])
     }
 
     func testOrderPreservedAndNoDuplication() {
         let threads = [thread("t1"), thread("t2", starred: true, labels: "INBOX IMPORTANT"),
                        thread("t3"), thread("t4", starred: true)]
-        let (priority, rest) = PrioritySplit.partition(threads, enabled: true)
+        let (priority, rest) = PrioritySplit.partition(threads, mode: .starredImportant)
         XCTAssertEqual(priority.map(\.gmailThreadId), ["t2", "t4"])
         XCTAssertEqual(rest.map(\.gmailThreadId), ["t1", "t3"])
         XCTAssertEqual(priority.count + rest.count, threads.count)
     }
 
-    func testDisabledPassesEverythingThrough() {
+    func testOffPassesEverythingThrough() {
         let threads = [thread("t1", starred: true), thread("t2")]
-        let (priority, rest) = PrioritySplit.partition(threads, enabled: false)
+        let (priority, rest) = PrioritySplit.partition(threads, mode: .off)
         XCTAssertTrue(priority.isEmpty)
         XCTAssertEqual(rest.map(\.gmailThreadId), ["t1", "t2"])
     }
@@ -40,7 +49,7 @@ final class PrioritySplitTests: XCTestCase {
     func testImportantSubstringLabelDoesNotMatch() {
         // "UNIMPORTANT" or a user label containing the word must not qualify.
         let threads = [thread("t1", labels: "INBOX Label_UNIMPORTANT")]
-        let (priority, _) = PrioritySplit.partition(threads, enabled: true)
+        let (priority, _) = PrioritySplit.partition(threads, mode: .starredImportant)
         XCTAssertTrue(priority.isEmpty)
     }
 }

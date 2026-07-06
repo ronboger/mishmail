@@ -32,17 +32,19 @@ struct ThreadListView: View {
     @EnvironmentObject var store: MailStore
     @AppStorage("groupBy") private var groupByRaw = GroupBy.date.rawValue
     @AppStorage("fontScale") private var fontScale = 1.0
-    @AppStorage("priorityInboxEnabled") private var priorityInboxEnabled = true
+    @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
 
     private var groupBy: GroupBy { GroupBy(rawValue: groupByRaw) ?? .date }
 
     private var grouped: [(String, [MailThread])] {
-        // Superhuman-style split inbox: starred and Gmail-IMPORTANT threads
-        // pin to a Priority section on top; the chosen grouping applies to
-        // the rest. Inbox only — dedicated views (Starred, Sent…) stay flat.
+        // Superhuman-style split inbox: qualifying threads pin to a Priority
+        // section on top (what qualifies is the Settings → Appearance mode);
+        // the chosen grouping applies to the rest. Inbox only — dedicated
+        // views (Starred, Sent…) stay flat.
+        let mode = PrioritySplit.Mode(rawValue: priorityModeRaw) ?? .starred
         let (priority, rest) = PrioritySplit.partition(
             store.threads,
-            enabled: priorityInboxEnabled && store.selectedView == .inbox)
+            mode: store.selectedView == .inbox ? mode : .off)
         var out: [(String, [MailThread])] = []
         if !priority.isEmpty { out.append((Self.prioritySection, priority)) }
         out += groups(rest)
