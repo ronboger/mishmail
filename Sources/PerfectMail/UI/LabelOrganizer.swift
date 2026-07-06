@@ -89,7 +89,7 @@ private struct LabelOrganizerRow: View {
         HStack(spacing: 10) {
             Button { showPalette = true } label: {
                 Circle()
-                    .fill(store.labelTint(label.name))
+                    .fill(store.labelTint(label.name, account: label.accountId))
                     .frame(width: 18, height: 18)
                     .overlay(Circle().strokeBorder(.separator, lineWidth: 0.5))
             }

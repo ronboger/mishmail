@@ -183,9 +183,6 @@ struct FilterChips: Equatable, Codable {
 final class MailStore: ObservableObject {
     @Published var accounts: [Account] = []
     @Published var labelsByAccount: [String: [LabelRow]] = [:]
-    /// Label display colors by name ("#RRGGBB"), derived from the label rows
-    /// on reload. Keyed by name so same-named labels match across accounts.
-    @Published var labelColors: [String: String] = [:]
     @Published var threads: [MailThread] = []
     @Published var savedViews: [SavedView] = []
     @Published var selectedView: MailboxView = .inbox {
@@ -489,9 +486,6 @@ final class MailStore: ObservableObject {
                 .order(Column("sortOrder"), Column("name")).fetchAll($0)
         }) ?? []
         labelsByAccount = Dictionary(grouping: rows, by: \.accountId)
-        labelColors = rows.reduce(into: [:]) { colors, row in
-            if let hex = row.color, colors[row.name] == nil { colors[row.name] = hex }
-        }
     }
 
     func reloadSavedViews() {
@@ -1146,10 +1140,20 @@ final class MailStore: ObservableObject {
         labelsByAccount[accountId]?.first { $0.gmailLabelId == labelId }?.name
     }
 
-    /// Display color for a label name: the user-assigned (or Gmail-seeded)
-    /// color, falling back to the old name-stable palette.
-    func labelTint(_ name: String) -> Color {
-        labelColors[name].flatMap(Color.hexString) ?? Color.stable(for: name)
+    /// Display color for a label within an account: the user-assigned (or
+    /// Gmail-seeded) color, falling back to the name-stable palette. Scoped by
+    /// account so two accounts' same-named labels can carry different colors.
+    func labelTint(_ name: String, account accountId: String) -> Color {
+        let hex = labelsByAccount[accountId]?.first { $0.name == name }?.color
+        return hex.flatMap(Color.hexString) ?? Color.stable(for: name)
+    }
+
+    /// Tint for a label filter that isn't scoped to one account (the Labels
+    /// chip in unified mode): the color of any account's label with that name,
+    /// else the name-stable fallback.
+    func labelTint(anyAccount name: String) -> Color {
+        let hex = labelsByAccount.values.lazy.flatMap { $0 }.first { $0.name == name }?.color
+        return hex.flatMap(Color.hexString) ?? Color.stable(for: name)
     }
 
     /// Sets (or clears, with nil) a label's display color.
