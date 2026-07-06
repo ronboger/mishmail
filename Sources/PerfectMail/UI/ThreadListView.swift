@@ -771,7 +771,7 @@ struct FilterBar: View {
             if let name = store.chips.labelName {
                 // Active: show the label's own color as a leading dot.
                 HStack(spacing: 4) {
-                    Circle().fill(store.labelTint(name)).frame(width: 8, height: 8)
+                    Circle().fill(store.labelTint(anyAccount: name)).frame(width: 8, height: 8)
                     Text("\(store.chips.labelExclude ? "≠ " : "")\(name)").font(.caption)
                 }
                 .foregroundStyle(Color.notionAccent)
@@ -837,7 +837,7 @@ struct FilterBar: View {
     /// the active filter.
     private func labelFilterRow(_ label: LabelRow) -> some View {
         let selected = store.chips.labelId == label.gmailLabelId
-        let tint = store.labelTint(label.name)
+        let tint = store.labelTint(label.name, account: label.accountId)
         return Button {
             store.chips.labelId = label.gmailLabelId
             store.chips.labelName = label.name
@@ -1065,7 +1065,7 @@ struct ThreadRow: View {
     }
 
     private func labelPill(_ name: String) -> some View {
-        let tint = store.labelTint(name)
+        let tint = store.labelTint(name, account: thread.accountId)
         return Text(name)
             .font(.system(size: 10.5 * fontScale, weight: .medium))
             .lineLimit(1)

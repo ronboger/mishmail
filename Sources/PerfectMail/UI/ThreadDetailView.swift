@@ -69,7 +69,7 @@ struct ThreadDetailView: View {
                         HStack(spacing: 6) {
                             ForEach(userLabelIds, id: \.self) { labelId in
                                 let name = store.labelName(labelId, account: thread.accountId) ?? labelId
-                                let tint = store.labelTint(name)
+                                let tint = store.labelTint(name, account: thread.accountId)
                                 HStack(spacing: 4) {
                                     Circle().fill(tint).frame(width: 7, height: 7)
                                     Text(name).font(.system(size: 11.5 * fontScale))

@@ -42,7 +42,7 @@ struct LabelPicker: View {
                                     HStack(spacing: 8) {
                                         Image(systemName: applied ? "checkmark.square.fill" : "square")
                                             .foregroundStyle(applied ? Color.notionAccent : .secondary)
-                                        Circle().fill(store.labelTint(label.name))
+                                        Circle().fill(store.labelTint(label.name, account: label.accountId))
                                             .frame(width: 8, height: 8)
                                         Text(label.name).font(.system(size: 13))
                                         Spacer()
