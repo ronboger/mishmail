@@ -246,8 +246,14 @@ final class MailStore: ObservableObject {
 
     @Published var aiCategories: [String: String] = [:]   // threadId → category
     @Published var classifying = false
+    private var aiCategoriesLoaded = false
 
+    /// Loads the persisted category map once; after that the in-memory map is
+    /// authoritative (classifyInbox updates it as it writes rows), so thread
+    /// reloads don't re-read the table every time.
     func loadAICategories() {
+        guard !aiCategoriesLoaded else { return }
+        aiCategoriesLoaded = true
         let rows = (try? db.read { try ThreadAICategory.fetchAll($0) }) ?? []
         aiCategories = Dictionary(rows.map { ($0.threadId, $0.category) }) { _, last in last }
     }
@@ -490,7 +496,21 @@ final class MailStore: ObservableObject {
 
     private static let categoryLabels = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"]
 
+    /// Chip toggles arrive in bursts (typing a sender, flipping several
+    /// filters); coalesce them into one reload instead of a full 300-thread
+    /// query per change. View switches keep calling reloadThreads() directly.
+    private var chipReloadTask: Task<Void, Never>?
+    func reloadThreadsDebounced() {
+        chipReloadTask?.cancel()
+        chipReloadTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 180_000_000)
+            guard !Task.isCancelled else { return }
+            self?.reloadThreads()
+        }
+    }
+
     func reloadThreads() {
+        chipReloadTask?.cancel()   // a direct reload supersedes a pending debounced one
         let view = selectedView
         let search = searchText.trimmingCharacters(in: .whitespaces)
         let chips = chips
@@ -1280,11 +1300,14 @@ final class MailStore: ObservableObject {
     /// Snooze is local-only: the thread is hidden from the inbox until the
     /// date passes. (Gmail has no first-class snooze API.)
     func snooze(_ thread: MailThread, until date: Date?) {
+        let wasSelected = selectedThreadId == thread.id
+        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
         var copy = thread
         copy.snoozeUntil = date
         let updated = copy
         try? db.write { db in try updated.save(db) }
         reloadThreads()
+        advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
     }
 
     // MARK: - Sending
@@ -1609,21 +1632,42 @@ final class MailStore: ObservableObject {
     /// (macOS purges it; nothing is written to user folders). The file is
     /// namespaced by message id (so same-named attachments never collide) and
     /// tagged with the quarantine attribute so Gatekeeper still gates it.
+    /// Downloads an attachment into the per-message temp folder, reusing an
+    /// already-downloaded copy so open → Quick Look → open doesn't re-fetch.
+    private func attachmentTempURL(_ attachment: AttachmentRow, message: Message) async throws -> URL {
+        let dir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("PerfectMailAttachments", isDirectory: true)
+            .appendingPathComponent(MessageParser.safeFilename(message.gmailId), isDirectory: true)
+        let url = dir.appendingPathComponent(MessageParser.safeFilename(attachment.filename))
+        if FileManager.default.fileExists(atPath: url.path) { return url }
+        let data = try await client(for: message.accountId)
+            .getAttachment(messageId: message.gmailId, attachmentId: attachment.gmailAttachmentId)
+        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
+        try data.write(to: url)
+        Self.markQuarantined(url)
+        return url
+    }
+
     func openAttachment(_ attachment: AttachmentRow, message: Message) {
         Task {
             do {
-                let data = try await client(for: message.accountId)
-                    .getAttachment(messageId: message.gmailId, attachmentId: attachment.gmailAttachmentId)
-                let dir = FileManager.default.temporaryDirectory
-                    .appendingPathComponent("PerfectMailAttachments", isDirectory: true)
-                    .appendingPathComponent(MessageParser.safeFilename(message.gmailId), isDirectory: true)
-                try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-                let url = dir.appendingPathComponent(MessageParser.safeFilename(attachment.filename))
-                try data.write(to: url)
-                Self.markQuarantined(url)
-                await MainActor.run { NSWorkspace.shared.open(url) }
+                let url = try await attachmentTempURL(attachment, message: message)
+                NSWorkspace.shared.open(url)
             } catch {
-                await MainActor.run { self.lastError = error.localizedDescription }
+                self.lastError = error.localizedDescription
+            }
+        }
+    }
+
+    /// Native Quick Look on an attachment (same sanitized, quarantined temp
+    /// copy the Open path uses — no separate download).
+    func quickLookAttachment(_ attachment: AttachmentRow, message: Message) {
+        Task {
+            do {
+                let url = try await attachmentTempURL(attachment, message: message)
+                QuickLookController.shared.show([url])
+            } catch {
+                self.lastError = error.localizedDescription
             }
         }
     }

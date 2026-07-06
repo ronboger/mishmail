@@ -48,7 +48,7 @@ struct ContentView: View {
             store.resetChips()
             store.reloadThreads()
         }
-        .onChange(of: store.chips) { store.reloadThreads() }
+        .onChange(of: store.chips) { store.reloadThreadsDebounced() }
         .onAppear {
             installKeyMonitor()
             // Don't let the sidebar search field start with keyboard focus —
