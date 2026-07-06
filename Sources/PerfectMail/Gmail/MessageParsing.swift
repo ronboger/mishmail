@@ -191,6 +191,51 @@ enum ForwardComposer {
     }
 }
 
+/// Detects the quoted reply trail inside a message body so the thread view
+/// can collapse it behind a "…" pill, Gmail-style. Every message in a thread
+/// carries the full history below its new text; showing it all makes long
+/// threads unreadable.
+enum QuotedReply {
+    /// Splits a plain-text body at the reply attribution ("On …, X wrote:")
+    /// or forwarded-message marker. Returns nil when there is no quoted trail
+    /// or no authored text above it (collapsing would hide the whole message).
+    static func splitText(_ body: String) -> (head: String, tail: String)? {
+        let patterns = [#"\n+On .+ wrote:\s*\n"#,
+                        #"\n+-{2,} ?Forwarded message ?-{2,}"#]
+        for pattern in patterns {
+            guard let range = body.range(of: pattern, options: .regularExpression)
+            else { continue }
+            let head = String(body[..<range.lowerBound])
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            if head.isEmpty { return nil }
+            return (head, String(body[range.lowerBound...]))
+        }
+        return nil
+    }
+
+    /// True when an HTML body carries a quoted trail that `hideQuoteCSS`
+    /// knows how to hide (Gmail, Apple Mail, Outlook containers) *and* has
+    /// authored content above it — same guard as the plain-text split.
+    static func hasHTMLQuote(_ html: String) -> Bool {
+        let markers = [#"<[^>]+class\s*=\s*"[^"]*gmail_quote"#,
+                       #"<[^>]+id\s*=\s*.?divRplyFwdMsg"#,
+                       #"<blockquote[^>]*type\s*=\s*.?cite"#]
+        let starts = markers.compactMap {
+            html.range(of: $0, options: [.regularExpression, .caseInsensitive])?.lowerBound
+        }
+        guard let first = starts.min() else { return false }
+        let head = String(html[..<first])
+            .replacingOccurrences(of: #"<[^>]*>"#, with: " ", options: .regularExpression)
+            .replacingOccurrences(of: "&nbsp;", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        return !head.isEmpty
+    }
+
+    /// Stylesheet rule that hides those quoted trails while collapsed.
+    static let hideQuoteCSS =
+        #"div.gmail_quote, #divRplyFwdMsg, blockquote[type="cite"] { display: none; }"#
+}
+
 /// Builds RFC 2822 messages for sending/replying, optionally multipart/mixed
 /// with attachments.
 enum MIMEBuilder {
