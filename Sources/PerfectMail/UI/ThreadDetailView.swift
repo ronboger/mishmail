@@ -9,6 +9,7 @@ struct ThreadDetailView: View {
     let onReply: (Message) -> Void
 
     @State private var messages: [Message] = []
+    @State private var scrolledMessageId: String?
     @State private var labelsExpanded = false
     @State private var aiSummary: String?
     @State private var summarizing = false
@@ -103,6 +104,7 @@ struct ThreadDetailView: View {
                         .padding(.horizontal)
                 }
             }
+            .scrollTargetLayout()
             .padding(.vertical)
         }
         .toolbar {
@@ -154,12 +156,13 @@ struct ThreadDetailView: View {
                 }
             }
         }
-        // Long threads open already at the newest message — anchored, not
-        // scrolled, so there's no visible jump; the pane also stays pinned to
-        // the bottom while HTML bodies settle their real heights.
-        .defaultScrollAnchor(messages.count > 1 ? .bottom : .top)
+        // Long threads open with the top of the newest message at the top of
+        // the pane — positioned before display, not scrolled, so there's no
+        // visible jump.
+        .scrollPosition(id: $scrolledMessageId, anchor: .top)
         .task(id: thread.id) {
             messages = store.messages(inThread: thread.id)
+            scrolledMessageId = messages.count > 1 ? messages.last?.id : nil
             aiSummary = nil; summaryError = nil; summarizing = false
             if thread.isUnread { store.setRead(thread, read: true) }
         }
