@@ -44,6 +44,36 @@ final class DatabaseMigrationTests: XCTestCase {
         XCTAssertEqual(message?.subject, "Old mail")
     }
 
+    /// A label created before v10 survives the upgrade and gains the color
+    /// (nil) and sortOrder (unsorted) columns with their defaults; new values
+    /// round-trip through LabelRow.
+    func testUpgradeFromV9AddsLabelColorAndOrder() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v9")
+        try q.write { db in
+            try db.execute(sql: "INSERT INTO account (id, displayName, senderName) VALUES ('ron@x.com', 'Personal', '')")
+            try db.execute(sql: """
+                INSERT INTO label (id, accountId, gmailLabelId, name, type)
+                VALUES ('ron@x.com:Label_1', 'ron@x.com', 'Label_1', 'Work', 'user')
+                """)
+        }
+        try AppDatabase.migrator.migrate(q)
+        let cols = try q.read { try $0.columns(in: "label").map(\.name) }
+        XCTAssertTrue(cols.contains("color"), "v10 must add color")
+        XCTAssertTrue(cols.contains("sortOrder"), "v10 must add sortOrder")
+
+        var label = try XCTUnwrap(try q.read { try LabelRow.fetchOne($0, key: "ron@x.com:Label_1") })
+        XCTAssertNil(label.color)
+        XCTAssertEqual(label.sortOrder, LabelRow.unsorted)
+
+        label.color = "#EB5757"
+        label.sortOrder = 0
+        try q.write { db in try label.save(db) }
+        let reloaded = try q.read { try LabelRow.fetchOne($0, key: "ron@x.com:Label_1") }
+        XCTAssertEqual(reloaded?.color, "#EB5757")
+        XCTAssertEqual(reloaded?.sortOrder, 0)
+    }
+
     /// A database created before v5 (real upgrade path) gains the
     /// scheduledSend table without touching existing rows.
     func testUpgradeFromV4AddsScheduledSends() throws {

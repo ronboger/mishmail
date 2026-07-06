@@ -226,6 +226,8 @@ struct FilterBar: View {
     @EnvironmentObject var store: MailStore
     @State private var showCategoriesPopover = false
     @State private var showLabelsPopover = false
+    @State private var labelQuery = ""
+    @State private var filterQuery = ""
     @State private var datePopoverTitle: String?
     @State private var editingField: FilterField?
     @State private var fieldDraft = ""
@@ -382,7 +384,7 @@ struct FilterBar: View {
             filterPopover
         }
         .onChange(of: store.showFilterMenu) {
-            if store.showFilterMenu { editingField = nil; showMore = false }
+            if store.showFilterMenu { editingField = nil; showMore = false; filterQuery = "" }
         }
     }
 
@@ -401,51 +403,103 @@ struct FilterBar: View {
         .frame(width: 260)
     }
 
+    /// One entry in the "+ Filter" menu. Data-driven so the menu can be
+    /// searched (type to narrow across the whole set, primary + "More").
+    struct FilterOption: Identifiable {
+        enum Kind {
+            case field(FilterField)
+            case date(String)
+            case categories
+            case mutate((inout FilterChips) -> Void)
+            case showCategory(String)
+            case hideCategory(String)
+        }
+        let icon: String
+        let title: String
+        let primary: Bool
+        let kind: Kind
+        var id: String { title }
+    }
+
+    /// The full ordered filter list. `primary` ones show before "More filters".
+    private var filterOptions: [FilterOption] {
+        [
+            .init(icon: "person.crop.circle", title: "From", primary: true, kind: .field(.from)),
+            .init(icon: "paperclip", title: "Has attachments", primary: true,
+                  kind: .mutate { $0.hasAttachmentOnly = true; $0.noAttachmentOnly = false }),
+            .init(icon: "calendar", title: "Date", primary: true, kind: .date("Date")),
+            .init(icon: "calendar.badge.clock", title: "Only show calendar events", primary: true,
+                  kind: .mutate { $0.calendarOnly = true; $0.hideCalendar = false }),
+            .init(icon: "person.2", title: "Show \"social\" emails", primary: true,
+                  kind: .showCategory("CATEGORY_SOCIAL")),
+            .init(icon: "megaphone", title: "Show \"promotional\" emails", primary: true,
+                  kind: .showCategory("CATEGORY_PROMOTIONS")),
+            .init(icon: "tag", title: "Labels", primary: false, kind: .field(.label)),
+            .init(icon: "bookmark", title: "Categories", primary: false, kind: .categories),
+            .init(icon: "at", title: "To", primary: false, kind: .field(.to)),
+            .init(icon: "at.badge.plus", title: "Cc", primary: false, kind: .field(.cc)),
+            .init(icon: "eye.slash", title: "Bcc", primary: false, kind: .field(.bcc)),
+            .init(icon: "textformat", title: "Subject", primary: false, kind: .field(.subject)),
+            .init(icon: "clock.arrow.circlepath", title: "Received date", primary: false,
+                  kind: .date("Received date")),
+            .init(icon: "paperplane", title: "Show sent", primary: false,
+                  kind: .mutate { $0.showSent = true }),
+            .init(icon: "archivebox", title: "Show archived", primary: false,
+                  kind: .mutate { $0.showArchived = true }),
+            .init(icon: "envelope.open", title: "Is read", primary: false,
+                  kind: .mutate { $0.readOnly = true; $0.unreadOnly = false }),
+            .init(icon: "envelope.badge", title: "Is unread", primary: false,
+                  kind: .mutate { $0.unreadOnly = true; $0.readOnly = false }),
+            .init(icon: "paperclip.badge.ellipsis", title: "No attachments", primary: false,
+                  kind: .mutate { $0.noAttachmentOnly = true; $0.hasAttachmentOnly = false }),
+            .init(icon: "calendar.badge.minus", title: "Hide calendar events", primary: false,
+                  kind: .mutate { $0.hideCalendar = true; $0.calendarOnly = false }),
+            .init(icon: "bubble.left.and.bubble.right", title: "Show \"forums\" emails", primary: false,
+                  kind: .showCategory("CATEGORY_FORUMS")),
+            .init(icon: "bubble.left.and.bubble.right", title: "Hide \"forums\" emails", primary: false,
+                  kind: .hideCategory("CATEGORY_FORUMS")),
+            .init(icon: "info.circle", title: "Show \"updates\" emails", primary: false,
+                  kind: .showCategory("CATEGORY_UPDATES")),
+            .init(icon: "info.circle", title: "Hide \"updates\" emails", primary: false,
+                  kind: .hideCategory("CATEGORY_UPDATES")),
+        ]
+    }
+
     private var filterMenu: some View {
         VStack(alignment: .leading, spacing: 1) {
-            FilterMenuRow(icon: "person.crop.circle", title: "From") { beginEditing(.from) }
-            FilterMenuRow(icon: "paperclip", title: "Has attachments") {
-                set { $0.hasAttachmentOnly = true; $0.noAttachmentOnly = false }
+            SearchField(prompt: "Search filters", text: $filterQuery, compact: true) {
+                // Enter applies the first match (skipping the date rows, whose
+                // action is their own sub-popover).
+                let q = filterQuery.trimmingCharacters(in: .whitespaces).lowercased()
+                guard !q.isEmpty,
+                      let first = filterOptions.first(where: {
+                          $0.title.lowercased().contains(q) && !isDateOption($0)
+                      })
+                else { return }
+                activate(first)
             }
-            dateRow(icon: "calendar", title: "Date")
-            FilterMenuRow(icon: "calendar.badge.clock", title: "Only show calendar events") {
-                set { $0.calendarOnly = true; $0.hideCalendar = false }
-            }
-            FilterMenuRow(icon: "person.2", title: "Show \"social\" emails") { showCategory("CATEGORY_SOCIAL") }
-            FilterMenuRow(icon: "megaphone", title: "Show \"promotional\" emails") { showCategory("CATEGORY_PROMOTIONS") }
+            .padding(.bottom, 4)
 
-            if !showMore {
-                FilterMenuRow(icon: "ellipsis", title: "More filters") { showMore = true }
+            let q = filterQuery.trimmingCharacters(in: .whitespaces).lowercased()
+            if q.isEmpty {
+                // Default layout: primary filters, then the "More filters" set.
+                ForEach(filterOptions.filter(\.primary)) { optionRow($0) }
+                if !showMore {
+                    FilterMenuRow(icon: "ellipsis", title: "More filters") { showMore = true }
+                } else {
+                    Divider().padding(.vertical, 4)
+                    ForEach(filterOptions.filter { !$0.primary }) { optionRow($0) }
+                }
             } else {
-                Divider().padding(.vertical, 4)
-                FilterMenuRow(icon: "tag", title: "Labels") { beginEditing(.label) }
-                FilterMenuRow(icon: "bookmark", title: "Categories") {
-                    store.showFilterMenu = false
-                    DispatchQueue.main.async { showCategoriesPopover = true }
+                // Search across everything at once.
+                let matches = filterOptions.filter { $0.title.lowercased().contains(q) }
+                if matches.isEmpty {
+                    Text("No filters match “\(filterQuery)”")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .padding(.vertical, 6).padding(.horizontal, 6)
+                } else {
+                    ForEach(matches) { optionRow($0) }
                 }
-                FilterMenuRow(icon: "at", title: "To") { beginEditing(.to) }
-                FilterMenuRow(icon: "at.badge.plus", title: "Cc") { beginEditing(.cc) }
-                FilterMenuRow(icon: "eye.slash", title: "Bcc") { beginEditing(.bcc) }
-                FilterMenuRow(icon: "textformat", title: "Subject") { beginEditing(.subject) }
-                dateRow(icon: "clock.arrow.circlepath", title: "Received date")
-                FilterMenuRow(icon: "paperplane", title: "Show sent") { set { $0.showSent = true } }
-                FilterMenuRow(icon: "archivebox", title: "Show archived") { set { $0.showArchived = true } }
-                FilterMenuRow(icon: "envelope.open", title: "Is read") {
-                    set { $0.readOnly = true; $0.unreadOnly = false }
-                }
-                FilterMenuRow(icon: "envelope.badge", title: "Is unread") {
-                    set { $0.unreadOnly = true; $0.readOnly = false }
-                }
-                FilterMenuRow(icon: "paperclip.badge.ellipsis", title: "No attachments") {
-                    set { $0.noAttachmentOnly = true; $0.hasAttachmentOnly = false }
-                }
-                FilterMenuRow(icon: "calendar.badge.minus", title: "Hide calendar events") {
-                    set { $0.hideCalendar = true; $0.calendarOnly = false }
-                }
-                FilterMenuRow(icon: "bubble.left.and.bubble.right", title: "Show \"forums\" emails") { showCategory("CATEGORY_FORUMS") }
-                FilterMenuRow(icon: "bubble.left.and.bubble.right", title: "Hide \"forums\" emails") { hideCategory("CATEGORY_FORUMS") }
-                FilterMenuRow(icon: "info.circle", title: "Show \"updates\" emails") { showCategory("CATEGORY_UPDATES") }
-                FilterMenuRow(icon: "info.circle", title: "Hide \"updates\" emails") { hideCategory("CATEGORY_UPDATES") }
             }
 
             if store.chips != defaultChips {
@@ -460,6 +514,41 @@ struct FilterBar: View {
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 6)
             }
+        }
+    }
+
+    /// Renders one filter option. Date options keep their sub-popover; the rest
+    /// are plain action rows.
+    @ViewBuilder
+    private func optionRow(_ option: FilterOption) -> some View {
+        switch option.kind {
+        case .date(let title):
+            dateRow(icon: option.icon, title: title)
+        default:
+            FilterMenuRow(icon: option.icon, title: option.title) { activate(option) }
+        }
+    }
+
+    private func isDateOption(_ option: FilterOption) -> Bool {
+        if case .date = option.kind { return true }
+        return false
+    }
+
+    private func activate(_ option: FilterOption) {
+        switch option.kind {
+        case .field(let field):
+            beginEditing(field)
+        case .date:
+            break   // handled by dateRow's own popover
+        case .categories:
+            store.showFilterMenu = false
+            DispatchQueue.main.async { showCategoriesPopover = true }
+        case .mutate(let mutate):
+            set(mutate)
+        case .showCategory(let cat):
+            showCategory(cat)
+        case .hideCategory(let cat):
+            hideCategory(cat)
         }
     }
 
@@ -676,50 +765,106 @@ struct FilterBar: View {
     /// picker of all user labels.
     private var labelsChip: some View {
         Button {
+            labelQuery = ""
             showLabelsPopover = true
         } label: {
-            chipLabel(store.chips.labelName.map {
-                          "Label\(store.chips.labelExclude ? " ≠" : ":") \($0)"
-                      } ?? "Labels",
-                      icon: "tag",
-                      active: store.chips.labelName != nil)
+            if let name = store.chips.labelName {
+                // Active: show the label's own color as a leading dot.
+                HStack(spacing: 4) {
+                    Circle().fill(store.labelTint(name)).frame(width: 8, height: 8)
+                    Text("\(store.chips.labelExclude ? "≠ " : "")\(name)").font(.caption)
+                }
+                .foregroundStyle(Color.notionAccent)
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .background(Color.notionAccent.opacity(0.16), in: Capsule())
+            } else {
+                chipLabel("Labels", icon: "tag", active: false)
+            }
         }
         .buttonStyle(.plain)
         .popover(isPresented: $showLabelsPopover, arrowEdge: .bottom) {
-            VStack(alignment: .leading, spacing: 1) {
-                if store.chips.labelName != nil {
-                    FilterMenuRow(icon: "xmark.circle", title: "Clear label filter") {
-                        store.chips.labelId = nil
-                        store.chips.labelName = nil
-                        showLabelsPopover = false
-                    }
-                    Divider().padding(.vertical, 4)
+            labelsPopover
+        }
+    }
+
+    /// The Labels chip dropdown: a searchable, color-dotted list of the user's
+    /// labels, a clear action when a filter is active, and a shortcut into the
+    /// organizer (colors + drag ordering).
+    private var labelsPopover: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            SearchField(prompt: "Search labels", text: $labelQuery, compact: true)
+
+            if store.chips.labelName != nil {
+                FilterMenuRow(icon: "xmark.circle", title: "Clear label filter") {
+                    store.chips.labelId = nil
+                    store.chips.labelName = nil
+                    showLabelsPopover = false
                 }
-                if allLabels.isEmpty {
-                    Text("No labels yet")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
-                        .padding(6)
-                }
+                Divider()
+            }
+
+            let matches = filteredLabels
+            if allLabels.isEmpty {
+                Text("No labels yet")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .padding(.vertical, 6)
+            } else if matches.isEmpty {
+                Text("No labels match “\(labelQuery)”")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                    .padding(.vertical, 6)
+            } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 1) {
-                        ForEach(allLabels, id: \.gmailLabelId) { label in
-                            FilterMenuRow(
-                                icon: store.chips.labelId == label.gmailLabelId ? "checkmark" : "tag",
-                                title: label.name
-                            ) {
-                                store.chips.labelId = label.gmailLabelId
-                                store.chips.labelName = label.name
-                                store.chips.labelExclude = false
-                                showLabelsPopover = false
-                            }
+                        ForEach(matches, id: \.gmailLabelId) { label in
+                            labelFilterRow(label)
                         }
                     }
                 }
-                .frame(maxHeight: 280)
+                .frame(maxHeight: 260)
             }
-            .padding(10)
-            .frame(width: 220)
+
+            Divider()
+            FilterMenuRow(icon: "slider.horizontal.3", title: "Organize labels…") {
+                showLabelsPopover = false
+                store.showLabelOrganizer = true
+            }
         }
+        .padding(10)
+        .frame(width: 240)
+    }
+
+    /// One selectable label row: a colored dot, the name, and a check when it's
+    /// the active filter.
+    private func labelFilterRow(_ label: LabelRow) -> some View {
+        let selected = store.chips.labelId == label.gmailLabelId
+        let tint = store.labelTint(label.name)
+        return Button {
+            store.chips.labelId = label.gmailLabelId
+            store.chips.labelName = label.name
+            store.chips.labelExclude = false
+            showLabelsPopover = false
+        } label: {
+            HStack(spacing: 8) {
+                Circle().fill(tint).frame(width: 9, height: 9)
+                Text(label.name).font(.system(size: 12.5)).lineLimit(1)
+                Spacer(minLength: 0)
+                if selected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(Color.notionAccent)
+                }
+            }
+            .padding(.horizontal, 6).padding(.vertical, 4)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .hoverTint()
+    }
+
+    private var filteredLabels: [LabelRow] {
+        let q = labelQuery.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return allLabels }
+        return allLabels.filter { $0.name.lowercased().contains(q) }
     }
 
     private func chipLabel(_ title: String, icon: String, active: Bool) -> some View {
@@ -920,12 +1065,13 @@ struct ThreadRow: View {
     }
 
     private func labelPill(_ name: String) -> some View {
-        Text(name)
+        let tint = store.labelTint(name)
+        return Text(name)
             .font(.system(size: 10.5 * fontScale, weight: .medium))
             .lineLimit(1)
-            .foregroundStyle(Color.stable(for: name))
+            .foregroundStyle(tint)
             .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(Color.stable(for: name).opacity(0.18),
+            .background(tint.opacity(0.18),
                         in: RoundedRectangle(cornerRadius: 4))
     }
 
