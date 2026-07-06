@@ -1064,15 +1064,15 @@ struct ThreadRow: View {
             .sorted()
     }
 
+    /// Notion-style label pill: tinted text on a soft capsule of its color.
     private func labelPill(_ name: String) -> some View {
         let tint = store.labelTint(name, account: thread.accountId)
         return Text(name)
             .font(.system(size: 10.5 * fontScale, weight: .medium))
             .lineLimit(1)
             .foregroundStyle(tint)
-            .padding(.horizontal, 6).padding(.vertical, 2)
-            .background(tint.opacity(0.18),
-                        in: RoundedRectangle(cornerRadius: 4))
+            .padding(.horizontal, 8).padding(.vertical, 2.5)
+            .background(tint.opacity(0.16), in: Capsule())
     }
 
     private func hoverButton(_ icon: String, filled: Bool = false, action: @escaping () -> Void) -> some View {
