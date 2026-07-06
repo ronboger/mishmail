@@ -341,6 +341,72 @@ final class MailStore: ObservableObject {
         }
     }
 
+    // MARK: - VIP senders
+
+    /// Lowercased VIP addresses, and which loaded threads they sent. Kept in
+    /// memory so the priority partition never queries per row.
+    @Published private(set) var vipEmails: Set<String> = []
+    @Published private(set) var vipThreadIds: Set<String> = []
+
+    func loadVIPs() {
+        let rows = (try? db.read { try VIPSender.fetchAll($0) }) ?? []
+        vipEmails = Set(rows.map { $0.email.lowercased() })
+    }
+
+    func addVIP(_ email: String) {
+        let e = email.trimmingCharacters(in: .whitespaces).lowercased()
+        guard e.contains("@") else { return }
+        try? db.write { try VIPSender(email: e).save($0) }
+        loadVIPs()
+        reloadThreads()
+        showNotice("\(e) added to VIPs")
+    }
+
+    func removeVIP(_ email: String) {
+        let e = email.trimmingCharacters(in: .whitespaces).lowercased()
+        try? db.write { _ = try VIPSender.deleteOne($0, key: e) }
+        loadVIPs()
+        reloadThreads()
+    }
+
+    /// Newest sender address on a thread (for the Add/Remove VIP menu).
+    func senderEmail(of thread: MailThread) -> String? {
+        let header = (try? db.read { db in
+            try String.fetchOne(db, sql: """
+                SELECT fromHeader FROM message WHERE threadId = ?
+                ORDER BY date DESC LIMIT 1
+                """, arguments: [thread.id])
+        }) ?? nil
+        guard let header else { return nil }
+        let email = MessageParser.emailAddress(header).lowercased()
+        return email.contains("@") ? email : nil
+    }
+
+    /// Recomputes which of the loaded threads came from a VIP. One query per
+    /// reload, none when the VIP list is empty.
+    func refreshVIPThreadIds() {
+        guard !vipEmails.isEmpty, !threads.isEmpty else {
+            if !vipThreadIds.isEmpty { vipThreadIds = [] }
+            return
+        }
+        let ids = threads.map(\.id)
+        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
+        let rows = (try? db.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT DISTINCT threadId, fromHeader FROM message
+                WHERE threadId IN (\(placeholders))
+                """, arguments: StatementArguments(ids))
+        }) ?? []
+        var hits = Set<String>()
+        for row in rows {
+            let header: String = row["fromHeader"]
+            if vipEmails.contains(MessageParser.emailAddress(header).lowercased()) {
+                hits.insert(row["threadId"])
+            }
+        }
+        vipThreadIds = hits
+    }
+
     /// User-facing label for an account ("Personal", "Fund", …).
     func renameAccount(_ id: String, label: String) {
         let trimmed = label.trimmingCharacters(in: .whitespaces)
@@ -412,6 +478,7 @@ final class MailStore: ObservableObject {
     init() {
         reloadAccounts()
         reloadSavedViews()
+        loadVIPs()
         reloadThreads()
         reloadScheduledSends()
         // Anything that came due while the app was closed goes out now.
@@ -628,6 +695,7 @@ final class MailStore: ObservableObject {
             return try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
         }) ?? []
         loadAICategories()
+        refreshVIPThreadIds()
         refreshCountsAndBadge()
     }
 

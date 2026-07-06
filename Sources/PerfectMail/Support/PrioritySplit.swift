@@ -20,21 +20,25 @@ enum PrioritySplit {
         }
     }
 
-    static func qualifies(_ thread: MailThread, mode: Mode) -> Bool {
+    static func qualifies(_ thread: MailThread, mode: Mode,
+                          vipThreadIds: Set<String> = []) -> Bool {
         switch mode {
         case .off: return false
-        case .starred: return thread.isStarred
-        case .starredImportant: return thread.isStarred || thread.labels.contains("IMPORTANT")
+        case .starred:
+            return thread.isStarred || vipThreadIds.contains(thread.id)
+        case .starredImportant:
+            return thread.isStarred || vipThreadIds.contains(thread.id)
+                || thread.labels.contains("IMPORTANT")
         }
     }
 
-    static func partition(_ threads: [MailThread],
-                          mode: Mode) -> (priority: [MailThread], rest: [MailThread]) {
+    static func partition(_ threads: [MailThread], mode: Mode,
+                          vipThreadIds: Set<String> = []) -> (priority: [MailThread], rest: [MailThread]) {
         guard mode != .off else { return ([], threads) }
         var priority: [MailThread] = []
         var rest: [MailThread] = []
         for thread in threads {
-            if qualifies(thread, mode: mode) {
+            if qualifies(thread, mode: mode, vipThreadIds: vipThreadIds) {
                 priority.append(thread)
             } else {
                 rest.append(thread)

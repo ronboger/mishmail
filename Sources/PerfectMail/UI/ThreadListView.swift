@@ -44,7 +44,8 @@ struct ThreadListView: View {
         let mode = PrioritySplit.Mode(rawValue: priorityModeRaw) ?? .starred
         let (priority, rest) = PrioritySplit.partition(
             store.threads,
-            mode: store.selectedView == .inbox ? mode : .off)
+            mode: store.selectedView == .inbox ? mode : .off,
+            vipThreadIds: store.vipThreadIds)
         var out: [(String, [MailThread])] = []
         if !priority.isEmpty { out.append((Self.prioritySection, priority)) }
         out += groups(rest)
@@ -240,6 +241,14 @@ struct ThreadListView: View {
             Button("In a week") { store.setReminder(thread, after: 7) }
             if thread.reminderAt != nil {
                 Button("Clear reminder") { store.setReminder(thread, after: nil) }
+            }
+        }
+        if let email = store.senderEmail(of: thread) {
+            Divider()
+            if store.vipEmails.contains(email) {
+                Button("Remove \(email) from VIPs") { store.removeVIP(email) }
+            } else {
+                Button("Add \(email) to VIPs") { store.addVIP(email) }
             }
         }
         Divider()

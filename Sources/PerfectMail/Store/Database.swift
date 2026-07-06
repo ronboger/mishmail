@@ -154,6 +154,14 @@ struct ThreadAICategory: Codable, Identifiable, Hashable, FetchableRecord, Persi
     var id: String { threadId }
 }
 
+/// A VIP sender: mail from this address pins to the Inbox Priority section.
+/// Emails are stored lowercased; the list is global across accounts.
+struct VIPSender: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "vipSender"
+    var email: String
+    var id: String { email }
+}
+
 struct LabelRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "label"
     /// sortOrder for labels the user hasn't ordered yet: they sort after any
@@ -419,6 +427,13 @@ final class AppDatabase {
             try db.alter(table: "label") { t in
                 t.add(column: "color", .text)
                 t.add(column: "sortOrder", .integer).notNull().defaults(to: LabelRow.unsorted)
+            }
+        }
+        // VIP senders: mail from these addresses pins to the Inbox Priority
+        // section. Stored lowercased; global across accounts.
+        m.registerMigration("v11") { db in
+            try db.create(table: "vipSender") { t in
+                t.primaryKey("email", .text)
             }
         }
         return m

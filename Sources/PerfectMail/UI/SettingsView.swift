@@ -711,6 +711,13 @@ struct AppearanceSettings: View {
     @AppStorage("fontScale") private var fontScale = 1.0
     @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
     @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
+    @State private var newVIP = ""
+
+    private func addVIP() {
+        guard newVIP.contains("@") else { return }
+        store.addVIP(newVIP)
+        newVIP = ""
+    }
 
     var body: some View {
         PaneScaffold(title: "Appearance") {
@@ -722,7 +729,36 @@ struct AppearanceSettings: View {
                         }
                     }
                 } footer: {
-                    Text("What pins to the top of the Inbox. Starred is just what you've hand-picked; Starred + Important adds everything Gmail predicts matters, which can be a lot.")
+                    Text("What pins to the top of the Inbox. Starred is just what you've hand-picked; Starred + Important adds everything Gmail predicts matters, which can be a lot. VIP senders always pin (unless Off).")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    ForEach(store.vipEmails.sorted(), id: \.self) { email in
+                        HStack {
+                            Text(email)
+                            Spacer()
+                            Button {
+                                store.removeVIP(email)
+                            } label: {
+                                Image(systemName: "xmark.circle.fill")
+                                    .foregroundStyle(.secondary)
+                            }
+                            .buttonStyle(.plain)
+                            .help("Remove from VIPs")
+                        }
+                    }
+                    HStack {
+                        TextField("email@example.com", text: $newVIP)
+                            .textFieldStyle(.roundedBorder)
+                            .onSubmit(addVIP)
+                        Button("Add", action: addVIP)
+                            .disabled(!newVIP.contains("@"))
+                    }
+                } header: {
+                    Text("VIP senders")
+                } footer: {
+                    Text("New mail from these addresses pins to Priority the moment it arrives. You can also right-click any thread → Add sender to VIPs.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

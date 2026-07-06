@@ -46,6 +46,23 @@ final class PrioritySplitTests: XCTestCase {
         XCTAssertEqual(rest.map(\.gmailThreadId), ["t1", "t2"])
     }
 
+    func testVIPThreadPinsInAnyActiveMode() {
+        let threads = [thread("t1"), thread("t2")]
+        for mode in [PrioritySplit.Mode.starred, .starredImportant] {
+            let (priority, rest) = PrioritySplit.partition(
+                threads, mode: mode, vipThreadIds: ["a@x.com:t2"])
+            XCTAssertEqual(priority.map(\.gmailThreadId), ["t2"], "mode \(mode)")
+            XCTAssertEqual(rest.map(\.gmailThreadId), ["t1"], "mode \(mode)")
+        }
+    }
+
+    func testVIPIgnoredWhenOff() {
+        let threads = [thread("t1")]
+        let (priority, _) = PrioritySplit.partition(
+            threads, mode: .off, vipThreadIds: ["a@x.com:t1"])
+        XCTAssertTrue(priority.isEmpty)
+    }
+
     func testImportantSubstringLabelDoesNotMatch() {
         // "UNIMPORTANT" or a user label containing the word must not qualify.
         let threads = [thread("t1", labels: "INBOX Label_UNIMPORTANT")]
