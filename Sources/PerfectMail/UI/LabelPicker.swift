@@ -9,7 +9,6 @@ import SwiftUI
 /// here doesn't work while the field is focused.
 struct LabelPicker: View {
     @EnvironmentObject var store: MailStore
-    @State private var query = ""
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -22,7 +21,7 @@ struct LabelPicker: View {
                 let labels = filtered(for: thread)
                 let highlighted = min(store.labelPickerHighlight, max(labels.count - 1, 0))
                 VStack(spacing: 0) {
-                    TextField("Label as…", text: $query)
+                    TextField("Label as…", text: $store.labelPickerQuery)
                         .textFieldStyle(.plain)
                         .font(.system(size: 15))
                         .padding(12)
@@ -32,7 +31,7 @@ struct LabelPicker: View {
                                 store.toggleLabel(thread, labelId: label.gmailLabelId)
                             }
                         }
-                        .onChange(of: query) { store.labelPickerHighlight = 0 }
+                        .onChange(of: store.labelPickerQuery) { store.labelPickerHighlight = 0 }
                     Divider()
                     ScrollViewReader { proxy in
                         ScrollView {
@@ -81,7 +80,7 @@ struct LabelPicker: View {
 
     private func filtered(for thread: MailThread) -> [LabelRow] {
         let labels = store.userLabels(forAccount: thread.accountId)
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = store.labelPickerQuery.trimmingCharacters(in: .whitespaces).lowercased()
         guard !q.isEmpty else { return labels }
         return labels.filter { $0.name.lowercased().contains(q) }
     }

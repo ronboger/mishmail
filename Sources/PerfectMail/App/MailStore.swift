@@ -229,6 +229,11 @@ final class MailStore: ObservableObject {
     // key monitor (the picker's text field eats arrow events before SwiftUI's
     // onKeyPress sees them); the view clamps it to the filtered list.
     @Published var labelPickerHighlight = 0
+    // The picker's filter text lives here (not @State in the view) so the key
+    // monitor can route typed characters in while the text field is still
+    // winning the focus race — otherwise a fast second keystroke falls
+    // through to the thread list's type-select.
+    @Published var labelPickerQuery = ""
     @Published var showCommandPalette = false
     @Published var showFilterMenu = false   // "+ Filter" popover (Ctrl-F)
     @Published var unreadCounts: [String: Int] = [:]   // sidebar badges
@@ -1123,7 +1128,11 @@ final class MailStore: ObservableObject {
         case .forward: if let t = selectedThread {
                            composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, forward: true)
                        }
-        case .label: if selectedThread != nil { labelPickerHighlight = 0; showLabelPicker = true }
+        case .label: if selectedThread != nil {
+                         labelPickerHighlight = 0
+                         labelPickerQuery = ""
+                         showLabelPicker = true
+                     }
         case .undo: if let undo = undoAction { undo.undo() }
         case .compose: composeRequest = ComposeRequest(replyTo: nil)
         }

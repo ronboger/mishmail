@@ -264,7 +264,19 @@ struct ContentView: View {
                     store.labelPickerHighlight = max(store.labelPickerHighlight - 1, 0)
                     return nil
                 default:
-                    break
+                    // If the picker's text field hasn't grabbed focus yet (it
+                    // can lose the race right after opening), typed characters
+                    // would fall through to the thread list's type-select.
+                    // Route them into the filter query instead.
+                    if mods.isEmpty, !(event.window?.firstResponder is NSTextView) {
+                        if event.keyCode == 51 {  // delete
+                            if !store.labelPickerQuery.isEmpty { store.labelPickerQuery.removeLast() }
+                        } else if let chars = event.charactersIgnoringModifiers, !chars.isEmpty,
+                                  !chars.unicodeScalars.contains(where: { CharacterSet.controlCharacters.contains($0) }) {
+                            store.labelPickerQuery += chars
+                        }
+                        return nil
+                    }
                 }
             }
             // Esc: first press while typing (e.g. in search) drops focus back
