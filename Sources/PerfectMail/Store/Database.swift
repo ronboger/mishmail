@@ -156,11 +156,18 @@ struct ThreadAICategory: Codable, Identifiable, Hashable, FetchableRecord, Persi
 
 struct LabelRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "label"
+    /// sortOrder for labels the user hasn't ordered yet: they sort after any
+    /// explicitly ordered labels, alphabetically among themselves.
+    static let unsorted = 1_000_000
     var id: String          // "<account>:<labelId>"
     var accountId: String
     var gmailLabelId: String
     var name: String
     var type: String
+    /// Display color as "#RRGGBB". Locally chosen (or seeded from Gmail's
+    /// label color on first sync); nil falls back to a name-stable color.
+    var color: String?
+    var sortOrder: Int = LabelRow.unsorted
 }
 
 // MARK: - Database
@@ -403,6 +410,15 @@ final class AppDatabase {
         m.registerMigration("v9") { db in
             try db.alter(table: "snippet") { t in
                 t.add(column: "movesToBcc", .boolean).notNull().defaults(to: false)
+            }
+        }
+        // Label colors (local hex override, seeded from Gmail's palette) and
+        // user-defined ordering. Unordered labels sort after ordered ones,
+        // hence the large default.
+        m.registerMigration("v10") { db in
+            try db.alter(table: "label") { t in
+                t.add(column: "color", .text)
+                t.add(column: "sortOrder", .integer).notNull().defaults(to: LabelRow.unsorted)
             }
         }
         return m

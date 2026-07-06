@@ -139,6 +139,9 @@ struct ContentView: View {
         .sheet(isPresented: $store.showShortcutsHelp) {
             ShortcutsHelpView(bindings: store.keyBindings)
         }
+        .sheet(isPresented: $store.showLabelOrganizer) {
+            LabelOrganizer()
+        }
         .overlay {
             if store.showCommandPalette {
                 CommandPalette()

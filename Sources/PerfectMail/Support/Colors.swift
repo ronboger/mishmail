@@ -34,6 +34,23 @@ extension Color {
               blue: Double(hex & 0xFF) / 255)
     }
 
+    /// Color from a "#RRGGBB" (or "RRGGBB") string; nil when malformed.
+    static func hexString(_ string: String) -> Color? {
+        var hex = string.trimmingCharacters(in: .whitespaces)
+        if hex.hasPrefix("#") { hex.removeFirst() }
+        guard hex.count == 6, let value = UInt32(hex, radix: 16) else { return nil }
+        return .hex(value)
+    }
+
+    /// The label color palette offered in the organizer (name, hex).
+    /// Notion-ish hues that read well as tinted pills in both themes.
+    static let labelPalette: [(name: String, hex: String)] = [
+        ("Red", "#EB5757"), ("Orange", "#F2994A"), ("Yellow", "#DFAB01"),
+        ("Green", "#27AE60"), ("Teal", "#12A594"), ("Blue", "#2D9CDB"),
+        ("Indigo", "#5E6AD2"), ("Purple", "#9B51E0"), ("Pink", "#E255A1"),
+        ("Brown", "#9F6B53"), ("Gray", "#787774"),
+    ]
+
     /// Deterministic pleasant color for a string (sender avatars, etc.).
     static func stable(for string: String) -> Color {
         var hash: UInt64 = 5381

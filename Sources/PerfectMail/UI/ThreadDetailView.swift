@@ -15,6 +15,12 @@ struct ThreadDetailView: View {
     @State private var summaryError: String?
 
     var body: some View {
+        ScrollViewReader { proxy in
+            scrollContent(proxy)
+        }
+    }
+
+    private func scrollContent(_ proxy: ScrollViewProxy) -> some View {
         ScrollView {
             LazyVStack(alignment: .leading, spacing: 12) {
                 Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
@@ -63,8 +69,9 @@ struct ThreadDetailView: View {
                         HStack(spacing: 6) {
                             ForEach(userLabelIds, id: \.self) { labelId in
                                 let name = store.labelName(labelId, account: thread.accountId) ?? labelId
+                                let tint = store.labelTint(name)
                                 HStack(spacing: 4) {
-                                    Circle().fill(Color.stable(for: name)).frame(width: 7, height: 7)
+                                    Circle().fill(tint).frame(width: 7, height: 7)
                                     Text(name).font(.system(size: 11.5 * fontScale))
                                     Button {
                                         store.toggleLabel(thread, labelId: labelId)
@@ -74,7 +81,7 @@ struct ThreadDetailView: View {
                                     .buttonStyle(.plain).foregroundStyle(.secondary)
                                 }
                                 .padding(.horizontal, 8).padding(.vertical, 3)
-                                .background(Color.stable(for: name).opacity(0.15), in: Capsule())
+                                .background(tint.opacity(0.15), in: Capsule())
                             }
                             Button {
                                 store.showLabelPicker = true
@@ -100,6 +107,7 @@ struct ThreadDetailView: View {
                                 isLast: message.id == messages.last?.id,
                                 onReply: { onReply(message) })
                         .padding(.horizontal)
+                        .id(message.id)
                 }
             }
             .padding(.vertical)
@@ -157,6 +165,22 @@ struct ThreadDetailView: View {
             messages = store.messages(inThread: thread.id)
             aiSummary = nil; summaryError = nil; summarizing = false
             if thread.isUnread { store.setRead(thread, read: true) }
+            scrollToLatest(proxy)
+        }
+    }
+
+    /// Long threads open at the newest message instead of the top. The jump
+    /// repeats a few times because expanded HTML bodies report their real
+    /// height asynchronously, which shifts the layout after the first scroll.
+    private func scrollToLatest(_ proxy: ScrollViewProxy) {
+        guard messages.count > 1, let lastId = messages.last?.id else { return }
+        let threadId = thread.id
+        proxy.scrollTo(lastId, anchor: .top)
+        for delay in [0.15, 0.4] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) {
+                guard self.thread.id == threadId, self.messages.last?.id == lastId else { return }
+                proxy.scrollTo(lastId, anchor: .top)
+            }
         }
     }
 

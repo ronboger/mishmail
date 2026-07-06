@@ -183,6 +183,9 @@ struct FilterChips: Equatable, Codable {
 final class MailStore: ObservableObject {
     @Published var accounts: [Account] = []
     @Published var labelsByAccount: [String: [LabelRow]] = [:]
+    /// Label display colors by name ("#RRGGBB"), derived from the label rows
+    /// on reload. Keyed by name so same-named labels match across accounts.
+    @Published var labelColors: [String: String] = [:]
     @Published var threads: [MailThread] = []
     @Published var savedViews: [SavedView] = []
     @Published var selectedView: MailboxView = .inbox {
@@ -222,6 +225,7 @@ final class MailStore: ObservableObject {
     @Published var editingView: SavedView?
     @Published var editingAccountLabels = false
     @Published var showLabelPicker = false
+    @Published var showLabelOrganizer = false
     @Published var snoozingThread: MailThread?   // custom snooze date sheet
     @Published var confirmingDraftDelete: MailThread?   // delete-draft confirmation alert
     // Arrow-key highlight for the label picker. Driven by the window-level
@@ -479,9 +483,15 @@ final class MailStore: ObservableObject {
 
     func reloadAccounts() {
         accounts = (try? db.read { try Account.order(Column("id")).fetchAll($0) }) ?? []
-        labelsByAccount = Dictionary(grouping: (try? db.read {
-            try LabelRow.filter(Column("type") == "user").order(Column("name")).fetchAll($0)
-        }) ?? [], by: \.accountId)
+        // User order first (organizer drag), alphabetical among the unordered.
+        let rows = (try? db.read {
+            try LabelRow.filter(Column("type") == "user")
+                .order(Column("sortOrder"), Column("name")).fetchAll($0)
+        }) ?? []
+        labelsByAccount = Dictionary(grouping: rows, by: \.accountId)
+        labelColors = rows.reduce(into: [:]) { colors, row in
+            if let hex = row.color, colors[row.name] == nil { colors[row.name] = hex }
+        }
     }
 
     func reloadSavedViews() {
@@ -1134,6 +1144,35 @@ final class MailStore: ObservableObject {
 
     func labelName(_ labelId: String, account accountId: String) -> String? {
         labelsByAccount[accountId]?.first { $0.gmailLabelId == labelId }?.name
+    }
+
+    /// Display color for a label name: the user-assigned (or Gmail-seeded)
+    /// color, falling back to the old name-stable palette.
+    func labelTint(_ name: String) -> Color {
+        labelColors[name].flatMap(Color.hexString) ?? Color.stable(for: name)
+    }
+
+    /// Sets (or clears, with nil) a label's display color.
+    func setLabelColor(_ label: LabelRow, hex: String?) {
+        try? db.write { db in
+            var row = label
+            row.color = hex
+            try row.save(db)
+        }
+        reloadAccounts()
+    }
+
+    /// Persists a drag-reorder of one account's labels from the organizer.
+    func reorderLabels(account accountId: String, from source: IndexSet, to destination: Int) {
+        var labels = labelsByAccount[accountId] ?? []
+        labels.move(fromOffsets: source, toOffset: destination)
+        try? db.write { db in
+            for (idx, var row) in labels.enumerated() {
+                row.sortOrder = idx
+                try row.save(db)
+            }
+        }
+        reloadAccounts()
     }
 
     func toggleLabel(_ thread: MailThread, labelId: String) {
