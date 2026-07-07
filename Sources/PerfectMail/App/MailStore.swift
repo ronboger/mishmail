@@ -454,6 +454,7 @@ final class MailStore: ObservableObject {
         var forward = false
         var editDraft: Message? = nil   // an existing Gmail draft being edited
         var restore: PendingSend? = nil // undone send: reopen with this content
+        var prefillTo: String? = nil    // new mail straight to this address
     }
 
     struct UndoAction: Identifiable {
