@@ -12,12 +12,14 @@ struct ContentView: View {
                 // Two columns: the thread list takes the full right side.
                 NavigationSplitView {
                     Sidebar()
+                        .navigationSplitViewColumnWidth(min: 230, ideal: 270, max: 400)
                 } detail: {
                     listColumn
                 }
             } else {
                 NavigationSplitView {
                     Sidebar()
+                        .navigationSplitViewColumnWidth(min: 230, ideal: 270, max: 400)
                 } content: {
                     listColumn
                         .navigationSplitViewColumnWidth(min: 420, ideal: 560)
@@ -230,6 +232,21 @@ struct ContentView: View {
             if mods == .command, event.charactersIgnoringModifiers == "k" {
                 store.showCommandPalette.toggle()
                 return nil
+            }
+            // ⌘1 = All accounts, ⌘2… = individual accounts, in popover order
+            // (Notion Mail-style inbox switching).
+            if mods == .command, let chars = event.charactersIgnoringModifiers,
+               chars.count == 1, let digit = Int(chars), (1...9).contains(digit) {
+                if digit == 1 {
+                    store.setActiveAccount(nil)
+                    return nil
+                }
+                let index = digit - 2
+                if index < store.accounts.count {
+                    store.setActiveAccount(store.accounts[index].id)
+                    return nil
+                }
+                return event
             }
             if mods == .control, event.charactersIgnoringModifiers == "f" {
                 store.showFilterMenu.toggle()
@@ -510,9 +527,9 @@ struct AccountSwitcher: View {
         .buttonStyle(.plain)
         .popover(isPresented: $showMenu, arrowEdge: .bottom) {
             VStack(alignment: .leading, spacing: 1) {
-                accountRow(nil)
-                ForEach(store.accounts) { account in
-                    accountRow(account)
+                accountRow(nil, shortcut: 1)
+                ForEach(Array(store.accounts.enumerated()), id: \.element.id) { index, account in
+                    accountRow(account, shortcut: index + 2)
                 }
                 Divider().padding(.vertical, 4)
                 FilterMenuRow(icon: "plus", title: "Add Google Account…") {
@@ -533,7 +550,8 @@ struct AccountSwitcher: View {
     }
 
     /// One row of the account popover: avatar, name + address, checkmark.
-    private func accountRow(_ account: Account?) -> some View {
+    /// `shortcut` is the ⌘-digit that switches to this scope from anywhere.
+    private func accountRow(_ account: Account?, shortcut: Int? = nil) -> some View {
         let selected = store.activeAccountId == account?.id
         return Button {
             store.setActiveAccount(account?.id)
@@ -561,6 +579,10 @@ struct AccountSwitcher: View {
                     Image(systemName: "checkmark")
                         .font(.system(size: 10, weight: .semibold))
                         .foregroundStyle(Color.notionAccent)
+                }
+                if let shortcut, shortcut <= 9 {
+                    Text("⌘\(shortcut)")
+                        .font(.system(size: 10)).foregroundStyle(.tertiary)
                 }
             }
             .padding(.horizontal, 6).padding(.vertical, 4)

@@ -600,6 +600,12 @@ struct ComposeView: View {
             initialSubject = subject
             initialRecipients = toTokens + ccTokens + bccTokens
         }
+        // "Draft email to X" from a message header: new mail, To prefilled.
+        if let to = request.prefillTo, original == nil {
+            toTokens = [to]
+            focusBody()
+            return
+        }
         guard let original else { return }
         let ownAddresses = Set(store.accounts.map { $0.id.lowercased() })
         let sender = MessageParser.emailAddress(original.fromHeader)

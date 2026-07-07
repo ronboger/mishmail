@@ -9,6 +9,7 @@ struct ThreadDetailView: View {
     let onReply: (Message) -> Void
 
     @State private var messages: [Message] = []
+    @State private var threadAttachments: [(message: Message, attachment: AttachmentRow)] = []
     @State private var scrolledMessageId: String?
     @State private var labelsExpanded = false
     @State private var aiSummary: String?
@@ -22,6 +23,8 @@ struct ThreadDetailView: View {
                     .font(.system(size: 19 * fontScale, weight: .semibold))
                     .textSelection(.enabled)
                     .padding(.horizontal)
+
+                threadMetaRow
 
                 summarySection
 
@@ -162,9 +165,69 @@ struct ThreadDetailView: View {
         .scrollPosition(id: $scrolledMessageId, anchor: .top)
         .task(id: thread.id) {
             messages = store.messages(inThread: thread.id)
+            threadAttachments = messages.flatMap { msg in
+                store.attachments(for: msg.id).map { (message: msg, attachment: $0) }
+            }
             scrolledMessageId = messages.count > 1 ? messages.last?.id : nil
             aiSummary = nil; summaryError = nil; summarizing = false
             if thread.isUnread { store.setRead(thread, read: true) }
+        }
+    }
+
+    /// Notion Mail-style meta row under the subject: an attachments menu
+    /// (every file in the thread, one click to Quick Look) and read-only
+    /// Gmail category chips ("Important", "Updates", …).
+    @ViewBuilder
+    private var threadMetaRow: some View {
+        if !threadAttachments.isEmpty || !categoryChips.isEmpty {
+            HStack(spacing: 10) {
+                if !threadAttachments.isEmpty {
+                    Menu {
+                        ForEach(threadAttachments, id: \.attachment.id) { pair in
+                            Button {
+                                store.quickLookAttachment(pair.attachment, message: pair.message)
+                            } label: {
+                                Label(pair.attachment.filename, systemImage: "doc")
+                            }
+                        }
+                    } label: {
+                        HStack(spacing: 5) {
+                            Image(systemName: "paperclip")
+                                .font(.system(size: 11 * fontScale))
+                            Text(threadAttachments.count == 1
+                                 ? "1 attachment"
+                                 : "\(threadAttachments.count) attachments")
+                                .font(.system(size: 12 * fontScale))
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    .menuStyle(.button)
+                    .buttonStyle(.plain)
+                    .menuIndicator(.hidden)
+                    .fixedSize()
+                    .help("Attachments in this thread — click to Quick Look")
+                }
+                ForEach(categoryChips, id: \.self) { chip in
+                    Text(chip)
+                        .font(.system(size: 11 * fontScale, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 8).padding(.vertical, 3)
+                        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 5))
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(.horizontal)
+        }
+    }
+
+    /// Gmail's own classification of this thread, shown Notion Mail-style.
+    private var categoryChips: [String] {
+        thread.labels.compactMap { label in
+            if label == "IMPORTANT" { return "Important" }
+            if label.hasPrefix("CATEGORY_"), label != "CATEGORY_PERSONAL" {
+                return label.dropFirst("CATEGORY_".count).capitalized
+            }
+            return nil
         }
     }
 
@@ -251,6 +314,8 @@ struct MessageCard: View {
     let isLast: Bool
     let onReply: () -> Void
     @State private var expanded: Bool
+    // Full FROM/TO/CC rows (Notion Mail's "Show more"); compact by default.
+    @State private var recipientsExpanded = false
     @State private var htmlHeight: CGFloat = 120
     @State private var loadRemoteImages = false
     @State private var cardCursorPushed = false
@@ -293,14 +358,35 @@ struct MessageCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                VStack(alignment: .leading, spacing: 1) {
-                    Text(MessageParser.displayName(fromHeader: message.fromHeader))
-                        .font(.system(size: 14 * fontScale, weight: .semibold))
-                        .textSelection(.enabled)
+            HStack(alignment: .top) {
+                // Notion Mail-style header: sender name + address, with a
+                // compact "To me ⌄" summary that expands into full FROM/TO/CC
+                // rows. Every participant is clickable (draft/search/copy).
+                VStack(alignment: .leading, spacing: 3) {
                     if expanded {
-                        Text("to \(message.toHeader)")
-                            .font(.system(size: 12 * fontScale)).foregroundStyle(.secondary).lineLimit(1)
+                        if recipientsExpanded {
+                            recipientGrid
+                        } else {
+                            participantMenu(message.fromHeader, nameSize: 14, nameWeight: .semibold)
+                            Button {
+                                withAnimation(.easeOut(duration: 0.12)) { recipientsExpanded = true }
+                            } label: {
+                                HStack(spacing: 4) {
+                                    Text(recipientSummary)
+                                        .font(.system(size: 12 * fontScale))
+                                        .foregroundStyle(.secondary)
+                                    Image(systemName: "chevron.up.chevron.down")
+                                        .font(.system(size: 7 * fontScale, weight: .semibold))
+                                        .foregroundStyle(.tertiary)
+                                }
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .help("Show all senders and recipients")
+                        }
+                    } else {
+                        Text(MessageParser.displayName(fromHeader: message.fromHeader))
+                            .font(.system(size: 14 * fontScale, weight: .semibold))
                             .textSelection(.enabled)
                     }
                 }
@@ -482,6 +568,9 @@ struct MessageCard: View {
         }
         .padding(12)
         .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
+        // A visible bounding box makes each message in a thread read as its
+        // own card (Notion Mail-style).
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
         .contentShape(Rectangle())
         .onTapGesture {
             if !expanded {
@@ -498,6 +587,106 @@ struct MessageCard: View {
                 NSCursor.pop(); cardCursorPushed = false
             }
         }
+    }
+
+    /// Compact recipient line: "To me", "To Van Ju +3" (extras include Cc).
+    private var recipientSummary: String {
+        let own = Set(store.accounts.map { $0.id.lowercased() })
+        let recipients = MessageParser.splitAddresses(message.toHeader)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        let ccCount = MessageParser.splitAddresses(message.ccHeader)
+            .filter { $0.contains("@") }.count
+        guard let first = recipients.first else { return "To —" }
+        let firstName = own.contains(MessageParser.emailAddress(first).lowercased())
+            ? "me" : MessageParser.displayName(fromHeader: first)
+        let extra = recipients.count - 1 + ccCount
+        return extra > 0 ? "To \(firstName) +\(extra)" : "To \(firstName)"
+    }
+
+    /// Full participant details, Notion Mail-style: FROM / TO / CC rows with
+    /// one clickable participant per line, and "Show less" to tuck it back.
+    private var recipientGrid: some View {
+        Grid(alignment: .leadingFirstTextBaseline, horizontalSpacing: 12, verticalSpacing: 5) {
+            recipientRows("FROM", header: message.fromHeader)
+            recipientRows("TO", header: message.toHeader)
+            recipientRows("CC", header: message.ccHeader)
+            GridRow {
+                Text("")
+                Button("Show less") {
+                    withAnimation(.easeOut(duration: 0.12)) { recipientsExpanded = false }
+                }
+                .buttonStyle(.plain)
+                .font(.system(size: 12 * fontScale))
+                .foregroundStyle(.secondary)
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func recipientRows(_ role: String, header: String) -> some View {
+        let addresses = MessageParser.splitAddresses(header)
+            .map { $0.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+        ForEach(Array(addresses.enumerated()), id: \.offset) { index, address in
+            GridRow {
+                Text(index == 0 ? role : "")
+                    .font(.system(size: 10 * fontScale, weight: .medium))
+                    .foregroundStyle(.tertiary)
+                    .gridColumnAlignment(.leading)
+                participantMenu(address)
+            }
+        }
+    }
+
+    /// A clickable participant: name + address, opening a Notion Mail-style
+    /// menu (draft to them, search their mail, copy either part).
+    @ViewBuilder
+    private func participantMenu(_ raw: String, nameSize: CGFloat = 12.5,
+                                 nameWeight: Font.Weight = .regular) -> some View {
+        let email = MessageParser.emailAddress(raw)
+        let name = MessageParser.displayName(fromHeader: raw)
+        Menu {
+            Button {
+                store.composeRequest = .init(replyTo: nil, prefillTo: email)
+            } label: {
+                Label("Draft email to \(name)", systemImage: "square.and.pencil")
+            }
+            Button {
+                store.searchText = "from:\(email)"
+            } label: {
+                Label("Search emails from \(name)", systemImage: "magnifyingglass")
+            }
+            Divider()
+            Button("Copy \"\(email)\"") { copyToPasteboard(email) }
+            if name.lowercased() != email.lowercased() {
+                Button("Copy \"\(name)\"") { copyToPasteboard(name) }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(name)
+                    .font(.system(size: nameSize * fontScale, weight: nameWeight))
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                if name.lowercased() != email.lowercased() {
+                    Text(email)
+                        .font(.system(size: (nameSize - 1.5) * fontScale))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+            }
+            .contentShape(Rectangle())
+        }
+        .menuStyle(.button)
+        .buttonStyle(.plain)
+        .menuIndicator(.hidden)
+        .fixedSize(horizontal: false, vertical: true)
+        .help(email)
+    }
+
+    private func copyToPasteboard(_ string: String) {
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(string, forType: .string)
     }
 
     private func byteSize(_ bytes: Int) -> String {
