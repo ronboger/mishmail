@@ -194,6 +194,9 @@ final class MailStore: ObservableObject {
     /// User-rebindable single-key shortcuts (Settings → Keyboard shortcuts).
     let keyBindings = KeyBindings()
     @Published var searchText: String = ""
+    /// Bumped by `/` (Gmail-style) to move keyboard focus into the sidebar
+    /// search field. The sidebar watches this and drives its `@FocusState`.
+    @Published var searchFocusToken = 0
     @Published var chips = FilterChips.initial(for: .inbox) {
         // Category picks persist per view so they're back after relaunch.
         // Only user edits persist — programmatic resets (view switches) go
@@ -1275,6 +1278,13 @@ final class MailStore: ObservableObject {
         case .undo: if let undo = undoAction { undo.undo() }
         case .compose: composeRequest = ComposeRequest(replyTo: nil)
         }
+    }
+
+    /// Gmail's `/`: move keyboard focus into the sidebar search field. Bumps a
+    /// token instead of holding focus state directly so a repeated `/` (after
+    /// the user clicked away) re-focuses.
+    func focusSearch() {
+        searchFocusToken &+= 1
     }
 
     // MARK: - Labels on threads

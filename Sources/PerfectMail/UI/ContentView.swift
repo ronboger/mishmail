@@ -334,6 +334,11 @@ struct ContentView: View {
                   !(event.window?.firstResponder is NSTextView),
                   !(event.window?.firstResponder is NSTextField)
             else { return event }
+            // Gmail's `/`: jump focus to the sidebar search field.
+            if event.charactersIgnoringModifiers == "/" {
+                store.focusSearch()
+                return nil
+            }
             // Arrow keys browse the list without opening the pane; Enter
             // (or a click) opens the selected thread.
             switch event.keyCode {
@@ -370,6 +375,8 @@ struct ContentView: View {
 struct Sidebar: View {
     @EnvironmentObject var store: MailStore
     @ObservedObject private var updates = UpdateChecker.shared
+    // Driven by `/` (Gmail-style) via store.searchFocusToken.
+    @FocusState private var searchFocused: Bool
 
     var body: some View {
         VStack(spacing: 0) {
@@ -388,13 +395,15 @@ struct Sidebar: View {
                 .help("Compose (⌘N or \(store.keyBindings.key(for: .compose)))")
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-            SearchField(prompt: "Search", text: $store.searchText, onSubmit: {
+            SearchField(prompt: "Search", text: $store.searchText, focused: $searchFocused, onSubmit: {
                 // Hand focus back to the list so j/k/e/etc. work.
                 NSApp.keyWindow?.makeFirstResponder(nil)
                 if store.selectedThreadId == nil { store.moveSelection(1) }
             })
             .help("Search — from: to: subject: label: has:attachment is:unread is:starred after: before:")
             .padding(.horizontal, 10).padding(.bottom, 8)
+            // Gmail's `/`: focus search.
+            .onChange(of: store.searchFocusToken) { searchFocused = true }
             List(selection: $store.selectedView) {
                 Section("Views") {
                     sidebarItem(.inbox, badge: store.unreadCounts["inbox"])

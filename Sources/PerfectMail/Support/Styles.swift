@@ -52,6 +52,9 @@ struct SearchField: View {
     let prompt: String
     @Binding var text: String
     var compact = false
+    /// Optional external focus binding so callers can move keyboard focus into
+    /// the field programmatically (e.g. Gmail's `/`).
+    var focused: FocusState<Bool>.Binding? = nil
     var onSubmit: () -> Void = {}
 
     var body: some View {
@@ -62,6 +65,7 @@ struct SearchField: View {
                 .textFieldStyle(.plain)
                 .font(compact ? .system(size: 11.5) : .body)
                 .onSubmit(onSubmit)
+                .focused(optional: focused)
             if !text.isEmpty {
                 Button {
                     text = ""
@@ -75,6 +79,19 @@ struct SearchField: View {
         .padding(.horizontal, compact ? 6 : 7).padding(.vertical, compact ? 3 : 5)
         .background(Color.primary.opacity(0.06),
                     in: RoundedRectangle(cornerRadius: compact ? 5 : 6))
+    }
+}
+
+extension View {
+    /// Applies `.focused` only when a binding is supplied, so a view can accept
+    /// an optional focus binding without duplicating its body.
+    @ViewBuilder
+    func focused(optional binding: FocusState<Bool>.Binding?) -> some View {
+        if let binding {
+            focused(binding)
+        } else {
+            self
+        }
     }
 }
 
