@@ -150,7 +150,7 @@ The defaults are Gmail's:
 | # | Trash | | f | Forward |
 | s | Star / unstar | | l | Label… |
 | u | Toggle read / unread | | c | Compose |
-| h | Snooze until tomorrow 8 AM | | z | Undo last action |
+| b | Snooze until tomorrow 8 AM | | z | Undo last action |
 
 Fixed shortcuts (not customizable):
 
