@@ -42,7 +42,7 @@ final class KeyBindingsTests: XCTestCase {
     func testConflictRefusedAndUnchanged() {
         let kb = KeyBindings(defaults: defaults)
         XCTAssertEqual(kb.rebind(.snooze, to: "e"), .conflict(.archive))
-        XCTAssertEqual(kb.key(for: .snooze), "h")
+        XCTAssertEqual(kb.key(for: .snooze), "b")
         XCTAssertEqual(kb.command(for: "e"), .archive)
     }
 

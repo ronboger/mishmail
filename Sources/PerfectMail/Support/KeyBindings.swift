@@ -36,7 +36,7 @@ final class KeyBindings: ObservableObject {
         .init(command: .trash, title: "Delete (Trash)", category: .actions, defaultKey: "#"),
         .init(command: .toggleStar, title: "Star / Unstar", category: .actions, defaultKey: "s"),
         .init(command: .toggleRead, title: "Mark read / unread", category: .actions, defaultKey: "u"),
-        .init(command: .snooze, title: "Snooze", category: .actions, defaultKey: "h"),
+        .init(command: .snooze, title: "Snooze", category: .actions, defaultKey: "b"),
         .init(command: .reply, title: "Reply", category: .actions, defaultKey: "r"),
         .init(command: .replyAll, title: "Reply all", category: .actions, defaultKey: "a"),
         .init(command: .forward, title: "Forward", category: .actions, defaultKey: "f"),
