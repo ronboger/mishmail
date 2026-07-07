@@ -711,12 +711,11 @@ struct AppearanceSettings: View {
     @AppStorage("fontScale") private var fontScale = 1.0
     @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
     @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
-    @State private var newVIP = ""
+    @AppStorage("vipAlwaysPins") private var vipAlwaysPins = true
+    @State private var showVIPManager = false
 
-    private func addVIP() {
-        guard newVIP.contains("@") else { return }
-        store.addVIP(newVIP)
-        newVIP = ""
+    private var priorityMode: PrioritySplit.Mode {
+        PrioritySplit.Mode(rawValue: priorityModeRaw) ?? .starred
     }
 
     var body: some View {
@@ -728,32 +727,28 @@ struct AppearanceSettings: View {
                             Text(mode.title).tag(mode.rawValue)
                         }
                     }
+                    if priorityMode == .starred || priorityMode == .starredImportant {
+                        VStack(alignment: .leading, spacing: 2) {
+                            Toggle("Also pin mail from VIP senders", isOn: $vipAlwaysPins)
+                            Text("VIP mail joins the Priority section even when it isn't \(priorityMode == .starred ? "starred" : "starred or important").")
+                                .font(.system(size: 11))
+                                .foregroundStyle(.secondary)
+                        }
+                    }
                 } footer: {
-                    Text("What pins to the top of the Inbox. Starred is just what you've hand-picked; Starred + Important adds everything Gmail predicts matters, which can be a lot. VIP senders always pin (unless Off).")
+                    Text("What pins to the top of the Inbox. VIPs only is the tightest — just mail from your VIP senders. Starred is what you've hand-picked; Starred + Important adds everything Gmail predicts matters, which can be a lot.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section {
-                    ForEach(store.vipEmails.sorted(), id: \.self) { email in
-                        HStack {
-                            Text(email)
-                            Spacer()
-                            Button {
-                                store.removeVIP(email)
-                            } label: {
-                                Image(systemName: "xmark.circle.fill")
-                                    .foregroundStyle(.secondary)
-                            }
-                            .buttonStyle(.plain)
-                            .help("Remove from VIPs")
-                        }
-                    }
                     HStack {
-                        TextField("email@example.com", text: $newVIP)
-                            .textFieldStyle(.roundedBorder)
-                            .onSubmit(addVIP)
-                        Button("Add", action: addVIP)
-                            .disabled(!newVIP.contains("@"))
+                        Text(store.vipEmails.isEmpty
+                             ? "No VIP senders yet"
+                             : "\(store.vipEmails.count) VIP sender\(store.vipEmails.count == 1 ? "" : "s")")
+                            .foregroundStyle(store.vipEmails.isEmpty ? AnyShapeStyle(.secondary)
+                                                                     : AnyShapeStyle(.primary))
+                        Spacer()
+                        Button("Edit…") { showVIPManager = true }
                     }
                 } header: {
                     Text("VIP senders")
@@ -796,6 +791,131 @@ struct AppearanceSettings: View {
             }
             .formStyle(.grouped)
         }
+        .sheet(isPresented: $showVIPManager) { VIPManager() }
+    }
+}
+
+/// Full VIP list editor. Quick add-one field on top, hover-to-remove rows,
+/// and a separate bulk section whose paste box pulls every email address out
+/// of free-form text (commas, newlines, "Name <email>", CSV columns).
+private struct VIPManager: View {
+    @EnvironmentObject var store: MailStore
+    @Environment(\.dismiss) private var dismiss
+    @State private var newVIP = ""
+    @State private var pasteText = ""
+    @State private var filter = ""
+    @State private var bulkExpanded = false
+
+    private var visibleEmails: [String] {
+        let all = store.vipEmails.sorted()
+        let f = filter.trimmingCharacters(in: .whitespaces).lowercased()
+        return f.isEmpty ? all : all.filter { $0.contains(f) }
+    }
+
+    private var pendingEmails: [String] {
+        PrioritySplit.parseEmails(pasteText).filter { !store.vipEmails.contains($0) }
+    }
+
+    private func addOne() {
+        guard newVIP.contains("@") else { return }
+        store.addVIP(newVIP)
+        newVIP = ""
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            HStack {
+                Text("VIP senders")
+                    .font(.headline)
+                Spacer()
+                if store.vipEmails.count > 8 {
+                    TextField("Filter", text: $filter)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 160)
+                }
+            }
+
+            HStack {
+                TextField("Add a sender: email@example.com", text: $newVIP)
+                    .textFieldStyle(.roundedBorder)
+                    .onSubmit(addOne)
+                Button("Add", action: addOne)
+                    .disabled(!newVIP.contains("@"))
+            }
+
+            List {
+                ForEach(visibleEmails, id: \.self) { email in
+                    VIPRow(email: email) { store.removeVIP(email) }
+                }
+                if store.vipEmails.isEmpty {
+                    Text("No VIP senders yet — add one above, paste a list below, or right-click any thread → Add sender to VIPs.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(minHeight: 200)
+
+            DisclosureGroup(isExpanded: $bulkExpanded) {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Paste any text that contains email addresses — an address book export, a CSV column, To/Cc lines like “Ada Lovelace <ada@example.org>, grace@example.mil”, or just one address per line. Every address is picked up automatically; duplicates and ones already on the list are skipped.")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                    TextEditor(text: $pasteText)
+                        .font(.system(size: 12.5))
+                        .frame(height: 88)
+                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
+                    HStack {
+                        Text(pasteText.isEmpty ? " "
+                             : pendingEmails.isEmpty
+                                ? "No new addresses found in the pasted text."
+                                : "Found \(pendingEmails.count) new address\(pendingEmails.count == 1 ? "" : "es").")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                        Spacer()
+                        Button("Add \(pendingEmails.count) sender\(pendingEmails.count == 1 ? "" : "s")") {
+                            store.addVIPs(pendingEmails)
+                            pasteText = ""
+                        }
+                        .disabled(pendingEmails.isEmpty)
+                    }
+                }
+                .padding(.top, 6)
+            } label: {
+                Text("Bulk add — paste a list")
+                    .font(.system(size: 12.5, weight: .medium))
+            }
+
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(16)
+        .frame(width: 480, height: 520)
+    }
+}
+
+/// One VIP list row: remove button only shows on hover, keeping the list clean.
+private struct VIPRow: View {
+    let email: String
+    let remove: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack {
+            Text(email)
+            Spacer()
+            Button(action: remove) {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Remove from VIPs")
+            .opacity(hovering ? 1 : 0)
+        }
+        .contentShape(Rectangle())
+        .onHover { hovering = $0 }
     }
 }
 

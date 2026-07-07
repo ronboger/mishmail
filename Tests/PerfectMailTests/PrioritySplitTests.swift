@@ -63,6 +63,50 @@ final class PrioritySplitTests: XCTestCase {
         XCTAssertTrue(priority.isEmpty)
     }
 
+    func testVIPsOnlyModePinsJustVIPs() {
+        let threads = [thread("t1", starred: true),
+                       thread("t2", labels: "INBOX IMPORTANT"),
+                       thread("t3")]
+        let (priority, rest) = PrioritySplit.partition(
+            threads, mode: .vips, vipThreadIds: ["a@x.com:t3"])
+        XCTAssertEqual(priority.map(\.gmailThreadId), ["t3"])
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["t1", "t2"])
+    }
+
+    func testVIPAlwaysPinsToggleOffExcludesVIPsFromStarredModes() {
+        let threads = [thread("t1", starred: true), thread("t2")]
+        for mode in [PrioritySplit.Mode.starred, .starredImportant] {
+            let (priority, rest) = PrioritySplit.partition(
+                threads, mode: mode, vipThreadIds: ["a@x.com:t2"],
+                vipAlwaysPins: false)
+            XCTAssertEqual(priority.map(\.gmailThreadId), ["t1"], "mode \(mode)")
+            XCTAssertEqual(rest.map(\.gmailThreadId), ["t2"], "mode \(mode)")
+        }
+    }
+
+    func testVIPAlwaysPinsToggleDoesNotAffectVIPsOnlyMode() {
+        let threads = [thread("t1")]
+        let (priority, _) = PrioritySplit.partition(
+            threads, mode: .vips, vipThreadIds: ["a@x.com:t1"],
+            vipAlwaysPins: false)
+        XCTAssertEqual(priority.map(\.gmailThreadId), ["t1"])
+    }
+
+    func testParseEmailsHandlesMixedFreeFormText() {
+        let text = """
+        Ada Lovelace <ada@analytical.org>, grace@navy.mil
+        turing@bletchley.uk; not-an-email
+        ADA@analytical.org
+        """
+        XCTAssertEqual(PrioritySplit.parseEmails(text),
+                       ["ada@analytical.org", "grace@navy.mil", "turing@bletchley.uk"])
+    }
+
+    func testParseEmailsEmptyAndJunk() {
+        XCTAssertEqual(PrioritySplit.parseEmails(""), [])
+        XCTAssertEqual(PrioritySplit.parseEmails("no addresses here @ all"), [])
+    }
+
     func testImportantSubstringLabelDoesNotMatch() {
         // "UNIMPORTANT" or a user label containing the word must not qualify.
         let threads = [thread("t1", labels: "INBOX Label_UNIMPORTANT")]
