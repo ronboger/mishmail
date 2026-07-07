@@ -80,7 +80,15 @@ final class KeyBindings: ObservableObject {
         overrides[command] ?? Self.catalog.first { $0.command == command }!.defaultKey
     }
 
+    /// Secondary built-in keys that fire a command when the key isn't
+    /// bound to anything else (a rebind to the key wins over the alias).
+    static let aliases: [String: ShortcutCommand] = ["h": .snooze]
+
     func command(for key: String) -> ShortcutCommand? {
+        primaryCommand(for: key) ?? Self.aliases[key]
+    }
+
+    private func primaryCommand(for key: String) -> ShortcutCommand? {
         Self.catalog.map(\.command).first { self.key(for: $0) == key }
     }
 
@@ -92,7 +100,7 @@ final class KeyBindings: ObservableObject {
             return .rejected("\"\(key)\" is reserved.")
         }
         if self.key(for: command) == key { return .ok }
-        if let other = self.command(for: key) { return .conflict(other) }
+        if let other = primaryCommand(for: key) { return .conflict(other) }
         overrides[command] = key
         persist()
         return .ok

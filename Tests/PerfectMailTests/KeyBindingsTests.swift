@@ -55,6 +55,15 @@ final class KeyBindingsTests: XCTestCase {
         XCTAssertEqual(kb.key(for: .archive), "e")
     }
 
+    func testAliasKeyTriggersCommandUntilRebound() {
+        let kb = KeyBindings(defaults: defaults)
+        XCTAssertEqual(kb.command(for: "b"), .snooze)
+        XCTAssertEqual(kb.command(for: "h"), .snooze)  // built-in alias
+        // A rebind to the alias key wins over the alias.
+        XCTAssertEqual(kb.rebind(.archive, to: "h"), .ok)
+        XCTAssertEqual(kb.command(for: "h"), .archive)
+    }
+
     func testRebindToOwnKeyIsOk() {
         let kb = KeyBindings(defaults: defaults)
         XCTAssertEqual(kb.rebind(.archive, to: "e"), .ok)
