@@ -285,6 +285,20 @@ struct ContentView: View {
             // Compose and the view editor keep their own Esc behavior.
             if event.keyCode == 53,
                store.composeRequest == nil, store.editingView == nil {
+                // The global monitor also fires for the Settings window. There,
+                // Esc should close Settings and return to the mailbox — not
+                // toggle the main window's reading pane. Drop text-field focus
+                // first so an in-progress edit commits before the window closes.
+                if let window = event.window,
+                   window.identifier?.rawValue.contains("Settings") == true {
+                    if window.firstResponder is NSTextView
+                        || window.firstResponder is NSTextField {
+                        window.makeFirstResponder(nil)
+                        return nil
+                    }
+                    window.close()
+                    return nil
+                }
                 if event.window?.firstResponder is NSTextView
                     || event.window?.firstResponder is NSTextField {
                     event.window?.makeFirstResponder(nil)
