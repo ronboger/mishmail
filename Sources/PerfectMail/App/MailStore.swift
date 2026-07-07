@@ -362,6 +362,23 @@ final class MailStore: ObservableObject {
         showNotice("\(e) added to VIPs")
     }
 
+    /// Batch add (VIP manager paste box): one write, one reload, one notice.
+    /// Returns how many were actually new.
+    @discardableResult
+    func addVIPs(_ emails: [String]) -> Int {
+        let fresh = Set(emails.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+            .filter { $0.contains("@") && !vipEmails.contains($0) })
+        guard !fresh.isEmpty else { return 0 }
+        try? db.write { db in
+            for e in fresh { try VIPSender(email: e).save(db) }
+        }
+        loadVIPs()
+        reloadThreads()
+        showNotice(fresh.count == 1 ? "\(fresh.first!) added to VIPs"
+                                    : "\(fresh.count) senders added to VIPs")
+        return fresh.count
+    }
+
     func removeVIP(_ email: String) {
         let e = email.trimmingCharacters(in: .whitespaces).lowercased()
         try? db.write { _ = try VIPSender.deleteOne($0, key: e) }

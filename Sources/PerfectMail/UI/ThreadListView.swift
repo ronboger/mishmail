@@ -33,6 +33,7 @@ struct ThreadListView: View {
     @AppStorage("groupBy") private var groupByRaw = GroupBy.date.rawValue
     @AppStorage("fontScale") private var fontScale = 1.0
     @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
+    @AppStorage("vipAlwaysPins") private var vipAlwaysPins = true
 
     private var groupBy: GroupBy { GroupBy(rawValue: groupByRaw) ?? .date }
 
@@ -45,7 +46,8 @@ struct ThreadListView: View {
         let (priority, rest) = PrioritySplit.partition(
             store.threads,
             mode: store.selectedView == .inbox ? mode : .off,
-            vipThreadIds: store.vipThreadIds)
+            vipThreadIds: store.vipThreadIds,
+            vipAlwaysPins: vipAlwaysPins)
         var out: [(String, [MailThread])] = []
         if !priority.isEmpty { out.append((Self.prioritySection, priority)) }
         out += groups(rest)
