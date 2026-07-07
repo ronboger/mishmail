@@ -556,6 +556,7 @@ struct HTMLBodyView: NSViewRepresentable {
         let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src \(imgSrc); style-src 'unsafe-inline'\">"
         let style = """
             <style>
+            html, body { height: auto !important; min-height: 0 !important; }
             body { font: \(Int(14.5 * fontScale))px -apple-system, sans-serif; color: canvastext; margin: 0; }
             img { max-width: 100%; height: auto; }
             @media (prefers-color-scheme: dark) { body { color: #ddd; } a { color: #6cb2ff; } }
@@ -578,7 +579,7 @@ struct HTMLBodyView: NSViewRepresentable {
         /// Content (images, layout) can settle after didFinish; re-measure a
         /// few times and keep the tallest stable value.
         private func measure(_ webView: WKWebView, attempt: Int) {
-            webView.evaluateJavaScript("document.documentElement.scrollHeight") { [weak self] result, _ in
+            webView.evaluateJavaScript("Math.ceil(Math.max(document.body.scrollHeight, document.body.getBoundingClientRect().height))") { [weak self] result, _ in
                 if let h = result as? CGFloat, h > 0 {
                     DispatchQueue.main.async { self?.setHeight?(max(h, 40)) }
                 }
