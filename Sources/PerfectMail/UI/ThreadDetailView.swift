@@ -11,7 +11,6 @@ struct ThreadDetailView: View {
     @State private var messages: [Message] = []
     @State private var threadAttachments: [(message: Message, attachment: AttachmentRow)] = []
     @State private var scrolledMessageId: String?
-    @State private var labelsExpanded = false
     @State private var aiSummary: String?
     @State private var summarizing = false
     @State private var summaryError: String?
@@ -43,62 +42,6 @@ struct ThreadDetailView: View {
                     }
                     .padding(.horizontal)
                 }
-
-                // Labels on this thread, collapsed behind a disclosure by
-                // default. Expanding shows chips with add/remove; "l" still
-                // opens the picker regardless.
-                VStack(alignment: .leading, spacing: 6) {
-                    Button {
-                        withAnimation(.easeOut(duration: 0.12)) { labelsExpanded.toggle() }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "tag")
-                            Text(userLabelIds.isEmpty ? "Labels" : "Labels (\(userLabelIds.count))")
-                            Image(systemName: labelsExpanded ? "chevron.down" : "chevron.right")
-                                .font(.system(size: 8 * fontScale, weight: .semibold))
-                        }
-                        .font(.system(size: 11 * fontScale))
-                        .foregroundStyle(.secondary)
-                    }
-                    .buttonStyle(.plain)
-                    .help("Show labels on this thread (\(store.keyBindings.key(for: .label)) labels it)")
-
-                    if labelsExpanded {
-                        HStack(spacing: 6) {
-                            ForEach(userLabelIds, id: \.self) { labelId in
-                                let name = store.labelName(labelId, account: thread.accountId) ?? labelId
-                                let tint = store.labelTint(name, account: thread.accountId)
-                                HStack(spacing: 4) {
-                                    Circle().fill(tint).frame(width: 7, height: 7)
-                                    Text(name).font(.system(size: 11.5 * fontScale))
-                                    Button {
-                                        store.toggleLabel(thread, labelId: labelId)
-                                    } label: {
-                                        Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
-                                    }
-                                    .buttonStyle(.plain).foregroundStyle(.secondary)
-                                }
-                                .padding(.horizontal, 8).padding(.vertical, 3)
-                                .background(tint.opacity(0.15), in: Capsule())
-                            }
-                            Button {
-                                store.showLabelPicker = true
-                            } label: {
-                                HStack(spacing: 3) {
-                                    Image(systemName: "plus")
-                                    Text(userLabelIds.isEmpty ? "Add label" : "")
-                                }
-                                .font(.system(size: 11 * fontScale))
-                                .foregroundStyle(.secondary)
-                                .padding(.horizontal, 8).padding(.vertical, 3)
-                                .background(Color.secondary.opacity(0.1), in: Capsule())
-                            }
-                            .buttonStyle(.plain)
-                            .help("Label this thread (\(store.keyBindings.key(for: .label)))")
-                        }
-                    }
-                }
-                .padding(.horizontal)
 
                 ForEach(messages) { message in
                     MessageCard(message: message,
@@ -175,11 +118,11 @@ struct ThreadDetailView: View {
     }
 
     /// Notion Mail-style meta row under the subject: an attachments menu
-    /// (every file in the thread, one click to Quick Look) and read-only
-    /// Gmail category chips ("Important", "Updates", …).
-    @ViewBuilder
+    /// (every file in the thread, one click to Quick Look), removable
+    /// category chips (Gmail categories, Important, and user labels), and
+    /// "Add category" opening the label picker.
     private var threadMetaRow: some View {
-        if !threadAttachments.isEmpty || !categoryChips.isEmpty {
+        ScrollView(.horizontal, showsIndicators: false) {
             HStack(spacing: 10) {
                 if !threadAttachments.isEmpty {
                     Menu {
@@ -207,28 +150,59 @@ struct ThreadDetailView: View {
                     .fixedSize()
                     .help("Attachments in this thread — click to Quick Look")
                 }
-                ForEach(categoryChips, id: \.self) { chip in
-                    Text(chip)
-                        .font(.system(size: 11 * fontScale, weight: .medium))
-                        .foregroundStyle(.secondary)
-                        .padding(.horizontal, 8).padding(.vertical, 3)
-                        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 5))
+                ForEach(categoryChipItems, id: \.id) { chip in
+                    HStack(spacing: 5) {
+                        if let tint = chip.tint {
+                            Circle().fill(tint).frame(width: 7, height: 7)
+                        }
+                        Text(chip.name)
+                            .font(.system(size: 11.5 * fontScale, weight: .medium))
+                        Button {
+                            store.toggleLabel(thread, labelId: chip.id)
+                        } label: {
+                            Image(systemName: "xmark")
+                                .font(.system(size: 8, weight: .bold))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Remove \(chip.name)")
+                    }
+                    .foregroundStyle(chip.tint == nil ? Color.secondary : .primary)
+                    .padding(.horizontal, 8).padding(.vertical, 3)
+                    .background((chip.tint?.opacity(0.15) ?? Color.secondary.opacity(0.1)),
+                                in: RoundedRectangle(cornerRadius: 5))
                 }
+                Button {
+                    store.showLabelPicker = true
+                } label: {
+                    Text("Add category")
+                        .font(.system(size: 12 * fontScale))
+                        .foregroundStyle(.secondary)
+                }
+                .buttonStyle(.plain)
+                .help("Label this thread (\(store.keyBindings.key(for: .label)))")
                 Spacer(minLength: 0)
             }
             .padding(.horizontal)
         }
     }
 
-    /// Gmail's own classification of this thread, shown Notion Mail-style.
-    private var categoryChips: [String] {
-        thread.labels.compactMap { label in
-            if label == "IMPORTANT" { return "Important" }
-            if label.hasPrefix("CATEGORY_"), label != "CATEGORY_PERSONAL" {
-                return label.dropFirst("CATEGORY_".count).capitalized
+    /// Everything categorizing this thread, Notion Mail-style: Gmail's own
+    /// classification (Important, Updates, …) plus the user's labels, all
+    /// removable in place.
+    private var categoryChipItems: [(id: String, name: String, tint: Color?)] {
+        var items: [(id: String, name: String, tint: Color?)] = []
+        for label in thread.labels {
+            if label == "IMPORTANT" {
+                items.append((label, "Important", nil))
+            } else if label.hasPrefix("CATEGORY_"), label != "CATEGORY_PERSONAL" {
+                items.append((label, String(label.dropFirst("CATEGORY_".count)).capitalized, nil))
             }
-            return nil
         }
+        for labelId in userLabelIds {
+            let name = store.labelName(labelId, account: thread.accountId) ?? labelId
+            items.append((labelId, name, store.labelTint(name, account: thread.accountId)))
+        }
+        return items
     }
 
     /// On-device AI summary. Only offered for multi-message threads (a single
@@ -661,6 +635,37 @@ struct MessageCard: View {
             Button("Copy \"\(email)\"") { copyToPasteboard(email) }
             if name.lowercased() != email.lowercased() {
                 Button("Copy \"\(name)\"") { copyToPasteboard(name) }
+            }
+            // Split/block only make sense for other people's addresses.
+            if !store.accounts.contains(where: { $0.id.lowercased() == email.lowercased() }) {
+                Divider()
+                Button {
+                    store.splitFromInbox(matching: email, named: name)
+                } label: {
+                    Label("Split \(name) from Inbox", systemImage: "arrow.triangle.branch")
+                }
+                if let domain = email.split(separator: "@").last.map(String.init),
+                   domain.contains(".") {
+                    Button {
+                        store.splitFromInbox(matching: "@\(domain)", named: domain)
+                    } label: {
+                        Label("Split \(domain) from Inbox", systemImage: "at")
+                    }
+                }
+                Divider()
+                if store.isBlocked(email) {
+                    Button {
+                        store.unblockSender(email)
+                    } label: {
+                        Label("Unblock \(email)", systemImage: "person.crop.circle.badge.checkmark")
+                    }
+                } else {
+                    Button(role: .destructive) {
+                        store.blockSender(email)
+                    } label: {
+                        Label("Block \(email)", systemImage: "person.crop.circle.badge.xmark")
+                    }
+                }
             }
         } label: {
             HStack(spacing: 6) {

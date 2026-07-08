@@ -121,6 +121,10 @@ struct FilterChips: Equatable, Codable {
     var labelExclude = false      // "does not contain" mode for the label
     var senderContains = ""
     var senderExclude = false     // "does not contain" mode for the sender
+    /// Matches against message From headers (email address or "@domain"),
+    /// unlike senderContains which matches display names. Optional so views
+    /// saved before this field existed still decode. Powers "Split from Inbox".
+    var fromEmailContains: String? = nil
     var hasAttachmentOnly = false
     var noAttachmentOnly = false
     var readOnly = false          // isUnread == false
@@ -424,6 +428,67 @@ final class MailStore: ObservableObject {
         vipThreadIds = hits
     }
 
+    // MARK: - Blocked senders
+
+    /// Lowercased blocked addresses. Their threads move to Spam immediately
+    /// on block and again after every sync (new arrivals).
+    @Published private(set) var blockedEmails: Set<String> = []
+
+    func loadBlocked() {
+        let rows = (try? db.read { try BlockedSender.fetchAll($0) }) ?? []
+        blockedEmails = Set(rows.map { $0.email.lowercased() })
+    }
+
+    func isBlocked(_ email: String) -> Bool {
+        blockedEmails.contains(email.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    func blockSender(_ email: String) {
+        let e = email.trimmingCharacters(in: .whitespaces).lowercased()
+        guard e.contains("@") else { return }
+        try? db.write { try BlockedSender(email: e).save($0) }
+        loadBlocked()
+        applyBlocklist()
+        showNotice("Blocked \(e) — their mail goes to Spam")
+    }
+
+    func unblockSender(_ email: String) {
+        let e = email.trimmingCharacters(in: .whitespaces).lowercased()
+        try? db.write { _ = try BlockedSender.deleteOne($0, key: e) }
+        loadBlocked()
+        showNotice("Unblocked \(e)")
+    }
+
+    /// Moves every inbox thread from a blocked sender to Spam. Quiet (no
+    /// per-thread undo toast — blocking is the undoable act, via Unblock).
+    /// Runs on block and after each sync so new arrivals never linger.
+    func applyBlocklist() {
+        guard !blockedEmails.isEmpty else { return }
+        let rows = (try? db.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT DISTINCT thread.id AS threadId, message.fromHeader AS fromHeader
+                FROM thread JOIN message ON message.threadId = thread.id
+                WHERE thread.inInbox = 1 AND thread.inTrash = 0
+                """)
+        }) ?? []
+        var hitIds = Set<String>()
+        for row in rows {
+            let header: String = row["fromHeader"]
+            if blockedEmails.contains(MessageParser.emailAddress(header).lowercased()) {
+                hitIds.insert(row["threadId"])
+            }
+        }
+        guard !hitIds.isEmpty else { return }
+        let hits = (try? db.read { db in
+            try MailThread.filter(hitIds.contains(Column("id"))).fetchAll(db)
+        }) ?? []
+        for thread in hits {
+            mutateThread(thread) { $0.inInbox = false } remote: { client, id in
+                try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
+            }
+        }
+    }
+
     /// User-facing label for an account ("Personal", "Fund", …).
     func renameAccount(_ id: String, label: String) {
         let trimmed = label.trimmingCharacters(in: .whitespaces)
@@ -497,6 +562,7 @@ final class MailStore: ObservableObject {
         reloadAccounts()
         reloadSavedViews()
         loadVIPs()
+        loadBlocked()
         reloadThreads()
         reloadScheduledSends()
         // Anything that came due while the app was closed goes out now.
@@ -785,6 +851,12 @@ final class MailStore: ObservableObject {
             q = q.filter(sql: chips.senderExclude ? "NOT \(condition)" : condition,
                          arguments: [pattern, pattern])
         }
+        if let sender = chips.fromEmailContains, !sender.isEmpty {
+            q = q.filter(sql: """
+                EXISTS (SELECT 1 FROM message
+                        WHERE message.threadId = thread.id AND message.fromHeader LIKE ?)
+                """, arguments: ["%\(sender)%"])
+        }
         for (header, value) in [("toHeader", chips.toContains),
                                 ("ccHeader", chips.ccContains),
                                 ("bccHeader", chips.bccContains)] where !value.isEmpty {
@@ -1035,6 +1107,24 @@ final class MailStore: ObservableObject {
         reloadSavedViews()
     }
 
+    /// Notion Mail-style "Split from Inbox": a new saved view holding all
+    /// mail whose From header matches `sender` (an address, or "@domain"),
+    /// then jump straight into it.
+    func splitFromInbox(matching sender: String, named name: String) {
+        var chips = FilterChips()
+        chips.fromEmailContains = sender
+        chips.showArchived = true   // the view is their full history, not inbox-only
+        var view = SavedView.empty()
+        view.name = name
+        view.showArchived = true    // saveView folds this back into the chips
+        view.chipsJSON = try? JSONEncoder().encode(chips)
+        saveView(view)
+        if let saved = savedViews.last(where: { $0.name == name }), let id = saved.id {
+            selectedView = .saved(id, name)
+        }
+        showNotice("New view: \(name)")
+    }
+
     func deleteView(_ view: SavedView) {
         guard let id = view.id else { return }
         try? db.write { db in _ = try SavedView.deleteOne(db, key: id) }
@@ -1094,6 +1184,7 @@ final class MailStore: ObservableObject {
 
     func syncAll() async {
         for account in accounts { await sync(accountId: account.id) }
+        applyBlocklist()
         notifyNewMail()
         rebuildContacts()
         autoClassifyNewMail()
