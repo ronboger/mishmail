@@ -101,6 +101,7 @@ extension MailboxView {
         case .trash: return "trash"
         case .account: return "person.crop.circle"
         case .label: return "tag.fill"
+        case .labels: return "tag.fill"
         case .saved: return "line.3.horizontal.decrease.circle"
         }
     }
@@ -113,7 +114,7 @@ extension MailboxView {
         case .starred: return .hex(0xF2C94C)      // yellow
         case .snoozed: return .hex(0xF2994A)      // orange
         case .reminders: return .hex(0xF2994A)
-        case .label: return .hex(0x27AE60)        // green
+        case .label, .labels: return .hex(0x27AE60)  // green
         default: return .secondary
         }
     }

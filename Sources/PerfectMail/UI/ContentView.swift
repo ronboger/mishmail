@@ -422,6 +422,7 @@ struct Sidebar: View {
                     sidebarItem(.social, badge: store.unreadCounts["social"])
                     sidebarItem(.starred, badge: store.unreadCounts["starred"])
                     sidebarItem(.snoozed, badge: store.unreadCounts["snoozed"])
+                    sidebarItem(.labels)
                     ForEach(store.savedViews) { view in
                         sidebarItem(.saved(view.id ?? -1, view.name))
                             .contextMenu {
@@ -447,16 +448,6 @@ struct Sidebar: View {
                     }
                     sidebarItem(.reminders, badge: store.unreadCounts["reminders"])
                     sidebarItem(.trash)
-                }
-                // Notion Mail-style Labels section: the account's Gmail labels,
-                // each tinted with its label color. Unified scope lists every
-                // account's labels (organizer order within each account).
-                if !sidebarLabels.isEmpty {
-                    Section("Labels") {
-                        ForEach(sidebarLabels, id: \.id) { label in
-                            labelItem(label)
-                        }
-                    }
                 }
             }
             .listStyle(.sidebar)
@@ -557,24 +548,6 @@ struct Sidebar: View {
                     in: RoundedRectangle(cornerRadius: 6))
         .padding(.top, 4)
         .transition(.opacity)
-    }
-
-    /// Labels shown in the sidebar: the active account's, or every
-    /// account's when the unified scope is selected.
-    private var sidebarLabels: [LabelRow] {
-        if let id = store.activeAccountId { return store.userLabels(forAccount: id) }
-        return store.accounts.flatMap { store.userLabels(forAccount: $0.id) }
-    }
-
-    private func labelItem(_ label: LabelRow) -> some View {
-        Label {
-            Text(label.name)
-        } icon: {
-            Image(systemName: "tag.fill")
-                .foregroundStyle(store.labelTint(label.name, account: label.accountId))
-        }
-        .tag(MailboxView.label(account: label.accountId,
-                               labelId: label.gmailLabelId, name: label.name))
     }
 
     /// Notion Mail-style row: each view keeps its own icon color.

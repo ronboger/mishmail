@@ -9,6 +9,7 @@ enum MailboxView: Hashable {
     case social
     case starred
     case snoozed
+    case labels         // all labeled mail, one section per label (Notion-style)
     case reminders
     case drafts
     case scheduled      // locally scheduled sends (not Gmail threads)
@@ -26,6 +27,7 @@ enum MailboxView: Hashable {
         case .social: return "Social"
         case .starred: return "Starred"
         case .snoozed: return "Snoozed"
+        case .labels: return "Labels"
         case .reminders: return "Reminders"
         case .drafts: return "Drafts"
         case .scheduled: return "Scheduled"
@@ -48,6 +50,7 @@ enum MailboxView: Hashable {
         case .social: return "social"
         case .starred: return "starred"
         case .snoozed: return "snoozed"
+        case .labels: return "labels"
         case .reminders: return "reminders"
         case .drafts: return "drafts"
         case .sent: return "sent"
@@ -989,6 +992,10 @@ final class MailStore: ObservableObject {
             q = q.filter(Column("isStarred") == true && Column("inTrash") == false)
         case .snoozed:
             q = q.filter(Column("snoozeUntil") != nil && Column("snoozeUntil") > now && Column("inTrash") == false)
+        case .labels:
+            // Any user label (Gmail user label ids are "Label_<n>"); system
+            // labels (INBOX, SENT, CATEGORY_*) never match.
+            q = q.filter(Column("inTrash") == false && Column("labelIds").like("%Label_%"))
         case .reminders:
             q = q.filter(Column("reminderAt") != nil)
         case .drafts:

@@ -61,6 +61,9 @@ struct ThreadListView: View {
     }
 
     private func groups(_ threads: [MailThread]) -> [(String, [MailThread])] {
+        // The Labels view always groups by label (that's the whole point),
+        // regardless of the user's grouping preference.
+        if store.selectedView == .labels { return labelSections(threads) }
         switch groupBy {
         case .date: return groupedByDate(threads)
         case .starred: return partition(threads, "Starred", "Everything else") { $0.isStarred }
@@ -75,6 +78,32 @@ struct ThreadListView: View {
         }
         case .aiCategory: return groupedBy(threads) { store.aiCategories[$0.id] ?? "Unsorted" }
         }
+    }
+
+    /// Notion Mail-style Labels view: one section per user label, in the
+    /// organizer's label order; a thread files under its first label in
+    /// that order (each thread appears once so keyboard nav stays sane).
+    private func labelSections(_ threads: [MailThread]) -> [(String, [MailThread])] {
+        var orderedNames: [String] = []
+        var seen = Set<String>()
+        for account in store.accounts {
+            for label in store.userLabels(forAccount: account.id)
+            where seen.insert(label.name).inserted {
+                orderedNames.append(label.name)
+            }
+        }
+        let rank = Dictionary(orderedNames.enumerated().map { ($1, $0) },
+                              uniquingKeysWith: { first, _ in first })
+        var buckets: [String: [MailThread]] = [:]
+        for thread in threads {
+            let name = thread.labels
+                .compactMap { store.labelName($0, account: thread.accountId) }
+                .min { (rank[$0] ?? .max) < (rank[$1] ?? .max) }
+            buckets[name ?? "No label", default: []].append(thread)
+        }
+        var out = orderedNames.compactMap { name in buckets[name].map { (name, $0) } }
+        if let rest = buckets["No label"] { out.append(("No label", rest)) }
+        return out
     }
 
     private func groupedByDate(_ threads: [MailThread]) -> [(String, [MailThread])] {
