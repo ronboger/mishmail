@@ -489,10 +489,8 @@ struct Sidebar: View {
         .background(Color.notionSidebar)
     }
 
-    /// Notion Mail-style row: each view keeps its own icon color.
-    @ViewBuilder
     /// Recents shown under the focused search field: all of them when the
-    /// field is empty, prefix-filtered while typing (hiding an exact match).
+    /// field is empty, substring-filtered while typing (hiding an exact match).
     private var visibleRecentSearches: [String] {
         let typed = store.searchText.trimmingCharacters(in: .whitespaces)
         guard !typed.isEmpty else { return store.recentSearches }
@@ -548,6 +546,8 @@ struct Sidebar: View {
         .transition(.opacity)
     }
 
+    /// Notion Mail-style row: each view keeps its own icon color.
+    @ViewBuilder
     private func sidebarItem(_ view: MailboxView, badge: Int? = nil) -> some View {
         Label {
             Text(view.title)
