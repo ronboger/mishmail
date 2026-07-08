@@ -794,7 +794,9 @@ struct FilterBar: View {
     private var allLabels: [LabelRow] {
         let labels = store.labelsByAccount.values.flatMap { $0 }
         var seen = Set<String>()
-        return labels.filter { seen.insert($0.gmailLabelId).inserted }.sorted { $0.name < $1.name }
+        // Dedupe by the account-scoped row id: raw Gmail label ids (Label_1, Label_9…)
+        // collide across accounts and would silently drop labels.
+        return labels.filter { seen.insert($0.id).inserted }.sorted { $0.name < $1.name }
     }
 
     /// A persistent toggle chip: highlighted while its filter is on.
@@ -860,7 +862,7 @@ struct FilterBar: View {
             } else {
                 ScrollView {
                     VStack(alignment: .leading, spacing: 1) {
-                        ForEach(matches, id: \.gmailLabelId) { label in
+                        ForEach(matches, id: \.id) { label in
                             labelFilterRow(label)
                         }
                     }

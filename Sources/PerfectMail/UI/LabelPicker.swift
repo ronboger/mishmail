@@ -32,6 +32,12 @@ struct LabelPicker: View {
                             }
                         }
                         .onChange(of: store.labelPickerQuery) { store.labelPickerHighlight = 0 }
+                    if store.accounts.count > 1 {
+                        Text(thread.accountId)
+                            .font(.caption).foregroundStyle(.secondary)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                            .padding(.horizontal, 12).padding(.bottom, 6)
+                    }
                     Divider()
                     ScrollViewReader { proxy in
                         ScrollView {
@@ -54,7 +60,7 @@ struct LabelPicker: View {
                                     .id(idx)
                                 }
                                 if labels.isEmpty {
-                                    Text("No labels").font(.caption).foregroundStyle(.secondary)
+                                    Text("No labels in \(thread.accountId)").font(.caption).foregroundStyle(.secondary)
                                         .padding(12)
                                 }
                             }
