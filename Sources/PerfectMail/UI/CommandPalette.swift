@@ -119,8 +119,7 @@ struct CommandPalette: View {
         // Search is always the first, default action for any typed text.
         let search = Command(id: "search", title: "Search mail for \u{201C}\(raw)\u{201D}",
                              icon: "magnifyingglass") { s in
-            s.searchText = raw
-            s.reloadThreads()
+            s.commitSearch(raw)
             // Land keyboard focus on the results so j/k work right away.
             DispatchQueue.main.async {
                 NSApp.keyWindow?.makeFirstResponder(nil)

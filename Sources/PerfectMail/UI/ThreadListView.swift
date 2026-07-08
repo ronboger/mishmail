@@ -184,6 +184,35 @@ struct ThreadListView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            // Notion Mail-style: while a search is committed, a banner above
+            // the filter bar makes it unmistakable that the list is filtered.
+            if !store.committedSearch.isEmpty {
+                HStack(spacing: 8) {
+                    Image(systemName: "magnifyingglass")
+                        .font(.system(size: 11)).foregroundStyle(Color.notionAccent)
+                    Text("Results for")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    Text("\u{201C}\(store.committedSearch)\u{201D}")
+                        .font(.system(size: 12, weight: .semibold)).lineLimit(1)
+                    Text("· \(store.threads.count)")
+                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                    Spacer()
+                    Button {
+                        store.clearSearch()
+                    } label: {
+                        HStack(spacing: 4) {
+                            Image(systemName: "xmark.circle.fill").font(.system(size: 11))
+                            Text("Clear").font(.system(size: 11.5))
+                        }
+                        .foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Back to \(store.selectedView.title) (Esc)")
+                }
+                .padding(.horizontal, 12).padding(.vertical, 6)
+                .background(Color.notionAccent.opacity(0.08))
+                Divider()
+            }
             FilterBar()
             Divider()
             List(selection: $store.selectedThreadId) {
@@ -255,7 +284,7 @@ struct ThreadListView: View {
                     .foregroundStyle(store.selectedView.iconColor)
             }
             // While searching, let the user reach past the local cache to Gmail.
-            if !store.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+            if !store.committedSearch.trimmingCharacters(in: .whitespaces).isEmpty {
                 ToolbarItem(placement: .automatic) {
                     Button { store.searchAllGmail() } label: {
                         Label(store.serverSearching ? "Searching…" : "Search all of Gmail",
@@ -268,12 +297,12 @@ struct ThreadListView: View {
         }
         .overlay {
             if store.threads.isEmpty {
-                if !store.accounts.isEmpty, !store.searchText.trimmingCharacters(in: .whitespaces).isEmpty {
+                if !store.accounts.isEmpty, !store.committedSearch.trimmingCharacters(in: .whitespaces).isEmpty {
                     // Local search only covers cached mail — offer the server.
                     ContentUnavailableView {
                         Label("No local matches", systemImage: "magnifyingglass")
                     } description: {
-                        Text("Nothing cached matches “\(store.searchText)”. Older mail may still be on Gmail.")
+                        Text("Nothing cached matches “\(store.committedSearch)”. Older mail may still be on Gmail.")
                     } actions: {
                         Button { store.searchAllGmail() } label: {
                             Label(store.serverSearching ? "Searching…" : "Search all of Gmail",

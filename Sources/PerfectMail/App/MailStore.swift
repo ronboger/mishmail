@@ -200,10 +200,43 @@ final class MailStore: ObservableObject {
     @Published var showShortcutsHelp = false
     /// User-rebindable single-key shortcuts (Settings → Keyboard shortcuts).
     let keyBindings = KeyBindings()
+    /// Live text in the search field. Drives ONLY the dropdown preview —
+    /// the inbox list keeps showing `committedSearch` until you commit.
     @Published var searchText: String = ""
+    /// The query the thread list is actually filtered by. Set when a search
+    /// is committed (Enter / View all results / picking a suggestion).
+    @Published var committedSearch: String = ""
     /// Bumped by `/` (Gmail-style) to move keyboard focus into the sidebar
     /// search field. The sidebar watches this and drives its `@FocusState`.
     @Published var searchFocusToken = 0
+    /// True while the search field is focused, so ContentView can float the
+    /// wide command-K-style results panel over the message list.
+    @Published var searchActive = false
+    /// ↑/↓ highlight in the search dropdown (the panel clamps to its rows,
+    /// same pattern as labelPickerHighlight).
+    @Published var searchHighlight = 0
+    /// Bumped by Enter while the dropdown is open; the panel runs the
+    /// highlighted row.
+    @Published var searchActivateToken = 0
+
+    /// Commit a query: filter the thread list by it and remember it.
+    func commitSearch(_ query: String) {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return }
+        searchText = q
+        committedSearch = q
+        recordSearch(q)
+        reloadThreads()
+    }
+
+    /// Drop an active search and return to the plain view (Esc, or the ✕ on
+    /// the results banner).
+    func clearSearch() {
+        guard !searchText.isEmpty || !committedSearch.isEmpty else { return }
+        searchText = ""
+        committedSearch = ""
+        reloadThreads()
+    }
     /// Recent search queries, newest first, shown under the search field while
     /// it has focus. Persisted so history survives relaunch.
     @Published var recentSearches: [String] =
@@ -650,6 +683,7 @@ final class MailStore: ObservableObject {
     }
 
     init() {
+        DemoSeed.seedIfRequested(AppDatabase.shared.dbQueue)
         reloadAccounts()
         reloadSavedViews()
         loadVIPs()
@@ -739,6 +773,40 @@ final class MailStore: ObservableObject {
         }.prefix(6))
     }
 
+    /// A few matching threads for the live search dropdown — a cheap FTS lookup
+    /// over cached mail, newest first. Cheap enough to call per keystroke.
+    func threadSuggestions(for query: String, limit: Int = 5) -> [MailThread] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard q.count >= 1, let pattern = FTS5Pattern(matchingAllPrefixesIn: q) else { return [] }
+        return (try? db.read { db -> [MailThread] in
+            let ids = try Row.fetchAll(db, sql: """
+                SELECT DISTINCT message.threadId FROM message
+                JOIN message_fts ON message_fts.rowid = message.rowid
+                WHERE message_fts MATCH ? LIMIT 300
+                """, arguments: [pattern])
+                .map { $0["threadId"] as String }
+            guard !ids.isEmpty else { return [] }
+            return try MailThread
+                .filter(ids.contains(Column("id")))
+                .filter(Column("inTrash") == false)
+                .order(Column("lastDate").desc)
+                .limit(limit)
+                .fetchAll(db)
+        }) ?? []
+    }
+
+    /// Open a specific thread picked from search, even if it isn't in the
+    /// current view: fall back to All Mail so it's guaranteed to load.
+    func openThread(id: String) {
+        if !threads.contains(where: { $0.id == id }) {
+            selectedView = .allMail
+            searchText = ""
+            committedSearch = ""
+            reloadThreads()
+        }
+        selectedThreadId = id
+    }
+
     func client(for accountId: String) -> GmailClient {
         if let c = clients[accountId] { return c }
         let c = GmailClient(accountEmail: accountId)
@@ -795,7 +863,7 @@ final class MailStore: ObservableObject {
     func reloadThreads() {
         chipReloadTask?.cancel()   // a direct reload supersedes a pending debounced one
         let view = selectedView
-        let search = searchText.trimmingCharacters(in: .whitespaces)
+        let search = committedSearch.trimmingCharacters(in: .whitespaces)
         let chips = chips
         let activeAccount = activeAccountId
         if !readStateFilterActive { readStateKeepIds.removeAll() }
@@ -815,9 +883,15 @@ final class MailStore: ObservableObject {
                     q = q.filter(ids.contains(Column("id")))
                 }
                 if let from = parsed.from {
+                    // fromDisplay/participants hold display names, so an email
+                    // query ("from:x@y.com") must also check the raw header.
                     let pattern = "%\(from)%"
-                    q = q.filter(sql: "(fromDisplay LIKE ? OR participants LIKE ?)",
-                                 arguments: [pattern, pattern])
+                    q = q.filter(sql: """
+                        (fromDisplay LIKE ? OR participants LIKE ?
+                         OR EXISTS (SELECT 1 FROM message
+                                    WHERE message.threadId = thread.id
+                                      AND message.fromHeader LIKE ?))
+                        """, arguments: [pattern, pattern, pattern])
                 }
                 if let to = parsed.to {
                     // Recipient headers live on messages, so match via EXISTS.
@@ -883,7 +957,7 @@ final class MailStore: ObservableObject {
     /// mail, then reloads. Gmail's query syntax matches the app's operators, so
     /// the raw search text is passed through as the query.
     func searchAllGmail() {
-        let query = searchText.trimmingCharacters(in: .whitespaces)
+        let query = committedSearch.trimmingCharacters(in: .whitespaces)
         guard !query.isEmpty, !serverSearching else { return }
         serverSearching = true
         syncStatus = "Searching all mail…"
@@ -1274,6 +1348,9 @@ final class MailStore: ObservableObject {
     // MARK: - Sync
 
     func startPolling() {
+        // Demo mode has no real account and no token; polling would only spin
+        // up failed syncs and error banners over the screenshot fixtures.
+        if DemoSeed.isActive { return }
         fireDueSnoozes()  // catch snoozes that came due while the app was closed
         syncTimer?.invalidate()
         syncTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
