@@ -56,8 +56,15 @@ struct ThreadListView: View {
 
     private static let prioritySection = "Priority"
 
+    /// Labels view: sections the user folded shut. Keyboard nav skips them.
+    @State private var collapsedLabels: Set<String> = []
+
+    private func isCollapsed(_ title: String) -> Bool {
+        store.selectedView == .labels && collapsedLabels.contains(title)
+    }
+
     private var flatDisplayOrder: [String] {
-        grouped.flatMap { $0.1.map(\.id) }
+        grouped.flatMap { isCollapsed($0.0) ? [] : $0.1.map(\.id) }
     }
 
     private func groups(_ threads: [MailThread]) -> [(String, [MailThread])] {
@@ -106,6 +113,36 @@ struct ThreadListView: View {
         return out
     }
 
+    /// Labels view header: the label name as its colored Notion-style pill,
+    /// plus a count and a collapse chevron; clicking folds the section.
+    private func labelSectionHeader(_ title: String, count: Int) -> some View {
+        let tint = title == "No label" ? Color.secondary : store.labelTint(anyAccount: title)
+        let folded = collapsedLabels.contains(title)
+        return Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                if folded { collapsedLabels.remove(title) }
+                else { collapsedLabels.insert(title) }
+            }
+        } label: {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.system(size: 12 * fontScale, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .background(tint.opacity(0.16), in: Capsule())
+                Text("\(count)")
+                    .font(.system(size: 11 * fontScale))
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9 * fontScale, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(folded ? 0 : 90))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
     private func groupedByDate(_ threads: [MailThread]) -> [(String, [MailThread])] {
         let cal = Calendar.current
         let now = Date()
@@ -152,6 +189,7 @@ struct ThreadListView: View {
             List(selection: $store.selectedThreadId) {
                 ForEach(grouped, id: \.0) { title, threads in
                     Section {
+                        if !isCollapsed(title) {
                         ForEach(threads) { thread in
                             ThreadRow(thread: thread)
                                 .tag(thread.id)
@@ -170,10 +208,14 @@ struct ThreadListView: View {
                                 }
                                 .contextMenu { threadMenu(thread) }
                         }
+                        }
                     } header: {
                         // Compact so the pinned (sticky) header stays a thin
                         // line while scrolling. Secondary gray adapts to the
                         // theme and sets headers clearly apart from thread text.
+                        if store.selectedView == .labels {
+                            labelSectionHeader(title, count: threads.count)
+                        } else {
                         HStack(spacing: 4) {
                             if title == Self.prioritySection {
                                 Image(systemName: "star.fill")
@@ -184,6 +226,7 @@ struct ThreadListView: View {
                         }
                         .font(.system(size: 12 * fontScale, weight: .semibold))
                         .foregroundStyle(.secondary)
+                        }
                     } footer: {
                         // The air lives AFTER each group, so every gap between
                         // groups is this exact height.
