@@ -1056,59 +1056,92 @@ private struct VIPManager: View {
     }
 }
 
-/// Compact group picker for add/bulk fields.
-private struct GroupPickerCompact: View {
-    @Binding var selectedGroup: String
-    let allGroups: [String]
-    @State private var newGroupText = ""
-    @State private var showNewGroup = false
+/// Shared group menu: pick an existing group (checkmark on the current one),
+/// create a suggested group in one click, or name a new one in a popover.
+private struct GroupMenuButton: View {
+    /// Groups worth offering before any exist; hidden once created.
+    static let suggested = ["founders", "investors", "researchers", "family", "friends"]
 
-    private var displayText: String {
-        selectedGroup.isEmpty ? "No group" : selectedGroup
+    let current: String?          // nil = no group
+    let allGroups: [String]
+    let select: (String?) -> Void
+    @State private var showNewGroup = false
+    @State private var newGroupText = ""
+
+    private var remainingSuggestions: [String] {
+        Self.suggested.filter { !allGroups.contains($0) }
     }
 
     var body: some View {
-        if showNewGroup {
-            HStack(spacing: 4) {
-                TextField("New", text: $newGroupText)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(width: 70)
-                Button("OK") {
-                    if !newGroupText.trimmingCharacters(in: .whitespaces).isEmpty {
-                        selectedGroup = newGroupText.trimmingCharacters(in: .whitespaces)
-                        newGroupText = ""
-                        showNewGroup = false
-                    }
-                }
-                .font(.system(size: 11))
+        Menu {
+            Button {
+                select(nil)
+            } label: {
+                if current == nil { Label("No group", systemImage: "checkmark") }
+                else { Text("No group") }
             }
-        } else {
-            Menu {
-                Button("No group") {
-                    selectedGroup = ""
-                }
+            if !allGroups.isEmpty {
                 Divider()
                 ForEach(allGroups.sorted(), id: \.self) { group in
-                    Button(group) {
-                        selectedGroup = group
+                    Button {
+                        select(group)
+                    } label: {
+                        if group == current { Label(group, systemImage: "checkmark") }
+                        else { Text(group) }
                     }
                 }
-                Divider()
-                Button("New group…") {
-                    showNewGroup = true
-                }
-            } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 11))
-                    Text(displayText)
-                        .font(.system(size: 12))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(.secondary)
             }
-            .fixedSize()
+            if !remainingSuggestions.isEmpty {
+                Divider()
+                Section("Suggested") {
+                    ForEach(remainingSuggestions, id: \.self) { group in
+                        Button(group) { select(group) }
+                    }
+                }
+            }
+            Divider()
+            Button("New group…") { showNewGroup = true }
+        } label: {
+            HStack(spacing: 3) {
+                Image(systemName: "folder")
+                    .font(.system(size: 11))
+                Text(current ?? "No group")
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+            }
+            .foregroundStyle(.secondary)
         }
+        .fixedSize()
+        .popover(isPresented: $showNewGroup, arrowEdge: .bottom) {
+            HStack(spacing: 6) {
+                TextField("Group name", text: $newGroupText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 160)
+                    .onSubmit(commitNewGroup)
+                Button("Create", action: commitNewGroup)
+                    .disabled(newGroupText.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            .padding(10)
+        }
+    }
+
+    private func commitNewGroup() {
+        let name = newGroupText.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return }
+        select(name)
+        newGroupText = ""
+        showNewGroup = false
+    }
+}
+
+/// Group menu bound to a String selection ("" = no group), for add/bulk fields.
+private struct GroupPickerCompact: View {
+    @Binding var selectedGroup: String
+    let allGroups: [String]
+
+    var body: some View {
+        GroupMenuButton(current: selectedGroup.isEmpty ? nil : selectedGroup,
+                        allGroups: allGroups) { selectedGroup = $0 ?? "" }
     }
 }
 
@@ -1120,37 +1153,13 @@ private struct VIPRow: View {
     let remove: () -> Void
     let setGroup: (String?) -> Void
 
-    private var currentGroup: String {
-        groupName ?? "No group"
-    }
-
     var body: some View {
         HStack {
             Text(email)
                 .lineLimit(1)
             Spacer()
-            Menu {
-                Button("No group") {
-                    setGroup(nil)
-                }
-                Divider()
-                ForEach(allGroups.sorted(), id: \.self) { group in
-                    Button(group) {
-                        setGroup(group)
-                    }
-                }
-            } label: {
-                HStack(spacing: 3) {
-                    Image(systemName: "folder")
-                        .font(.system(size: 11))
-                    Text(currentGroup)
-                        .font(.system(size: 12))
-                        .lineLimit(1)
-                }
-                .foregroundStyle(.secondary)
-            }
-            .fixedSize()
-            .help("Move to a group")
+            GroupMenuButton(current: groupName, allGroups: allGroups, select: setGroup)
+                .help("Move to a group — or create a new one")
             Button(action: remove) {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
