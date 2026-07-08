@@ -658,9 +658,10 @@ struct ComposeView: View {
         // cursor lands at the top.
         let when = original.date.formatted(date: .abbreviated, time: .shortened)
         let who = "\(MessageParser.displayName(fromHeader: original.fromHeader)) <\(sender)>"
-        let quoted = original.bodyText
+        let quoted = MessageParser
+            .replyQuotableText(text: original.bodyText, html: original.bodyHTML)
             .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { "> \($0)" }
+            .map { $0.isEmpty ? ">" : "> \($0)" }
             .joined(separator: "\n")
         quotedTail = "\nOn \(when), \(who) wrote:\n\(quoted)"
         focusBody()
@@ -703,7 +704,8 @@ struct ComposeView: View {
         if let original {
             prompt = Ollama.draftReply(
                 originalFrom: original.fromHeader,
-                originalBody: original.bodyText,
+                originalBody: MessageParser.replyQuotableText(
+                    text: original.bodyText, html: original.bodyHTML),
                 intent: intent,
                 userEmail: fromAccount)
         } else {

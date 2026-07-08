@@ -65,7 +65,47 @@ final class MessageParsingTests: XCTestCase {
 
     func testStripHTML() {
         let html = "<div><p>Hello&nbsp;<b>world</b></p>&amp; more   spaces</div>"
-        XCTAssertEqual(MessageParser.stripHTML(html), "Hello world & more spaces")
+        XCTAssertEqual(MessageParser.stripHTML(html), "Hello world\n& more spaces")
+    }
+
+    func testStripHTMLDropsStyleAndScriptContents() {
+        // Notion Mail regression: its HTML carries a large <style> block whose
+        // CSS used to leak into the extracted text (and quoted replies).
+        let html = """
+        <html><head><title>ignore</title>
+        <style type="text/css">code { font-family: SFMono-Regular, Menlo; } \
+        p { border-radius: 0px; margin: 0px; }</style></head>
+        <body><script>alert("no")</script><!-- comment -->
+        <p>Sounds good, see you Friday.</p><p>Best,<br/>Ron</p></body></html>
+        """
+        let text = MessageParser.stripHTML(html)
+        XCTAssertEqual(text, "Sounds good, see you Friday.\nBest,\nRon")
+        XCTAssertFalse(text.contains("font-family"))
+        XCTAssertFalse(text.contains("ignore"))
+        XCTAssertFalse(text.contains("alert"))
+    }
+
+    func testStripHTMLStructureAndEntities() {
+        let html = "<ul><li>One</li><li>Two &#8212; dash</li></ul><p>A &amp;lt; B &#x41;</p>"
+        // List end + new paragraph is a paragraph break (one blank line).
+        XCTAssertEqual(MessageParser.stripHTML(html), "One\nTwo \u{2014} dash\n\nA &lt; B A")
+    }
+
+    func testStripHTMLCollapsesBlankRuns() {
+        let html = "<p>First</p><br><br><br><div></div><p>Second</p>"
+        XCTAssertEqual(MessageParser.stripHTML(html), "First\n\nSecond")
+    }
+
+    func testReplyQuotableTextPrefersHTML() {
+        // Legacy rows derived bodyText from HTML with the old stripper,
+        // so CSS junk may be stored; quoting must re-derive from the HTML.
+        let junk = "code { font-family: Menlo; } p { margin: 0px; } Hi there"
+        let html = "<style>code { font-family: Menlo; }</style><p>Hi there</p>"
+        XCTAssertEqual(MessageParser.replyQuotableText(text: junk, html: html), "Hi there")
+        // No HTML part: the plain text is authoritative.
+        XCTAssertEqual(MessageParser.replyQuotableText(text: "plain", html: nil), "plain")
+        // Empty/image-only HTML falls back to the plain part.
+        XCTAssertEqual(MessageParser.replyQuotableText(text: "plain", html: "<img src='x'>"), "plain")
     }
 
     // MARK: - HTML entity decoding
