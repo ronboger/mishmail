@@ -55,6 +55,9 @@ struct SearchField: View {
     /// Optional external focus binding so callers can move keyboard focus into
     /// the field programmatically (e.g. Gmail's `/`).
     var focused: FocusState<Bool>.Binding? = nil
+    /// Expanded look while the field is active (accent ring, brighter fill,
+    /// roomier padding) so the search target is unmistakable when focused.
+    var emphasized = false
     var onSubmit: () -> Void = {}
 
     var body: some View {
@@ -76,9 +79,17 @@ struct SearchField: View {
                 .buttonStyle(.plain)
             }
         }
-        .padding(.horizontal, compact ? 6 : 7).padding(.vertical, compact ? 3 : 5)
-        .background(Color.primary.opacity(0.06),
+        .padding(.horizontal, compact ? 6 : 7)
+        .padding(.vertical, compact ? 3 : (emphasized ? 7 : 5))
+        .background(Color.primary.opacity(emphasized ? 0.09 : 0.06),
                     in: RoundedRectangle(cornerRadius: compact ? 5 : 6))
+        .overlay {
+            if emphasized {
+                RoundedRectangle(cornerRadius: compact ? 5 : 6)
+                    .strokeBorder(Color.notionAccent.opacity(0.7), lineWidth: 1.5)
+            }
+        }
+        .animation(.easeOut(duration: 0.15), value: emphasized)
     }
 }
 
