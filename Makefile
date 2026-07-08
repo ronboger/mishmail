@@ -50,10 +50,12 @@ build: gen
 # real-account Debug app for testing sign-in/sync.
 DEMO ?= 1
 run: build
+	-pkill -f "PerfectMail Debug" 2>/dev/null || true
 	open -n "$(DEBUG_APP)" --env PERFECTMAIL_DEMO=$(DEMO)
 
 # Explicit alias for the screenshot/demo verb.
 demo: build
+	-pkill -f "PerfectMail Debug" 2>/dev/null || true
 	open -n "$(DEBUG_APP)" --env PERFECTMAIL_DEMO=1
 
 # Build Release and install it as your real /Applications app — the "ship it to

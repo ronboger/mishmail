@@ -318,8 +318,10 @@ struct ContentView: View {
             }
             // Search dropdown open: ↑/↓/Enter drive the panel directly, so
             // `/` → arrows → Enter works without ever leaving the keyboard.
-            // Intercepted here so the text field never sees them.
-            if store.searchActive, mods.isEmpty {
+            // Intercepted here so the text field never sees them. Main window
+            // only — Settings keeps its own arrows/Enter even while the
+            // sidebar field technically still holds main-window focus.
+            if store.searchActive, mods.isEmpty, event.window == NSApp.mainWindow {
                 switch event.keyCode {
                 case 125:  // down — panel clamps to its rows
                     store.searchHighlight += 1
@@ -606,34 +608,45 @@ struct SearchResultsPanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            ScrollView {
-                VStack(alignment: .leading, spacing: 0) {
-                    if trimmedSearch.isEmpty {
-                        recentsSection
-                    } else {
-                        viewAllResultsRow(index: 0)
-                    }
-                    if !shownContacts.isEmpty {
-                        sectionHeader("Contacts")
-                        ForEach(Array(shownContacts.enumerated()), id: \.element.id) { i, contact in
-                            contactRow(contact, index: contactsStart + i)
+            ScrollViewReader { proxy in
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        if trimmedSearch.isEmpty {
+                            recentsSection
+                        } else {
+                            viewAllResultsRow(index: 0).id(0)
+                        }
+                        if !shownContacts.isEmpty {
+                            sectionHeader("Contacts")
+                            ForEach(Array(shownContacts.enumerated()), id: \.element.id) { i, contact in
+                                contactRow(contact, index: contactsStart + i).id(contactsStart + i)
+                            }
+                        }
+                        if !threadPreview.isEmpty {
+                            sectionHeader("Threads")
+                            ForEach(Array(threadPreview.enumerated()), id: \.element.id) { i, thread in
+                                threadRow(thread, index: contactsStart + shownContacts.count + i)
+                                    .id(contactsStart + shownContacts.count + i)
+                            }
+                        }
+                        if !trimmedSearch.isEmpty, shownContacts.isEmpty, threadPreview.isEmpty {
+                            Text("No contacts or threads match")
+                                .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 12).padding(.vertical, 10)
                         }
                     }
-                    if !threadPreview.isEmpty {
-                        sectionHeader("Threads")
-                        ForEach(Array(threadPreview.enumerated()), id: \.element.id) { i, thread in
-                            threadRow(thread, index: contactsStart + shownContacts.count + i)
-                        }
-                    }
-                    if !trimmedSearch.isEmpty, shownContacts.isEmpty, threadPreview.isEmpty {
-                        Text("No contacts or threads match")
-                            .font(.system(size: 11.5)).foregroundStyle(.secondary)
-                            .padding(.horizontal, 12).padding(.vertical, 10)
-                    }
+                    .padding(.vertical, 5)
                 }
-                .padding(.vertical, 5)
+                .frame(maxHeight: 460)
+                // Keyboard highlight: clamp over-scrolled ↓ presses back to the
+                // last row (like LabelPicker) and keep the row visible.
+                .onChange(of: store.searchHighlight) {
+                    if store.searchHighlight >= rows.count {
+                        store.searchHighlight = max(rows.count - 1, 0)
+                    }
+                    proxy.scrollTo(highlight)
+                }
             }
-            .frame(maxHeight: 460)
         }
         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
         .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.08)))
@@ -646,6 +659,9 @@ struct SearchResultsPanel: View {
             store.searchHighlight = 0
             refreshThreadPreview()
         }
+        // The empty-query "latest threads" must track the list (it can reload
+        // right after ✕ clears a committed search, in either observer order).
+        .onChange(of: store.threads) { if trimmedSearch.isEmpty { refreshThreadPreview() } }
         // Enter from the key monitor: run whatever is highlighted.
         .onChange(of: store.searchActivateToken) { activate(rows[safe: highlight]) }
     }
@@ -790,6 +806,7 @@ struct SearchResultsPanel: View {
                     .buttonStyle(.plain)
                     .background(rowBackground(i))
                     .onHover { if $0 { store.searchHighlight = i } }
+                    .id(i)
                 }
                 .padding(.bottom, 5)
             }

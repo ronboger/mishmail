@@ -12,7 +12,13 @@ import GRDB
 /// Release app you install or ship.
 enum DemoSeed {
     static var isActive: Bool {
+        // Hard-disabled outside Debug so no environment variable can ever
+        // wipe/replace a real mail cache in the installed Release app.
+        #if DEBUG
         ProcessInfo.processInfo.environment["PERFECTMAIL_DEMO"] == "1"
+        #else
+        false
+        #endif
     }
 
     static let account = "you@example.com"
@@ -21,6 +27,14 @@ enum DemoSeed {
     /// launch reseeds from scratch, so the screenshots are deterministic.
     static func seedIfRequested(_ db: DatabaseQueue) {
         guard isActive else { return }
+        // Never clobber a real signed-in account: the wipe below only runs on
+        // a fresh database or one that already holds only the demo fixture.
+        // (`make run DEMO=0` is the verb for a real-account Debug session.)
+        let existing = (try? db.read { try Account.fetchAll($0) }) ?? []
+        guard existing.allSatisfy({ $0.id == account }) else {
+            NSLog("PerfectMail: demo seed skipped — a real account is signed in")
+            return
+        }
         try? db.write { database in
             for table in ["message", "thread", "threadAI", "label", "vipSender",
                           "attachment", "account"] {
