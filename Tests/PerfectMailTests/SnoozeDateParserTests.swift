@@ -96,6 +96,27 @@ final class SnoozeDateParserTests: XCTestCase {
         XCTAssertEqual([c.year, c.month, c.day], [2027, 8, 17])
     }
 
+    func testBareHourIsMilitaryTime() {
+        let c = comps(first("tm 20"))
+        XCTAssertEqual([c.month, c.day, c.hour], [7, 8, 20])
+    }
+
+    func testBareHourMorning() {
+        let c = comps(first("tm 10"))
+        XCTAssertEqual([c.month, c.day, c.hour], [7, 8, 10])
+    }
+
+    func testBareHourAfterWeekday() {
+        let c = comps(first("fri 15"))
+        XCTAssertEqual([c.month, c.day, c.hour], [7, 10, 15])
+    }
+
+    func testMonthDayNotTreatedAsBareHour() {
+        // "aug 12" must stay Aug 12, not August at hour 12.
+        let c = comps(first("aug 12"))
+        XCTAssertEqual([c.month, c.day], [8, 12])
+    }
+
     func testEmptyAndGarbage() {
         XCTAssertTrue(SnoozeDateParser.suggestions(for: "", now: now).isEmpty)
         XCTAssertTrue(SnoozeDateParser.suggestions(for: "zzzz", now: now).isEmpty)
