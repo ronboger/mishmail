@@ -226,6 +226,9 @@ struct ContentView: View {
             guard let store else { return event }
             // Settings is capturing a key for rebinding — don't run shortcuts.
             if store.keyBindings.capturing { return event }
+            // The snooze sheet runs its own monitor (↑/↓/Return/Esc while
+            // typing a date) — everything must pass through untouched.
+            if store.snoozingThread != nil { return event }
             let mods = event.modifierFlags.intersection([.command, .option, .control])
             if mods == .command, event.charactersIgnoringModifiers == "k" {
                 store.showCommandPalette.toggle()
