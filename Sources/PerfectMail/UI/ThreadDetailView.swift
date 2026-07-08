@@ -63,14 +63,20 @@ struct ThreadDetailView: View {
                     Label("Close", systemImage: "chevron.right.2")
                 }
                 .help("Close (esc)")
+                .focusable(false)
+                .focusEffectDisabled()
                 Button { store.moveSelection(-1) } label: {
                     Label("Previous", systemImage: "chevron.up")
                 }
                 .help("Previous thread (\(store.keyBindings.key(for: .prev)))")
+                .focusable(false)
+                .focusEffectDisabled()
                 Button { store.moveSelection(1) } label: {
                     Label("Next", systemImage: "chevron.down")
                 }
                 .help("Next thread (\(store.keyBindings.key(for: .next)))")
+                .focusable(false)
+                .focusEffectDisabled()
             }
             ToolbarItemGroup {
                 Button { store.archive(thread) } label: {

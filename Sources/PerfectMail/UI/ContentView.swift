@@ -12,14 +12,14 @@ struct ContentView: View {
                 // Two columns: the thread list takes the full right side.
                 NavigationSplitView {
                     Sidebar()
-                        .navigationSplitViewColumnWidth(min: 230, ideal: 270, max: 400)
+                        .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 400)
                 } detail: {
                     listColumn
                 }
             } else {
                 NavigationSplitView {
                     Sidebar()
-                        .navigationSplitViewColumnWidth(min: 230, ideal: 270, max: 400)
+                        .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 400)
                 } content: {
                     listColumn
                         .navigationSplitViewColumnWidth(min: 420, ideal: 560)
