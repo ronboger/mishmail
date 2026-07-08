@@ -251,6 +251,14 @@ struct ContentView: View {
             // The snooze sheet runs its own monitor (↑/↓/Return/Esc while
             // typing a date) — everything must pass through untouched.
             if store.snoozingThread != nil { return event }
+            // Compose is open and the user is typing: every chord belongs to
+            // the text system (⌘K, ⌃F/⌃K caret motion, ⌘-digits, …), not to
+            // app-level shortcuts. SwiftUI .keyboardShortcut sends (⌘Return)
+            // and snippets (⌘/) are resolved before this monitor, so they
+            // keep working.
+            if store.composeRequest != nil, event.window?.firstResponder is NSText {
+                return event
+            }
             let mods = event.modifierFlags.intersection([.command, .option, .control])
             if mods == .command, event.charactersIgnoringModifiers == "k" {
                 store.showCommandPalette.toggle()
