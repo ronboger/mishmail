@@ -8,8 +8,13 @@ API (and, optionally, a local Ollama model that also never leaves the machine).
 > keyboard-driven, Notion-Mail-style inbox that runs entirely on their own
 > hardware. Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-<!-- Add a screenshot or short GIF here — it's the single most useful thing a
-     UI project's README can have. e.g. ![PerfectMail](Design/screenshot.png) -->
+<!-- Screenshots are captured from the built-in demo inbox (fictional mail, no
+     real account), so they're safe to publish. Run `make demo`, capture the
+     window, save it as docs/screenshots/inbox.png, then uncomment the line
+     below. See the "Screenshots" section for details.
+
+![PerfectMail inbox](docs/screenshots/inbox.png)
+-->
 
 ## Features
 
@@ -134,6 +139,26 @@ For a distributable binary, sign with a Developer ID, keep
 `ENABLE_HARDENED_RUNTIME` on (it already is), and notarize with `notarytool`.
 Each user still needs their own Google OAuth client (see above), so building
 from source stays a first-class path.
+
+
+### Screenshots
+
+The images in this README come from a **demo inbox** of entirely fictional mail,
+so they never expose a real account. To (re)generate them:
+
+```sh
+make demo    # builds the Debug app and launches it seeded with fake mail
+```
+
+`make demo` launches the isolated **PerfectMail Debug** app with
+`PERFECTMAIL_DEMO=1`, which reseeds a fresh fictional inbox on every launch (no
+network, no real account, no token). Capture with **⌘⇧4 then Space** to grab the
+window, and save into [`docs/screenshots/`](docs/screenshots/) as `inbox.png`
+(and any others referenced above). The seed data lives in
+[`Sources/PerfectMail/Support/DemoSeed.swift`](Sources/PerfectMail/Support/DemoSeed.swift)
+— edit it to change what the screenshots show. It is compiled only into Debug
+builds and does nothing unless `PERFECTMAIL_DEMO=1` is set, so it can never run
+in the Release app.
 
 
 ## Keyboard shortcuts

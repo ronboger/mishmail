@@ -30,7 +30,7 @@ DD = build/dd.noindex
 DEBUG_APP = $(DD)/Build/Products/Debug/PerfectMail Debug.app
 RELEASE_APP = $(DD)/Build/Products/Release/PerfectMail.app
 
-.PHONY: test build run install gen hooks release clean
+.PHONY: test build run demo install gen hooks release clean
 
 gen:
 	xcodegen generate
@@ -47,6 +47,13 @@ build: gen
 # Build the test app and launch it in place — the "let me look at my change" verb.
 run: build
 	open "$(DEBUG_APP)"
+
+# Build the Debug app and launch it seeded with fictional demo mail — the
+# "make screenshots for the README" verb. Uses the Debug app's isolated data,
+# reseeded fresh each launch (PERFECTMAIL_DEMO=1), so it never touches a real
+# account. See Sources/PerfectMail/Support/DemoSeed.swift.
+demo: build
+	open -n "$(DEBUG_APP)" --env PERFECTMAIL_DEMO=1
 
 # Build Release and install it as your real /Applications app — the "ship it to
 # my machine" verb. Replaces whatever PerfectMail.app is there.
