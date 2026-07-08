@@ -64,6 +64,38 @@ final class SnoozeDateParserTests: XCTestCase {
         XCTAssertEqual([c.month, c.day], [7, 13])
     }
 
+    func testTomorrowAbbreviationWithTime() {
+        let c = comps(first("tm 10am"))
+        XCTAssertEqual([c.month, c.day, c.hour], [7, 8, 10])
+    }
+
+    func testTomorrowAbbreviationVariants() {
+        for q in ["tmrw", "tmr", "tmw"] {
+            let c = comps(first(q))
+            XCTAssertEqual([c.month, c.day], [7, 8], "\(q) should be tomorrow")
+        }
+    }
+
+    func testMonthDayWithFourDigitYear() {
+        let c = comps(first("aug 17 2027"))
+        XCTAssertEqual([c.year, c.month, c.day], [2027, 8, 17])
+    }
+
+    func testMonthDayWithYearAndTime() {
+        let c = comps(first("aug 17 2027 3pm"))
+        XCTAssertEqual([c.year, c.month, c.day, c.hour], [2027, 8, 17, 15])
+    }
+
+    func testSlashDateWithTwoDigitYear() {
+        let c = comps(first("8/12/27"))
+        XCTAssertEqual([c.year, c.month, c.day], [2027, 8, 12])
+    }
+
+    func testDayMonthYear() {
+        let c = comps(first("17 aug 2027"))
+        XCTAssertEqual([c.year, c.month, c.day], [2027, 8, 17])
+    }
+
     func testEmptyAndGarbage() {
         XCTAssertTrue(SnoozeDateParser.suggestions(for: "", now: now).isEmpty)
         XCTAssertTrue(SnoozeDateParser.suggestions(for: "zzzz", now: now).isEmpty)
