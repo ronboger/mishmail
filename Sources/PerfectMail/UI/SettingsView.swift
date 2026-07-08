@@ -805,6 +805,9 @@ private struct VIPManager: View {
     @State private var pasteText = ""
     @State private var filter = ""
     @State private var bulkExpanded = false
+    @State private var highlighted = 0
+    @State private var dropTargeted = false
+    @FocusState private var addFieldFocused: Bool
 
     private var visibleEmails: [String] {
         let all = store.vipEmails.sorted()
@@ -816,10 +819,41 @@ private struct VIPManager: View {
         PrioritySplit.parseEmails(pasteText).filter { !store.vipEmails.contains($0) }
     }
 
+    private var addSuggestions: [MailStore.Contact] {
+        let token = newVIP.trimmingCharacters(in: .whitespaces)
+        guard !token.isEmpty else { return [] }
+        return store.contactSuggestions(for: token).filter { !store.vipEmails.contains($0.email) }
+    }
+
     private func addOne() {
         guard newVIP.contains("@") else { return }
         store.addVIP(newVIP)
         newVIP = ""
+    }
+
+    private func accept(_ contact: MailStore.Contact) {
+        store.addVIP(contact.email)
+        newVIP = ""
+    }
+
+    /// Reads dropped .csv/.txt (any plain-text) files into the paste box.
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers where provider.hasItemConformingToTypeIdentifier("public.file-url") {
+            handled = true
+            provider.loadItem(forTypeIdentifier: "public.file-url") { item, _ in
+                guard let data = item as? Data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil),
+                      let text = (try? String(contentsOf: url, encoding: .utf8))
+                                 ?? (try? String(contentsOf: url, encoding: .isoLatin1))
+                else { return }
+                DispatchQueue.main.async {
+                    bulkExpanded = true
+                    pasteText = pasteText.isEmpty ? text : pasteText + "\n" + text
+                }
+            }
+        }
+        return handled
     }
 
     var body: some View {
@@ -838,10 +872,58 @@ private struct VIPManager: View {
             HStack {
                 TextField("Add a sender: email@example.com", text: $newVIP)
                     .textFieldStyle(.roundedBorder)
-                    .onSubmit(addOne)
+                    .focused($addFieldFocused)
+                    .onChange(of: newVIP) { highlighted = 0 }
+                    .onKeyPress(.downArrow) {
+                        guard !addSuggestions.isEmpty else { return .ignored }
+                        highlighted = min(highlighted + 1, addSuggestions.count - 1)
+                        return .handled
+                    }
+                    .onKeyPress(.upArrow) {
+                        guard !addSuggestions.isEmpty else { return .ignored }
+                        highlighted = max(highlighted - 1, 0)
+                        return .handled
+                    }
+                    .onSubmit {
+                        if let pick = addSuggestions[safe: highlighted] { accept(pick) }
+                        else { addOne() }
+                    }
                 Button("Add", action: addOne)
                     .disabled(!newVIP.contains("@"))
             }
+            // Contact suggestions float over the list, same as the compose To field.
+            .overlay(alignment: .topLeading) {
+                if addFieldFocused, !addSuggestions.isEmpty {
+                    VStack(alignment: .leading, spacing: 0) {
+                        ForEach(Array(addSuggestions.enumerated()), id: \.element.id) { idx, contact in
+                            Button {
+                                accept(contact)
+                            } label: {
+                                HStack {
+                                    Text(contact.name.isEmpty ? contact.email : contact.name)
+                                        .font(.system(size: 12))
+                                    if !contact.name.isEmpty {
+                                        Text(contact.email)
+                                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                                    }
+                                    Spacer()
+                                }
+                                .padding(.horizontal, 8).padding(.vertical, 5)
+                                .background(idx == highlighted ? Color.notionAccent.opacity(0.18) : .clear)
+                                .contentShape(Rectangle())
+                            }
+                            .buttonStyle(.plain)
+                            .onHover { if $0 { highlighted = idx } }
+                        }
+                    }
+                    .frame(width: 380, alignment: .leading)
+                    .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                    .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+                    .shadow(radius: 10)
+                    .offset(y: 26)
+                }
+            }
+            .zIndex(10)
 
             List {
                 ForEach(visibleEmails, id: \.self) { email in
@@ -852,18 +934,30 @@ private struct VIPManager: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .frame(minHeight: 200)
+            .frame(minHeight: bulkExpanded ? 120 : 200)
 
-            DisclosureGroup(isExpanded: $bulkExpanded) {
+            DisclosureGroup(isExpanded: $bulkExpanded.animation()) {
                 VStack(alignment: .leading, spacing: 6) {
-                    Text("Paste any text that contains email addresses — an address book export, a CSV column, To/Cc lines like “Ada Lovelace <ada@example.org>, grace@example.mil”, or just one address per line. Every address is picked up automatically; duplicates and ones already on the list are skipped.")
+                    Text("Paste any text that contains email addresses — an address book export, a CSV column, To/Cc lines, or one address per line — or drag a CSV file in. Every address is picked up automatically; duplicates and ones already on the list are skipped.")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     TextEditor(text: $pasteText)
                         .font(.system(size: 12.5))
-                        .frame(height: 88)
-                        .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.separator))
+                        .frame(height: 96)
+                        .overlay(alignment: .topLeading) {
+                            if pasteText.isEmpty {
+                                Text("Ada Lovelace <ada@example.org>, grace@example.mil\njudith@example.com\n…or drop a .csv file here")
+                                    .font(.system(size: 12.5))
+                                    .foregroundStyle(.tertiary)
+                                    .padding(.top, 1).padding(.leading, 5)
+                                    .allowsHitTesting(false)
+                            }
+                        }
+                        .overlay(RoundedRectangle(cornerRadius: 6)
+                            .strokeBorder(dropTargeted ? Color.notionAccent : Color(nsColor: .separatorColor),
+                                          lineWidth: dropTargeted ? 2 : 1))
+                        .onDrop(of: ["public.file-url"], isTargeted: $dropTargeted) { handleDrop($0) }
                     HStack {
                         Text(pasteText.isEmpty ? " "
                              : pendingEmails.isEmpty
@@ -892,7 +986,9 @@ private struct VIPManager: View {
             }
         }
         .padding(16)
-        .frame(width: 480, height: 520)
+        // Grow the sheet when the bulk section opens so the list isn't crushed.
+        .frame(width: 480, height: bulkExpanded ? 640 : 520)
+        .onDrop(of: ["public.file-url"], isTargeted: nil) { handleDrop($0) }
     }
 }
 
