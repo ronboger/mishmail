@@ -1069,7 +1069,7 @@ struct ThreadRow: View {
                 HStack(spacing: 2) {
                     hoverButton("star", filled: thread.isStarred) { store.toggleStar(thread) }
                     hoverButton("archivebox") { store.archive(thread) }
-                    hoverButton("clock") { store.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 1)) }
+                    hoverButton("clock") { store.snoozingThread = thread }
                     hoverButton("trash") { store.trash(thread) }
                 }
                 .opacity(hovering ? 1 : 0)

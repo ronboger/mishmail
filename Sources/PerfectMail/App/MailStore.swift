@@ -1080,11 +1080,13 @@ final class MailStore: ObservableObject {
     // MARK: - Sync
 
     func startPolling() {
+        fireDueSnoozes()  // catch snoozes that came due while the app was closed
         syncTimer?.invalidate()
         syncTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.syncAll()
                 self?.fireDueReminders()
+                self?.fireDueSnoozes()
                 // Backstop for the one-shot timer (sleep/wake can eat it).
                 await self?.fireDueScheduledSends()
             }
@@ -1254,7 +1256,7 @@ final class MailStore: ObservableObject {
         case .trash: selectedThread.map(trash)
         case .toggleStar: selectedThread.map(toggleStar)
         case .toggleRead: if let t = selectedThread { setRead(t, read: t.isUnread) }
-        case .snooze: if let t = selectedThread { snooze(t, until: Self.snoozeDate(hour: 8, addDays: 1)) }
+        case .snooze: if let t = selectedThread { snoozingThread = t }
         case .next: moveSelection(1)
         case .prev: moveSelection(-1)
         case .reply: if let t = selectedThread {
@@ -1467,29 +1469,44 @@ final class MailStore: ObservableObject {
         }
     }
 
-    /// Snooze is local-only: the thread is hidden from the inbox until the
-    /// date passes. (Gmail has no first-class snooze API.)
+    /// Snooze mirrors what Gmail's own snooze looks like over the API: the
+    /// thread loses INBOX while sleeping and gets it back when the date
+    /// passes (or on unsnooze), so other Gmail clients agree with us.
+    /// `snoozeUntil` itself stays local — the API has no snooze field —
+    /// which also means threads snoozed *in* Gmail arrive here as archived
+    /// and reappear on sync when Gmail wakes them.
     func snooze(_ thread: MailThread, until date: Date?) {
+        guard let date else {  // unsnooze: back to the inbox now
+            mutateThread(thread) { $0.snoozeUntil = nil; $0.inInbox = true } remote: { client, id in
+                try await client.modifyThread(id: id, add: ["INBOX"])
+            }
+            return
+        }
         let wasSelected = selectedThreadId == thread.id
         let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
-        var copy = thread
-        copy.snoozeUntil = date
-        let updated = copy
-        try? db.write { db in try updated.save(db) }
-        reloadThreads()
+        mutateThread(thread) { $0.snoozeUntil = date; $0.inInbox = false } remote: { client, id in
+            try await client.modifyThread(id: id, remove: ["INBOX"])
+        }
         advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
-        guard let date else { return }  // unsnooze needs no toast
         let formatter = DateFormatter()
         formatter.dateFormat = Calendar.current.isDateInTomorrow(date) ? "'tomorrow' h a" : "MMM d, h a"
         offerUndo("Snoozed until \(formatter.string(from: date))") { [weak self] in
             guard let self else { return }
-            var restored = thread
-            restored.snoozeUntil = nil
-            let row = restored
-            try? self.db.write { db in try row.save(db) }
-            self.reloadThreads()
+            self.snooze(thread, until: nil)
             self.undoAction = nil
         }
+    }
+
+    /// Wakes snoozed threads whose date has passed: clears the snooze and
+    /// restores INBOX (locally and on Gmail). Runs on the sync tick.
+    private func fireDueSnoozes() {
+        let now = Date()
+        let due = (try? db.read { db in
+            try MailThread
+                .filter(Column("snoozeUntil") != nil && Column("snoozeUntil") <= now)
+                .fetchAll(db)
+        }) ?? []
+        for thread in due { snooze(thread, until: nil) }
     }
 
     // MARK: - Sending
