@@ -380,6 +380,12 @@ final class MailStore: ObservableObject {
     @Published private(set) var vipEmails: Set<String> = []
     @Published private(set) var vipThreadIds: Set<String> = []
     @Published private(set) var vipGroups: [String: String] = [:]
+    @Published private(set) var vipGroupEnabled: [String: Bool] = [:]
+
+    /// VIPs that actually count: members of a toggled-off group are paused.
+    var activeVIPEmails: Set<String> {
+        vipEmails.filter { vipGroupEnabled[vipGroups[$0] ?? ""] ?? true }
+    }
 
     func loadVIPs() {
         let rows = (try? db.read { try VIPSender.fetchAll($0) }) ?? []
@@ -391,12 +397,26 @@ final class MailStore: ObservableObject {
             }
         }
         vipGroups = groups
+        let groupRows = (try? db.read { try VIPGroupRow.fetchAll($0) }) ?? []
+        vipGroupEnabled = Dictionary(uniqueKeysWithValues: groupRows.map { ($0.name, $0.enabled) })
+    }
+
+    /// Group definitions persist in their own table so a group survives losing
+    /// its last member; tag values still count for rows created before v14.
+    private func ensureVIPGroup(_ name: String?, in db: GRDB.Database) throws {
+        guard let name, !name.isEmpty else { return }
+        if try VIPGroupRow.fetchOne(db, key: name) == nil {
+            try VIPGroupRow(name: name).insert(db)
+        }
     }
 
     func addVIP(_ email: String, group: String? = nil) {
         let e = email.trimmingCharacters(in: .whitespaces).lowercased()
         guard e.contains("@") else { return }
-        try? db.write { try VIPSender(email: e, groupName: group).save($0) }
+        try? db.write { db in
+            try ensureVIPGroup(group, in: db)
+            try VIPSender(email: e, groupName: group).save(db)
+        }
         loadVIPs()
         reloadThreads()
         showNotice("\(e) added to VIPs")
@@ -410,6 +430,7 @@ final class MailStore: ObservableObject {
             .filter { $0.contains("@") && !vipEmails.contains($0) })
         guard !fresh.isEmpty else { return 0 }
         try? db.write { db in
+            try ensureVIPGroup(group, in: db)
             for e in fresh { try VIPSender(email: e, groupName: group).save(db) }
         }
         loadVIPs()
@@ -430,16 +451,25 @@ final class MailStore: ObservableObject {
         let e = email.trimmingCharacters(in: .whitespaces).lowercased()
         let g = (group ?? "").isEmpty ? nil : group
         try? db.write { db in
+            try ensureVIPGroup(g, in: db)
             if var sender = try VIPSender.fetchOne(db, key: e) {
                 sender.groupName = g
                 try sender.update(db)
             }
         }
         loadVIPs()
+        reloadThreads()
+    }
+
+    /// Pause/resume VIP status for a whole group.
+    func setVIPGroupEnabled(_ name: String, _ enabled: Bool) {
+        try? db.write { try VIPGroupRow(name: name, enabled: enabled).save($0) }
+        loadVIPs()
+        reloadThreads()
     }
 
     var allVIPGroupNames: [String] {
-        Set(vipGroups.values).sorted()
+        Set(vipGroups.values).union(vipGroupEnabled.keys).sorted()
     }
 
     /// Newest sender address on a thread (for the Add/Remove VIP menu).
@@ -458,7 +488,8 @@ final class MailStore: ObservableObject {
     /// Recomputes which of the loaded threads came from a VIP. One query per
     /// reload, none when the VIP list is empty.
     func refreshVIPThreadIds() {
-        guard !vipEmails.isEmpty, !threads.isEmpty else {
+        let active = activeVIPEmails
+        guard !active.isEmpty, !threads.isEmpty else {
             if !vipThreadIds.isEmpty { vipThreadIds = [] }
             return
         }
@@ -473,7 +504,7 @@ final class MailStore: ObservableObject {
         var hits = Set<String>()
         for row in rows {
             let header: String = row["fromHeader"]
-            if vipEmails.contains(MessageParser.emailAddress(header).lowercased()) {
+            if active.contains(MessageParser.emailAddress(header).lowercased()) {
                 hits.insert(row["threadId"])
             }
         }

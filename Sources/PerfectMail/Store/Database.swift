@@ -163,6 +163,15 @@ struct VIPSender: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
     var id: String { email }
 }
 
+/// A VIP group definition: persists even with no members, and `enabled`
+/// pauses/resumes VIP status for every sender tagged with the group.
+struct VIPGroupRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "vipGroup"
+    var name: String
+    var enabled: Bool = true
+    var id: String { name }
+}
+
 /// A blocked sender: their threads are moved to Spam on sight (Notion
 /// Mail-style "Block"). Emails are stored lowercased; global across accounts.
 struct BlockedSender: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
@@ -456,6 +465,14 @@ final class AppDatabase {
         m.registerMigration("v13") { db in
             try db.alter(table: "vipSender") { t in
                 t.add(column: "groupName", .text)
+            }
+        }
+        // VIP group definitions: groups persist even when empty, and can be
+        // toggled off to pause their members' VIP status without removing them.
+        m.registerMigration("v14") { db in
+            try db.create(table: "vipGroup") { t in
+                t.primaryKey("name", .text)
+                t.column("enabled", .boolean).notNull().defaults(to: true)
             }
         }
         return m
