@@ -1129,6 +1129,14 @@ final class MailStore: ObservableObject {
                 "promotions": count(unread.filter(Column("labelIds").like("%CATEGORY_PROMOTIONS%"))),
                 "social": count(unread.filter(Column("labelIds").like("%CATEGORY_SOCIAL%"))),
                 "reminders": count(MailThread.filter(Column("reminderAt") != nil)),
+                // Totals (not unread), matching each view's query exactly.
+                "starred": count(MailThread.filter(
+                    Column("isStarred") == true && Column("inTrash") == false)),
+                "snoozed": count(MailThread.filter(
+                    Column("snoozeUntil") != nil && Column("snoozeUntil") > Date()
+                        && Column("inTrash") == false)),
+                "drafts": count(MailThread.filter(
+                    Column("labelIds").like("%DRAFT%") && Column("inTrash") == false)),
             ]
             // Same scope as the sidebar inbox count → reuse it.
             let badge = badgeAccount == activeAccount
