@@ -54,7 +54,17 @@ enum SnoozeDateParser {
             ("weekend", { at(nextWeekday(7)) }),            // Saturday
             ("this weekend", { at(nextWeekday(7)) }),
         ]
-        for (word, make) in keywords where word.hasPrefix(datePart) {
+        // Common abbreviations that don't prefix-match the full word
+        // ("tm"/"tmrw" → tomorrow, "td" → today).
+        let aliases: [String: [String]] = [
+            "tomorrow": ["tm", "tmr", "tmrw", "tmw", "tmo", "tmoro"],
+            "today": ["td", "tdy"],
+            "tonight": ["tn", "tnt"],
+        ]
+        func matchesKeyword(_ word: String) -> Bool {
+            word.hasPrefix(datePart) || (aliases[word]?.contains(datePart) ?? false)
+        }
+        for (word, make) in keywords where matchesKeyword(word) {
             add(word.capitalized, make())
         }
 
@@ -75,23 +85,42 @@ enum SnoozeDateParser {
             add("In \(n) \(m.2)\(n == 1 ? "" : "s")", unit == .hour ? target : at(target))
         }
 
-        // "aug 12" / "12 aug" / "8/12"
+        // "aug 12" / "12 aug" / "8/12", each optionally with a year
+        // ("aug 17 2027", "8/12/27"). Without a year we roll to next year
+        // if the date has already passed.
         let months = cal.monthSymbols.map { $0.lowercased() }
-        func monthDay(month: Int, day: Int) -> Date? {
+        func monthDay(month: Int, day: Int, year: Int? = nil) -> Date? {
+            if let year {
+                return cal.date(from: DateComponents(year: year, month: month, day: day)).flatMap { at($0) }
+            }
             var comps = DateComponents(year: cal.component(.year, from: now), month: month, day: day)
             guard let d = cal.date(from: comps) else { return nil }
             if let dated = at(d), dated > now { return dated }
             comps.year! += 1
             return cal.date(from: comps).flatMap { at($0) }
         }
-        if let m = datePart.wholeMatch(of: /([a-z]{3,}) (\d{1,2})/),
+        func label(month: Int, day: Int, year: Int?) -> String {
+            let base = "\(cal.monthSymbols[month]) \(day)"
+            return year.map { "\(base), \($0)" } ?? base
+        }
+        func fullYear(_ raw: Int?) -> Int? {
+            guard let raw else { return nil }
+            return raw < 100 ? 2000 + raw : raw
+        }
+        if let m = datePart.wholeMatch(of: /([a-z]{3,}) (\d{1,2})(?:,? (\d{2,4}))?/),
            let month = months.firstIndex(where: { $0.hasPrefix(String(m.1)) }) {
-            add("\(cal.monthSymbols[month]) \(m.2)", monthDay(month: month + 1, day: Int(m.2)!))
-        } else if let m = datePart.wholeMatch(of: /(\d{1,2}) ([a-z]{3,})/),
+            let year = fullYear(m.3.flatMap { Int($0) })
+            add(label(month: month, day: Int(m.2)!, year: year),
+                monthDay(month: month + 1, day: Int(m.2)!, year: year))
+        } else if let m = datePart.wholeMatch(of: /(\d{1,2}) ([a-z]{3,})(?:,? (\d{2,4}))?/),
                   let month = months.firstIndex(where: { $0.hasPrefix(String(m.2)) }) {
-            add("\(cal.monthSymbols[month]) \(m.1)", monthDay(month: month + 1, day: Int(m.1)!))
-        } else if let m = datePart.wholeMatch(of: /(\d{1,2})\/(\d{1,2})/) {
-            add("\(cal.monthSymbols[Int(m.1)! - 1]) \(m.2)", monthDay(month: Int(m.1)!, day: Int(m.2)!))
+            let year = fullYear(m.3.flatMap { Int($0) })
+            add(label(month: month, day: Int(m.1)!, year: year),
+                monthDay(month: month + 1, day: Int(m.1)!, year: year))
+        } else if let m = datePart.wholeMatch(of: /(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/) {
+            let year = fullYear(m.3.flatMap { Int($0) })
+            add(label(month: Int(m.1)! - 1, day: Int(m.2)!, year: year),
+                monthDay(month: Int(m.1)!, day: Int(m.2)!, year: year))
         }
 
         return Array(results.prefix(5))
@@ -125,6 +154,9 @@ enum SnoozeDateParser {
         let time = date.formatted(.dateTime.hour().minute())
         if cal.isDateInToday(date) { return "today \(time)" }
         if cal.isDateInTomorrow(date) { return "tomorrow \(time)" }
+        if cal.component(.year, from: date) != cal.component(.year, from: Date()) {
+            return date.formatted(.dateTime.month(.abbreviated).day().year()) + " \(time)"
+        }
         return date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()) + " \(time)"
     }
 }
