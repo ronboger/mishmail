@@ -1501,6 +1501,45 @@ final class MailStore: ObservableObject {
         }
     }
 
+    /// The "Create <query>" row's label name: the trimmed query, when it
+    /// wouldn't duplicate an existing label on the thread's account.
+    func labelPickerCreateName(for thread: MailThread) -> String? {
+        let name = labelPickerQuery.trimmingCharacters(in: .whitespaces)
+        guard !name.isEmpty else { return nil }
+        let exists = userLabels(forAccount: thread.accountId)
+            .contains { $0.name.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }
+        return exists ? nil : name
+    }
+
+    /// Creates the label on the thread's account, then applies it. The new
+    /// label lands highlighted in the (re-emptied) picker list so the applied
+    /// checkmark is visible.
+    func createLabelAndApply(name: String, thread: MailThread) {
+        let accountId = thread.accountId
+        let client = client(for: accountId)
+        Task {
+            do {
+                let l = try await client.createLabel(name: name)
+                await MainActor.run {
+                    try? self.db.write { db in
+                        try LabelRow(id: "\(accountId):\(l.id)", accountId: accountId,
+                                     gmailLabelId: l.id, name: l.name, type: l.type ?? "user",
+                                     color: l.color?.backgroundColor).save(db)
+                    }
+                    self.reloadAccounts()
+                    self.labelPickerQuery = ""
+                    if let idx = self.userLabels(forAccount: accountId)
+                        .firstIndex(where: { $0.gmailLabelId == l.id }) {
+                        self.labelPickerHighlight = idx
+                    }
+                    self.toggleLabel(thread, labelId: l.id)
+                }
+            } catch {
+                await MainActor.run { self.lastError = error.localizedDescription }
+            }
+        }
+    }
+
     /// When the query matches a label that only exists on a *different*
     /// account, name it so the miss isn't silent (labels apply per account).
     func labelPickerOtherAccountMatch(excluding accountId: String) -> LabelRow? {
