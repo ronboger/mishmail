@@ -377,6 +377,8 @@ struct Sidebar: View {
     @ObservedObject private var updates = UpdateChecker.shared
     // Driven by `/` (Gmail-style) via store.searchFocusToken.
     @FocusState private var searchFocused: Bool
+    // Live thread matches for the search dropdown; refreshed as the query changes.
+    @State private var threadPreview: [MailThread] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -395,23 +397,14 @@ struct Sidebar: View {
                 .help("Compose (⌘N or \(store.keyBindings.key(for: .compose)))")
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-            VStack(spacing: 0) {
-                SearchField(prompt: "Search", text: $store.searchText, focused: $searchFocused,
-                            emphasized: searchFocused, onSubmit: {
-                    store.recordSearch(store.searchText)
-                    // Hand focus back to the list so j/k/e/etc. work.
-                    NSApp.keyWindow?.makeFirstResponder(nil)
-                    if store.selectedThreadId == nil { store.moveSelection(1) }
-                })
+            SearchField(prompt: "Search", text: $store.searchText, focused: $searchFocused,
+                        emphasized: searchFocused, onSubmit: { runFullSearch(store.searchText) })
                 .help("Search — from: to: subject: label: has:attachment is:unread is:starred after: before:")
-                if searchFocused, !visibleRecentSearches.isEmpty {
-                    recentSearchesPanel
-                }
-            }
-            .padding(.horizontal, 10).padding(.bottom, 8)
-            .animation(.easeOut(duration: 0.15), value: searchFocused)
-            // Gmail's `/`: focus search.
-            .onChange(of: store.searchFocusToken) { searchFocused = true }
+                .padding(.horizontal, 10).padding(.bottom, 8)
+                // Gmail's `/`: focus search.
+                .onChange(of: store.searchFocusToken) { searchFocused = true }
+                .onChange(of: store.searchText) { refreshThreadPreview() }
+                .onChange(of: searchFocused) { if searchFocused { refreshThreadPreview() } }
             List(selection: $store.selectedView) {
                 Section("Views") {
                     sidebarItem(.inbox, badge: store.unreadCounts["inbox"])
@@ -448,6 +441,17 @@ struct Sidebar: View {
             }
             .listStyle(.sidebar)
             .scrollContentBackground(.hidden)
+            // Command-K-style search dropdown floats over the list while the
+            // field is focused, so it can grow tall without shoving the sidebar.
+            .overlay(alignment: .top) {
+                if searchFocused {
+                    searchDropdown
+                        .padding(.horizontal, 10)
+                        .padding(.top, 2)
+                        .transition(.opacity.combined(with: .move(edge: .top)))
+                }
+            }
+            .animation(.easeOut(duration: 0.14), value: searchFocused)
 
             // Settings pinned at the bottom (also Cmd-, from anywhere).
             Divider()
@@ -489,61 +493,190 @@ struct Sidebar: View {
         .background(Color.notionSidebar)
     }
 
-    /// Recents shown under the focused search field: all of them when the
-    /// field is empty, substring-filtered while typing (hiding an exact match).
+    // MARK: - Search dropdown (command-K style)
+
+    private var trimmedSearch: String {
+        store.searchText.trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Recents shown when the field is focused but empty; substring-filtered
+    /// while typing (hiding an exact match).
     private var visibleRecentSearches: [String] {
-        let typed = store.searchText.trimmingCharacters(in: .whitespaces)
-        guard !typed.isEmpty else { return store.recentSearches }
+        guard !trimmedSearch.isEmpty else { return store.recentSearches }
         return store.recentSearches.filter {
-            $0.range(of: typed, options: .caseInsensitive) != nil
-                && $0.caseInsensitiveCompare(typed) != .orderedSame
+            $0.range(of: trimmedSearch, options: .caseInsensitive) != nil
+                && $0.caseInsensitiveCompare(trimmedSearch) != .orderedSame
         }
     }
 
-    private var recentSearchesPanel: some View {
+    private var contactMatches: [MailStore.Contact] {
+        trimmedSearch.isEmpty ? [] : store.contactSuggestions(for: trimmedSearch)
+    }
+
+    /// The floating panel: recents when empty, otherwise the "view all results"
+    /// row plus Contacts and Threads sections (Notion Mail-style).
+    private var searchDropdown: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Text("Recent searches")
-                    .font(.system(size: 10.5, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button("Clear") { store.clearRecentSearches() }
-                    .buttonStyle(.plain)
-                    .font(.system(size: 10.5))
-                    .foregroundStyle(.secondary)
-                    .help("Clear search history")
-            }
-            .padding(.horizontal, 8).padding(.top, 7).padding(.bottom, 3)
-            ForEach(visibleRecentSearches, id: \.self) { query in
-                HStack(spacing: 6) {
-                    Image(systemName: "clock.arrow.circlepath")
-                        .font(.system(size: 10)).foregroundStyle(.secondary)
-                    Text(query)
-                        .font(.system(size: 12)).lineLimit(1)
-                    Spacer(minLength: 4)
-                    Button {
-                        store.removeRecentSearch(query)
-                    } label: {
-                        Image(systemName: "xmark")
-                            .font(.system(size: 8.5)).foregroundStyle(.secondary)
+            if trimmedSearch.isEmpty {
+                recentsSection
+            } else {
+                ScrollView {
+                    VStack(alignment: .leading, spacing: 0) {
+                        viewAllResultsRow
+                        if !contactMatches.isEmpty {
+                            sectionHeader("Contacts")
+                            ForEach(contactMatches) { contact in contactRow(contact) }
+                        }
+                        if !threadPreview.isEmpty {
+                            sectionHeader("Threads")
+                            ForEach(threadPreview) { thread in threadRow(thread) }
+                        }
+                        if contactMatches.isEmpty && threadPreview.isEmpty {
+                            Text("No contacts or threads match")
+                                .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                                .padding(.horizontal, 10).padding(.vertical, 8)
+                        }
                     }
-                    .buttonStyle(.plain)
-                    .help("Remove from history")
+                    .padding(.vertical, 4)
                 }
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .contentShape(Rectangle())
-                .onTapGesture {
-                    store.searchText = query
-                    store.recordSearch(query)
-                    NSApp.keyWindow?.makeFirstResponder(nil)
-                }
+                .frame(maxHeight: 420)
             }
-            .padding(.bottom, 4)
         }
-        .background(Color.primary.opacity(0.04),
-                    in: RoundedRectangle(cornerRadius: 6))
-        .padding(.top, 4)
-        .transition(.opacity)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(Color.primary.opacity(0.08)))
+        .shadow(color: .black.opacity(0.18), radius: 16, y: 6)
+    }
+
+    private func sectionHeader(_ title: String) -> some View {
+        Text(title.uppercased())
+            .font(.system(size: 9.5, weight: .semibold)).kerning(0.4)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 3)
+    }
+
+    private var viewAllResultsRow: some View {
+        Button { runFullSearch(store.searchText) } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "magnifyingglass").font(.system(size: 12)).frame(width: 18)
+                Text("View all results")
+                Text("\u{201C}\(trimmedSearch)\u{201D}")
+                    .foregroundStyle(.secondary).lineLimit(1)
+                Spacer(minLength: 4)
+                Image(systemName: "return").font(.system(size: 10)).foregroundStyle(.secondary)
+            }
+            .font(.system(size: 12.5))
+            .padding(.horizontal, 10).padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func contactRow(_ contact: MailStore.Contact) -> some View {
+        Button {
+            // Notion Mail-style: jump to everything from this person.
+            runFullSearch("from:\(contact.email)")
+        } label: {
+            HStack(spacing: 8) {
+                avatar(for: contact.name.isEmpty ? contact.email : contact.name)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(contact.name.isEmpty ? contact.email : contact.name)
+                        .font(.system(size: 12.5)).lineLimit(1)
+                    if !contact.name.isEmpty {
+                        Text(contact.email)
+                            .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                    }
+                }
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func threadRow(_ thread: MailThread) -> some View {
+        Button {
+            store.openThread(id: thread.id)
+            store.recordSearch(trimmedSearch)
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: "envelope")
+                    .font(.system(size: 12)).foregroundStyle(.secondary).frame(width: 18)
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
+                        .font(.system(size: 12.5, weight: thread.isUnread ? .semibold : .regular))
+                        .lineLimit(1)
+                    Text(thread.participants.isEmpty ? thread.snippet : thread.participants)
+                        .font(.system(size: 11)).foregroundStyle(.secondary).lineLimit(1)
+                }
+                Spacer(minLength: 4)
+            }
+            .padding(.horizontal, 10).padding(.vertical, 5)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
+
+    private func avatar(for label: String) -> some View {
+        let initial = label.first.map { String($0).uppercased() } ?? "?"
+        return Circle()
+            .fill(Color.secondary.opacity(0.25))
+            .frame(width: 22, height: 22)
+            .overlay(Text(initial).font(.system(size: 10, weight: .semibold))
+                .foregroundStyle(.secondary))
+    }
+
+    private var recentsSection: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            if visibleRecentSearches.isEmpty {
+                Text("No recent searches")
+                    .font(.system(size: 11.5)).foregroundStyle(.secondary)
+                    .padding(.horizontal, 10).padding(.vertical, 8)
+            } else {
+                HStack {
+                    Text("RECENT SEARCHES")
+                        .font(.system(size: 9.5, weight: .semibold)).kerning(0.4)
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    Button("Clear") { store.clearRecentSearches() }
+                        .buttonStyle(.plain).font(.system(size: 10.5))
+                        .foregroundStyle(.secondary).help("Clear search history")
+                }
+                .padding(.horizontal, 10).padding(.top, 8).padding(.bottom, 3)
+                ForEach(visibleRecentSearches, id: \.self) { query in
+                    HStack(spacing: 8) {
+                        Image(systemName: "clock.arrow.circlepath")
+                            .font(.system(size: 11)).foregroundStyle(.secondary).frame(width: 18)
+                        Text(query).font(.system(size: 12.5)).lineLimit(1)
+                        Spacer(minLength: 4)
+                        Button { store.removeRecentSearch(query) } label: {
+                            Image(systemName: "xmark").font(.system(size: 8.5))
+                                .foregroundStyle(.secondary)
+                        }
+                        .buttonStyle(.plain).help("Remove from history")
+                    }
+                    .padding(.horizontal, 10).padding(.vertical, 5)
+                    .contentShape(Rectangle())
+                    .onTapGesture { runFullSearch(query) }
+                }
+                .padding(.bottom, 4)
+            }
+        }
+    }
+
+    /// Run the full search: set the query, remember it, hand focus to the list.
+    private func runFullSearch(_ query: String) {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return }
+        store.searchText = q
+        store.recordSearch(q)
+        NSApp.keyWindow?.makeFirstResponder(nil)
+        if store.selectedThreadId == nil { store.moveSelection(1) }
+    }
+
+    private func refreshThreadPreview() {
+        threadPreview = searchFocused ? store.threadSuggestions(for: trimmedSearch) : []
     }
 
     /// Notion Mail-style row: each view keeps its own icon color.

@@ -676,6 +676,39 @@ final class MailStore: ObservableObject {
         }.prefix(6))
     }
 
+    /// A few matching threads for the live search dropdown — a cheap FTS lookup
+    /// over cached mail, newest first. Cheap enough to call per keystroke.
+    func threadSuggestions(for query: String, limit: Int = 5) -> [MailThread] {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard q.count >= 1, let pattern = FTS5Pattern(matchingAllPrefixesIn: q) else { return [] }
+        return (try? db.read { db -> [MailThread] in
+            let ids = try Row.fetchAll(db, sql: """
+                SELECT DISTINCT message.threadId FROM message
+                JOIN message_fts ON message_fts.rowid = message.rowid
+                WHERE message_fts MATCH ? LIMIT 300
+                """, arguments: [pattern])
+                .map { $0["threadId"] as String }
+            guard !ids.isEmpty else { return [] }
+            return try MailThread
+                .filter(ids.contains(Column("id")))
+                .filter(Column("inTrash") == false)
+                .order(Column("lastDate").desc)
+                .limit(limit)
+                .fetchAll(db)
+        }) ?? []
+    }
+
+    /// Open a specific thread picked from search, even if it isn't in the
+    /// current view: fall back to All Mail so it's guaranteed to load.
+    func openThread(id: String) {
+        if !threads.contains(where: { $0.id == id }) {
+            selectedView = .allMail
+            searchText = ""
+            reloadThreads()
+        }
+        selectedThreadId = id
+    }
+
     func client(for accountId: String) -> GmailClient {
         if let c = clients[accountId] { return c }
         let c = GmailClient(accountEmail: accountId)
