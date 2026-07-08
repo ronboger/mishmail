@@ -163,6 +163,14 @@ struct VIPSender: Codable, Identifiable, Hashable, FetchableRecord, PersistableR
     var id: String { email }
 }
 
+/// A blocked sender: their threads are moved to Spam on sight (Notion
+/// Mail-style "Block"). Emails are stored lowercased; global across accounts.
+struct BlockedSender: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "blockedSender"
+    var email: String
+    var id: String { email }
+}
+
 struct LabelRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "label"
     /// sortOrder for labels the user hasn't ordered yet: they sort after any
@@ -437,8 +445,15 @@ final class AppDatabase {
                 t.primaryKey("email", .text)
             }
         }
-        // VIP groups: optional tag (founders, investors, family, …) per VIP sender.
+        // Blocked senders: their threads leave the inbox for Spam, now and on
+        // every future sync. Stored lowercased; global across accounts.
         m.registerMigration("v12") { db in
+            try db.create(table: "blockedSender") { t in
+                t.primaryKey("email", .text)
+            }
+        }
+        // VIP groups: optional tag (founders, investors, family, …) per VIP sender.
+        m.registerMigration("v13") { db in
             try db.alter(table: "vipSender") { t in
                 t.add(column: "groupName", .text)
             }

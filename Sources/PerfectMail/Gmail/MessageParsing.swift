@@ -70,11 +70,85 @@ enum MessageParser {
         return Data(base64Encoded: b64)
     }
 
+    /// Converts an HTML body to readable plain text. Non-content elements
+    /// (`<style>`, `<script>`, `<head>`, comments) are removed *with their
+    /// contents* — Notion Mail in particular ships a large `<style>` block
+    /// whose CSS used to leak into quoted replies. Structural tags become
+    /// newlines so paragraphs survive, then entities are decoded.
     static func stripHTML(_ html: String) -> String {
-        html.replacingOccurrences(of: "<[^>]+>", with: " ", options: .regularExpression)
-            .decodingHTMLEntities()
-            .replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        var s = html
+        // Tags whose contents are not message text: drop tag AND contents.
+        for tag in ["style", "script", "head", "title"] {
+            s = s.replacingOccurrences(
+                of: "<\(tag)\\b[^>]*>[\\s\\S]*?</\(tag)\\s*>",
+                with: " ", options: [.regularExpression, .caseInsensitive])
+        }
+        s = s.replacingOccurrences(of: "<!--[\\s\\S]*?-->", with: " ",
+                                   options: .regularExpression)
+        // Structure → newlines, before the tags themselves are stripped.
+        // Closing tags only: open+close both breaking would leave a blank
+        // line between every adjacent paragraph/list item.
+        s = s.replacingOccurrences(of: "<br\\s*/?\\s*>", with: "\n",
+                                   options: [.regularExpression, .caseInsensitive])
+        s = s.replacingOccurrences(
+            of: "</(p|div|li|ul|ol|h[1-6]|tr|table|blockquote|pre|section|article|header|footer)\\s*>",
+            with: "\n", options: [.regularExpression, .caseInsensitive])
+        s = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        s = decodeEntities(s)
+        // Tidy: collapse horizontal whitespace per line, trim line edges,
+        // and allow at most one blank line between paragraphs.
+        var lines: [String] = []
+        for raw in s.components(separatedBy: "\n") {
+            let line = raw
+                .replacingOccurrences(of: "[ \\t\\r\u{00A0}]+", with: " ",
+                                      options: .regularExpression)
+                .trimmingCharacters(in: .whitespaces)
+            if line.isEmpty && (lines.last?.isEmpty ?? true) { continue }
+            lines.append(line)
+        }
+        while lines.last?.isEmpty == true { lines.removeLast() }
+        return lines.joined(separator: "\n")
+    }
+
+    /// Decodes the common named entities plus numeric forms
+    /// (`&#8217;`, `&#x1F600;`). `&amp;` goes last so `&amp;lt;` stays `&lt;`.
+    static func decodeEntities(_ s: String) -> String {
+        var r = s
+        for (entity, ch) in [("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"),
+                             ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'")] {
+            r = r.replacingOccurrences(of: entity, with: ch)
+        }
+        if let regex = try? NSRegularExpression(pattern: "&#(x[0-9a-fA-F]+|[0-9]+);") {
+            var result = ""
+            var last = r.startIndex
+            for m in regex.matches(in: r, range: NSRange(r.startIndex..., in: r)) {
+                guard let range = Range(m.range, in: r),
+                      let numRange = Range(m.range(at: 1), in: r) else { continue }
+                let num = r[numRange]
+                let value = num.hasPrefix("x")
+                    ? UInt32(num.dropFirst(), radix: 16)
+                    : UInt32(num)
+                result += r[last..<range.lowerBound]
+                if let value, let scalar = Unicode.Scalar(value) {
+                    result.append(Character(scalar))
+                }
+                last = range.upperBound
+            }
+            result += r[last...]
+            r = result
+        }
+        return r.replacingOccurrences(of: "&amp;", with: "&")
+    }
+
+    /// The text a reply should quote. Prefer the HTML body — it is what the
+    /// reading pane displayed, and older synced rows derived `bodyText` from
+    /// HTML with a stripper that leaked CSS — falling back to the plain part.
+    static func replyQuotableText(text: String, html: String?) -> String {
+        if let html, !html.isEmpty {
+            let t = stripHTML(html)
+            if !t.isEmpty { return t }
+        }
+        return text
     }
 
     /// Extracts a display name from a From header like `Jane Doe <jane@x.com>`.

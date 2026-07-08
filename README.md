@@ -8,8 +8,12 @@ API (and, optionally, a local Ollama model that also never leaves the machine).
 > keyboard-driven, Notion-Mail-style inbox that runs entirely on their own
 > hardware. Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-<!-- Add a screenshot or short GIF here — it's the single most useful thing a
-     UI project's README can have. e.g. ![PerfectMail](Design/screenshot.png) -->
+<!-- Screenshot goes here once captured from the real app — save it as
+     docs/screenshots/inbox.png (redact anything sensitive first), then
+     uncomment the line below. See the "Screenshots" section for details.
+
+![PerfectMail inbox](docs/screenshots/inbox.png)
+-->
 
 ## Features
 
@@ -136,6 +140,16 @@ Each user still needs their own Google OAuth client (see above), so building
 from source stays a first-class path.
 
 
+### Screenshots
+
+The images in this README come straight from the real app (`make run` or
+`make install`). Before capturing, pick or set up an inbox you're comfortable
+publishing — redact/crop anything sensitive (real names, subjects, addresses)
+before saving. Capture with **⌘⇧4 then Space** to grab the window, and save
+into [`docs/screenshots/`](docs/screenshots/) as `inbox.png` (and any others
+referenced above).
+
+
 ## Keyboard shortcuts
 
 Press **`?`** anywhere to see the full cheat sheet, reflecting any custom
@@ -150,7 +164,7 @@ The defaults are Gmail's:
 | # | Trash | | f | Forward |
 | s | Star / unstar | | l | Label… |
 | u | Toggle read / unread | | c | Compose |
-| b or h | Snooze until tomorrow 8 AM | | z | Undo last action |
+| b or h | Snooze… (picker) | | z | Undo last action |
 
 Fixed shortcuts (not customizable):
 

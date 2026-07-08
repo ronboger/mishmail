@@ -121,6 +121,10 @@ struct FilterChips: Equatable, Codable {
     var labelExclude = false      // "does not contain" mode for the label
     var senderContains = ""
     var senderExclude = false     // "does not contain" mode for the sender
+    /// Matches against message From headers (email address or "@domain"),
+    /// unlike senderContains which matches display names. Optional so views
+    /// saved before this field existed still decode. Powers "Split from Inbox".
+    var fromEmailContains: String? = nil
     var hasAttachmentOnly = false
     var noAttachmentOnly = false
     var readOnly = false          // isUnread == false
@@ -194,6 +198,9 @@ final class MailStore: ObservableObject {
     /// User-rebindable single-key shortcuts (Settings → Keyboard shortcuts).
     let keyBindings = KeyBindings()
     @Published var searchText: String = ""
+    /// Bumped by `/` (Gmail-style) to move keyboard focus into the sidebar
+    /// search field. The sidebar watches this and drives its `@FocusState`.
+    @Published var searchFocusToken = 0
     @Published var chips = FilterChips.initial(for: .inbox) {
         // Category picks persist per view so they're back after relaunch.
         // Only user edits persist — programmatic resets (view switches) go
@@ -448,6 +455,67 @@ final class MailStore: ObservableObject {
         vipThreadIds = hits
     }
 
+    // MARK: - Blocked senders
+
+    /// Lowercased blocked addresses. Their threads move to Spam immediately
+    /// on block and again after every sync (new arrivals).
+    @Published private(set) var blockedEmails: Set<String> = []
+
+    func loadBlocked() {
+        let rows = (try? db.read { try BlockedSender.fetchAll($0) }) ?? []
+        blockedEmails = Set(rows.map { $0.email.lowercased() })
+    }
+
+    func isBlocked(_ email: String) -> Bool {
+        blockedEmails.contains(email.trimmingCharacters(in: .whitespaces).lowercased())
+    }
+
+    func blockSender(_ email: String) {
+        let e = email.trimmingCharacters(in: .whitespaces).lowercased()
+        guard e.contains("@") else { return }
+        try? db.write { try BlockedSender(email: e).save($0) }
+        loadBlocked()
+        applyBlocklist()
+        showNotice("Blocked \(e) — their mail goes to Spam")
+    }
+
+    func unblockSender(_ email: String) {
+        let e = email.trimmingCharacters(in: .whitespaces).lowercased()
+        try? db.write { _ = try BlockedSender.deleteOne($0, key: e) }
+        loadBlocked()
+        showNotice("Unblocked \(e)")
+    }
+
+    /// Moves every inbox thread from a blocked sender to Spam. Quiet (no
+    /// per-thread undo toast — blocking is the undoable act, via Unblock).
+    /// Runs on block and after each sync so new arrivals never linger.
+    func applyBlocklist() {
+        guard !blockedEmails.isEmpty else { return }
+        let rows = (try? db.read { db in
+            try Row.fetchAll(db, sql: """
+                SELECT DISTINCT thread.id AS threadId, message.fromHeader AS fromHeader
+                FROM thread JOIN message ON message.threadId = thread.id
+                WHERE thread.inInbox = 1 AND thread.inTrash = 0
+                """)
+        }) ?? []
+        var hitIds = Set<String>()
+        for row in rows {
+            let header: String = row["fromHeader"]
+            if blockedEmails.contains(MessageParser.emailAddress(header).lowercased()) {
+                hitIds.insert(row["threadId"])
+            }
+        }
+        guard !hitIds.isEmpty else { return }
+        let hits = (try? db.read { db in
+            try MailThread.filter(hitIds.contains(Column("id"))).fetchAll(db)
+        }) ?? []
+        for thread in hits {
+            mutateThread(thread) { $0.inInbox = false } remote: { client, id in
+                try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
+            }
+        }
+    }
+
     /// User-facing label for an account ("Personal", "Fund", …).
     func renameAccount(_ id: String, label: String) {
         let trimmed = label.trimmingCharacters(in: .whitespaces)
@@ -521,6 +589,7 @@ final class MailStore: ObservableObject {
         reloadAccounts()
         reloadSavedViews()
         loadVIPs()
+        loadBlocked()
         reloadThreads()
         reloadScheduledSends()
         // Anything that came due while the app was closed goes out now.
@@ -809,6 +878,12 @@ final class MailStore: ObservableObject {
             q = q.filter(sql: chips.senderExclude ? "NOT \(condition)" : condition,
                          arguments: [pattern, pattern])
         }
+        if let sender = chips.fromEmailContains, !sender.isEmpty {
+            q = q.filter(sql: """
+                EXISTS (SELECT 1 FROM message
+                        WHERE message.threadId = thread.id AND message.fromHeader LIKE ?)
+                """, arguments: ["%\(sender)%"])
+        }
         for (header, value) in [("toHeader", chips.toContains),
                                 ("ccHeader", chips.ccContains),
                                 ("bccHeader", chips.bccContains)] where !value.isEmpty {
@@ -1059,6 +1134,24 @@ final class MailStore: ObservableObject {
         reloadSavedViews()
     }
 
+    /// Notion Mail-style "Split from Inbox": a new saved view holding all
+    /// mail whose From header matches `sender` (an address, or "@domain"),
+    /// then jump straight into it.
+    func splitFromInbox(matching sender: String, named name: String) {
+        var chips = FilterChips()
+        chips.fromEmailContains = sender
+        chips.showArchived = true   // the view is their full history, not inbox-only
+        var view = SavedView.empty()
+        view.name = name
+        view.showArchived = true    // saveView folds this back into the chips
+        view.chipsJSON = try? JSONEncoder().encode(chips)
+        saveView(view)
+        if let saved = savedViews.last(where: { $0.name == name }), let id = saved.id {
+            selectedView = .saved(id, name)
+        }
+        showNotice("New view: \(name)")
+    }
+
     func deleteView(_ view: SavedView) {
         guard let id = view.id else { return }
         try? db.write { db in _ = try SavedView.deleteOne(db, key: id) }
@@ -1105,11 +1198,13 @@ final class MailStore: ObservableObject {
     // MARK: - Sync
 
     func startPolling() {
+        fireDueSnoozes()  // catch snoozes that came due while the app was closed
         syncTimer?.invalidate()
         syncTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 await self?.syncAll()
                 self?.fireDueReminders()
+                self?.fireDueSnoozes()
                 // Backstop for the one-shot timer (sleep/wake can eat it).
                 await self?.fireDueScheduledSends()
             }
@@ -1118,6 +1213,7 @@ final class MailStore: ObservableObject {
 
     func syncAll() async {
         for account in accounts { await sync(accountId: account.id) }
+        applyBlocklist()
         notifyNewMail()
         rebuildContacts()
         autoClassifyNewMail()
@@ -1279,7 +1375,7 @@ final class MailStore: ObservableObject {
         case .trash: selectedThread.map(trash)
         case .toggleStar: selectedThread.map(toggleStar)
         case .toggleRead: if let t = selectedThread { setRead(t, read: t.isUnread) }
-        case .snooze: if let t = selectedThread { snooze(t, until: Self.snoozeDate(hour: 8, addDays: 1)) }
+        case .snooze: if let t = selectedThread { snoozingThread = t }
         case .next: moveSelection(1)
         case .prev: moveSelection(-1)
         case .reply: if let t = selectedThread {
@@ -1299,6 +1395,13 @@ final class MailStore: ObservableObject {
         case .undo: if let undo = undoAction { undo.undo() }
         case .compose: composeRequest = ComposeRequest(replyTo: nil)
         }
+    }
+
+    /// Gmail's `/`: move keyboard focus into the sidebar search field. Bumps a
+    /// token instead of holding focus state directly so a repeated `/` (after
+    /// the user clicked away) re-focuses.
+    func focusSearch() {
+        searchFocusToken &+= 1
     }
 
     // MARK: - Labels on threads
@@ -1492,17 +1595,44 @@ final class MailStore: ObservableObject {
         }
     }
 
-    /// Snooze is local-only: the thread is hidden from the inbox until the
-    /// date passes. (Gmail has no first-class snooze API.)
+    /// Snooze mirrors what Gmail's own snooze looks like over the API: the
+    /// thread loses INBOX while sleeping and gets it back when the date
+    /// passes (or on unsnooze), so other Gmail clients agree with us.
+    /// `snoozeUntil` itself stays local — the API has no snooze field —
+    /// which also means threads snoozed *in* Gmail arrive here as archived
+    /// and reappear on sync when Gmail wakes them.
     func snooze(_ thread: MailThread, until date: Date?) {
+        guard let date else {  // unsnooze: back to the inbox now
+            mutateThread(thread) { $0.snoozeUntil = nil; $0.inInbox = true } remote: { client, id in
+                try await client.modifyThread(id: id, add: ["INBOX"])
+            }
+            return
+        }
         let wasSelected = selectedThreadId == thread.id
         let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
-        var copy = thread
-        copy.snoozeUntil = date
-        let updated = copy
-        try? db.write { db in try updated.save(db) }
-        reloadThreads()
+        mutateThread(thread) { $0.snoozeUntil = date; $0.inInbox = false } remote: { client, id in
+            try await client.modifyThread(id: id, remove: ["INBOX"])
+        }
         advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
+        let formatter = DateFormatter()
+        formatter.dateFormat = Calendar.current.isDateInTomorrow(date) ? "'tomorrow' h a" : "MMM d, h a"
+        offerUndo("Snoozed until \(formatter.string(from: date))") { [weak self] in
+            guard let self else { return }
+            self.snooze(thread, until: nil)
+            self.undoAction = nil
+        }
+    }
+
+    /// Wakes snoozed threads whose date has passed: clears the snooze and
+    /// restores INBOX (locally and on Gmail). Runs on the sync tick.
+    private func fireDueSnoozes() {
+        let now = Date()
+        let due = (try? db.read { db in
+            try MailThread
+                .filter(Column("snoozeUntil") != nil && Column("snoozeUntil") <= now)
+                .fetchAll(db)
+        }) ?? []
+        for thread in due { snooze(thread, until: nil) }
     }
 
     // MARK: - Sending
