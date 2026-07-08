@@ -268,7 +268,12 @@ final class MailStore: ObservableObject {
     // monitor can route typed characters in while the text field is still
     // winning the focus race — otherwise a fast second keystroke falls
     // through to the thread list's type-select.
-    @Published var labelPickerQuery = ""
+    @Published var labelPickerQuery = "" {
+        didSet { if labelPickerQuery != oldValue { labelPickerNavigated = false } }
+    }
+    // True once arrows moved the picker highlight; space then toggles the
+    // highlighted label instead of typing into the filter. Typing resets it.
+    var labelPickerNavigated = false
     @Published var showCommandPalette = false
     @Published var showFilterMenu = false   // "+ Filter" popover (Ctrl-F)
     @Published var unreadCounts: [String: Int] = [:]   // sidebar badges
@@ -1461,6 +1466,7 @@ final class MailStore: ObservableObject {
         case .label: if selectedThread != nil {
                          labelPickerHighlight = 0
                          labelPickerQuery = ""
+                         labelPickerNavigated = false
                          showLabelPicker = true
                      }
         case .undo: if let undo = undoAction { undo.undo() }
@@ -1480,6 +1486,34 @@ final class MailStore: ObservableObject {
     /// User labels available for a thread's account.
     func userLabels(forAccount accountId: String) -> [LabelRow] {
         labelsByAccount[accountId] ?? []
+    }
+
+    /// The picker's filtered list for a thread — shared by LabelPicker (rows)
+    /// and the window key monitor (space-to-toggle), so both always agree on
+    /// which label is highlighted. Matching is per whitespace token, using
+    /// locale-aware case/diacritic-insensitive comparison.
+    func labelPickerLabels(for thread: MailThread) -> [LabelRow] {
+        let labels = userLabels(forAccount: thread.accountId)
+        let tokens = labelPickerQuery.split(separator: " ")
+        guard !tokens.isEmpty else { return labels }
+        return labels.filter { label in
+            tokens.allSatisfy { label.name.localizedStandardContains($0) }
+        }
+    }
+
+    /// When the query matches a label that only exists on a *different*
+    /// account, name it so the miss isn't silent (labels apply per account).
+    func labelPickerOtherAccountMatch(excluding accountId: String) -> LabelRow? {
+        let tokens = labelPickerQuery.split(separator: " ")
+        guard !tokens.isEmpty, accounts.count > 1 else { return nil }
+        let localNames = Set(userLabels(forAccount: accountId).map { $0.name.lowercased() })
+        return labelsByAccount
+            .filter { $0.key != accountId }
+            .values.flatMap { $0 }
+            .first { label in
+                !localNames.contains(label.name.lowercased())
+                    && tokens.allSatisfy { label.name.localizedStandardContains($0) }
+            }
     }
 
     func labelName(_ labelId: String, account accountId: String) -> String? {

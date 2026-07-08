@@ -279,9 +279,20 @@ struct ContentView: View {
                     return nil
                 case 125:  // down — picker clamps to the filtered list
                     store.labelPickerHighlight += 1
+                    store.labelPickerNavigated = true
                     return nil
                 case 126:  // up
                     store.labelPickerHighlight = max(store.labelPickerHighlight - 1, 0)
+                    store.labelPickerNavigated = true
+                    return nil
+                case 49 where store.labelPickerNavigated:  // space after arrows: toggle
+                    if let thread = store.selectedThread {
+                        let labels = store.labelPickerLabels(for: thread)
+                        let idx = min(store.labelPickerHighlight, max(labels.count - 1, 0))
+                        if let label = labels[safe: idx] {
+                            store.toggleLabel(thread, labelId: label.gmailLabelId)
+                        }
+                    }
                     return nil
                 default:
                     // If the picker's text field hasn't grabbed focus yet (it

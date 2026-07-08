@@ -1,7 +1,9 @@
 import SwiftUI
 
 /// Gmail-style "l" label picker for the selected thread: type to filter,
-/// up/down to move, Enter or click to toggle, Esc to close.
+/// up/down to move, Enter/Space or click to toggle, Esc to close.
+/// (Space only toggles after arrow navigation; while typing it stays a
+/// literal space so multi-word label names remain searchable.)
 ///
 /// The highlight index lives in MailStore and is driven by the window-level
 /// key monitor in ContentView — the text field's field editor consumes arrow
@@ -18,7 +20,7 @@ struct LabelPicker: View {
                 .onTapGesture { store.showLabelPicker = false }
 
             if let thread = store.selectedThread {
-                let labels = filtered(for: thread)
+                let labels = store.labelPickerLabels(for: thread)
                 let highlighted = min(store.labelPickerHighlight, max(labels.count - 1, 0))
                 VStack(spacing: 0) {
                     TextField("Label as…", text: $store.labelPickerQuery)
@@ -63,6 +65,15 @@ struct LabelPicker: View {
                                     Text("No labels in \(thread.accountId)").font(.caption).foregroundStyle(.secondary)
                                         .padding(12)
                                 }
+                                // A matching label on another account can't be
+                                // applied here — say so instead of silently
+                                // dropping it from the results.
+                                if let other = store.labelPickerOtherAccountMatch(excluding: thread.accountId) {
+                                    Text("“\(other.name)” is a label in \(other.accountId) — labels apply per account")
+                                        .font(.caption).foregroundStyle(.secondary)
+                                        .frame(maxWidth: .infinity, alignment: .leading)
+                                        .padding(.horizontal, 12).padding(.vertical, 6)
+                                }
                             }
                         }
                         .frame(maxHeight: 260)
@@ -82,12 +93,5 @@ struct LabelPicker: View {
                 .onAppear { focused = true }
             }
         }
-    }
-
-    private func filtered(for thread: MailThread) -> [LabelRow] {
-        let labels = store.userLabels(forAccount: thread.accountId)
-        let q = store.labelPickerQuery.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return labels }
-        return labels.filter { $0.name.lowercased().contains(q) }
     }
 }
