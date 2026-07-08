@@ -55,7 +55,11 @@ struct ThreadDetailView: View {
         }
         .toolbar {
             // Notion Mail-style left cluster: close the pane, prev/next thread.
-            ToolbarItemGroup(placement: .navigation) {
+            // Separate ToolbarItems, not a ToolbarItemGroup: on macOS 26 a
+            // group shares one glass capsule, so the whole cluster (plus the
+            // adjacent view icon) rendered as a single pill that lit up
+            // together on any interaction.
+            ToolbarItem(placement: .navigation) {
                 Button {
                     // Keep the selection so the list stays where you are.
                     readingPaneHidden = true
@@ -65,12 +69,16 @@ struct ThreadDetailView: View {
                 .help("Close (esc)")
                 .focusable(false)
                 .focusEffectDisabled()
+            }
+            ToolbarItem(placement: .navigation) {
                 Button { store.moveSelection(-1) } label: {
                     Label("Previous", systemImage: "chevron.up")
                 }
                 .help("Previous thread (\(store.keyBindings.key(for: .prev)))")
                 .focusable(false)
                 .focusEffectDisabled()
+            }
+            ToolbarItem(placement: .navigation) {
                 Button { store.moveSelection(1) } label: {
                     Label("Next", systemImage: "chevron.down")
                 }
