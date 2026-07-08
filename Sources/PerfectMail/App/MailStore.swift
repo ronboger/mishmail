@@ -1478,6 +1478,18 @@ final class MailStore: ObservableObject {
         try? db.write { db in try updated.save(db) }
         reloadThreads()
         advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
+        guard let date else { return }  // unsnooze needs no toast
+        let formatter = DateFormatter()
+        formatter.dateFormat = Calendar.current.isDateInTomorrow(date) ? "'tomorrow' h a" : "MMM d, h a"
+        offerUndo("Snoozed until \(formatter.string(from: date))") { [weak self] in
+            guard let self else { return }
+            var restored = thread
+            restored.snoozeUntil = nil
+            let row = restored
+            try? self.db.write { db in try row.save(db) }
+            self.reloadThreads()
+            self.undoAction = nil
+        }
     }
 
     // MARK: - Sending
