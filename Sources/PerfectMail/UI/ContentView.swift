@@ -123,7 +123,7 @@ struct ContentView: View {
             ViewEditor(view: view)
         }
         .sheet(item: $store.snoozingThread) { thread in
-            SnoozeSheet { store.snooze(thread, until: $0) }
+            SnoozeSheet(current: thread.snoozeUntil) { store.snooze(thread, until: $0) }
         }
         .alert(
             "Delete this draft?",
