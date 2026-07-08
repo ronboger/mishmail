@@ -15,8 +15,19 @@ enum SnoozeDateParser {
         let text = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard !text.isEmpty else { return [] }
 
-        let (datePart, time) = splitTime(from: text)
+        var (datePart, time) = splitTime(from: text)
         var results: [Suggestion] = []
+
+        // A bare trailing number after a date *word* is a 24h hour:
+        // "tm 10" → tomorrow 10:00, "fri 20" → Friday 20:00. Guarded to
+        // date words only so "aug 12" keeps 12 as the day, not the hour.
+        if time == nil, let m = datePart.wholeMatch(of: /(.+) (\d{1,2})/) {
+            let hour = Int(m.2)!
+            if hour < 24, Self.isDateWord(String(m.1), calendar: cal) {
+                datePart = String(m.1)
+                time = (hour, 0)
+            }
+        }
 
         func at(_ day: Date, _ fallbackHour: Int = 8) -> Date? {
             let h = time?.hour ?? fallbackHour
@@ -147,6 +158,18 @@ enum SnoozeDateParser {
             return (rest, (hour, minute))
         }
         return (text, nil)
+    }
+
+    /// True if `s` is (a prefix of) a snooze date keyword, a tomorrow/today
+    /// alias, or a weekday name — i.e. a word a bare trailing hour can attach
+    /// to. Deliberately excludes month names so "aug 12" isn't read as a time.
+    private static func isDateWord(_ s: String, calendar cal: Calendar) -> Bool {
+        let keywords = ["today", "tonight", "tomorrow", "next week", "next month", "weekend", "this weekend"]
+        if keywords.contains(where: { $0.hasPrefix(s) }) { return true }
+        let aliases = ["tm", "tmr", "tmrw", "tmw", "tmo", "tmoro", "td", "tdy", "tn", "tnt"]
+        if aliases.contains(s) { return true }
+        if s.count >= 2, cal.weekdaySymbols.contains(where: { $0.lowercased().hasPrefix(s) }) { return true }
+        return false
     }
 
     static func format(_ date: Date) -> String {
