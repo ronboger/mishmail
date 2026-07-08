@@ -802,9 +802,10 @@ private struct VIPManager: View {
     @EnvironmentObject var store: MailStore
     @Environment(\.dismiss) private var dismiss
     @State private var newVIP = ""
+    @State private var addGroup = ""
     @State private var pasteText = ""
+    @State private var bulkGroup = ""
     @State private var filter = ""
-    @State private var bulkExpanded = false
     @State private var highlighted = 0
     @State private var dropTargeted = false
     @FocusState private var addFieldFocused: Bool
@@ -813,6 +814,22 @@ private struct VIPManager: View {
         let all = store.vipEmails.sorted()
         let f = filter.trimmingCharacters(in: .whitespaces).lowercased()
         return f.isEmpty ? all : all.filter { $0.contains(f) }
+    }
+
+    private var groupedEmails: [String: [String]] {
+        var groups: [String: [String]] = [:]
+        for email in visibleEmails {
+            let group = store.vipGroups[email] ?? "No group"
+            if groups[group] == nil {
+                groups[group] = []
+            }
+            groups[group]?.append(email)
+        }
+        return groups
+    }
+
+    private var hasGroupedEmails: Bool {
+        store.allVIPGroupNames.count > 0
     }
 
     private var pendingEmails: [String] {
@@ -827,12 +844,12 @@ private struct VIPManager: View {
 
     private func addOne() {
         guard newVIP.contains("@") else { return }
-        store.addVIP(newVIP)
+        store.addVIP(newVIP, group: addGroup.isEmpty ? nil : addGroup)
         newVIP = ""
     }
 
     private func accept(_ contact: MailStore.Contact) {
-        store.addVIP(contact.email)
+        store.addVIP(contact.email, group: addGroup.isEmpty ? nil : addGroup)
         newVIP = ""
     }
 
@@ -848,7 +865,6 @@ private struct VIPManager: View {
                                  ?? (try? String(contentsOf: url, encoding: .isoLatin1))
                 else { return }
                 DispatchQueue.main.async {
-                    bulkExpanded = true
                     pasteText = pasteText.isEmpty ? text : pasteText + "\n" + text
                 }
             }
@@ -869,7 +885,7 @@ private struct VIPManager: View {
                 }
             }
 
-            HStack {
+            HStack(spacing: 8) {
                 TextField("Add a sender: email@example.com", text: $newVIP)
                     .textFieldStyle(.roundedBorder)
                     .focused($addFieldFocused)
@@ -888,10 +904,10 @@ private struct VIPManager: View {
                         if let pick = addSuggestions[safe: highlighted] { accept(pick) }
                         else { addOne() }
                     }
+                GroupPickerCompact(selectedGroup: $addGroup, allGroups: store.allVIPGroupNames)
                 Button("Add", action: addOne)
                     .disabled(!newVIP.contains("@"))
             }
-            // Contact suggestions float over the list, same as the compose To field.
             .overlay(alignment: .topLeading) {
                 if addFieldFocused, !addSuggestions.isEmpty {
                     VStack(alignment: .leading, spacing: 0) {
@@ -925,58 +941,95 @@ private struct VIPManager: View {
             }
             .zIndex(10)
 
-            List {
-                ForEach(visibleEmails, id: \.self) { email in
-                    VIPRow(email: email) { store.removeVIP(email) }
-                }
-                if store.vipEmails.isEmpty {
-                    Text("No VIP senders yet — add one above, paste a list below, or right-click any thread → Add sender to VIPs.")
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .frame(minHeight: bulkExpanded ? 120 : 200)
-
-            DisclosureGroup(isExpanded: $bulkExpanded.animation()) {
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("Paste any text that contains email addresses — an address book export, a CSV column, To/Cc lines, or one address per line — or drag a CSV file in. Every address is picked up automatically; duplicates and ones already on the list are skipped.")
-                        .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                    TextEditor(text: $pasteText)
-                        .font(.system(size: 12.5))
-                        .frame(height: 96)
-                        .overlay(alignment: .topLeading) {
-                            if pasteText.isEmpty {
-                                Text("Ada Lovelace <ada@example.org>, grace@example.mil\njudith@example.com\n…or drop a .csv file here")
-                                    .font(.system(size: 12.5))
-                                    .foregroundStyle(.tertiary)
-                                    .padding(.top, 1).padding(.leading, 5)
-                                    .allowsHitTesting(false)
+            if hasGroupedEmails {
+                List {
+                    ForEach(store.allVIPGroupNames.sorted(), id: \.self) { groupName in
+                        if let emails = groupedEmails[groupName]?.sorted() {
+                            Section(header: Text(groupName).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)) {
+                                ForEach(emails, id: \.self) { email in
+                                    VIPRow(email: email,
+                                           groupName: store.vipGroups[email],
+                                           allGroups: store.allVIPGroupNames,
+                                           remove: { store.removeVIP(email) },
+                                           setGroup: { store.setVIPGroup(email, group: $0) })
+                                }
                             }
                         }
-                        .overlay(RoundedRectangle(cornerRadius: 6)
-                            .strokeBorder(dropTargeted ? Color.notionAccent : Color(nsColor: .separatorColor),
-                                          lineWidth: dropTargeted ? 2 : 1))
-                        .onDrop(of: ["public.file-url"], isTargeted: $dropTargeted) { handleDrop($0) }
-                    HStack {
-                        Text(pasteText.isEmpty ? " "
-                             : pendingEmails.isEmpty
-                                ? "No new addresses found in the pasted text."
-                                : "Found \(pendingEmails.count) new address\(pendingEmails.count == 1 ? "" : "es").")
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                        Spacer()
-                        Button("Add \(pendingEmails.count) sender\(pendingEmails.count == 1 ? "" : "s")") {
-                            store.addVIPs(pendingEmails)
-                            pasteText = ""
+                    }
+                    if let noGroupEmails = groupedEmails["No group"]?.sorted() {
+                        Section(header: Text("No group").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)) {
+                            ForEach(noGroupEmails, id: \.self) { email in
+                                VIPRow(email: email,
+                                       groupName: store.vipGroups[email],
+                                       allGroups: store.allVIPGroupNames,
+                                       remove: { store.removeVIP(email) },
+                                       setGroup: { store.setVIPGroup(email, group: $0) })
+                            }
                         }
-                        .disabled(pendingEmails.isEmpty)
+                    }
+                    if store.vipEmails.isEmpty {
+                        Text("No VIP senders yet — add one above, paste a list below, or right-click any thread → Add sender to VIPs.")
+                            .foregroundStyle(.secondary)
                     }
                 }
-                .padding(.top, 6)
-            } label: {
-                Text("Bulk add — paste a list")
-                    .font(.system(size: 12.5, weight: .medium))
+                .frame(minHeight: 180)
+            } else {
+                List {
+                    ForEach(visibleEmails, id: \.self) { email in
+                        VIPRow(email: email,
+                               groupName: store.vipGroups[email],
+                               allGroups: store.allVIPGroupNames,
+                               remove: { store.removeVIP(email) },
+                               setGroup: { store.setVIPGroup(email, group: $0) })
+                    }
+                    if store.vipEmails.isEmpty {
+                        Text("No VIP senders yet — add one above, paste a list below, or right-click any thread → Add sender to VIPs.")
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .frame(minHeight: 180)
+            }
+
+            Text("Bulk add")
+                .font(.system(size: 12.5, weight: .medium))
+
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Paste any text that contains email addresses — an address book export, a CSV column, To/Cc lines, or one address per line — or drag a CSV file in. Every address is picked up automatically; duplicates and ones already on the list are skipped.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                TextEditor(text: $pasteText)
+                    .font(.system(size: 12.5))
+                    .frame(height: 96)
+                    .overlay(alignment: .topLeading) {
+                        if pasteText.isEmpty {
+                            Text("Ada Lovelace <ada@example.org>, grace@example.mil\njudith@example.com\n…or drop a .csv / .txt file here")
+                                .font(.system(size: 12.5))
+                                .foregroundStyle(.tertiary)
+                                .padding(.top, 1).padding(.leading, 5)
+                                .allowsHitTesting(false)
+                        }
+                    }
+                    .overlay(RoundedRectangle(cornerRadius: 6)
+                        .strokeBorder(style: StrokeStyle(lineWidth: dropTargeted ? 2 : 1, dash: [5, 3]))
+                        .foregroundStyle(dropTargeted ? Color.notionAccent : Color(nsColor: .separatorColor)))
+                    .onDrop(of: ["public.file-url"], isTargeted: $dropTargeted) { handleDrop($0) }
+                HStack {
+                    Text(pasteText.isEmpty ? " "
+                         : pendingEmails.isEmpty
+                            ? "No new addresses found in the pasted text."
+                            : "Found \(pendingEmails.count) new address\(pendingEmails.count == 1 ? "" : "es").")
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                    Spacer()
+                    GroupPickerCompact(selectedGroup: $bulkGroup, allGroups: store.allVIPGroupNames)
+                    Button("Add \(pendingEmails.count) sender\(pendingEmails.count == 1 ? "" : "s")") {
+                        store.addVIPs(pendingEmails, group: bulkGroup.isEmpty ? nil : bulkGroup)
+                        pasteText = ""
+                        bulkGroup = ""
+                    }
+                    .disabled(pendingEmails.isEmpty)
+                }
             }
 
             HStack {
@@ -986,32 +1039,110 @@ private struct VIPManager: View {
             }
         }
         .padding(16)
-        // Grow the sheet when the bulk section opens so the list isn't crushed.
-        .frame(width: 480, height: bulkExpanded ? 640 : 520)
+        .frame(width: 500, height: 660)
         .onDrop(of: ["public.file-url"], isTargeted: nil) { handleDrop($0) }
     }
 }
 
-/// One VIP list row: remove button only shows on hover, keeping the list clean.
+/// Compact group picker for add/bulk fields.
+private struct GroupPickerCompact: View {
+    @Binding var selectedGroup: String
+    let allGroups: [String]
+    @State private var newGroupText = ""
+    @State private var showNewGroup = false
+
+    private var displayText: String {
+        selectedGroup.isEmpty ? "group" : selectedGroup
+    }
+
+    var body: some View {
+        if showNewGroup {
+            HStack(spacing: 4) {
+                TextField("New", text: $newGroupText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 70)
+                Button("OK") {
+                    if !newGroupText.trimmingCharacters(in: .whitespaces).isEmpty {
+                        selectedGroup = newGroupText.trimmingCharacters(in: .whitespaces)
+                        newGroupText = ""
+                        showNewGroup = false
+                    }
+                }
+                .font(.system(size: 11))
+            }
+        } else {
+            Menu {
+                Button("No group") {
+                    selectedGroup = ""
+                }
+                Divider()
+                ForEach(allGroups.sorted(), id: \.self) { group in
+                    Button(group) {
+                        selectedGroup = group
+                    }
+                }
+                Divider()
+                Button("New group…") {
+                    showNewGroup = true
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10))
+                    Text(displayText)
+                        .font(.system(size: 11))
+                }
+                .foregroundStyle(.secondary)
+            }
+            .frame(width: 90)
+        }
+    }
+}
+
+/// One VIP list row with group picker and always-visible remove button.
 private struct VIPRow: View {
     let email: String
+    let groupName: String?
+    let allGroups: [String]
     let remove: () -> Void
-    @State private var hovering = false
+    let setGroup: (String?) -> Void
+
+    private var currentGroup: String {
+        groupName ?? "No group"
+    }
 
     var body: some View {
         HStack {
             Text(email)
+                .lineLimit(1)
             Spacer()
+            Menu {
+                Button("No group") {
+                    setGroup(nil)
+                }
+                Divider()
+                ForEach(allGroups.sorted(), id: \.self) { group in
+                    Button(group) {
+                        setGroup(group)
+                    }
+                }
+            } label: {
+                HStack(spacing: 3) {
+                    Image(systemName: "folder")
+                        .font(.system(size: 10))
+                    Text(currentGroup)
+                        .font(.system(size: 11))
+                }
+                .foregroundStyle(.secondary)
+            }
+            .frame(width: 100)
             Button(action: remove) {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
             .help("Remove from VIPs")
-            .opacity(hovering ? 1 : 0)
         }
-        .contentShape(Rectangle())
-        .onHover { hovering = $0 }
     }
 }
 

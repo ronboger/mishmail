@@ -347,16 +347,24 @@ final class MailStore: ObservableObject {
     /// memory so the priority partition never queries per row.
     @Published private(set) var vipEmails: Set<String> = []
     @Published private(set) var vipThreadIds: Set<String> = []
+    @Published private(set) var vipGroups: [String: String] = [:]
 
     func loadVIPs() {
         let rows = (try? db.read { try VIPSender.fetchAll($0) }) ?? []
         vipEmails = Set(rows.map { $0.email.lowercased() })
+        var groups: [String: String] = [:]
+        for row in rows {
+            if let groupName = row.groupName, !groupName.isEmpty {
+                groups[row.email.lowercased()] = groupName
+            }
+        }
+        vipGroups = groups
     }
 
-    func addVIP(_ email: String) {
+    func addVIP(_ email: String, group: String? = nil) {
         let e = email.trimmingCharacters(in: .whitespaces).lowercased()
         guard e.contains("@") else { return }
-        try? db.write { try VIPSender(email: e).save($0) }
+        try? db.write { try VIPSender(email: e, groupName: group).save($0) }
         loadVIPs()
         reloadThreads()
         showNotice("\(e) added to VIPs")
@@ -365,12 +373,12 @@ final class MailStore: ObservableObject {
     /// Batch add (VIP manager paste box): one write, one reload, one notice.
     /// Returns how many were actually new.
     @discardableResult
-    func addVIPs(_ emails: [String]) -> Int {
+    func addVIPs(_ emails: [String], group: String? = nil) -> Int {
         let fresh = Set(emails.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
             .filter { $0.contains("@") && !vipEmails.contains($0) })
         guard !fresh.isEmpty else { return 0 }
         try? db.write { db in
-            for e in fresh { try VIPSender(email: e).save(db) }
+            for e in fresh { try VIPSender(email: e, groupName: group).save(db) }
         }
         loadVIPs()
         reloadThreads()
@@ -384,6 +392,22 @@ final class MailStore: ObservableObject {
         try? db.write { _ = try VIPSender.deleteOne($0, key: e) }
         loadVIPs()
         reloadThreads()
+    }
+
+    func setVIPGroup(_ email: String, group: String?) {
+        let e = email.trimmingCharacters(in: .whitespaces).lowercased()
+        let g = (group ?? "").isEmpty ? nil : group
+        try? db.write { db in
+            if var sender = try VIPSender.fetchOne(db, key: e) {
+                sender.groupName = g
+                try sender.update(db)
+            }
+        }
+        loadVIPs()
+    }
+
+    var allVIPGroupNames: [String] {
+        Set(vipGroups.values).sorted()
     }
 
     /// Newest sender address on a thread (for the Add/Remove VIP menu).

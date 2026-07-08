@@ -159,6 +159,7 @@ struct ThreadAICategory: Codable, Identifiable, Hashable, FetchableRecord, Persi
 struct VIPSender: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "vipSender"
     var email: String
+    var groupName: String? = nil
     var id: String { email }
 }
 
@@ -434,6 +435,12 @@ final class AppDatabase {
         m.registerMigration("v11") { db in
             try db.create(table: "vipSender") { t in
                 t.primaryKey("email", .text)
+            }
+        }
+        // VIP groups: optional tag (founders, investors, family, …) per VIP sender.
+        m.registerMigration("v12") { db in
+            try db.alter(table: "vipSender") { t in
+                t.add(column: "groupName", .text)
             }
         }
         return m
