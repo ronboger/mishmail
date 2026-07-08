@@ -559,7 +559,6 @@ final class MailStore: ObservableObject {
     }
 
     init() {
-        DemoSeed.seedIfRequested(AppDatabase.shared.dbQueue)
         reloadAccounts()
         reloadSavedViews()
         loadVIPs()
@@ -1172,9 +1171,6 @@ final class MailStore: ObservableObject {
     // MARK: - Sync
 
     func startPolling() {
-        // Demo mode has no real account and no token; polling would only spin
-        // up failed syncs and error banners over the screenshot fixtures.
-        if DemoSeed.isActive { return }
         fireDueSnoozes()  // catch snoozes that came due while the app was closed
         syncTimer?.invalidate()
         syncTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
