@@ -201,6 +201,31 @@ final class MailStore: ObservableObject {
     /// Bumped by `/` (Gmail-style) to move keyboard focus into the sidebar
     /// search field. The sidebar watches this and drives its `@FocusState`.
     @Published var searchFocusToken = 0
+    /// Recent search queries, newest first, shown under the search field while
+    /// it has focus. Persisted so history survives relaunch.
+    @Published var recentSearches: [String] =
+        UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
+
+    /// Remember a submitted/picked query: dedupe (case-insensitive), move to
+    /// front, cap the list so the dropdown stays scannable.
+    func recordSearch(_ query: String) {
+        let q = query.trimmingCharacters(in: .whitespaces)
+        guard !q.isEmpty else { return }
+        var list = recentSearches.filter { $0.caseInsensitiveCompare(q) != .orderedSame }
+        list.insert(q, at: 0)
+        recentSearches = Array(list.prefix(8))
+        UserDefaults.standard.set(recentSearches, forKey: "recentSearches")
+    }
+
+    func removeRecentSearch(_ query: String) {
+        recentSearches.removeAll { $0 == query }
+        UserDefaults.standard.set(recentSearches, forKey: "recentSearches")
+    }
+
+    func clearRecentSearches() {
+        recentSearches = []
+        UserDefaults.standard.removeObject(forKey: "recentSearches")
+    }
     @Published var chips = FilterChips.initial(for: .inbox) {
         // Category picks persist per view so they're back after relaunch.
         // Only user edits persist — programmatic resets (view switches) go

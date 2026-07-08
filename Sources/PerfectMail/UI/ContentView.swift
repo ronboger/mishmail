@@ -395,13 +395,21 @@ struct Sidebar: View {
                 .help("Compose (⌘N or \(store.keyBindings.key(for: .compose)))")
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-            SearchField(prompt: "Search", text: $store.searchText, focused: $searchFocused, onSubmit: {
-                // Hand focus back to the list so j/k/e/etc. work.
-                NSApp.keyWindow?.makeFirstResponder(nil)
-                if store.selectedThreadId == nil { store.moveSelection(1) }
-            })
-            .help("Search — from: to: subject: label: has:attachment is:unread is:starred after: before:")
+            VStack(spacing: 0) {
+                SearchField(prompt: "Search", text: $store.searchText, focused: $searchFocused,
+                            emphasized: searchFocused, onSubmit: {
+                    store.recordSearch(store.searchText)
+                    // Hand focus back to the list so j/k/e/etc. work.
+                    NSApp.keyWindow?.makeFirstResponder(nil)
+                    if store.selectedThreadId == nil { store.moveSelection(1) }
+                })
+                .help("Search — from: to: subject: label: has:attachment is:unread is:starred after: before:")
+                if searchFocused, !visibleRecentSearches.isEmpty {
+                    recentSearchesPanel
+                }
+            }
             .padding(.horizontal, 10).padding(.bottom, 8)
+            .animation(.easeOut(duration: 0.15), value: searchFocused)
             // Gmail's `/`: focus search.
             .onChange(of: store.searchFocusToken) { searchFocused = true }
             List(selection: $store.selectedView) {
@@ -479,6 +487,63 @@ struct Sidebar: View {
             .help("Settings (⌘,)")
         }
         .background(Color.notionSidebar)
+    }
+
+    /// Recents shown under the focused search field: all of them when the
+    /// field is empty, substring-filtered while typing (hiding an exact match).
+    private var visibleRecentSearches: [String] {
+        let typed = store.searchText.trimmingCharacters(in: .whitespaces)
+        guard !typed.isEmpty else { return store.recentSearches }
+        return store.recentSearches.filter {
+            $0.range(of: typed, options: .caseInsensitive) != nil
+                && $0.caseInsensitiveCompare(typed) != .orderedSame
+        }
+    }
+
+    private var recentSearchesPanel: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack {
+                Text("Recent searches")
+                    .font(.system(size: 10.5, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button("Clear") { store.clearRecentSearches() }
+                    .buttonStyle(.plain)
+                    .font(.system(size: 10.5))
+                    .foregroundStyle(.secondary)
+                    .help("Clear search history")
+            }
+            .padding(.horizontal, 8).padding(.top, 7).padding(.bottom, 3)
+            ForEach(visibleRecentSearches, id: \.self) { query in
+                HStack(spacing: 6) {
+                    Image(systemName: "clock.arrow.circlepath")
+                        .font(.system(size: 10)).foregroundStyle(.secondary)
+                    Text(query)
+                        .font(.system(size: 12)).lineLimit(1)
+                    Spacer(minLength: 4)
+                    Button {
+                        store.removeRecentSearch(query)
+                    } label: {
+                        Image(systemName: "xmark")
+                            .font(.system(size: 8.5)).foregroundStyle(.secondary)
+                    }
+                    .buttonStyle(.plain)
+                    .help("Remove from history")
+                }
+                .padding(.horizontal, 8).padding(.vertical, 4)
+                .contentShape(Rectangle())
+                .onTapGesture {
+                    store.searchText = query
+                    store.recordSearch(query)
+                    NSApp.keyWindow?.makeFirstResponder(nil)
+                }
+            }
+            .padding(.bottom, 4)
+        }
+        .background(Color.primary.opacity(0.04),
+                    in: RoundedRectangle(cornerRadius: 6))
+        .padding(.top, 4)
+        .transition(.opacity)
     }
 
     /// Notion Mail-style row: each view keeps its own icon color.
