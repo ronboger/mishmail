@@ -168,6 +168,15 @@ actor GmailClient {
         return list.labels ?? []
     }
 
+    /// Creates a user label (409 if the name already exists).
+    func createLabel(name: String) async throws -> GLabel {
+        try await request("POST", "/labels", jsonBody: [
+            "name": name,
+            "labelListVisibility": "labelShow",
+            "messageListVisibility": "show",
+        ])
+    }
+
     /// All filters the account has set up in Gmail. Requires the
     /// gmail.settings.basic scope (403 for tokens granted before it).
     func listFilters() async throws -> [GFilter] {

@@ -288,9 +288,13 @@ struct ContentView: View {
                 case 49 where store.labelPickerNavigated:  // space after arrows: toggle
                     if let thread = store.selectedThread {
                         let labels = store.labelPickerLabels(for: thread)
-                        let idx = min(store.labelPickerHighlight, max(labels.count - 1, 0))
+                        let createName = store.labelPickerCreateName(for: thread)
+                        let rowCount = labels.count + (createName != nil ? 1 : 0)
+                        let idx = min(store.labelPickerHighlight, max(rowCount - 1, 0))
                         if let label = labels[safe: idx] {
                             store.toggleLabel(thread, labelId: label.gmailLabelId)
+                        } else if let createName {
+                            store.createLabelAndApply(name: createName, thread: thread)
                         }
                     }
                     return nil

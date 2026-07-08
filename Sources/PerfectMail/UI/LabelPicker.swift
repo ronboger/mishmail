@@ -21,7 +21,11 @@ struct LabelPicker: View {
 
             if let thread = store.selectedThread {
                 let labels = store.labelPickerLabels(for: thread)
-                let highlighted = min(store.labelPickerHighlight, max(labels.count - 1, 0))
+                // The "Create …" row sits after the matches and is reachable
+                // with the same up/down highlight.
+                let createName = store.labelPickerCreateName(for: thread)
+                let rowCount = labels.count + (createName != nil ? 1 : 0)
+                let highlighted = min(store.labelPickerHighlight, max(rowCount - 1, 0))
                 VStack(spacing: 0) {
                     TextField("Label as…", text: $store.labelPickerQuery)
                         .textFieldStyle(.plain)
@@ -31,6 +35,8 @@ struct LabelPicker: View {
                         .onSubmit {
                             if let label = labels[safe: highlighted] {
                                 store.toggleLabel(thread, labelId: label.gmailLabelId)
+                            } else if let createName {
+                                store.createLabelAndApply(name: createName, thread: thread)
                             }
                         }
                         .onChange(of: store.labelPickerQuery) { store.labelPickerHighlight = 0 }
@@ -61,7 +67,21 @@ struct LabelPicker: View {
                                     .onHover { if $0 { store.labelPickerHighlight = idx } }
                                     .id(idx)
                                 }
-                                if labels.isEmpty {
+                                if let createName {
+                                    HStack(spacing: 8) {
+                                        Image(systemName: "plus.circle")
+                                            .foregroundStyle(highlighted == labels.count ? Color.notionAccent : .secondary)
+                                        Text("Create “\(createName)”").font(.system(size: 13))
+                                        Spacer()
+                                    }
+                                    .padding(.horizontal, 12).padding(.vertical, 6)
+                                    .background(highlighted == labels.count ? Color.notionAccent.opacity(0.18) : .clear)
+                                    .contentShape(Rectangle())
+                                    .onTapGesture { store.createLabelAndApply(name: createName, thread: thread) }
+                                    .onHover { if $0 { store.labelPickerHighlight = labels.count } }
+                                    .id(labels.count)
+                                }
+                                if labels.isEmpty, createName == nil {
                                     Text("No labels in \(thread.accountId)").font(.caption).foregroundStyle(.secondary)
                                         .padding(12)
                                 }
@@ -79,12 +99,30 @@ struct LabelPicker: View {
                         .frame(maxHeight: 260)
                         .onChange(of: store.labelPickerHighlight) {
                             // Keep the monitor-driven index in bounds and visible.
-                            if store.labelPickerHighlight > max(labels.count - 1, 0) {
-                                store.labelPickerHighlight = max(labels.count - 1, 0)
+                            if store.labelPickerHighlight > max(rowCount - 1, 0) {
+                                store.labelPickerHighlight = max(rowCount - 1, 0)
                             }
                             proxy.scrollTo(store.labelPickerHighlight, anchor: .center)
                         }
                     }
+                    Divider()
+                    // Spell out the keyboard model: what Enter will do depends
+                    // on the highlighted row.
+                    let enterVerb: String = {
+                        if let label = labels[safe: highlighted] {
+                            return thread.labels.contains(label.gmailLabelId) ? "remove" : "add"
+                        }
+                        return createName != nil ? "create" : "add"
+                    }()
+                    HStack(spacing: 10) {
+                        Text("↑↓ select")
+                        Text("⏎ \(enterVerb)")
+                        Text("␣ toggle")
+                        Text("esc close")
+                        Spacer()
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.horizontal, 12).padding(.vertical, 6)
                 }
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
                 .frame(width: 380)
