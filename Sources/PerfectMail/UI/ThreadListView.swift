@@ -56,6 +56,10 @@ struct ThreadListView: View {
 
     private static let prioritySection = "Priority"
 
+    private var flatDisplayOrder: [String] {
+        grouped.flatMap { $0.1.map(\.id) }
+    }
+
     private func groups(_ threads: [MailThread]) -> [(String, [MailThread])] {
         switch groupBy {
         case .date: return groupedByDate(threads)
@@ -164,6 +168,10 @@ struct ThreadListView: View {
             .contentMargins(.top, 40 * fontScale, for: .scrollContent)
             // Archived/trashed rows slide out instead of blinking away.
             .animation(.easeOut(duration: 0.2), value: store.threads)
+            // Keep keyboard navigation aligned with the displayed order
+            // (priority section first, then groups).
+            .onAppear { store.displayOrder = flatDisplayOrder }
+            .onChange(of: flatDisplayOrder) { store.displayOrder = flatDisplayOrder }
         }
         .background(Color.notionContent)
         .navigationTitle(store.selectedView.title)

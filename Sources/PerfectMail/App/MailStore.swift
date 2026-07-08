@@ -1496,11 +1496,17 @@ final class MailStore: ObservableObject {
     /// (which never sets it) reopens the pane. Cleared after each change.
     var selectionViaKeyboard = false
 
+    /// Thread ids in the order the list actually displays them (priority
+    /// section first, then grouped) — kept in sync by ThreadListView so
+    /// keyboard navigation matches what's on screen.
+    var displayOrder: [String] = []
+
     func moveSelection(_ delta: Int) {
-        guard !threads.isEmpty else { return }
-        let idx = threads.firstIndex { $0.id == selectedThreadId } ?? (delta > 0 ? -1 : 0)
-        let next = min(max(idx + delta, 0), threads.count - 1)
-        selectedThreadId = threads[next].id
+        let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
+        guard !order.isEmpty else { return }
+        let idx = order.firstIndex { $0 == selectedThreadId } ?? (delta > 0 ? -1 : 0)
+        let next = min(max(idx + delta, 0), order.count - 1)
+        selectedThreadId = order[next]
     }
 
     static func snoozeDate(hour: Int, addDays: Int = 0) -> Date {
