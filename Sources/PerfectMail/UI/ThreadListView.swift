@@ -864,7 +864,10 @@ struct FilterBar: View {
     }
 
     private var allLabels: [LabelRow] {
-        let labels = store.labelsByAccount.values.flatMap { $0 }
+        // Scoped to the account the sidebar is on; every account's labels
+        // only in the unified (all-accounts) view.
+        let labels = store.activeAccountId.map { store.userLabels(forAccount: $0) }
+            ?? store.labelsByAccount.values.flatMap { $0 }
         var seen = Set<String>()
         // Dedupe by the account-scoped row id: raw Gmail label ids (Label_1, Label_9…)
         // collide across accounts and would silently drop labels.
@@ -981,9 +984,8 @@ struct FilterBar: View {
     }
 
     private var filteredLabels: [LabelRow] {
-        let q = labelQuery.trimmingCharacters(in: .whitespaces).lowercased()
-        guard !q.isEmpty else { return allLabels }
-        return allLabels.filter { $0.name.lowercased().contains(q) }
+        // Same per-token, locale-insensitive matching as the label picker.
+        allLabels.filter { LabelSearch.matches($0.name, query: labelQuery) }
     }
 
     private func chipLabel(_ title: String, icon: String, active: Bool) -> some View {

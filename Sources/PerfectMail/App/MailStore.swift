@@ -1493,12 +1493,8 @@ final class MailStore: ObservableObject {
     /// which label is highlighted. Matching is per whitespace token, using
     /// locale-aware case/diacritic-insensitive comparison.
     func labelPickerLabels(for thread: MailThread) -> [LabelRow] {
-        let labels = userLabels(forAccount: thread.accountId)
-        let tokens = labelPickerQuery.split(separator: " ")
-        guard !tokens.isEmpty else { return labels }
-        return labels.filter { label in
-            tokens.allSatisfy { label.name.localizedStandardContains($0) }
-        }
+        userLabels(forAccount: thread.accountId)
+            .filter { LabelSearch.matches($0.name, query: labelPickerQuery) }
     }
 
     /// The "Create <query>" row's label name: the trimmed query, when it
@@ -1543,15 +1539,15 @@ final class MailStore: ObservableObject {
     /// When the query matches a label that only exists on a *different*
     /// account, name it so the miss isn't silent (labels apply per account).
     func labelPickerOtherAccountMatch(excluding accountId: String) -> LabelRow? {
-        let tokens = labelPickerQuery.split(separator: " ")
-        guard !tokens.isEmpty, accounts.count > 1 else { return nil }
+        guard !labelPickerQuery.trimmingCharacters(in: .whitespaces).isEmpty,
+              accounts.count > 1 else { return nil }
         let localNames = Set(userLabels(forAccount: accountId).map { $0.name.lowercased() })
         return labelsByAccount
             .filter { $0.key != accountId }
             .values.flatMap { $0 }
             .first { label in
                 !localNames.contains(label.name.lowercased())
-                    && tokens.allSatisfy { label.name.localizedStandardContains($0) }
+                    && LabelSearch.matches(label.name, query: labelPickerQuery)
             }
     }
 

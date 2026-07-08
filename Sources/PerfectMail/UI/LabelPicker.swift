@@ -106,18 +106,12 @@ struct LabelPicker: View {
                         }
                     }
                     Divider()
-                    // Spell out the keyboard model: what Enter will do depends
-                    // on the highlighted row.
-                    let enterVerb: String = {
-                        if let label = labels[safe: highlighted] {
-                            return thread.labels.contains(label.gmailLabelId) ? "remove" : "add"
-                        }
-                        return createName != nil ? "create" : "add"
-                    }()
+                    // Spell out the keyboard model: Enter toggles the
+                    // highlighted label (or creates, on the Create row).
+                    let enterVerb = highlighted == labels.count && createName != nil ? "create" : "toggle"
                     HStack(spacing: 10) {
                         Text("↑↓ select")
                         Text("⏎ \(enterVerb)")
-                        Text("␣ toggle")
                         Text("esc close")
                         Spacer()
                     }
