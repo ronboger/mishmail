@@ -89,7 +89,7 @@ struct SearchField: View {
                     .strokeBorder(Color.notionAccent.opacity(0.7), lineWidth: 1.5)
             }
         }
-        .animation(.easeOut(duration: 0.15), value: emphasized)
+        .animation(.easeOut(duration: 0.08), value: emphasized)
     }
 }
 

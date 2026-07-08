@@ -627,7 +627,7 @@ struct MessageCard: View {
                 Label("Draft email to \(name)", systemImage: "square.and.pencil")
             }
             Button {
-                store.searchText = "from:\(email)"
+                store.commitSearch("from:\(email)")
             } label: {
                 Label("Search emails from \(name)", systemImage: "magnifyingglass")
             }
