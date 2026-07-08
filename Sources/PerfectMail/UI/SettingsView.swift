@@ -944,15 +944,27 @@ private struct VIPManager: View {
             if hasGroupedEmails {
                 List {
                     ForEach(store.allVIPGroupNames.sorted(), id: \.self) { groupName in
-                        if let emails = groupedEmails[groupName]?.sorted() {
-                            Section(header: Text(groupName).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)) {
-                                ForEach(emails, id: \.self) { email in
-                                    VIPRow(email: email,
-                                           groupName: store.vipGroups[email],
-                                           allGroups: store.allVIPGroupNames,
-                                           remove: { store.removeVIP(email) },
-                                           setGroup: { store.setVIPGroup(email, group: $0) })
-                                }
+                        let enabled = store.vipGroupEnabled[groupName] ?? true
+                        // Header toggle pauses the whole group's VIP status.
+                        Section(header: HStack {
+                            Text(groupName).font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)
+                            Spacer()
+                            Toggle("", isOn: Binding(
+                                get: { enabled },
+                                set: { store.setVIPGroupEnabled(groupName, $0) }))
+                                .toggleStyle(.switch)
+                                .controlSize(.mini)
+                                .labelsHidden()
+                                .help(enabled ? "Group counts as VIP — click to pause"
+                                              : "Group paused — members aren't treated as VIPs")
+                        }) {
+                            ForEach(groupedEmails[groupName]?.sorted() ?? [], id: \.self) { email in
+                                VIPRow(email: email,
+                                       groupName: store.vipGroups[email],
+                                       allGroups: store.allVIPGroupNames,
+                                       remove: { store.removeVIP(email) },
+                                       setGroup: { store.setVIPGroup(email, group: $0) })
+                                    .opacity(enabled ? 1 : 0.45)
                             }
                         }
                     }
@@ -1052,7 +1064,7 @@ private struct GroupPickerCompact: View {
     @State private var showNewGroup = false
 
     private var displayText: String {
-        selectedGroup.isEmpty ? "group" : selectedGroup
+        selectedGroup.isEmpty ? "No group" : selectedGroup
     }
 
     var body: some View {
@@ -1088,13 +1100,14 @@ private struct GroupPickerCompact: View {
             } label: {
                 HStack(spacing: 3) {
                     Image(systemName: "folder")
-                        .font(.system(size: 10))
-                    Text(displayText)
                         .font(.system(size: 11))
+                    Text(displayText)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
                 }
                 .foregroundStyle(.secondary)
             }
-            .frame(width: 90)
+            .fixedSize()
         }
     }
 }
@@ -1129,13 +1142,15 @@ private struct VIPRow: View {
             } label: {
                 HStack(spacing: 3) {
                     Image(systemName: "folder")
-                        .font(.system(size: 10))
-                    Text(currentGroup)
                         .font(.system(size: 11))
+                    Text(currentGroup)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
                 }
                 .foregroundStyle(.secondary)
             }
-            .frame(width: 100)
+            .fixedSize()
+            .help("Move to a group")
             Button(action: remove) {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)
