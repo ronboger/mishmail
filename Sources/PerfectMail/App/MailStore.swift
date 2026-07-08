@@ -663,7 +663,7 @@ final class MailStore: ObservableObject {
         reloadThreads()
     }
 
-    private let db = AppDatabase.shared.dbQueue
+    private let db = AppDatabase.shared.dbPool
     private var syncTimer: Timer?
     private var undoTimer: Timer?
     private var engines: [String: SyncEngine] = [:]
@@ -683,7 +683,7 @@ final class MailStore: ObservableObject {
     }
 
     init() {
-        DemoSeed.seedIfRequested(AppDatabase.shared.dbQueue)
+        DemoSeed.seedIfRequested(AppDatabase.shared.dbPool)
         reloadAccounts()
         reloadSavedViews()
         loadVIPs()
@@ -774,11 +774,16 @@ final class MailStore: ObservableObject {
     }
 
     /// A few matching threads for the live search dropdown — a cheap FTS lookup
-    /// over cached mail, newest first. Cheap enough to call per keystroke.
-    func threadSuggestions(for query: String, limit: Int = 5) -> [MailThread] {
+    /// over cached mail, newest first. Async so the per-keystroke lookup runs
+    /// on a pool reader connection instead of blocking the main thread while
+    /// SQLCipher decrypts pages.
+    func threadSuggestions(for query: String, limit: Int = 5) async -> [MailThread] {
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard q.count >= 1, let pattern = FTS5Pattern(matchingAllPrefixesIn: q) else { return [] }
-        return (try? db.read { db -> [MailThread] in
+        guard q.count >= 1 else { return [] }
+        return (try? await db.read { db -> [MailThread] in
+            // Build the pattern inside the read so nothing non-Sendable is
+            // captured across the suspension.
+            guard let pattern = FTS5Pattern(matchingAllPrefixesIn: q) else { return [] }
             let ids = try Row.fetchAll(db, sql: """
                 SELECT DISTINCT message.threadId FROM message
                 JOIN message_fts ON message_fts.rowid = message.rowid

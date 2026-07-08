@@ -200,7 +200,10 @@ struct LabelRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRe
 
 final class AppDatabase {
     static let shared = try! AppDatabase()
-    let dbQueue: DatabaseQueue
+    // A pool (WAL), not a serial queue: concurrent readers (e.g. the live
+    // search dropdown's per-keystroke FTS lookup) run on their own snapshot
+    // connections instead of queuing behind a sync-engine write transaction.
+    let dbPool: DatabasePool
 
     init() throws {
         let dir = try FileManager.default.url(for: .applicationSupportDirectory,
@@ -216,7 +219,7 @@ final class AppDatabase {
             try Self.encryptInPlace(path: path, passphrase: passphrase)
         }
         do {
-            dbQueue = try Self.openAndMigrate(path: path, passphrase: passphrase)
+            dbPool = try Self.openAndMigrate(path: path, passphrase: passphrase)
         } catch {
             // The cache can't be opened — wrong key (keychain item lost or
             // rotated, e.g. a backup restore) or a corrupt file. Everything in
@@ -224,18 +227,18 @@ final class AppDatabase {
             // of crashing at launch.
             NSLog("PerfectMail: mail cache unreadable (%@); resetting", "\(error)")
             try Self.setAsideUnreadable(path: path)
-            dbQueue = try Self.openAndMigrate(path: path, passphrase: passphrase)
+            dbPool = try Self.openAndMigrate(path: path, passphrase: passphrase)
         }
     }
 
-    private static func openAndMigrate(path: String, passphrase: String) throws -> DatabaseQueue {
+    private static func openAndMigrate(path: String, passphrase: String) throws -> DatabasePool {
         var config = Configuration()
         config.prepareDatabase { db in
             try db.usePassphrase(passphrase)
         }
-        let queue = try DatabaseQueue(path: path, configuration: config)
-        try migrator.migrate(queue)
-        return queue
+        let pool = try DatabasePool(path: path, configuration: config)
+        try migrator.migrate(pool)
+        return pool
     }
 
     /// Moves an unreadable database out of the way (kept as .unreadable for
@@ -473,6 +476,23 @@ final class AppDatabase {
             try db.create(table: "vipGroup") { t in
                 t.primaryKey("name", .text)
                 t.column("enabled", .boolean).notNull().defaults(to: true)
+            }
+        }
+        // Rebuild message_fts with prefix indexes (2- and 3-char). The live
+        // search dropdown queries prefixes on every keystroke (`FTS5Pattern
+        // matchingAllPrefixesIn:`); without prefix indexes SQLite scans the
+        // full term list for each short prefix — the exact hot path while
+        // typing. Drop the old table + its sync triggers, recreate with
+        // prefixes, and repopulate from `message`.
+        m.registerMigration("v15") { db in
+            try db.dropFTS5SynchronizationTriggers(forTable: "message_fts")
+            try db.drop(table: "message_fts")
+            try db.create(virtualTable: "message_fts", using: FTS5()) { t in
+                t.synchronize(withTable: "message")
+                t.column("subject")
+                t.column("fromHeader")
+                t.column("bodyText")
+                t.prefixes = [2, 3]
             }
         }
         return m

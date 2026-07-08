@@ -575,6 +575,16 @@ struct Sidebar: View {
 }
 
 
+/// Measures the panel's natural content height so the floating panel can hug
+/// its rows (instead of ScrollView greedily claiming its full max height and
+/// leaving dead space below the last row).
+private struct SearchPanelContentHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
 /// Wide command-K-style search results panel. Floats at the window level (see
 /// ContentView) so it can be much wider than the sidebar, spilling over the
 /// message list like Notion Mail. Shows recent searches when the query is
@@ -585,6 +595,11 @@ struct SearchResultsPanel: View {
     @EnvironmentObject var store: MailStore
     // Live thread matches; refreshed as the query changes.
     @State private var threadPreview: [MailThread] = []
+    // Natural content height, so the panel caps+scrolls at 460 but otherwise
+    // shrinks to fit. Defaults to the cap so the first frame isn't collapsed.
+    @State private var contentHeight: CGFloat = 460
+    // Debounced, off-main FTS lookup for the live preview.
+    @State private var previewTask: Task<Void, Never>?
 
     /// Everything the highlight can land on, in display order.
     private enum Row {
@@ -663,8 +678,14 @@ struct SearchResultsPanel: View {
                         }
                     }
                     .padding(.vertical, 5)
+                    .background(GeometryReader { geo in
+                        Color.clear.preference(key: SearchPanelContentHeightKey.self,
+                                               value: geo.size.height)
+                    })
                 }
-                .frame(maxHeight: 460)
+                // Hug the content, but cap (and scroll) at 460.
+                .frame(height: min(contentHeight, 460))
+                .onPreferenceChange(SearchPanelContentHeightKey.self) { contentHeight = $0 }
                 // Keyboard highlight: clamp over-scrolled ↓ presses back to the
                 // last row (like LabelPicker) and keep the row visible.
                 .onChange(of: store.searchHighlight) {
@@ -682,6 +703,7 @@ struct SearchResultsPanel: View {
             store.searchHighlight = 0
             refreshThreadPreview()
         }
+        .onDisappear { previewTask?.cancel() }
         .onChange(of: store.searchText) {
             store.searchHighlight = 0
             refreshThreadPreview()
@@ -858,11 +880,24 @@ struct SearchResultsPanel: View {
     }
 
     private func refreshThreadPreview() {
+        previewTask?.cancel()
+        let q = trimmedSearch
         // Empty query: latest threads from the current list, so `/` opens a
-        // full panel right away. Typing switches to live FTS matches.
-        threadPreview = trimmedSearch.isEmpty
-            ? Array(store.threads.prefix(4))
-            : store.threadSuggestions(for: trimmedSearch)
+        // full panel right away — instant, straight from memory.
+        if q.isEmpty {
+            threadPreview = Array(store.threads.prefix(4))
+            return
+        }
+        // Typing: debounce, then run the FTS lookup off the main thread. Keep
+        // the current rows visible until the new ones arrive so there's no
+        // flicker between keystrokes.
+        previewTask = Task {
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard !Task.isCancelled else { return }
+            let matches = await store.threadSuggestions(for: q)
+            guard !Task.isCancelled else { return }
+            threadPreview = matches
+        }
     }
 }
 

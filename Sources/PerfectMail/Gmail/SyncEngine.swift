@@ -6,7 +6,7 @@ import GRDB
 actor SyncEngine {
     private let client: GmailClient
     private let accountId: String
-    private let db = AppDatabase.shared.dbQueue
+    private let db = AppDatabase.shared.dbPool
 
     /// Sentinel for "keep no mail on this Mac" (0 already means "everything").
     static let windowNothing = -1

@@ -192,4 +192,51 @@ final class DatabaseMigrationTests: XCTestCase {
             XCTAssertEqual(try AttachmentRow.fetchCount(db), 0)
         }
     }
+
+    /// v15 rebuilds message_fts with prefix indexes. A message indexed before
+    /// the upgrade must survive: the rebuilt index repopulates from it (so
+    /// pre-v15 mail is still searchable), prefix queries match, and the sync
+    /// triggers keep working after the rebuild.
+    func testUpgradeToV15AddsFTSPrefixIndexes() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v14")
+        try q.write { db in
+            try db.execute(sql: "INSERT INTO account (id, displayName, senderName) VALUES ('ron@x.com', 'P', '')")
+            try db.execute(sql: """
+                INSERT INTO message (id, accountId, gmailId, threadId, fromHeader, toHeader,
+                    ccHeader, bccHeader, subject, date, snippet, bodyText, messageIdHeader,
+                    referencesHeader, labelIds, isUnread, hasAttachment)
+                VALUES ('ron@x.com:m1', 'ron@x.com', 'm1', 'ron@x.com:t1', 'jane@y.com', '',
+                    '', '', 'Zebra migration plans', '2026-01-01 00:00:00', '', 'the quick brown fox',
+                    '<id@mail>', '', 'INBOX', 1, 0)
+                """)
+        }
+        try AppDatabase.migrator.migrate(q)   // through v15
+
+        // The rebuilt FTS table declares prefix indexes.
+        let sql = try q.read { db in
+            try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = 'message_fts'") ?? ""
+        }
+        XCTAssertTrue(sql.lowercased().contains("prefix"),
+                      "v15 must declare FTS prefix indexes; got: \(sql)")
+
+        try q.read { db in
+            // The pre-v15 row was repopulated into the rebuilt index …
+            let full = try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'zebra'") ?? 0
+            XCTAssertEqual(full, 1, "existing rows must repopulate the rebuilt index")
+            // … and a prefix query matches it.
+            let prefix = try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'mig*'") ?? 0
+            XCTAssertEqual(prefix, 1, "prefix query must match")
+        }
+
+        // The sync triggers survive the rebuild: deleting the row clears it.
+        _ = try q.write { db in try Message.deleteOne(db, key: "ron@x.com:m1") }
+        let after = try q.read { db in
+            try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'zebra'") ?? 0
+        }
+        XCTAssertEqual(after, 0, "sync triggers must survive the FTS rebuild")
+    }
 }

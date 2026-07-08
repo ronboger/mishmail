@@ -25,7 +25,7 @@ enum DemoSeed {
 
     /// Wipes the mail tables and inserts a fresh demo inbox. Idempotent: every
     /// launch reseeds from scratch, so the screenshots are deterministic.
-    static func seedIfRequested(_ db: DatabaseQueue) {
+    static func seedIfRequested(_ db: DatabasePool) {
         guard isActive else { return }
         // Never clobber a real signed-in account: the wipe below only runs on
         // a fresh database or one that already holds only the demo fixture.
