@@ -988,7 +988,7 @@ final class MailStore: ObservableObject {
         case .starred:
             q = q.filter(Column("isStarred") == true && Column("inTrash") == false)
         case .snoozed:
-            q = q.filter(Column("snoozeUntil") != nil && Column("snoozeUntil") > now)
+            q = q.filter(Column("snoozeUntil") != nil && Column("snoozeUntil") > now && Column("inTrash") == false)
         case .reminders:
             q = q.filter(Column("reminderAt") != nil)
         case .drafts:
