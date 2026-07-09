@@ -2523,11 +2523,10 @@ final class MailStore: ObservableObject {
         await sync(accountId: apiAccountId)
     }
 
-    /// The HTML alternative an outgoing message can carry without ever
-    /// diverging from its plain text: a forward whose quoted block is
-    /// untouched (the user's text goes on top of the original HTML), or a
-    /// draft re-saved/sent with its body unedited (its stored HTML still
-    /// matches). Nil means plain text only.
+    /// HTML alternative for an outgoing message. Always non-nil so recipients
+    /// get clickable links (`[label](url)` and bare URLs via `ComposeLinks`).
+    /// Prefer preserved original/draft HTML when the plain body is still a
+    /// faithful twin (untouched forward quote, unedited draft body).
     private func htmlAlternative(body: String, forwardOf original: Message?,
                                  draft: Message?) -> String? {
         if let orig = original, let html = orig.bodyHTML, !html.isEmpty {
@@ -2544,7 +2543,9 @@ final class MailStore: ObservableObject {
         if let draft, let html = draft.bodyHTML, !html.isEmpty, body == draft.bodyText {
             return html
         }
-        return nil
+        // Normal compose / edited quote: plain body is source of truth.
+        let fragment = ComposeLinks.htmlFragment(from: body)
+        return fragment.isEmpty ? nil : fragment
     }
 
     /// Saves compose state as a real Gmail draft (shows up in Gmail too).

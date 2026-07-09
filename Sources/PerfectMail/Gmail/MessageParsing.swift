@@ -231,9 +231,10 @@ enum MessageParser {
 /// The compose editor is plain text, but most mail is HTML. To forward
 /// without losing formatting, the send path recomputes this block from the
 /// original message: if the composed body still ends with it verbatim, the
-/// message is upgraded to multipart/alternative with the user's (escaped)
-/// text on top of the original HTML. If the user edited inside the quoted
-/// block, we send plain text only — the two parts must never disagree.
+/// message is upgraded to multipart/alternative with the user's text (links
+/// turned into anchors via `ComposeLinks`) on top of the original HTML. If
+/// the user edited inside the quoted block, we fall back to regenerating
+/// HTML from the whole plain body — the two parts must never disagree.
 enum ForwardComposer {
     static let marker = "---------- Forwarded message ---------"
 
@@ -257,20 +258,22 @@ enum ForwardComposer {
     }
 
     /// The text the user authored above the quoted block, or nil when the
-    /// block was edited or removed (→ caller must send plain text only).
+    /// block was edited or removed (→ caller regenerates HTML from full body).
     static func userText(inBody body: String, expectedBlock block: String) -> String? {
         guard body.hasSuffix(block) else { return nil }
         return String(body.dropLast(block.count))
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// HTML alternative: escaped user text, header block, original HTML.
+    /// HTML alternative: linked/escaped user text, header block, original HTML.
     static func htmlBody(userText: String, fromHeader: String, date: Date,
                          subject: String, toHeader: String, ccHeader: String,
                          originalHTML: String) -> String {
         var out = ""
         if !userText.isEmpty {
-            out += "<div>\(escapeHTML(userText))</div><br>"
+            // ComposeLinks turns [label](url) and bare URLs into anchors and
+            // escapes everything else — same path as a normal compose send.
+            out += "<div>\(ComposeLinks.htmlFragment(from: userText))</div><br>"
         }
         var header = "\(marker)<br>From: \(escapeHTML(fromHeader))<br>"
             + "Date: \(escapeHTML(dateFormatter.string(from: date)))<br>"
@@ -281,10 +284,7 @@ enum ForwardComposer {
     }
 
     private static func escapeHTML(_ s: String) -> String {
-        s.replacingOccurrences(of: "&", with: "&amp;")
-            .replacingOccurrences(of: "<", with: "&lt;")
-            .replacingOccurrences(of: ">", with: "&gt;")
-            .replacingOccurrences(of: "\n", with: "<br>")
+        ComposeLinks.escapeText(s).replacingOccurrences(of: "\n", with: "<br>")
     }
 }
 

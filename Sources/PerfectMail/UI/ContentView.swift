@@ -254,10 +254,10 @@ struct ContentView: View {
             // typing a date) — everything must pass through untouched.
             if store.snoozingThread != nil { return event }
             // Compose is open and the user is typing: every chord belongs to
-            // the text system (⌘K, ⌃F/⌃K caret motion, ⌘-digits, …), not to
-            // app-level shortcuts. SwiftUI .keyboardShortcut sends (⌘Return)
-            // and snippets (⌘/) are resolved before this monitor, so they
-            // keep working.
+            // the text system / compose handlers (⌘K insert-link, ⌃F/⌃K caret
+            // motion, ⌘-digits, …), not to app-level shortcuts. Compose's own
+            // monitor turns ⌘K into a hyperlink sheet; SwiftUI .keyboardShortcut
+            // sends (⌘Return) and snippets (⌘/) still resolve before us.
             if store.composeRequest != nil, event.window?.firstResponder is NSText {
                 return event
             }

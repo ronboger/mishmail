@@ -17,7 +17,7 @@ struct ShortcutsHelpView: View {
             ("Return", "Open conversation"),
             ("/", "Search"),
             ("Esc", "Close reading pane / drop focus"),
-            ("⌘K", "Command palette"),
+            ("⌘K", "Command palette (Insert link while composing)"),
             ("/ (in compose)", "Snippet picker (typed in body)"),
             ("⌘/", "Snippets panel (in compose)"),
             ("⌃F", "Filter menu"),
