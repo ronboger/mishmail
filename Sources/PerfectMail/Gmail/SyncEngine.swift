@@ -179,13 +179,12 @@ actor SyncEngine {
     /// committed in chunks of `writeChunkSize` (one SQLCipher transaction per
     /// chunk). A failure mid-chunk rolls back that chunk only; earlier chunks
     /// stay committed. Progress reports download totals periodically per page.
+    ///
+    /// Existence: per list page, PK lookup for that page's ids only — never
+    /// loads all account gmailIds into a Set (memory stays O(page), not O(mailbox)).
     @discardableResult
     private func fetchAll(query: String?, limit: Int,
                           progress: (@Sendable (String) -> Void)?) async throws -> Set<String> {
-        let existing = try await db.read { [accountId] db in
-            Set(try String.fetchAll(db, sql: "SELECT gmailId FROM message WHERE accountId = ?",
-                                    arguments: [accountId]))
-        }
         var touchedKeys = Set<String>()
         var writeBuffer: [PendingUpsert] = []
         writeBuffer.reserveCapacity(Self.writeChunkSize)
@@ -194,8 +193,14 @@ actor SyncEngine {
         var fetched = 0
         repeat {
             let page = try await client.listMessages(query: query, pageToken: pageToken, maxResults: 100)
-            let refs = (page.messages ?? []).filter { !existing.contains($0.id) }
-            listed += page.messages?.count ?? 0
+            let listedIds = (page.messages ?? []).map(\.id)
+            listed += listedIds.count
+            // Per-page missing check (PK IN …) — avoids O(mailbox) Set at start.
+            let missingIds = try await db.read { [accountId] db in
+                try Self.filterMissingGmailIds(db, accountId: accountId, listed: listedIds)
+            }
+            let missingSet = Set(missingIds)
+            let refs = (page.messages ?? []).filter { missingSet.contains($0.id) }
             try await withThrowingTaskGroup(of: GMessage.self) { group in
                 var pending = 0
                 var iterator = refs.makeIterator()
@@ -223,6 +228,26 @@ actor SyncEngine {
         } while pageToken != nil && listed < limit
         try await flushUpserts(&writeBuffer, into: &touchedKeys)
         return touchedKeys
+    }
+
+    /// Returns gmailIds from `listed` that are not already stored for
+    /// `accountId`. Uses primary-key lookups (`id = accountId:gmailId`) so
+    /// work is O(|listed|), not O(all messages in the account).
+    ///
+    /// Dedupes `listed` while preserving first-seen order. Empty input → [].
+    /// Extracted for unit tests (seed known ids; assert only missing returned).
+    static func filterMissingGmailIds(_ db: Database, accountId: String,
+                                      listed: [String]) throws -> [String] {
+        guard !listed.isEmpty else { return [] }
+        var seen = Set<String>()
+        let unique = listed.filter { seen.insert($0).inserted }
+        let localIds = unique.map { "\(accountId):\($0)" }
+        let placeholders = localIds.map { _ in "?" }.joined(separator: ",")
+        let existingLocal = try Set(String.fetchAll(
+            db,
+            sql: "SELECT id FROM message WHERE id IN (\(placeholders))",
+            arguments: StatementArguments(localIds)))
+        return unique.filter { !existingLocal.contains("\(accountId):\($0)") }
     }
 
     // MARK: - Incremental
