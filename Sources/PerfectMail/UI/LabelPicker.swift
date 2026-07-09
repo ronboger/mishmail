@@ -18,6 +18,10 @@ struct LabelPicker: View {
     @ObservedObject var picker: LabelPickerState
     @FocusState private var focused: Bool
 
+    /// Stable id for the "Create …" row so ScrollViewReader can find it
+    /// after the filtered list shrinks (index-based ids churn under filter).
+    private static let createRowID = "label-picker-create"
+
     var body: some View {
         ZStack(alignment: .top) {
             Color.black.opacity(0.2)
@@ -37,7 +41,6 @@ struct LabelPicker: View {
                         .font(.system(size: 15))
                         .padding(12)
                         .focused($focused)
-                        .onChange(of: picker.query) { picker.highlight = 0 }
                     if store.accounts.count > 1 {
                         Text(thread.accountId)
                             .font(.caption).foregroundStyle(.secondary)
@@ -47,7 +50,12 @@ struct LabelPicker: View {
                     Divider()
                     ScrollViewReader { proxy in
                         ScrollView {
-                            LazyVStack(spacing: 0) {
+                            // Eager VStack (not LazyVStack): the Labels filter
+                            // chip uses the same pattern. Lazy stacks + index
+                            // scrollTo leave rows past the fold unmaterialized,
+                            // so typing a name for a label further down looked
+                            // empty even when the filter matched.
+                            VStack(spacing: 0) {
                                 ForEach(Array(labels.enumerated()), id: \.element.id) { idx, label in
                                     let applied = thread.labels.contains(label.gmailLabelId)
                                     HStack(spacing: 8) {
@@ -64,7 +72,7 @@ struct LabelPicker: View {
                                     .contentShape(Rectangle())
                                     .onTapGesture { store.toggleLabel(thread, labelId: label.gmailLabelId) }
                                     .onHover { if $0 { picker.highlight = idx } }
-                                    .id(idx)
+                                    .id(label.id)
                                 }
                                 if let createName {
                                     HStack(spacing: 8) {
@@ -78,7 +86,7 @@ struct LabelPicker: View {
                                     .contentShape(Rectangle())
                                     .onTapGesture { store.createLabelAndApply(name: createName, thread: thread) }
                                     .onHover { if $0 { picker.highlight = labels.count } }
-                                    .id(labels.count)
+                                    .id(Self.createRowID)
                                 }
                                 if labels.isEmpty, createName == nil {
                                     Text("No labels in \(thread.accountId)").font(.caption).foregroundStyle(.secondary)
@@ -101,7 +109,22 @@ struct LabelPicker: View {
                             if picker.highlight > max(rowCount - 1, 0) {
                                 picker.highlight = max(rowCount - 1, 0)
                             }
-                            proxy.scrollTo(picker.highlight, anchor: .center)
+                            scrollToHighlighted(proxy, labels: labels, createName: createName,
+                                                highlight: picker.highlight)
+                        }
+                        .onChange(of: picker.query) {
+                            // Typing resets selection to the first match. Must
+                            // scroll even when highlight was already 0 — otherwise
+                            // a prior mouse-wheel offset leaves the short
+                            // filtered list above the viewport (blank picker).
+                            picker.highlight = 0
+                            // Defer until after the filtered ForEach commits so
+                            // the stable row id exists for scrollTo.
+                            DispatchQueue.main.async {
+                                scrollToHighlighted(proxy, labels: store.labelPickerLabels(for: thread),
+                                                    createName: store.labelPickerCreateName(for: thread),
+                                                    highlight: 0)
+                            }
                         }
                     }
                     Divider()
@@ -134,6 +157,19 @@ struct LabelPicker: View {
                     }
                 }
             }
+        }
+    }
+
+    /// Scroll the list so the highlighted row (label or Create) is visible.
+    private func scrollToHighlighted(_ proxy: ScrollViewProxy, labels: [LabelRow],
+                                     createName: String?, highlight: Int) {
+        let rowCount = labels.count + (createName != nil ? 1 : 0)
+        guard rowCount > 0 else { return }
+        let idx = min(max(highlight, 0), rowCount - 1)
+        if idx < labels.count {
+            proxy.scrollTo(labels[idx].id, anchor: .center)
+        } else {
+            proxy.scrollTo(Self.createRowID, anchor: .center)
         }
     }
 }
