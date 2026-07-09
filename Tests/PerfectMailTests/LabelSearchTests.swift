@@ -26,4 +26,21 @@ final class LabelSearchTests: XCTestCase {
         XCTAssertTrue(LabelSearch.matches("Investment", query: "vest"))
         XCTAssertTrue(LabelSearch.matches("Café receipts", query: "cafe"))
     }
+
+    func testHighlightBoldsTheMatchedRange() {
+        let attributed = LabelSearch.highlighted("Investment Updates", query: "inv")
+        let run = attributed.runs.first { $0.inlinePresentationIntent == .stronglyEmphasized }
+        XCTAssertEqual(run.map { String(attributed[$0.range].characters) }, "Inv")
+    }
+
+    func testHighlightIsCaseInsensitiveOfQuery() {
+        let attributed = LabelSearch.highlighted("investor updates", query: "INV")
+        let run = attributed.runs.first { $0.inlinePresentationIntent == .stronglyEmphasized }
+        XCTAssertEqual(run.map { String(attributed[$0.range].characters) }, "inv")
+    }
+
+    func testHighlightWithEmptyQueryBoldsNothing() {
+        let attributed = LabelSearch.highlighted("Investment Updates", query: "")
+        XCTAssertNil(attributed.runs.first { $0.inlinePresentationIntent == .stronglyEmphasized })
+    }
 }

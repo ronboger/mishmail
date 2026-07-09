@@ -997,7 +997,8 @@ struct FilterBar: View {
         } label: {
             HStack(spacing: 8) {
                 Circle().fill(tint).frame(width: 9, height: 9)
-                Text(label.name).font(.system(size: 12.5)).lineLimit(1)
+                Text(LabelSearch.highlighted(label.name, query: labelQuery))
+                    .font(.system(size: 12.5)).lineLimit(1)
                 Spacer(minLength: 0)
                 if selected {
                     Image(systemName: "checkmark")

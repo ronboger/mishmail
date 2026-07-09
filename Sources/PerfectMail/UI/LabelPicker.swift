@@ -55,7 +55,8 @@ struct LabelPicker: View {
                                             .foregroundStyle(applied ? Color.notionAccent : .secondary)
                                         Circle().fill(store.labelTint(label.name, account: label.accountId))
                                             .frame(width: 8, height: 8)
-                                        Text(label.name).font(.system(size: 13))
+                                        Text(LabelSearch.highlighted(label.name, query: picker.query))
+                                            .font(.system(size: 13))
                                         Spacer()
                                     }
                                     .padding(.horizontal, 12).padding(.vertical, 6)
