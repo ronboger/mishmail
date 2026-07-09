@@ -87,6 +87,7 @@ targets:
       - Sources/PerfectMail/Support/SnippetImport.swift
       - Sources/PerfectMail/Support/SnippetInsertion.swift
       - Sources/PerfectMail/Support/UpdateChecker.swift
+      - Sources/PerfectMail/Support/HTMLBodyCSP.swift
       - Sources/PerfectMail/Auth/OAuth.swift
     dependencies:
       - package: GRDB

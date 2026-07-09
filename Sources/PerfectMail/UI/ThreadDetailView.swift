@@ -772,14 +772,40 @@ struct HTMLBodyView: NSViewRepresentable {
         guard context.coordinator.loadedKey != key else { return }
         context.coordinator.loadedKey = key
         context.coordinator.setHeight = { self.height = $0 }
-        let imgSrc = allowRemoteImages ? "data: cid: https: http:" : "data: cid:"
-        let csp = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src \(imgSrc); style-src 'unsafe-inline'\">"
+        let csp = HTMLBodyCSP.metaTag(allowRemoteImages: allowRemoteImages)
+        // Notion-style dark override: most HTML mail hardcodes color:#000 /
+        // black on spans (Outlook/Word, corporate sigs). A non-!important body
+        // rule loses to those inlines → black-on-gray. Force light text with
+        // !important; clear only pure-white panels so brand banners keep their
+        // fills and images stay untouched.
         let style = """
             <style>
+            :root { color-scheme: light dark; }
             html, body { height: auto !important; min-height: 0 !important; }
-            body { font: \(Int(14.5 * fontScale))px -apple-system, sans-serif; color: canvastext; margin: 0; }
+            body { font: \(Int(14.5 * fontScale))px -apple-system, sans-serif; color: canvastext; margin: 0; background: transparent; }
             img { max-width: 100%; height: auto; }
-            @media (prefers-color-scheme: dark) { body { color: #ddd; } a { color: #6cb2ff; } }
+            @media (prefers-color-scheme: dark) {
+              body, body :not(a):not(a *) { color: #e6e6e6 !important; }
+              a, a * { color: #6cb2ff !important; }
+              body [style*="background-color:white" i],
+              body [style*="background-color: white" i],
+              body [style*="background-color:#fff" i],
+              body [style*="background-color: #fff" i],
+              body [style*="background-color:#ffffff" i],
+              body [style*="background-color: #ffffff" i],
+              body [style*="background:white" i],
+              body [style*="background: white" i],
+              body [style*="background:#fff" i],
+              body [style*="background: #fff" i],
+              body [style*="background:#ffffff" i],
+              body [style*="background: #ffffff" i],
+              body [bgcolor="white" i],
+              body [bgcolor="#fff" i],
+              body [bgcolor="#ffffff" i] {
+                background-color: transparent !important;
+                background-image: none !important;
+              }
+            }
             \(collapseQuote ? QuotedReply.hideQuoteCSS : "")
             </style>
             """
