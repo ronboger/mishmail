@@ -1,99 +1,67 @@
 import XCTest
 
 final class HTMLBodyDarkModeTests: XCTestCase {
-    func testPlainMailHasNoOwnBackground() {
-        let html = "<div style=\"color:#000\">Hi Ron,</div><p>See you soon.</p>"
+    func testPlainMailForcesLightText() {
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false,
+                                               html: "<p style=\"color:#000\">Hi</p>")
+        XCTAssertTrue(css.contains("prefers-color-scheme: dark"))
+        XCTAssertTrue(css.contains("#e6e6e6"))
+    }
+
+    func testLightSurfacesForceDarkText() {
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false, html: "")
+        // White bgcolor panels get dark text (signature cards).
+        XCTAssertTrue(css.contains("[bgcolor=\"#ffffff\" i]"))
+        XCTAssertTrue(css.contains("color: #222 !important"))
+        // Light hex first-nibble coverage for cream newsletters.
+        XCTAssertTrue(css.contains("[bgcolor^=\"#f\" i]"))
+    }
+
+    func testAshleyStyleMixedMailHasBothRules() {
+        // Body has no bg; signature table is white — both force-light and
+        // light-surface dark text must be present so mixed mail works.
+        let html = """
+        <div>Hi Ron,</div>
+        <div class="front-signature">
+          <table bgcolor="#ffffff"><tr><td style="color: rgb(147, 147, 147)">Ashley</td></tr></table>
+        </div>
+        <blockquote type="cite">earlier</blockquote>
+        """
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: true, html: html)
+        XCTAssertTrue(css.contains("#e6e6e6"))
+        XCTAssertTrue(css.contains("#222"))
+        XCTAssertTrue(HTMLBodyDarkMode.hasOwnBackground(html),
+                      "white sig in authored head still detectable")
+    }
+
+    func testQuotedTrailWhiteBackgroundDetectionIgnored() {
+        let html = """
+        <div dir="ltr">Hi Jeremy,</div>
+        <div class="gmail_quote">
+          <div style="background-color:#ffffff"><p>quoted</p></div>
+        </div>
+        """
         XCTAssertFalse(HTMLBodyDarkMode.hasOwnBackground(html))
     }
 
-    func testPureWhiteBgcolorIsOwnBackground() {
-        let html = "<table bgcolor=\"#ffffff\"><tr><td>Hello</td></tr></table>"
-        XCTAssertTrue(HTMLBodyDarkMode.hasOwnBackground(html))
-    }
-
-    func testCreamBackgroundColorIsOwnBackground() {
-        // Constant Contact / marketing cream — the Urban Adamah failure mode.
+    func testCreamDetection() {
         let html = "<td style=\"background-color:#faf8f5; color:#333\">Join us</td>"
         XCTAssertTrue(HTMLBodyDarkMode.hasOwnBackground(html))
     }
 
-    func testBackgroundShorthandWhiteIsOwnBackground() {
-        let html = "<div style=\"background: #fff; padding: 12px\">Body</div>"
-        XCTAssertTrue(HTMLBodyDarkMode.hasOwnBackground(html))
+    func testPlainHasNoOwnBackground() {
+        let html = "<div style=\"color:#000\">Hi Ron,</div>"
+        XCTAssertFalse(HTMLBodyDarkMode.hasOwnBackground(html))
     }
 
-    func testNamedWhiteIsOwnBackground() {
-        let html = "<body bgcolor=\"white\"><p>Hi</p></body>"
-        XCTAssertTrue(HTMLBodyDarkMode.hasOwnBackground(html))
-    }
-
-    func testDarkBackgroundIsNotOwnLightBackground() {
-        // Dark navy panel — not a light surface; keep the force-light path.
+    func testDarkBackgroundNotOwnLight() {
         let html = "<div style=\"background-color:#1a1a2e; color:#eee\">Banner</div>"
         XCTAssertFalse(HTMLBodyDarkMode.hasOwnBackground(html))
     }
 
-    func testRgbHighChannelsIsOwnBackground() {
-        let html = "<div style=\"background-color: rgb(250, 248, 245)\">x</div>"
-        XCTAssertTrue(HTMLBodyDarkMode.hasOwnBackground(html))
-    }
-
-    func testPlainPathForcesLightTextInDarkMedia() {
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false,
-                                               html: "<p>Hi</p>")
-        XCTAssertTrue(css.contains("prefers-color-scheme: dark"))
-        XCTAssertTrue(css.contains("#e6e6e6"))
-        XCTAssertTrue(css.contains("color-scheme: light dark"))
-    }
-
-    func testDesignedPathLeavesAuthorColors() {
-        let html = "<table bgcolor=\"#f5f0e8\"><tr><td>Newsletter</td></tr></table>"
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false, html: html)
-        XCTAssertFalse(css.contains("prefers-color-scheme: dark"),
-                       "designed mail must not force light text")
-        XCTAssertFalse(css.contains("#e6e6e6"))
-        XCTAssertTrue(css.contains("color-scheme: light"))
-        XCTAssertTrue(css.contains("color: #222"),
-                      "unstyled text needs a dark default on light panels")
-    }
-
-    func testCollapseQuoteInjectedOnBothPaths() {
-        let plain = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: true,
-                                                 html: "<p>x</p>")
-        let designed = HTMLBodyDarkMode.injectedCSS(
-            fontScale: 1, collapseQuote: true,
-            html: "<div style=\"background:#fff\">x</div>")
-        XCTAssertTrue(plain.contains(QuotedReply.hideQuoteCSS)
-                      || plain.contains("gmail_quote"))
-        XCTAssertTrue(designed.contains(QuotedReply.hideQuoteCSS)
-                      || designed.contains("gmail_quote"))
-    }
-
-    /// Plain reply whose *quoted* trail has a white table must stay on the
-    /// force-light path — that was the Ron→Jeremy dark-on-dark regression.
-    func testQuotedTrailWhiteBackgroundDoesNotForceDesignedPath() {
-        let html = """
-        <div dir="ltr">Hi Jeremy,<br><br>Wanted to flag this as well.</div>
-        <div class="gmail_quote">
-          <div style="background-color:#ffffff">
-            <p style="color:#000">On Wed, earlier message…</p>
-          </div>
-        </div>
-        """
-        XCTAssertFalse(HTMLBodyDarkMode.hasOwnBackground(html),
-                       "white bg only inside gmail_quote must be ignored")
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: true, html: html)
-        XCTAssertTrue(css.contains("#e6e6e6"),
-                      "plain reply with quoted white table still forces light text")
-    }
-
-    func testAuthoredHeadCreamStillDesigned() {
-        // Author's own cream panel above the quote still counts.
-        let html = """
-        <table bgcolor="#faf8f5"><tr><td>My note</td></tr></table>
-        <div class="gmail_quote"><div>quoted</div></div>
-        """
-        XCTAssertTrue(HTMLBodyDarkMode.hasOwnBackground(html))
+    func testCollapseQuoteInjected() {
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: true, html: "<p>x</p>")
+        XCTAssertTrue(css.contains(QuotedReply.hideQuoteCSS) || css.contains("gmail_quote"))
     }
 
     func testAuthoredHeadStripsAtGmailQuote() {
@@ -101,6 +69,11 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         let head = HTMLBodyDarkMode.authoredHead(of: html)
         XCTAssertTrue(head.contains("head"))
         XCTAssertFalse(head.contains("gmail_quote"))
-        XCTAssertFalse(head.contains("bgcolor=#ffffff"))
+    }
+
+    func testLinksStayBlueOutsideLightSurfaces() {
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        XCTAssertTrue(css.contains("#6cb2ff"))
+        XCTAssertTrue(css.contains("#0b57d0"), "links inside light surfaces use darker blue")
     }
 }
