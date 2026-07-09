@@ -75,15 +75,96 @@ enum DemoSeed {
     // MARK: - Fixture data
 
     private struct DemoLabel { let id, name, color: String; let order: Int }
-    private static let userLabels: [DemoLabel] = [
-        DemoLabel(id: "Label_work", name: "Work", color: "#6E56CF", order: 0),
-        DemoLabel(id: "Label_research", name: "Research", color: "#30A46C", order: 1),
-        DemoLabel(id: "Label_personal", name: "Personal", color: "#E5484D", order: 2),
-        // Near-duplicate names (case + wording) so label-picker search can be
-        // exercised: typing "inv" must surface both of these.
-        DemoLabel(id: "Label_investment", name: "Investment Updates", color: "#0091FF", order: 3),
-        DemoLabel(id: "Label_investor", name: "investor updates", color: "#F76B15", order: 4),
-    ]
+
+    /// Deliberately long list with near-duplicate clusters so the "l" picker's
+    /// type-to-filter (and scroll-past-the-fold) can be exercised in demo mode.
+    /// Order is the organizer / picker order: early rows sit above the fold;
+    /// clusters further down force typing or ↓ to reach.
+    private static let userLabels: [DemoLabel] = {
+        // (id suffix, display name, color) — order is array index.
+        let rows: [(String, String, String)] = [
+            // Top of the list (visible without scrolling).
+            ("work", "Work", "#6E56CF"),
+            ("research", "Research", "#30A46C"),
+            ("personal", "Personal", "#E5484D"),
+            ("starred_keep", "Starred / keep", "#F5D90A"),
+            ("follow_up", "Follow up", "#E5484D"),
+            ("waiting", "Waiting on", "#AB4ABA"),
+            ("travel", "Travel", "#12A594"),
+            ("family", "Family", "#E93D82"),
+            ("friends", "Friends", "#D6409F"),
+            // Investment cluster — typing "inv" must surface several of these.
+            ("investment", "Investment Updates", "#0091FF"),
+            ("investor", "investor updates", "#F76B15"),
+            ("investors", "Investors", "#3E63DD"),
+            ("invest_lp", "Investment / LP notes", "#0090FF"),
+            ("invest_thesis", "Investment thesis", "#5B5BD6"),
+            ("inv_committee", "Investment Committee", "#6E56CF"),
+            ("invoices", "Invoices", "#30A46C"),
+            ("invite", "Invites", "#F76B15"),
+            // Receipt / finance cluster further down.
+            ("receipts", "Receipts", "#978365"),
+            ("receipts_tax", "Receipts — tax", "#AD7F58"),
+            ("receipts_2025", "Receipts 2025", "#A18072"),
+            ("receipts_2026", "Receipts 2026", "#A18072"),
+            ("expenses", "Expenses", "#FFB224"),
+            ("expense_reports", "Expense reports", "#F76808"),
+            ("reimbursements", "Reimbursements", "#E5484D"),
+            // Project / product cluster (mid list).
+            ("project_alpha", "Project Alpha", "#3E63DD"),
+            ("project_beta", "Project Beta", "#0090FF"),
+            ("project_gamma", "Project Gamma", "#12A594"),
+            ("product", "Product", "#6E56CF"),
+            ("product_feedback", "Product feedback", "#5B5BD6"),
+            ("product_roadmap", "Product roadmap", "#7C66DC"),
+            ("design", "Design", "#E93D82"),
+            ("design_review", "Design review", "#D6409F"),
+            ("eng", "Engineering", "#30A46C"),
+            ("eng_oncall", "Engineering / on-call", "#3D9A50"),
+            ("eng_hiring", "Engineering hiring", "#46A758"),
+            // Hiring / people (similar wording).
+            ("hiring", "Hiring", "#E5484D"),
+            ("hiring_eng", "Hiring — eng", "#E5484D"),
+            ("hiring_design", "Hiring — design", "#E93D82"),
+            ("candidates", "Candidates", "#AB4ABA"),
+            ("candidates_pass", "Candidates / pass", "#8E4EC6"),
+            ("intros", "Intros", "#0091FF"),
+            ("intros_lp", "Intros — LPs", "#3E63DD"),
+            ("intros_founders", "Intros — founders", "#12A594"),
+            // News / newsletters.
+            ("news", "News", "#978365"),
+            ("newsletters", "Newsletters", "#A18072"),
+            ("news_ai", "News — AI", "#5B5BD6"),
+            ("news_climate", "News — climate", "#30A46C"),
+            // Nested-style Gmail names further down the list.
+            ("clients", "Clients", "#0090FF"),
+            ("clients_acme", "Clients/Acme", "#3E63DD"),
+            ("clients_northwind", "Clients/Northwind", "#12A594"),
+            ("clients_brightloop", "Clients/Brightloop", "#6E56CF"),
+            ("vendors", "Vendors", "#F76B15"),
+            ("vendors_aws", "Vendors/AWS", "#FFB224"),
+            ("vendors_stripe", "Vendors/Stripe", "#E93D82"),
+            // Legal / admin tail of the list (must scroll or type to reach).
+            ("legal", "Legal", "#8B8D98"),
+            ("legal_contracts", "Legal — contracts", "#6C6E79"),
+            ("legal_nda", "Legal — NDAs", "#6C6E79"),
+            ("admin", "Admin", "#978365"),
+            ("admin_hr", "Admin / HR", "#A18072"),
+            ("admin_it", "Admin / IT", "#AD7F58"),
+            ("archive_2024", "Archive 2024", "#8B8D98"),
+            ("archive_2025", "Archive 2025", "#8B8D98"),
+            ("zzz_misc", "zzz misc", "#6C6E79"),
+            ("zzz_triage", "zzz triage later", "#6C6E79"),
+            ("university", "University", "#3E63DD"),
+            ("university_alumni", "University alumni", "#0090FF"),
+            ("board", "Board", "#E5484D"),
+            ("board_pack", "Board pack", "#E93D82"),
+            ("board_minutes", "Board minutes", "#D6409F"),
+        ]
+        return rows.enumerated().map { i, row in
+            DemoLabel(id: "Label_\(row.0)", name: row.1, color: row.2, order: i)
+        }
+    }()
 
     private static func date(_ hoursAgo: Double) -> Date {
         Date().addingTimeInterval(-hoursAgo * 3600)
