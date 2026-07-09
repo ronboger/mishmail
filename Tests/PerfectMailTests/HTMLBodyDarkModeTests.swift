@@ -76,4 +76,24 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         XCTAssertTrue(css.contains("#6cb2ff"))
         XCTAssertTrue(css.contains("#0b57d0"), "links inside light surfaces use darker blue")
     }
+
+    /// Regression: multi-selector list must be wrapped in :is() so that
+    /// `A, B, C :not(a)` is not parsed as only C's descendants. Urban Adamah
+    /// cream tables matched early bgcolor selectors but children stayed #e6e6e6.
+    func testLightSurfaceDescendantsAllGetDarkText() {
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        XCTAssertTrue(css.contains(":is("),
+                      "light-surface list must be wrapped in :is() for descendant rules")
+        XCTAssertTrue(css.contains(") :not(a):not(a *)"),
+                      "descendant selector must target :is(...) children")
+        // Both the element and its descendants share the dark-text rule.
+        XCTAssertTrue(css.contains("color: #222 !important"))
+        // Ensure we didn't leave a bare "last selector only" pattern as the
+        // primary light-surface rule (the old bug had no :is at all).
+        let isWrappedDescendant = css.range(of: #":is\([^)]+\) :not\(a\):not\(a \*\)"#,
+                                            options: .regularExpression) != nil
+            || css.contains(") :not(a):not(a *)")
+        XCTAssertTrue(isWrappedDescendant)
+    }
+
 }

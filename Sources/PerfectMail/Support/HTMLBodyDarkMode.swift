@@ -20,6 +20,11 @@ enum HTMLBodyDarkMode {
         // Light-surface selectors: white + first-nibble d–f hex + common names.
         // Applied to the element and its descendants so sig cards / cream
         // wrappers keep dark text while the surrounding body stays light.
+        // Wrap the multi-selector list in :is() so descendant combinators
+        // apply to EVERY light surface, not just the last one. Without this,
+        // `A, B, C :not(a)` only styles C's children — cream/white wrappers
+        // matched A/B but their text still got the body #e6e6e6 force (Urban
+        // Adamah light-on-cream regression after 8aac8ea).
         let light = lightSurfaceSelector
         return """
         :root { color-scheme: light dark; }
@@ -29,12 +34,12 @@ enum HTMLBodyDarkMode {
         @media (prefers-color-scheme: dark) {
           body, body :not(a):not(a *) { color: #e6e6e6 !important; }
           a, a * { color: #6cb2ff !important; }
-          \(light),
-          \(light) :not(a):not(a *) {
+          :is(\(light)),
+          :is(\(light)) :not(a):not(a *) {
             color: #222 !important;
           }
-          \(light) a,
-          \(light) a * {
+          :is(\(light)) a,
+          :is(\(light)) a * {
             color: #0b57d0 !important;
           }
         }
