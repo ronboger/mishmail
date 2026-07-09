@@ -8,19 +8,39 @@ import Foundation
 /// - **Designed** (author brings a light panel): cream/white wrappers were
 ///   authored with dark text — force-lighting text produces light-on-cream.
 ///   Leave author colors alone and only set a dark default for unstyled text.
+///
+/// Detection looks only at the *authored head* above any quoted trail
+/// (`gmail_quote` / Outlook / Apple Mail cite). Quotes frequently embed white
+/// tables from earlier mail; scanning them made plain replies pick the
+/// designed path → dark `#222` text on transparent dark chrome.
 enum HTMLBodyDarkMode {
-    /// True when the HTML declares a light-ish background on some container
-    /// (`bgcolor`, `background-color`, or `background:`). Used to pick the
-    /// "leave alone" path so newsletters keep their cream panels readable.
+    /// True when the authored portion of the HTML declares a light-ish
+    /// background on some container (`bgcolor`, `background-color`, or
+    /// `background:`). Quoted trails are ignored for this decision.
     static func hasOwnBackground(_ html: String) -> Bool {
-        let range = fullRange(html)
-        if bgcolorLightValue.numberOfMatches(in: html, options: [], range: range) > 0 {
+        let sample = authoredHead(of: html)
+        let range = fullRange(sample)
+        if bgcolorLightValue.numberOfMatches(in: sample, options: [], range: range) > 0 {
             return true
         }
-        if styleBackgroundLightValue.numberOfMatches(in: html, options: [], range: range) > 0 {
+        if styleBackgroundLightValue.numberOfMatches(in: sample, options: [], range: range) > 0 {
             return true
         }
         return false
+    }
+
+    /// HTML above the first reply/forward quote container, or the full string
+    /// when there is no recognized trail. Mirrors `QuotedReply` markers.
+    static func authoredHead(of html: String) -> String {
+        let ns = html as NSString
+        guard let match = quoteMarker.firstMatch(
+            in: html, range: NSRange(location: 0, length: ns.length))
+        else { return html }
+        let head = ns.substring(to: match.range.location)
+        // If the head is empty (quote is the whole body), fall back to full HTML
+        // so a forwarded newsletter still gets the designed path.
+        let stripped = head.trimmingCharacters(in: .whitespacesAndNewlines)
+        return stripped.isEmpty ? html : head
     }
 
     /// Injected stylesheet contents (no outer `<style>` tags) for the message pane.
@@ -73,14 +93,21 @@ enum HTMLBodyDarkMode {
 
     // MARK: - Detection
 
+    /// Same containers as `QuotedReply.htmlMarker` / `hideQuoteCSS`.
+    private static let quoteMarker: NSRegularExpression = {
+        try! NSRegularExpression(
+            pattern: #"<[^>]+class\s*=\s*["'][^"']*gmail_quote"# + "|"
+                + #"<[^>]+id\s*=\s*["']?divRplyFwdMsg"# + "|"
+                + #"<blockquote[^>]*type\s*=\s*["']?cite"#,
+            options: [.caseInsensitive])
+    }()
+
     // Light color token: hex with first channel nibble d–f (covers #fff, #eee,
     // #faf8f5, cream, etc.), common light names, or high-channel rgb().
-    // Kept as one line so we never trip (?x) comment-on-# rules.
     private static let lightColor =
         #"(?:#[d-fD-F][0-9a-fA-F]{2}(?:[d-fD-F][0-9a-fA-F]{2}[d-fD-F][0-9a-fA-F]{2})?|#[d-fD-F]{3}|white|ivory|snow|beige|linen|seashell|oldlace|cornsilk|whitesmoke|ghostwhite|floralwhite|honeydew|mintcream|azure|aliceblue|lavenderblush|lightyellow|lightcyan|lemonchiffon|papayawhip|blanchedalmond|antiquewhite|mistyrose|rgb\(\s*(?:2[0-5]\d|1\d\d)\s*,\s*(?:2[0-5]\d|1\d\d)\s*,\s*(?:2[0-5]\d|1\d\d)\s*\))"#
 
     private static let bgcolorLightValue: NSRegularExpression = {
-        // Case-insensitive; optional quotes around the value.
         try! NSRegularExpression(
             pattern: #"\bbgcolor\s*=\s*["']?\s*"# + lightColor,
             options: [.caseInsensitive])

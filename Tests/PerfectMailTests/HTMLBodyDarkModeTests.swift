@@ -68,4 +68,39 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         XCTAssertTrue(designed.contains(QuotedReply.hideQuoteCSS)
                       || designed.contains("gmail_quote"))
     }
+
+    /// Plain reply whose *quoted* trail has a white table must stay on the
+    /// force-light path — that was the Ron→Jeremy dark-on-dark regression.
+    func testQuotedTrailWhiteBackgroundDoesNotForceDesignedPath() {
+        let html = """
+        <div dir="ltr">Hi Jeremy,<br><br>Wanted to flag this as well.</div>
+        <div class="gmail_quote">
+          <div style="background-color:#ffffff">
+            <p style="color:#000">On Wed, earlier message…</p>
+          </div>
+        </div>
+        """
+        XCTAssertFalse(HTMLBodyDarkMode.hasOwnBackground(html),
+                       "white bg only inside gmail_quote must be ignored")
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: true, html: html)
+        XCTAssertTrue(css.contains("#e6e6e6"),
+                      "plain reply with quoted white table still forces light text")
+    }
+
+    func testAuthoredHeadCreamStillDesigned() {
+        // Author's own cream panel above the quote still counts.
+        let html = """
+        <table bgcolor="#faf8f5"><tr><td>My note</td></tr></table>
+        <div class="gmail_quote"><div>quoted</div></div>
+        """
+        XCTAssertTrue(HTMLBodyDarkMode.hasOwnBackground(html))
+    }
+
+    func testAuthoredHeadStripsAtGmailQuote() {
+        let html = "<div>head</div><div class=\"gmail_quote\">tail white bgcolor=#ffffff</div>"
+        let head = HTMLBodyDarkMode.authoredHead(of: html)
+        XCTAssertTrue(head.contains("head"))
+        XCTAssertFalse(head.contains("gmail_quote"))
+        XCTAssertFalse(head.contains("bgcolor=#ffffff"))
+    }
 }
