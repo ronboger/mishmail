@@ -1420,6 +1420,12 @@ final class MailStore: ObservableObject {
 
     /// One SQL with conditional aggregates for every sidebar count + dock badge.
     /// `activeAccount`/`badgeAccount` nil = every account. Safe off MainActor.
+    ///
+    /// **Sole source of truth for sidebar unread.** Do not merge Gmail
+    /// `labelInfo` / CATEGORY_* totals on top — those include spam and
+    /// archived threads and will disagree with `baseQuery` for Promotions/
+    /// Social. Keep this SQL aligned with those list filters and with the
+    /// mirrored copy in `ThreadDenormTests.fetchSidebarCounts`.
     nonisolated static func fetchSidebarCounts(
         db: Database,
         activeAccount: String?,

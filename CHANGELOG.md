@@ -6,6 +6,14 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Fixed
+- **Promotions/Social no longer show spam or archived mail** — lists and
+  sidebar badges now match gmail.com (inbox + category, excluding SPAM and
+  trash). Added denormalized `inSpam` (schema v19); mark-as-spam updates
+  labels/denorm like the blocklist. Sidebar unread uses local denorm counts
+  only (Gmail `CATEGORY_*` label totals include spam/archived and are not
+  merged on top).
+
 ## [0.2.0] - 2026-07-09
 
 ### Security

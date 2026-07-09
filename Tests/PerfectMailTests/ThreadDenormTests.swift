@@ -91,8 +91,10 @@ final class ThreadDenormTests: XCTestCase {
         try t.insert(db)
     }
 
-    /// Mirrors MailStore.fetchSidebarCounts — kept in the test target so we
-    /// can assert the aggregate SQL without compiling MailStore (AppKit).
+    /// Mirrors `MailStore.fetchSidebarCounts` — kept here so we can assert
+    /// the aggregate SQL without compiling MailStore (AppKit). If you change
+    /// the production SQL, update this copy. Sidebar unread must stay on
+    /// local denorm counts only (no Gmail CATEGORY_* `labelInfo` override).
     private func fetchSidebarCounts(
         db: Database, activeAccount: String?, badgeAccount: String?,
         now: Date = Date()
@@ -144,12 +146,6 @@ final class ThreadDenormTests: XCTestCase {
             try self.insertThread(db, id: "t2", account: "a@x.com", unread: true, inbox: true)
             try self.insertThread(db, id: "t3", account: "a@x.com", unread: true, inbox: true,
                                   promotions: true)
-            // Spam + promotions must not count toward promotions (or inbox).
-            try self.insertThread(db, id: "t3spam", account: "a@x.com", unread: true, inbox: false,
-                                  promotions: true, spam: true)
-            // Archived (not inbox) promotions also stay out of the tab count.
-            try self.insertThread(db, id: "t3arch", account: "a@x.com", unread: true, inbox: false,
-                                  promotions: true)
             try self.insertThread(db, id: "t4", account: "a@x.com", unread: true, inbox: true,
                                   social: true)
             try self.insertThread(db, id: "t5", account: "a@x.com", unread: false, inbox: true,
@@ -164,7 +160,7 @@ final class ThreadDenormTests: XCTestCase {
             try self.fetchSidebarCounts(db: $0, activeAccount: nil, badgeAccount: nil)
         }
         XCTAssertEqual(all["inbox"], 3)          // t1,t2,t7
-        XCTAssertEqual(all["promotions"], 1)     // t3 only (spam + archived excluded)
+        XCTAssertEqual(all["promotions"], 1)     // t3
         XCTAssertEqual(all["social"], 1)         // t4
         XCTAssertEqual(all["starred"], 1)        // t5
         XCTAssertEqual(all["drafts"], 1)         // t6
@@ -176,6 +172,39 @@ final class ThreadDenormTests: XCTestCase {
         }
         XCTAssertEqual(scoped["inbox"], 2)       // a only
         XCTAssertEqual(badgeScoped, 1)           // b only
+    }
+
+    /// Regression: Promotions/Social unread must match gmail.com tabs
+    /// (inbox + category − spam − trash), not raw Gmail CATEGORY_* label
+    /// totals (which still count spam + archived). This is the SQL the
+    /// sidebar uses after the API count override was removed.
+    func testPromoSocialCountsExcludeSpamAndArchived() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try Account(id: "a@x.com", displayName: "A", historyId: nil,
+                        lastSyncAt: nil, senderName: "").insert(db)
+            // Visible in Promotions tab.
+            try self.insertThread(db, id: "promo", account: "a@x.com",
+                                  unread: true, inbox: true, promotions: true)
+            // Gmail keeps CATEGORY_PROMOTIONS on spam — must not badge.
+            try self.insertThread(db, id: "spam", account: "a@x.com",
+                                  unread: true, inbox: false, promotions: true, spam: true)
+            // Archived promo — not in Gmail's Promotions tab.
+            try self.insertThread(db, id: "arch", account: "a@x.com",
+                                  unread: true, inbox: false, promotions: true)
+            // Visible in Social tab.
+            try self.insertThread(db, id: "social", account: "a@x.com",
+                                  unread: true, inbox: true, social: true)
+            try self.insertThread(db, id: "socialSpam", account: "a@x.com",
+                                  unread: true, inbox: false, social: true, spam: true)
+        }
+
+        let (counts, _) = try q.read {
+            try self.fetchSidebarCounts(db: $0, activeAccount: nil, badgeAccount: nil)
+        }
+        XCTAssertEqual(counts["promotions"], 1, "only in-inbox non-spam promotions")
+        XCTAssertEqual(counts["social"], 1, "only in-inbox non-spam social")
+        XCTAssertEqual(counts["inbox"], 0, "category mail stays out of primary inbox badge")
     }
 
     // MARK: - VIP any-message matching
