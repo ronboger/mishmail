@@ -1008,7 +1008,6 @@ final class MailStore: ObservableObject {
             case .account(let id): return id
             }
         }()
-        let apiCountsSnapshot = apiCounts
         let pool = db
 
         threadReloadTask?.cancel()
@@ -1105,20 +1104,15 @@ final class MailStore: ObservableObject {
             }
             guard let payload, !Task.isCancelled else { return }
 
-            // Gmail API counts still override local promotions/social totals.
-            var counts = payload.counts
-            let scoped = activeAccount.map { id in apiCountsSnapshot.filter { $0.key == id } }
-                ?? apiCountsSnapshot
-            if !scoped.isEmpty {
-                counts["promotions"] = scoped.values.reduce(0) { $0 + ($1["CATEGORY_PROMOTIONS"] ?? 0) }
-                counts["social"] = scoped.values.reduce(0) { $0 + ($1["CATEGORY_SOCIAL"] ?? 0) }
-            }
-
             await MainActor.run {
                 guard let self, generation == self.threadReloadGeneration else { return }
                 self.threads = payload.threads
                 self.vipThreadIds = payload.vipHits
-                self.unreadCounts = counts
+                // Local sidebar counts only: they use the same denorm filters as
+                // the visible lists (inbox/promotions/social exclude spam, and
+                // category tabs require inInbox). Gmail's CATEGORY_* label
+                // totals include spam + archived and would disagree with the list.
+                self.unreadCounts = payload.counts
                 Notifier.setBadge(payload.badge)
                 self.loadAICategories()
             }
@@ -1417,19 +1411,10 @@ final class MailStore: ObservableObject {
                                         badgeAccount: badgeAccount)
         }) ?? ([:], 0)
 
-        var counts = local
-        // Inbox badge always uses the local count: it applies the exact same
-        // filter as the visible inbox list, so badge and list can't disagree.
-        // (Gmail's INBOX-minus-categories math undercounts: CATEGORY_* label
-        // totals include archived unread, so the difference can clamp to 0
-        // while unread mail is visibly in the inbox.)
-        // Gmail's numbers are still authoritative for the category labels.
-        let scoped = activeAccountId.map { id in apiCounts.filter { $0.key == id } } ?? apiCounts
-        if !scoped.isEmpty {
-            counts["promotions"] = scoped.values.reduce(0) { $0 + ($1["CATEGORY_PROMOTIONS"] ?? 0) }
-            counts["social"] = scoped.values.reduce(0) { $0 + ($1["CATEGORY_SOCIAL"] ?? 0) }
-        }
-        unreadCounts = counts
+        // Local counts only — same denorm filters as the visible lists
+        // (spam excluded; promotions/social require inInbox). Gmail CATEGORY_*
+        // label totals include spam/archived and would disagree with the list.
+        unreadCounts = local
         Notifier.setBadge(badgeTotal)
     }
 
@@ -1678,7 +1663,6 @@ final class MailStore: ObservableObject {
                 if let error {
                     lastError = "\(id): \(error.localizedDescription)"
                 } else {
-                    await refreshApiCounts(accountId: id)
                     await backfillSenderNameIfNeeded(accountId: id)
                 }
             }
@@ -1701,7 +1685,6 @@ final class MailStore: ObservableObject {
                 Task { @MainActor [weak self] in self?.syncStatus = status }
             }
             syncStatus = ""
-            await refreshApiCounts(accountId: accountId)
             await backfillSenderNameIfNeeded(accountId: accountId)
             reloadAccounts()
             reloadThreads()
@@ -1710,9 +1693,6 @@ final class MailStore: ObservableObject {
             lastError = "\(accountId): \(error.localizedDescription)"
         }
     }
-
-    /// Gmail's own unread counts, so the sidebar matches gmail.com exactly.
-    private var apiCounts: [String: [String: Int]] = [:]   // account → label → threadsUnread
 
     /// Accounts added before senderName existed get it from the profile.
     private func backfillSenderNameIfNeeded(accountId: String) async {
@@ -1730,17 +1710,6 @@ final class MailStore: ObservableObject {
         guard let account = accounts.first(where: { $0.id == accountId }),
               !account.senderName.isEmpty else { return accountId }
         return "\(account.senderName) <\(accountId)>"
-    }
-
-    private func refreshApiCounts(accountId: String) async {
-        let client = client(for: accountId)
-        var counts: [String: Int] = [:]
-        for label in ["INBOX", "CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"] {
-            if let info = try? await client.labelInfo(label) {
-                counts[label] = info.threadsUnread ?? 0
-            }
-        }
-        apiCounts[accountId] = counts
     }
 
     // MARK: - New-mail notifications
