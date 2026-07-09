@@ -767,10 +767,11 @@ final class MailStore: ObservableObject {
         loadBlocked()
         reloadThreads()
         reloadScheduledSends()
-        // Anything that came due while the app was closed goes out now.
+        // Load send-as identities before firing due scheduled sends so From
+        // headers get alias display names, not bare emails.
         Task {
-            await self.fireDueScheduledSends()
             await self.refreshSendIdentities()
+            await self.fireDueScheduledSends()
         }
         knownUnreadInboxIds = currentUnreadInboxIds()
         notifiedThreadIds = knownUnreadInboxIds
@@ -848,13 +849,9 @@ final class MailStore: ObservableObject {
             sendIdentities = []
             return
         }
-        var byAccount: [String: [SendIdentity]] = Dictionary(
-            uniqueKeysWithValues: sendIdentities
-                .reduce(into: [String: [SendIdentity]]()) { dict, id in
-                    dict[id.accountId, default: []].append(id)
-                }
-                .map { ($0.key, $0.value) }
-        )
+        var byAccount = sendIdentities.reduce(into: [String: [SendIdentity]]()) { dict, id in
+            dict[id.accountId, default: []].append(id)
+        }
         // Keep non-targeted accounts; replace targeted ones.
         for id in targets {
             let senderName = accounts.first { $0.id == id }?.senderName ?? ""
@@ -1804,11 +1801,12 @@ final class MailStore: ObservableObject {
             email: email, inMailbox: accountId, from: sendIdentities) {
             return identity.fromHeader
         }
-        // Identity list not loaded or email is the primary.
-        if email.caseInsensitiveCompare(accountId) == .orderedSame {
-            guard let account = accounts.first(where: { $0.id == accountId }),
-                  !account.senderName.isEmpty else { return accountId }
-            return "\(account.senderName) <\(accountId)>"
+        // Identity list not loaded yet, or email is the primary: use the
+        // account's senderName when we have one (covers send-as scheduled
+        // sends that fire before refreshSendIdentities finishes).
+        if let account = accounts.first(where: { $0.id == accountId }),
+           !account.senderName.isEmpty {
+            return "\(account.senderName) <\(email)>"
         }
         return email
     }

@@ -112,4 +112,29 @@ final class SendIdentityTests: XCTestCase {
                 requested: custom, replyAccountId: nil, draftAccountId: nil),
             custom)
     }
+
+    func testFixedMailboxLocksThreadedRestoreButNotNewMailRestore() {
+        // Undo of a reply: still locked to the message mailbox.
+        XCTAssertEqual(
+            SendIdentityResolver.fixedMailboxAccountId(
+                restoreAccountId: gmail, restoreIsThreaded: true,
+                draftAccountId: nil, originalAccountId: nil),
+            gmail)
+        // Undo of brand-new compose: full From choice again.
+        XCTAssertNil(
+            SendIdentityResolver.fixedMailboxAccountId(
+                restoreAccountId: gmail, restoreIsThreaded: false,
+                draftAccountId: nil, originalAccountId: nil))
+        // Live draft / reply still lock.
+        XCTAssertEqual(
+            SendIdentityResolver.fixedMailboxAccountId(
+                restoreAccountId: nil, restoreIsThreaded: false,
+                draftAccountId: gmail, originalAccountId: nil),
+            gmail)
+        XCTAssertEqual(
+            SendIdentityResolver.fixedMailboxAccountId(
+                restoreAccountId: nil, restoreIsThreaded: false,
+                draftAccountId: nil, originalAccountId: custom),
+            custom)
+    }
 }

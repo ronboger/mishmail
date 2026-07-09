@@ -536,8 +536,10 @@ struct ComposeView: View {
             if fromEmail.isEmpty { ensureFromSelection() }
         }
         .onChange(of: store.sendIdentities) {
-            // Send-as aliases arrive after first sync — re-scope the menu and
-            // keep a still-valid selection (or pick the preferred default).
+            // Send-as aliases arrive after first sync — re-scope the menu.
+            // Prefer current selection, then a sticky draft/restore From, then
+            // the mailbox default (never silently replace a draft's send-as
+            // with the primary just because identities loaded late).
             ensureFromSelection(preferCurrent: true)
         }
         .sheet(isPresented: $showScheduleSheet) {
@@ -558,11 +560,28 @@ struct ComposeView: View {
 
     /// Mailbox that owns this compose session. Non-nil locks From to that
     /// mailbox's primary + send-as only (reply / forward / draft edit).
+    /// Undo-restore of a brand-new message does *not* lock — the user had
+    /// full From choice before Send, and undo must not shrink it.
     private var fixedMailboxAccountId: String? {
-        if let r = request.restore { return r.accountId }
-        if let draft = editingDraft { return draft.accountId }
-        if let original { return original.accountId }
-        return nil
+        let restore = request.restore
+        let threaded = restore.map {
+            $0.replyTo != nil || $0.replacingDraft != nil || $0.forward
+        } ?? false
+        return SendIdentityResolver.fixedMailboxAccountId(
+            restoreAccountId: restore?.accountId,
+            restoreIsThreaded: threaded,
+            draftAccountId: editingDraft?.accountId,
+            originalAccountId: original?.accountId)
+    }
+
+    /// From address we must re-apply when send-as identities load late
+    /// (draft header or restored pending send). Empty when none.
+    private var stickyFromEmail: String {
+        if let r = request.restore { return r.effectiveFromEmail }
+        if let draft = editingDraft {
+            return MessageParser.emailAddress(draft.fromHeader)
+        }
+        return ""
     }
 
     private var availableFromIdentities: [SendIdentity] {
@@ -582,14 +601,27 @@ struct ComposeView: View {
     /// Pick a valid From identity for the current mode. When
     /// `preferCurrent` is true, keep the selection if it still appears in
     /// the available list (send-as refresh shouldn't clobber a user pick).
+    /// Sticky draft/restore From wins over the mailbox primary so a late
+    /// identity load doesn't rewrite a send-as draft to the primary.
     private func ensureFromSelection(preferCurrent: Bool = false) {
         let options = availableFromIdentities
         if preferCurrent,
            let keep = options.first(where: {
                $0.email.caseInsensitiveCompare(fromEmail) == .orderedSame
-                   && $0.accountId.caseInsensitiveCompare(fromAccountId) == .orderedSame
+                   && (fromAccountId.isEmpty
+                       || $0.accountId.caseInsensitiveCompare(fromAccountId) == .orderedSame)
            }) {
             selectFrom(keep)
+            return
+        }
+        // Draft / restore From may have been set optimistically before send-as
+        // aliases were known — match it now that the list is complete.
+        let sticky = stickyFromEmail
+        if !sticky.isEmpty,
+           let match = options.first(where: {
+               $0.email.caseInsensitiveCompare(sticky) == .orderedSame
+           }) {
+            selectFrom(match)
             return
         }
         if let mailbox = fixedMailboxAccountId,
@@ -644,12 +676,16 @@ struct ComposeView: View {
         // Editing an existing Gmail draft: load its fields verbatim.
         if let draft = editingDraft {
             fromAccountId = draft.accountId
-            // Prefer the draft's own From header when it's a send-as identity.
+            // Stick the draft's From immediately (even if send-as isn't loaded
+            // yet). When identities arrive, ensureFromSelection re-matches via
+            // stickyFromEmail instead of silently swapping to the primary.
             let draftFrom = MessageParser.emailAddress(draft.fromHeader)
-            if !draftFrom.isEmpty,
-               store.fromIdentities(forMailbox: draft.accountId)
-                .contains(where: { $0.email.caseInsensitiveCompare(draftFrom) == .orderedSame }) {
+            if !draftFrom.isEmpty {
                 fromEmail = draftFrom
+                if let match = store.fromIdentities(forMailbox: draft.accountId)
+                    .first(where: { $0.email.caseInsensitiveCompare(draftFrom) == .orderedSame }) {
+                    selectFrom(match)
+                }
             } else {
                 ensureFromSelection()
             }

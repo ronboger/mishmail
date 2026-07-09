@@ -122,4 +122,19 @@ enum SendIdentityResolver {
         if let draftAccountId { return draftAccountId }
         return requested
     }
+
+    /// Which mailbox (if any) the compose From menu should lock to.
+    /// - Restore of a reply/forward/draft-edit: lock to that mailbox.
+    /// - Restore of brand-new mail: no lock (user had full From choice).
+    /// - Live draft / reply / forward: lock to the message's mailbox.
+    static func fixedMailboxAccountId(restoreAccountId: String?,
+                                      restoreIsThreaded: Bool,
+                                      draftAccountId: String?,
+                                      originalAccountId: String?) -> String? {
+        if let restoreAccountId {
+            return restoreIsThreaded ? restoreAccountId : nil
+        }
+        if let draftAccountId { return draftAccountId }
+        return originalAccountId
+    }
 }
