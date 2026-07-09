@@ -28,8 +28,9 @@ everyone." This doc is about `make release`.
 - **Signing**: the tracked default is ad-hoc + hardened runtime, which runs
   fine locally but is **not** distributable to other machines without warnings.
   For a real public release, sign with a Developer ID and notarize — see
-  [Distributable signing](#distributable-signing-developer-id) below. For a
-  personal / self-update release on your own machines, the ad-hoc default works.
+  [Distributable signing](#distributable-signing-developer-id) below. The
+  updater intentionally rejects ad-hoc release binaries because an ad-hoc
+  signature provides no publisher identity, and `make release` enforces this.
 
 ## Release checklist
 
@@ -93,8 +94,8 @@ everyone." This doc is about `make release`.
 
 ## Distributable signing (Developer ID)
 
-The ad-hoc default is fine for your own machines but Gatekeeper will warn other
-users. To ship a binary anyone can open:
+The ad-hoc default is fine for local builds, but it is not accepted by the
+in-app updater and Gatekeeper will warn other users. To ship a binary:
 
 1. Create `Config/Local.xcconfig` (git-ignored) with a Developer ID identity:
    ```

@@ -38,4 +38,21 @@ final class OAuthConfigTests: XCTestCase {
         XCTAssertFalse(OAuthService.isOAuthCallbackPath("/oauth2/callback/extra"))
         XCTAssertFalse(OAuthService.isOAuthCallbackPath("/admin"))
     }
+
+    func testSecureRandomProducesDistinctURLSafeValues() throws {
+        let first = try OAuthService.randomURLSafe(32)
+        let second = try OAuthService.randomURLSafe(32)
+        XCTAssertNotEqual(first, second)
+        XCTAssertEqual(first.count, 43)
+        XCTAssertTrue(first.allSatisfy { $0.isLetter || $0.isNumber || $0 == "-" || $0 == "_" })
+    }
+
+    func testSecureRandomFailureAbortsInsteadOfUsingZeroBytes() {
+        XCTAssertThrowsError(try OAuthService.randomURLSafe(32) { _, _ in errSecNotAvailable }) {
+            guard case OAuthError.randomGenerationFailed(let status) = $0 else {
+                return XCTFail("unexpected error: \($0)")
+            }
+            XCTAssertEqual(status, errSecNotAvailable)
+        }
+    }
 }

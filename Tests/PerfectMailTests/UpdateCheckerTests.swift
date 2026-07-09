@@ -75,16 +75,19 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertEqual(picked?.lastPathComponent, "SHA256SUMS")
     }
 
-    func testEvaluateTrustSameBuildAccepted() throws {
+    func testEvaluateTrustRejectsAdHocSourceUpdate() throws {
         guard let app = Self.builtAppIfPresent() else {
             throw XCTSkip("No built app for trust smoke")
         }
-        // Same binary as both sides (ad-hoc or Apple Development) — personal
-        // release path. Must not require Developer ID notarization.
-        XCTAssertNoThrow(
+        guard UpdateChecker.teamIdentifier(of: app) == nil else {
+            throw XCTSkip("Built app has a Team ID; ad-hoc behavior not applicable")
+        }
+        XCTAssertThrowsError(
             try UpdateChecker.evaluateTrust(updateApp: app, runningApp: app,
                                             officialRelease: true)
-        )
+        ) { error in
+            XCTAssertEqual(error as? UpdateChecker.UpdateError, .notDeveloperID)
+        }
     }
 
     private static func builtAppIfPresent() -> URL? {

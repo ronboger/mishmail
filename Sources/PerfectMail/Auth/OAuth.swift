@@ -65,6 +65,7 @@ enum OAuthError: LocalizedError {
     case tokenExchangeFailed(String)
     case cancelled
     case timedOut
+    case randomGenerationFailed(OSStatus)
 
     var errorDescription: String? {
         switch self {
@@ -74,6 +75,8 @@ enum OAuthError: LocalizedError {
         case .tokenExchangeFailed(let body): return "Token exchange failed: \(body)"
         case .cancelled: return "Sign-in was cancelled."
         case .timedOut: return "Sign-in timed out. Try again from PerfectMail."
+        case .randomGenerationFailed(let status):
+            return "Secure random generation failed (OSStatus \(status)). Sign-in was cancelled."
         }
     }
 }
@@ -87,9 +90,9 @@ final class OAuthService {
     func signIn() async throws -> (refreshToken: String, accessToken: String) {
         guard OAuthConfig.isConfigured else { throw OAuthError.notConfigured }
 
-        let verifier = Self.randomURLSafe(64)
+        let verifier = try Self.randomURLSafe(64)
         let challenge = Self.s256(verifier)
-        let state = Self.randomURLSafe(32)
+        let state = try Self.randomURLSafe(32)
 
         let (port, codeTask) = try startLoopbackListener(expectedState: state)
         // Fixed path so the catcher can ignore unrelated local probes.
@@ -108,7 +111,7 @@ final class OAuthService {
             .init(name: "prompt", value: "consent select_account"),
         ]
         let authURL = comps.url!
-        await MainActor.run { NSWorkspace.shared.open(authURL) }
+        _ = await MainActor.run { NSWorkspace.shared.open(authURL) }
 
         let code: String
         do {
@@ -283,9 +286,20 @@ final class OAuthService {
 
     // MARK: - PKCE helpers
 
-    private static func randomURLSafe(_ count: Int) -> String {
+    static func randomURLSafe(
+        _ count: Int,
+        fill: (UnsafeMutableRawPointer, Int) -> OSStatus = { buffer, length in
+            SecRandomCopyBytes(kSecRandomDefault, length, buffer)
+        }
+    ) throws -> String {
         var bytes = [UInt8](repeating: 0, count: count)
-        _ = SecRandomCopyBytes(kSecRandomDefault, count, &bytes)
+        let status = bytes.withUnsafeMutableBytes { buffer in
+            guard let base = buffer.baseAddress else { return errSecParam }
+            return fill(base, count)
+        }
+        guard status == errSecSuccess else {
+            throw OAuthError.randomGenerationFailed(status)
+        }
         return Data(bytes).base64URLEncoded()
     }
 

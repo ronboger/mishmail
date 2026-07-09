@@ -87,7 +87,8 @@ release: test
 	@if [ -n "$(TEAM)" ]; then \
 		echo "Release signing team $(TEAM) — using PerfectMail.Distribution.entitlements"; \
 	else \
-		echo "No DEVELOPMENT_TEAM in Config/Local.xcconfig — ad-hoc Release (fine for self-update)"; \
+		echo "Refusing public release: configure a Developer ID DEVELOPMENT_TEAM and notarization first"; \
+		exit 1; \
 	fi
 	xcodebuild build -project $(PROJECT) -scheme PerfectMail -configuration Release \
 		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet $(RELEASE_SIGN_FLAGS)

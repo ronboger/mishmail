@@ -108,6 +108,10 @@ By default the app is **ad-hoc signed** ("Sign to Run Locally"), so it builds
 and runs on any Mac with no Apple Developer account. Signing settings live in
 [`Config/Signing.xcconfig`](Config/Signing.xcconfig).
 
+Ad-hoc signatures do not establish publisher identity. For that reason, an
+ad-hoc/source installation will only accept in-app executable updates that are
+Developer ID signed and notarized; otherwise it opens the GitHub release page.
+
 To sign with your own Apple Developer team — required for **notarization**, and
 handy for a stable identity that stops the Keychain re-prompting on every
 rebuild — create `Config/Local.xcconfig` (git-ignored):

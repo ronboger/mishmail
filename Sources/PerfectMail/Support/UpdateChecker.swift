@@ -386,17 +386,17 @@ final class UpdateChecker: ObservableObject {
     /// - **Developer ID updates must be notarized** (whether or not a checksum
     ///   was published) — covers ad-hoc/source installs upgrading to a public
     ///   binary and official Developer ID releases.
-    /// - Apple Development / ad-hoc self-updates (same team or both ad-hoc) are
-    ///   allowed so personal `make release` still works; SHA-256 is the main
-    ///   integrity check for those.
+    /// - Source/ad-hoc installs may upgrade only to a notarized Developer ID
+    ///   build; an ad-hoc signature has no identity and is not a trust anchor.
+    /// - Apple Development builds retain Team ID continuity.
     nonisolated static func evaluateTrust(updateApp: URL, runningApp: URL,
                                           officialRelease: Bool) throws -> TrustOutcome {
         let runningTeam = teamIdentifier(of: runningApp)
         let updateTeam = teamIdentifier(of: updateApp)
         let notarized = isNotarized(updateApp)
         let developerID = isDeveloperID(updateApp)
-        // officialRelease reserved for callers that want stricter future
-        // policy (e.g. requiring checksums); team rules below are enough today.
+        // Reserved for callers that want a stricter future checksum policy;
+        // identity and notarization rules below apply to every executable.
         _ = officialRelease
 
         if let runningTeam {
@@ -404,6 +404,11 @@ final class UpdateChecker: ObservableObject {
             guard updateTeam == runningTeam else {
                 throw UpdateError.teamMismatch(expected: runningTeam, found: updateTeam)
             }
+        } else {
+            // An ad-hoc signature proves only that the archive was internally
+            // consistent; anybody can create one. A source/ad-hoc installation
+            // may therefore update only to a notarized Developer ID build.
+            guard developerID else { throw UpdateError.notDeveloperID }
         }
 
         if developerID {
