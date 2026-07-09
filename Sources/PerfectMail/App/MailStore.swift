@@ -1180,12 +1180,18 @@ final class MailStore: ObservableObject {
         if !chips.category.show.isEmpty {
             // Contains any of the selected categories. Denorm for promo/social;
             // labelIds LIKE for Updates/Forums (no denorm columns yet).
+            // Spam is never a category tab — keep SPAM out of promo/social chips.
             var parts: [String] = []
             var args: [any DatabaseValueConvertible] = []
+            var needsNotSpam = false
             for cat in chips.category.show {
                 switch cat {
-                case "CATEGORY_PROMOTIONS": parts.append("inPromotions = 1")
-                case "CATEGORY_SOCIAL": parts.append("inSocial = 1")
+                case "CATEGORY_PROMOTIONS":
+                    parts.append("inPromotions = 1")
+                    needsNotSpam = true
+                case "CATEGORY_SOCIAL":
+                    parts.append("inSocial = 1")
+                    needsNotSpam = true
                 default:
                     parts.append("labelIds LIKE ?")
                     args.append("%\(cat)%")
@@ -1193,6 +1199,7 @@ final class MailStore: ObservableObject {
             }
             q = q.filter(sql: parts.joined(separator: " OR "),
                          arguments: StatementArguments(args))
+            if needsNotSpam { q = q.filter(Column("inSpam") == false) }
         }
         if chips.unreadOnly { q = q.filter(Column("isUnread") == true || keepIds.contains(Column("id"))) }
         if chips.readOnly { q = q.filter(Column("isUnread") == false || keepIds.contains(Column("id"))) }
@@ -1259,9 +1266,16 @@ final class MailStore: ObservableObject {
             // Category filtering is handled by the Categories chip.
             q = notSnoozed(q.filter(Column("inInbox") == true && Column("inTrash") == false))
         case .promotions:
-            q = q.filter(Column("inTrash") == false && Column("inPromotions") == true)
+            // Match gmail.com's Promotions tab: in-inbox category mail, never spam.
+            q = q.filter(Column("inTrash") == false
+                         && Column("inSpam") == false
+                         && Column("inInbox") == true
+                         && Column("inPromotions") == true)
         case .social:
-            q = q.filter(Column("inTrash") == false && Column("inSocial") == true)
+            q = q.filter(Column("inTrash") == false
+                         && Column("inSpam") == false
+                         && Column("inInbox") == true
+                         && Column("inSocial") == true)
         case .starred:
             q = q.filter(Column("isStarred") == true && Column("inTrash") == false)
         case .snoozed:
@@ -1316,8 +1330,10 @@ final class MailStore: ObservableObject {
             }
             if let cat = v.category {
                 switch cat {
-                case "CATEGORY_PROMOTIONS": q = q.filter(Column("inPromotions") == true)
-                case "CATEGORY_SOCIAL": q = q.filter(Column("inSocial") == true)
+                case "CATEGORY_PROMOTIONS":
+                    q = q.filter(Column("inPromotions") == true && Column("inSpam") == false)
+                case "CATEGORY_SOCIAL":
+                    q = q.filter(Column("inSocial") == true && Column("inSpam") == false)
                 default: q = q.filter(Column("labelIds").like("%\(cat)%"))
                 }
             }
@@ -1429,12 +1445,14 @@ final class MailStore: ObservableObject {
         let row = try Row.fetchOne(db, sql: """
             SELECT
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inInbox = 1
+                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
                 AND inPromotions = 0 AND inSocial = 0 THEN 1 ELSE 0 END), 0) AS inbox,
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inPromotions = 1 THEN 1 ELSE 0 END), 0) AS promotions,
+                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
+                AND inPromotions = 1 THEN 1 ELSE 0 END), 0) AS promotions,
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inSocial = 1 THEN 1 ELSE 0 END), 0) AS social,
+                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
+                AND inSocial = 1 THEN 1 ELSE 0 END), 0) AS social,
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
                 AND reminderAt IS NOT NULL THEN 1 ELSE 0 END), 0) AS reminders,
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
@@ -1444,7 +1462,7 @@ final class MailStore: ObservableObject {
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
                 AND inDrafts = 1 AND inTrash = 0 THEN 1 ELSE 0 END), 0) AS drafts,
               COALESCE(SUM(CASE WHEN (?2 IS NULL OR accountId = ?2)
-                AND isUnread = 1 AND inTrash = 0 AND inInbox = 1
+                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
                 AND inPromotions = 0 AND inSocial = 0 THEN 1 ELSE 0 END), 0) AS badge
             FROM thread
             """, arguments: [activeAccount, badgeAccount, now])
@@ -1734,6 +1752,7 @@ final class MailStore: ObservableObject {
                 .filter(Column("isUnread") == true)
                 .filter(Column("inInbox") == true)
                 .filter(Column("inTrash") == false)
+                .filter(Column("inSpam") == false)
                 .filter(Column("inPromotions") == false)
                 .filter(Column("inSocial") == false)
                 .fetchAll(db).map(\.id)
@@ -2061,11 +2080,17 @@ final class MailStore: ObservableObject {
         case .inbox, .account:
             if chips.showArchived { return false }
             if let until = t.snoozeUntil, until > Date() { return true }
+            if t.inSpam { return true }
             if !t.inInbox {
                 if chips.showSent && t.labelIds.contains("SENT") { return false }
                 return true
             }
             return false
+        case .promotions:
+            // Gmail-aligned: inbox promotions only, never spam/trash.
+            return t.inSpam || !t.inInbox || !t.inPromotions
+        case .social:
+            return t.inSpam || !t.inInbox || !t.inSocial
         case .starred:
             return !t.isStarred
         case .snoozed:
@@ -2117,17 +2142,31 @@ final class MailStore: ObservableObject {
     }
 
     /// Gmail moves the whole thread to Spam; it leaves the inbox locally
-    /// right away and the next sync drops it from All Mail views too.
+    /// right away and drops out of Promotions/Social (those views exclude
+    /// `inSpam`). Matches blocklist's labelIds/denorm update so optimistic
+    /// UI and the next sync agree.
     func markSpam(_ thread: MailThread) {
         let wasSelected = selectedThreadId == thread.id
         let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
-        mutateThread(thread) { $0.inInbox = false } remote: { client, id in
+        mutateThread(thread) { t in
+            var labels = Set(t.labels)
+            labels.remove("INBOX")
+            labels.insert("SPAM")
+            t.labelIds = labels.sorted().joined(separator: " ")
+            t.syncFlagsFromLabelIds()
+        } remote: { client, id in
             try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
         }
         advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
         offerUndo("Marked as spam") { [weak self] in
             guard let self else { return }
-            self.mutateThread(thread) { $0.inInbox = true } remote: { client, id in
+            self.mutateThread(thread) { t in
+                var labels = Set(t.labels)
+                labels.remove("SPAM")
+                labels.insert("INBOX")
+                t.labelIds = labels.sorted().joined(separator: " ")
+                t.syncFlagsFromLabelIds()
+            } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
             }
             self.undoAction = nil

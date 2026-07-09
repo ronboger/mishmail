@@ -13,7 +13,7 @@ final class ThreadDenormTests: XCTestCase {
             subject: "s", snippet: "sn", fromDisplay: "F",
             lastDate: Date(), isUnread: false, isStarred: false,
             inInbox: false, inTrash: false,
-            labelIds: "INBOX STARRED SENT DRAFT CATEGORY_PROMOTIONS CATEGORY_SOCIAL",
+            labelIds: "INBOX STARRED SENT DRAFT CATEGORY_PROMOTIONS CATEGORY_SOCIAL SPAM",
             snoozeUntil: nil, participants: "F", messageCount: 1,
             hasAttachment: false, reminderAt: nil)
         t.syncFlagsFromLabelIds()
@@ -24,6 +24,7 @@ final class ThreadDenormTests: XCTestCase {
         XCTAssertTrue(t.inDrafts)
         XCTAssertTrue(t.inPromotions)
         XCTAssertTrue(t.inSocial)
+        XCTAssertTrue(t.inSpam)
     }
 
     func testSyncFlagsFromLabelIdsClearsWhenLabelsRemoved() {
@@ -45,6 +46,7 @@ final class ThreadDenormTests: XCTestCase {
         XCTAssertFalse(t.inPromotions)
         XCTAssertFalse(t.inDrafts)
         XCTAssertFalse(t.inSocial)
+        XCTAssertFalse(t.inSpam)
     }
 
     func testSyncFlagsFromLabelIdsDoesNotFalseMatchPartialTokens() {
@@ -75,6 +77,7 @@ final class ThreadDenormTests: XCTestCase {
                               unread: Bool, inbox: Bool, trash: Bool = false,
                               starred: Bool = false, drafts: Bool = false,
                               promotions: Bool = false, social: Bool = false,
+                              spam: Bool = false,
                               snooze: Date? = nil, reminder: Date? = nil) throws {
         let t = MailThread(
             id: "\(account):\(id)", accountId: account, gmailThreadId: id,
@@ -84,7 +87,7 @@ final class ThreadDenormTests: XCTestCase {
             labelIds: "INBOX", snoozeUntil: snooze, participants: "F",
             messageCount: 1, hasAttachment: false, reminderAt: reminder,
             inSent: false, inDrafts: drafts, inPromotions: promotions,
-            inSocial: social, fromEmail: "f@x.com")
+            inSocial: social, inSpam: spam, fromEmail: "f@x.com")
         try t.insert(db)
     }
 
@@ -97,12 +100,14 @@ final class ThreadDenormTests: XCTestCase {
         let row = try Row.fetchOne(db, sql: """
             SELECT
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inInbox = 1
+                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
                 AND inPromotions = 0 AND inSocial = 0 THEN 1 ELSE 0 END), 0) AS inbox,
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inPromotions = 1 THEN 1 ELSE 0 END), 0) AS promotions,
+                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
+                AND inPromotions = 1 THEN 1 ELSE 0 END), 0) AS promotions,
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inSocial = 1 THEN 1 ELSE 0 END), 0) AS social,
+                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
+                AND inSocial = 1 THEN 1 ELSE 0 END), 0) AS social,
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
                 AND reminderAt IS NOT NULL THEN 1 ELSE 0 END), 0) AS reminders,
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
@@ -112,7 +117,7 @@ final class ThreadDenormTests: XCTestCase {
               COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
                 AND inDrafts = 1 AND inTrash = 0 THEN 1 ELSE 0 END), 0) AS drafts,
               COALESCE(SUM(CASE WHEN (?2 IS NULL OR accountId = ?2)
-                AND isUnread = 1 AND inTrash = 0 AND inInbox = 1
+                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
                 AND inPromotions = 0 AND inSocial = 0 THEN 1 ELSE 0 END), 0) AS badge
             FROM thread
             """, arguments: [activeAccount, badgeAccount, now])!
@@ -139,7 +144,13 @@ final class ThreadDenormTests: XCTestCase {
             try self.insertThread(db, id: "t2", account: "a@x.com", unread: true, inbox: true)
             try self.insertThread(db, id: "t3", account: "a@x.com", unread: true, inbox: true,
                                   promotions: true)
-            try self.insertThread(db, id: "t4", account: "a@x.com", unread: true, inbox: false,
+            // Spam + promotions must not count toward promotions (or inbox).
+            try self.insertThread(db, id: "t3spam", account: "a@x.com", unread: true, inbox: false,
+                                  promotions: true, spam: true)
+            // Archived (not inbox) promotions also stay out of the tab count.
+            try self.insertThread(db, id: "t3arch", account: "a@x.com", unread: true, inbox: false,
+                                  promotions: true)
+            try self.insertThread(db, id: "t4", account: "a@x.com", unread: true, inbox: true,
                                   social: true)
             try self.insertThread(db, id: "t5", account: "a@x.com", unread: false, inbox: true,
                                   starred: true)
@@ -153,7 +164,7 @@ final class ThreadDenormTests: XCTestCase {
             try self.fetchSidebarCounts(db: $0, activeAccount: nil, badgeAccount: nil)
         }
         XCTAssertEqual(all["inbox"], 3)          // t1,t2,t7
-        XCTAssertEqual(all["promotions"], 1)     // t3
+        XCTAssertEqual(all["promotions"], 1)     // t3 only (spam + archived excluded)
         XCTAssertEqual(all["social"], 1)         // t4
         XCTAssertEqual(all["starred"], 1)        // t5
         XCTAssertEqual(all["drafts"], 1)         // t6
@@ -417,13 +428,15 @@ final class ThreadDenormTests: XCTestCase {
         XCTAssertTrue(t.inPromotions)
         XCTAssertTrue(t.inSent)
         XCTAssertTrue(t.inInbox)
-        // Blocklist-style SPAM move.
+        // Blocklist / markSpam-style SPAM move: promotions label stays, but
+        // inSpam flips so Promotions/Social list queries can exclude it.
         labels.remove("INBOX")
         labels.insert("SPAM")
         t.labelIds = labels.sorted().joined(separator: " ")
         t.syncFlagsFromLabelIds()
         XCTAssertFalse(t.inInbox)
         XCTAssertTrue(t.inPromotions)
+        XCTAssertTrue(t.inSpam)
         XCTAssertTrue(t.inSent)
     }
 }

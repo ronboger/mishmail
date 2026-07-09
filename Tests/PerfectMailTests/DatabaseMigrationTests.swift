@@ -23,6 +23,7 @@ final class DatabaseMigrationTests: XCTestCase {
             for name in ["inSent", "inDrafts", "inPromotions", "inSocial", "fromEmail"] {
                 XCTAssertTrue(threadCols.contains(name), "v16 must add \(name)")
             }
+            XCTAssertTrue(threadCols.contains("inSpam"), "v19 must add inSpam")
             let ftsSQL = try String.fetchOne(db, sql:
                 "SELECT sql FROM sqlite_master WHERE name = 'message_fts'") ?? ""
             XCTAssertFalse(ftsSQL.lowercased().contains("bodytext"),
@@ -400,5 +401,43 @@ final class DatabaseMigrationTests: XCTestCase {
         let thread = try q.read { try MailThread.fetchOne($0, key: "ron@x.com:t1") }
         XCTAssertEqual(thread?.fromEmail, "jane@y.com")
         XCTAssertEqual(thread?.inInbox, true)
+    }
+
+    /// v19 adds inSpam and backfills from labelIds (exact token, not substring).
+    func testUpgradeToV19AddsInSpamAndBackfills() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v18")
+        try q.write { db in
+            try db.execute(sql: "INSERT INTO account (id, displayName, senderName) VALUES ('ron@x.com', 'P', '')")
+            try db.execute(sql: """
+                INSERT INTO thread (id, accountId, gmailThreadId, subject, snippet, fromDisplay,
+                    lastDate, isUnread, isStarred, inInbox, inTrash, labelIds, participants,
+                    messageCount, hasAttachment, inSent, inDrafts, inPromotions, inSocial, fromEmail)
+                VALUES
+                ('ron@x.com:t1', 'ron@x.com', 't1', 's', 'sn', 'Spam',
+                 '2026-01-02 00:00:00', 1, 0, 0, 0, 'SPAM CATEGORY_PROMOTIONS', 'Spam', 1, 0,
+                 0, 0, 1, 0, 'spam@x.com'),
+                ('ron@x.com:t2', 'ron@x.com', 't2', 's', 'sn', 'Ok',
+                 '2026-01-02 00:00:00', 1, 0, 1, 0, 'INBOX CATEGORY_PROMOTIONS', 'Ok', 1, 0,
+                 0, 0, 1, 0, 'ok@x.com'),
+                ('ron@x.com:t3', 'ron@x.com', 't3', 's', 'sn', 'Only',
+                 '2026-01-02 00:00:00', 0, 0, 0, 0, 'SPAM', 'Only', 1, 0,
+                 0, 0, 0, 0, 'only@x.com')
+                """)
+        }
+        try AppDatabase.migrator.migrate(q)
+
+        let cols = try q.read { try $0.columns(in: "thread").map(\.name) }
+        XCTAssertTrue(cols.contains("inSpam"), "v19 must add inSpam")
+
+        let (t1, t2, t3) = try q.read { db in
+            (try MailThread.fetchOne(db, key: "ron@x.com:t1"),
+             try MailThread.fetchOne(db, key: "ron@x.com:t2"),
+             try MailThread.fetchOne(db, key: "ron@x.com:t3"))
+        }
+        XCTAssertEqual(t1?.inSpam, true)
+        XCTAssertEqual(t1?.inPromotions, true)
+        XCTAssertEqual(t2?.inSpam, false)
+        XCTAssertEqual(t3?.inSpam, true)
     }
 }

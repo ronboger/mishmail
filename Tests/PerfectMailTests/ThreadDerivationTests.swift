@@ -51,6 +51,7 @@ final class ThreadDerivationTests: XCTestCase {
         XCTAssertFalse(t.inDrafts)
         XCTAssertFalse(t.inPromotions)
         XCTAssertFalse(t.inSocial)
+        XCTAssertFalse(t.inSpam)
         XCTAssertEqual(t.fromEmail, "jane@y.com", "newest From, lowercased bare email")
     }
 
@@ -63,7 +64,18 @@ final class ThreadDerivationTests: XCTestCase {
         XCTAssertTrue(t.inDrafts)
         XCTAssertTrue(t.inPromotions)
         XCTAssertTrue(t.inSocial)
+        XCTAssertFalse(t.inSpam)
         XCTAssertEqual(t.fromEmail, "promo@shop.com")
+    }
+
+    func testSpamLabelSetsInSpamEvenWithPromotions() throws {
+        // Gmail often keeps CATEGORY_PROMOTIONS when moving mail to Spam.
+        let newest = msg(id: "m1", from: "Casino <spam@x.com>", daysAgo: 0,
+                         labels: "SPAM CATEGORY_PROMOTIONS")
+        let t = try XCTUnwrap(derive([newest]))
+        XCTAssertTrue(t.inSpam)
+        XCTAssertTrue(t.inPromotions)
+        XCTAssertFalse(t.inInbox)
     }
 
     func testParticipantsChronologicalDedupedAndMe() throws {

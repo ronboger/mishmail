@@ -38,6 +38,9 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var inDrafts: Bool = false
     var inPromotions: Bool = false
     var inSocial: Bool = false
+    /// True when any message still carries Gmail's SPAM label. Promotions/
+    /// Social lists exclude these so they match gmail.com (spam is not a tab).
+    var inSpam: Bool = false
     /// Lowercased email of the newest message's From (for VIP matching without scanning messages).
     var fromEmail: String = ""
 
@@ -55,6 +58,7 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         inDrafts = set.contains("DRAFT")
         inPromotions = set.contains("CATEGORY_PROMOTIONS")
         inSocial = set.contains("CATEGORY_SOCIAL")
+        inSpam = set.contains("SPAM")
     }
 }
 
@@ -628,6 +632,20 @@ final class AppDatabase {
                 index: "thread_on_accountId_lastDate",
                 on: "thread",
                 columns: ["accountId", "lastDate"])
+        }
+        // v19: denormalized SPAM flag so Promotions/Social can exclude spam
+        // without scanning labelIds (Gmail keeps CATEGORY_* on spam threads).
+        m.registerMigration("v19") { db in
+            try db.alter(table: "thread") { t in
+                t.add(column: "inSpam", .boolean).notNull().defaults(to: false)
+            }
+            try db.execute(sql: """
+                UPDATE thread SET
+                  inSpam = (labelIds = 'SPAM'
+                            OR labelIds LIKE 'SPAM %'
+                            OR labelIds LIKE '% SPAM'
+                            OR labelIds LIKE '% SPAM %')
+                """)
         }
         return m
     }

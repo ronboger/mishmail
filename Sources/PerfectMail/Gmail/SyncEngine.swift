@@ -533,6 +533,7 @@ actor SyncEngine {
             inDrafts: allLabels.contains("DRAFT"),
             inPromotions: allLabels.contains("CATEGORY_PROMOTIONS"),
             inSocial: allLabels.contains("CATEGORY_SOCIAL"),
+            inSpam: allLabels.contains("SPAM"),
             fromEmail: MessageParser.emailAddress(newest.fromHeader).lowercased()
         )
     }
