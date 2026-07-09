@@ -8,12 +8,7 @@ API (and, optionally, a local Ollama model that also never leaves the machine).
 > keyboard-driven, Notion-Mail-style inbox that runs entirely on their own
 > hardware. Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-<!-- Screenshot goes here once captured from the real app — save it as
-     docs/screenshots/inbox.png (redact anything sensitive first), then
-     uncomment the line below. See the "Screenshots" section for details.
-
 ![PerfectMail inbox](docs/screenshots/inbox.png)
--->
 
 ## Features
 
