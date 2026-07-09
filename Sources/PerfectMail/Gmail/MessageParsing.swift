@@ -228,9 +228,13 @@ enum MessageParser {
 /// recognizable marker line instead of `> ` quoting, so the original text
 /// survives readably and the send path can tell user text from quote.
 ///
+/// Forwards intentionally start a **new** Gmail conversation (no `threadId`,
+/// no `In-Reply-To`) — matching gmail.com / Notion Mail. Context travels in
+/// the body: one message ("Forward") or the whole thread ("Forward all").
+///
 /// The compose editor is plain text, but most mail is HTML. To forward
 /// without losing formatting, the send path recomputes this block from the
-/// original message: if the composed body still ends with it verbatim, the
+/// original message(s): if the composed body still ends with it verbatim, the
 /// message is upgraded to multipart/alternative with the user's text (links
 /// turned into anchors via `ComposeLinks`) on top of the original HTML. If
 /// the user edited inside the quoted block, we fall back to regenerating
@@ -238,23 +242,66 @@ enum MessageParser {
 enum ForwardComposer {
     static let marker = "---------- Forwarded message ---------"
 
+    /// One segment of a forward package (single message, or one turn in
+    /// Forward all). Plain `bodyText` is what the compose quote shows and
+    /// what the send path must match byte-for-byte; `bodyHTML` upgrades the
+    /// MIME alternative when present.
+    struct Part: Equatable {
+        var fromHeader: String
+        var date: Date
+        var subject: String
+        var toHeader: String
+        var ccHeader: String
+        var bodyText: String
+        var bodyHTML: String?
+
+        /// Prefer HTML-derived text so the plain block matches what the
+        /// reading pane showed (older rows sometimes have CSS-leaky bodyText).
+        init(message: Message) {
+            fromHeader = message.fromHeader
+            date = message.date
+            subject = message.subject
+            toHeader = message.toHeader
+            ccHeader = message.ccHeader
+            bodyText = MessageParser.replyQuotableText(
+                text: message.bodyText, html: message.bodyHTML)
+            let html = message.bodyHTML ?? ""
+            bodyHTML = html.isEmpty ? nil : html
+        }
+
+        init(fromHeader: String, date: Date, subject: String,
+             toHeader: String, ccHeader: String, bodyText: String,
+             bodyHTML: String? = nil) {
+            self.fromHeader = fromHeader
+            self.date = date
+            self.subject = subject
+            self.toHeader = toHeader
+            self.ccHeader = ccHeader
+            self.bodyText = bodyText
+            self.bodyHTML = bodyHTML.flatMap { $0.isEmpty ? nil : $0 }
+        }
+    }
+
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
         f.dateFormat = "EEE, MMM d, yyyy 'at' h:mm a"
         return f
     }()
 
-    /// The plain-text quoted block: marker, original headers, original body.
+    /// Plain-text package: one Gmail-style block per part, oldest first for
+    /// Forward all (read top→bottom as the conversation unfolded).
+    static func forwardBlock(parts: [Part]) -> String {
+        parts.map(singlePlainBlock).joined(separator: "\n\n")
+    }
+
+    /// Convenience for a single-message forward (Gmail "Forward").
     static func forwardBlock(fromHeader: String, date: Date, subject: String,
                              toHeader: String, ccHeader: String,
                              bodyText: String) -> String {
-        var lines = [marker,
-                     "From: \(fromHeader)",
-                     "Date: \(dateFormatter.string(from: date))",
-                     "Subject: \(subject)",
-                     "To: \(toHeader)"]
-        if !ccHeader.isEmpty { lines.append("Cc: \(ccHeader)") }
-        return lines.joined(separator: "\n") + "\n\n" + bodyText
+        forwardBlock(parts: [
+            Part(fromHeader: fromHeader, date: date, subject: subject,
+                 toHeader: toHeader, ccHeader: ccHeader, bodyText: bodyText)
+        ])
     }
 
     /// The text the user authored above the quoted block, or nil when the
@@ -265,22 +312,99 @@ enum ForwardComposer {
             .trimmingCharacters(in: .whitespacesAndNewlines)
     }
 
-    /// HTML alternative: linked/escaped user text, header block, original HTML.
+    /// True when a message carries Gmail's DRAFT label (space-separated ids).
+    static func hasDraftLabel(_ labelIds: String) -> Bool {
+        labelIds.split(whereSeparator: \.isWhitespace).contains { $0 == "DRAFT" }
+    }
+
+    /// Messages safe to include in Forward all — unsent drafts must not leak
+    /// to third parties. Order preserved (call with oldest-first rows).
+    static func forwardableMessages(_ messages: [Message]) -> [Message] {
+        messages.filter { !hasDraftLabel($0.labelIds) }
+    }
+
+    /// Which forward package still suffixes `body`, for HTML upgrade at send.
+    ///
+    /// **Order matters:** try the full non-draft thread package *before* the
+    /// single-message block. A Forward-all package always ends with the newest
+    /// message's block, so `hasSuffix(single)` would otherwise steal the match
+    /// and HTML-escape older turns as "user text."
+    static func matchHTMLUpgrade(
+        body: String,
+        original: Message,
+        threadMessages: [Message]
+    ) -> (userText: String, parts: [Part])? {
+        let forwardable = forwardableMessages(threadMessages)
+        if forwardable.count > 1 {
+            let parts = forwardable.map { Part(message: $0) }
+            let allBlock = forwardBlock(parts: parts)
+            if let userText = userText(inBody: body, expectedBlock: allBlock) {
+                return (userText, parts)
+            }
+        }
+        let single = [Part(message: original)]
+        let singleBlock = forwardBlock(parts: single)
+        if let userText = userText(inBody: body, expectedBlock: singleBlock) {
+            return (userText, single)
+        }
+        return nil
+    }
+
+    /// HTML alternative: user text (markdown when present, else linkified
+    /// plain via ComposeLinks), then each part's header + body.
+    static func htmlBody(userText: String, parts: [Part]) -> String {
+        var out = ""
+        if !userText.isEmpty {
+            if Markdown.looksLikeMarkdown(userText) {
+                out += Markdown.toHTML(userText) + "<br>"
+            } else {
+                // ComposeLinks turns [label](url) and bare URLs into anchors and
+                // escapes everything else — same path as a normal compose send.
+                out += "<div>\(ComposeLinks.htmlFragment(from: userText))</div><br>"
+            }
+        }
+        for (i, part) in parts.enumerated() {
+            if i > 0 { out += "<br>" }
+            out += singleHTMLBlock(part)
+        }
+        return out
+    }
+
+    /// Convenience matching the historical single-message HTML path.
     static func htmlBody(userText: String, fromHeader: String, date: Date,
                          subject: String, toHeader: String, ccHeader: String,
                          originalHTML: String) -> String {
-        var out = ""
-        if !userText.isEmpty {
-            // ComposeLinks turns [label](url) and bare URLs into anchors and
-            // escapes everything else — same path as a normal compose send.
-            out += "<div>\(ComposeLinks.htmlFragment(from: userText))</div><br>"
+        htmlBody(userText: userText, parts: [
+            Part(fromHeader: fromHeader, date: date, subject: subject,
+                 toHeader: toHeader, ccHeader: ccHeader, bodyText: "",
+                 bodyHTML: originalHTML)
+        ])
+    }
+
+    private static func singlePlainBlock(_ part: Part) -> String {
+        var lines = [marker,
+                     "From: \(part.fromHeader)",
+                     "Date: \(dateFormatter.string(from: part.date))",
+                     "Subject: \(part.subject)",
+                     "To: \(part.toHeader)"]
+        if !part.ccHeader.isEmpty { lines.append("Cc: \(part.ccHeader)") }
+        return lines.joined(separator: "\n") + "\n\n" + part.bodyText
+    }
+
+    private static func singleHTMLBlock(_ part: Part) -> String {
+        var header = "\(marker)<br>From: \(escapeHTML(part.fromHeader))<br>"
+            + "Date: \(escapeHTML(dateFormatter.string(from: part.date)))<br>"
+            + "Subject: \(escapeHTML(part.subject))<br>To: \(escapeHTML(part.toHeader))<br>"
+        if !part.ccHeader.isEmpty {
+            header += "Cc: \(escapeHTML(part.ccHeader))<br>"
         }
-        var header = "\(marker)<br>From: \(escapeHTML(fromHeader))<br>"
-            + "Date: \(escapeHTML(dateFormatter.string(from: date)))<br>"
-            + "Subject: \(escapeHTML(subject))<br>To: \(escapeHTML(toHeader))<br>"
-        if !ccHeader.isEmpty { header += "Cc: \(escapeHTML(ccHeader))<br>" }
-        out += "<div class=\"gmail_quote\"><div>\(header)</div><br>\(originalHTML)</div>"
-        return out
+        let content: String
+        if let html = part.bodyHTML {
+            content = html
+        } else {
+            content = "<div>\(escapeHTML(part.bodyText))</div>"
+        }
+        return "<div class=\"gmail_quote\"><div>\(header)</div><br>\(content)</div>"
     }
 
     private static func escapeHTML(_ s: String) -> String {

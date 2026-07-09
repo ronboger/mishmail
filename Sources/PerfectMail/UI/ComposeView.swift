@@ -62,7 +62,11 @@ struct ComposeView: View {
     @State private var linkIsEditing = false
     @State private var drafting = false
     @State private var error: String?
-    @FocusState private var bodyFocused: Bool
+    /// Body focus is a plain Bool (not FocusState) because the body is an
+    /// AppKit NSTextView — FocusState doesn't attach to NSViewRepresentable.
+    @State private var bodyFocused = false
+    /// Bridge so the format toolbar mutates the live text view + selection.
+    @State private var formatTarget = ComposeBodyFormatTarget()
 
     @State private var initialBody = ""
     @State private var initialSubject = ""
@@ -173,8 +177,19 @@ struct ComposeView: View {
             // Closed while the prefilled files were still downloading: their
             // chips aren't in yet, so re-fetch them before saving — otherwise
             // the re-saved draft would silently drop them.
-            let pendingSource = loadingAttachments
-                ? (editingDraft ?? (request.forward ? original : nil)) : nil
+            let pendingSources: [Message] = {
+                guard loadingAttachments else { return [] }
+                if let draft = editingDraft { return [draft] }
+                if request.forward, let original {
+                    if request.forwardAll {
+                        let thread = ForwardComposer.forwardableMessages(
+                            store.messages(inThread: original.threadId))
+                        return thread.isEmpty ? [original] : thread
+                    }
+                    return [original]
+                }
+                return []
+            }()
             let (apiAccount, identity, to, cc, bcc, subj, body, old) =
                 (fromAccountId, fromEmail,
                  toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
@@ -184,7 +199,7 @@ struct ComposeView: View {
             let (reply, isForward) = (request.replyTo, request.forward)
             Task {
                 var atts = attachments
-                if let source = pendingSource {
+                for source in pendingSources {
                     atts = ((try? await store.loadAttachments(for: source)) ?? []) + atts
                 }
                 await store.saveDraft(from: apiAccount, fromEmail: identity,
@@ -235,16 +250,16 @@ struct ComposeView: View {
             }
             .padding(.bottom, 6)
 
-            // Reply/forward context — you're inside this Gmail thread.
+            // Reply/forward context. Forwards always start a new Gmail
+            // conversation (gmail.com / Notion Mail); say so so users don't
+            // expect the Kearney-style source thread to absorb the send.
             if let original {
                 HStack(spacing: 5) {
                     Image(systemName: request.forward ? "arrowshape.turn.up.right" : "arrowshape.turn.up.left")
                         .font(.system(size: 10))
-                    Text(request.forward
-                         ? "Forwarding message from \(MessageParser.displayName(fromHeader: original.fromHeader))"
-                         : "Replying to \(MessageParser.displayName(fromHeader: original.fromHeader))")
+                    Text(forwardContextLabel(from: original))
                         .font(.system(size: 11))
-                        .lineLimit(1)
+                        .lineLimit(2)
                 }
                 .foregroundStyle(.secondary)
                 .padding(.bottom, 6)
@@ -328,15 +343,10 @@ struct ComposeView: View {
                 .padding(.vertical, 8)
             Divider()
 
-            TextEditor(text: $body_)
-                .font(.system(size: 14))
-                .lineSpacing(5)
-                .scrollContentBackground(.hidden)
-                .focused($bodyFocused)
+            // Markdown source editor: live highlight + ⌘B/⌘I/… shortcuts.
+            ComposeBodyEditor(text: $body_, isFocused: $bodyFocused,
+                              formatTarget: formatTarget, fontSize: 14)
                 .padding(.top, 10)
-                // NSTextView pads each line fragment 5pt; cancel it so the
-                // body text lines up with the Subject/From/To column.
-                .padding(.horizontal, -5)
                 .padding(.bottom, 6)
                 // Grow with authored content while the quote is collapsed so
                 // short replies don't scroll under the "…" pill; see
@@ -479,6 +489,14 @@ struct ComposeView: View {
                 footerButton(drafting ? "hourglass" : "sparkles",
                              help: "Draft with local AI (Ollama)") { draftWithAI() }
                     .disabled(drafting)
+
+                // Markdown format strip (bold/italic/headers/math…). Link is
+                // the dedicated button above (⌘K sheet); bar routes the rest.
+                ComposeFormatBar { action in
+                    if action == .link { openLinkSheet() }
+                    else { formatTarget.run(action) }
+                }
+                .padding(.leading, 2)
 
                 Spacer()
 
@@ -769,18 +787,30 @@ struct ComposeView: View {
         if request.forward {
             let subj = original.subject
             subject = subj.lowercased().hasPrefix("fwd:") ? subj : "Fwd: \(subj)"
-            // Gmail-style forwarded block instead of "> " quoting. Kept
+            // Gmail-style forwarded block(s) instead of "> " quoting. Kept
             // verbatim and collapsed behind the "…" button: the send path
-            // recomputes this block, and an untouched one lets the send carry
-            // the original HTML formatting alongside the plain text. The
-            // editor starts empty (cursor at the top); focus stays on To.
-            quotedTail = ForwardComposer.forwardBlock(
-                fromHeader: original.fromHeader, date: original.date,
-                subject: original.subject, toHeader: original.toHeader,
-                ccHeader: original.ccHeader, bodyText: original.bodyText)
-            // Forwards carry the original's attachments (standard behavior).
+            // recomputes this package, and an untouched one lets the send
+            // carry original HTML alongside the plain text. Editor starts
+            // empty (cursor at top); focus stays on To. Still a *new*
+            // conversation — no threadId / In-Reply-To on send.
+            let parts: [ForwardComposer.Part]
+            let attachmentSources: [Message]
+            if request.forwardAll {
+                // Exclude DRAFT-labeled rows so unsent text never leaves the box.
+                let threadMsgs = ForwardComposer.forwardableMessages(
+                    store.messages(inThread: original.threadId))
+                // Fall back to the single message if nothing else is left.
+                let msgs = threadMsgs.isEmpty ? [original] : threadMsgs
+                parts = msgs.map { ForwardComposer.Part(message: $0) }
+                attachmentSources = msgs
+            } else {
+                parts = [ForwardComposer.Part(message: original)]
+                attachmentSources = [original]
+            }
+            quotedTail = ForwardComposer.forwardBlock(parts: parts)
+            // Forwards carry the source attachment(s) (Gmail does the same).
             // They arrive async; Send holds until they're in.
-            prefillAttachments(of: original)
+            prefillAttachments(of: attachmentSources)
             return
         } else {
             if ownAddresses.contains(sender.lowercased()) {
@@ -823,27 +853,52 @@ struct ComposeView: View {
         focusBody()
     }
 
-    /// Pulls a message's attachments (forwarded original, or a draft being
-    /// reopened) into the card as removable chips. They arrive async; Send
-    /// holds until the download finishes, and they don't count as authored
-    /// content for the save-on-close heuristic.
-    private func prefillAttachments(of message: Message) {
-        guard message.hasAttachment else { return }
+    private func forwardContextLabel(from original: Message) -> String {
+        if request.forward {
+            let who = MessageParser.displayName(fromHeader: original.fromHeader)
+            let head = request.forwardAll
+                ? "Forwarding conversation"
+                : "Forwarding message from \(who)"
+            return "\(head) · Starts a new conversation"
+        }
+        return "Replying to \(MessageParser.displayName(fromHeader: original.fromHeader))"
+    }
+
+    /// Pulls attachments from one or more messages (forwarded original(s),
+    /// or a draft being reopened) into the card as removable chips. They
+    /// arrive async; Send holds until the download finishes, and they don't
+    /// count as authored content for the save-on-close heuristic.
+    private func prefillAttachments(of messages: [Message]) {
+        let sources = messages.filter(\.hasAttachment)
+        guard !sources.isEmpty else { return }
         loadingAttachments = true
         Task {
-            do {
-                let atts = try await store.loadAttachments(for: message)
-                await MainActor.run {
-                    restoredAttachments.append(contentsOf: atts)
-                    prefilledAttachmentNames = atts.map(\.filename)
-                }
-            } catch {
-                await MainActor.run {
-                    self.error = "Couldn't load the attachments: \(error.localizedDescription)"
+            var collected: [MIMEBuilder.Attachment] = []
+            var lastError: String?
+            for message in sources {
+                do {
+                    collected.append(contentsOf: try await store.loadAttachments(for: message))
+                } catch {
+                    lastError = error.localizedDescription
                 }
             }
-            await MainActor.run { loadingAttachments = false }
+            await MainActor.run {
+                restoredAttachments.append(contentsOf: collected)
+                prefilledAttachmentNames = restoredAttachments.map(\.filename)
+                // Surface partial failures too — a 5-message Forward all with
+                // one bad attachment should not look like a clean success.
+                if let lastError {
+                    self.error = collected.isEmpty
+                        ? "Couldn't load the attachments: \(lastError)"
+                        : "Some attachments couldn't be loaded: \(lastError)"
+                }
+                loadingAttachments = false
+            }
         }
+    }
+
+    private func prefillAttachments(of message: Message) {
+        prefillAttachments(of: [message])
     }
 
     private func draftWithAI() {
@@ -1127,6 +1182,7 @@ struct ComposeView: View {
                 // For forwards this is the forwarded original (supplies the
                 // HTML body at send time); the send path knows not to thread it.
                 replyTo: request.replyTo, forward: request.forward,
+                forwardAll: request.forwardAll,
                 attachments: attachments,
                 replacingDraft: editingDraft)
         } catch {

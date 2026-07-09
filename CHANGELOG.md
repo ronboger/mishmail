@@ -7,11 +7,29 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Added
+- **Compose markdown** — write `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``,
+  `#`/`##`/`###` headings, lists, `>` quotes, and `$math$` / `$$display$$` in the
+  compose body. Live syntax highlighting, footer format buttons, and shortcuts
+  (⌘B / ⌘I / ⌘⇧X / ⌘E / ⌘⇧M / ⌘⌥1–3 / …). Source stays plain-text markdown
+  (drafts, snippets, slash picker unchanged); send attaches an HTML alternative
+  so recipients see the formatting. Math is lightly prettified for email (no
+  full LaTeX engine).
 - **Compose hyperlinks (⌘K)** — select text in the compose body and press
   ⌘K (or the link button in the footer) to insert a Gmail-style link. Links
   are stored as markdown `[label](url)` in the plain-text editor and converted
   to real `<a href>` anchors on send; bare `https://…` URLs are auto-linked
   too. Outside compose, ⌘K still opens the command palette.
+- **Forward all** — thread ⋮ menu packages every message in the conversation
+  into one Gmail-style forward body (oldest first). Still starts a **new**
+  conversation (no `threadId` / `In-Reply-To`), matching gmail.com and Notion
+  Mail. Single-message Forward (`f`, message actions) is unchanged.
+- **Forward composer copy** — banner says “Starts a new conversation” so the
+  source thread is not expected to absorb the send.
+- **Richer forward HTML** — untouched forward packages (single or all) upgrade
+  to multipart HTML using each part’s original markup; plain text prefers the
+  HTML-derived body so it matches the reading pane. Forward-all is matched
+  before single-message at send (suffix-order fix). Unsent DRAFT rows are
+  excluded from Forward all so they never leak to recipients.
 
 ### Fixed
 - **Promotions/Social no longer show spam or archived mail** — lists and

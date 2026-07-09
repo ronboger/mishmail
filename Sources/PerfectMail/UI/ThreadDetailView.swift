@@ -126,8 +126,25 @@ struct ThreadDetailView: View {
                         Label("Reply", systemImage: "arrowshape.turn.up.left")
                     }
                     .help("Reply (\(store.keyBindings.key(for: .reply)))")
+                    Button {
+                        store.composeRequest = .init(replyTo: last, forward: true)
+                    } label: {
+                        Label("Forward", systemImage: "arrowshape.turn.up.right")
+                    }
+                    .help("Forward newest message (\(store.keyBindings.key(for: .forward))) · starts a new conversation")
                 }
                 Menu {
+                    // Hide when only one non-draft message (drafts are excluded
+                    // from the package — counting them would falsely enable this).
+                    if ForwardComposer.forwardableMessages(messages).count > 1,
+                       let last = messages.last {
+                        Button {
+                            store.composeRequest = .init(
+                                replyTo: last, forward: true, forwardAll: true)
+                        } label: {
+                            Label("Forward all", systemImage: "arrowshape.turn.up.forward")
+                        }
+                    }
                     Button {
                         store.markSpam(thread)
                     } label: {
@@ -475,7 +492,7 @@ struct MessageCard: View {
                             .font(.system(size: 12 * fontScale))
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .help("Forward (\(store.keyBindings.key(for: .forward)))")
+                    .help("Forward this message (\(store.keyBindings.key(for: .forward))) · starts a new conversation")
                 }
                 Text(message.date, format: .dateTime.month(.abbreviated).day().hour().minute())
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -625,6 +642,7 @@ struct MessageCard: View {
                             .font(.system(size: 12.5 * fontScale))
                     }
                     .buttonStyle(.bordered)
+                    .help("Forward this message · starts a new conversation")
                 }
                 .padding(.top, 4)
             } else {

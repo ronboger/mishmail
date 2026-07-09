@@ -22,8 +22,9 @@ API (and, optionally, a local Ollama model that also never leaves the machine).
 - **Local-first sync** — mail is cached in an encrypted SQLite database with
   FTS5 full-text search; the app is fast and works offline for cached mail.
 - **Compose that gets out of the way** — recipient chips with autocomplete from
-  mined contacts, Cc/Bcc, quote-on-reply, reply-all dedup, attachments, and
-  drafts that round-trip to Gmail.
+  mined contacts, Cc/Bcc, quote-on-reply, reply-all dedup, attachments, drafts
+  that round-trip to Gmail, and markdown in the body (bold/italic/headings/
+  lists/code/math) with shortcuts and an HTML alternative on send.
 - **Scheduled send, undo send, snooze, follow-up reminders, snippets.**
   Snippets trigger with `/name` in the body (Notion Mail-style), fill
   variables like `{first_name}` and `{my_first_name}`, and can move an
@@ -161,7 +162,7 @@ The defaults are Gmail's:
 |---|---|---|---|---|
 | j / k | Next / previous thread | | r | Reply |
 | e | Archive | | a | Reply all |
-| # | Trash | | f | Forward |
+| # | Trash | | f | Forward newest message (new conversation; use thread ⋮ → Forward all for the whole thread) |
 | s | Star / unstar | | l | Label… |
 | u | Toggle read / unread | | c | Compose |
 | b or h | Snooze… (picker) | | z | Undo last action |
@@ -179,6 +180,8 @@ Fixed shortcuts (not customizable):
 | Cmd-N | Compose · Cmd-Enter send |
 | / (in compose body) | Snippet picker — type `/name` to filter, Return inserts |
 | Cmd-/ (in compose) | Toggle the snippets panel |
+| ⌘B / ⌘I / ⌘⇧X / ⌘E | Bold / italic / strikethrough / code (compose body) |
+| ⌘⇧M / ⌘⌥1–3 / ⌘⇧. / ⌘⇧8 | Math / H1–H3 / quote / bullet (compose body) |
 | Cmd-Shift-R | Sync all |
 | Cmd-+ / Cmd-− / Cmd-0 | Text size |
 | Cmd-, | Settings |

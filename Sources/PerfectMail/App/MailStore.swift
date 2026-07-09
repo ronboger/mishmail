@@ -716,6 +716,9 @@ final class MailStore: ObservableObject {
         let replyTo: Message?
         var replyAll = false
         var forward = false
+        /// Gmail "Forward all": package every message in the source thread into
+        /// the body (still a **new** conversation — no threadId / In-Reply-To).
+        var forwardAll = false
         var editDraft: Message? = nil   // an existing Gmail draft being edited
         var restore: PendingSend? = nil // undone send: reopen with this content
         var prefillTo: String? = nil    // new mail straight to this address
@@ -1932,7 +1935,10 @@ final class MailStore: ObservableObject {
                             composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, replyAll: true)
                         }
         case .forward: if let t = selectedThread {
-                           composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, forward: true)
+                           // Gmail `f`: forward the newest message only. Use
+                           // the thread ⋮ menu for "Forward all".
+                           composeRequest = ComposeRequest(
+                               replyTo: messages(inThread: t.id).last, forward: true)
                        }
         case .label: if selectedThread != nil { openLabelPicker() }
         case .undo: if let undo = undoAction { undo.undo() }
@@ -2333,6 +2339,9 @@ final class MailStore: ObservableObject {
         let body: String
         let replyTo: Message?
         let forward: Bool
+        /// Gmail Forward all — restored into the compose banner; HTML upgrade
+        /// still re-detects from the body package if this is wrong/missing.
+        var forwardAll: Bool = false
         let attachments: [MIMEBuilder.Attachment]
         let replacingDraft: Message?
 
@@ -2366,6 +2375,7 @@ final class MailStore: ObservableObject {
         guard let p = takePendingSend() else { return }
         undoAction = nil
         composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
+                                        forwardAll: p.forwardAll,
                                         editDraft: p.replacingDraft, restore: p)
     }
 
@@ -2395,6 +2405,7 @@ final class MailStore: ObservableObject {
             // Bring the message back so nothing is lost.
             lastError = "Send failed: \(error.localizedDescription)"
             composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
+                                            forwardAll: p.forwardAll,
                                             editDraft: p.replacingDraft, restore: p)
         }
     }
@@ -2433,6 +2444,7 @@ final class MailStore: ObservableObject {
         try? db.write { db in _ = try ScheduledSend.deleteOne(db, key: s.id) }
         reloadScheduledSends()
         composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
+                                        forwardAll: p.forwardAll,
                                         editDraft: p.replacingDraft, restore: p)
     }
 
@@ -2523,27 +2535,34 @@ final class MailStore: ObservableObject {
         await sync(accountId: apiAccountId)
     }
 
-    /// HTML alternative for an outgoing message. Always non-nil so recipients
-    /// get clickable links (`[label](url)` and bare URLs via `ComposeLinks`).
-    /// Prefer preserved original/draft HTML when the plain body is still a
-    /// faithful twin (untouched forward quote, unedited draft body).
+    /// HTML alternative for an outgoing message:
+    /// 1. Untouched forward quote → original HTML under user text
+    /// 2. Unedited draft body → preserved draft HTML
+    /// 3. Markdown body → rendered HTML (bold, headers, math, lists, …)
+    /// 4. Otherwise → ComposeLinks linkification (markdown links + bare URLs)
+    ///
+    /// Forward single vs Forward-all is resolved by
+    /// `ForwardComposer.matchHTMLUpgrade` (all-package first — see that
+    /// method; drafts are excluded from Forward-all).
     private func htmlAlternative(body: String, forwardOf original: Message?,
                                  draft: Message?) -> String? {
-        if let orig = original, let html = orig.bodyHTML, !html.isEmpty {
-            let block = ForwardComposer.forwardBlock(
-                fromHeader: orig.fromHeader, date: orig.date, subject: orig.subject,
-                toHeader: orig.toHeader, ccHeader: orig.ccHeader, bodyText: orig.bodyText)
-            if let userText = ForwardComposer.userText(inBody: body, expectedBlock: block) {
-                return ForwardComposer.htmlBody(
-                    userText: userText, fromHeader: orig.fromHeader, date: orig.date,
-                    subject: orig.subject, toHeader: orig.toHeader, ccHeader: orig.ccHeader,
-                    originalHTML: html)
+        if let orig = original {
+            let threadMsgs = messages(inThread: orig.threadId)
+            if let match = ForwardComposer.matchHTMLUpgrade(
+                body: body, original: orig, threadMessages: threadMsgs) {
+                return ForwardComposer.htmlBody(userText: match.userText, parts: match.parts)
             }
+            // Content drift (new mail in thread since compose) or an edited
+            // quote: neither package matches → fall through to plain/markdown.
         }
         if let draft, let html = draft.bodyHTML, !html.isEmpty, body == draft.bodyText {
             return html
         }
-        // Normal compose / edited quote: plain body is source of truth.
+        // Markdown-authored body (replies with quotes count — `>` lines).
+        if Markdown.looksLikeMarkdown(body) {
+            return Markdown.toHTML(body)
+        }
+        // Plain prose: still emit HTML when there are links to click.
         let fragment = ComposeLinks.htmlFragment(from: body)
         return fragment.isEmpty ? nil : fragment
     }
@@ -2636,8 +2655,9 @@ final class MailStore: ObservableObject {
                 for att in attachments {
                     let data = try await client(for: message.accountId)
                         .getAttachment(messageId: message.gmailId, attachmentId: att.gmailAttachmentId)
-                    let dest = dir.appendingPathComponent(MessageParser.safeFilename(att.filename))
-                    try data.write(to: dest)
+                    let dest = Self.availableAttachmentURL(
+                        in: dir, filename: MessageParser.safeFilename(att.filename))
+                    try data.write(to: dest, options: .atomic)
                     Self.markQuarantined(dest)
                 }
                 await MainActor.run {
@@ -2676,16 +2696,49 @@ final class MailStore: ObservableObject {
         // message can't serve each other's cached bytes.
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("PerfectMailAttachments", isDirectory: true)
+            .appendingPathComponent(MessageParser.safeFilename(message.accountId), isDirectory: true)
             .appendingPathComponent(MessageParser.safeFilename(message.gmailId), isDirectory: true)
             .appendingPathComponent(String(attachment.id ?? 0), isDirectory: true)
         let url = dir.appendingPathComponent(MessageParser.safeFilename(attachment.filename))
-        if FileManager.default.fileExists(atPath: url.path) { return url }
+        let fm = FileManager.default
+        if fm.fileExists(atPath: url.path) {
+            let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+            if values.isRegularFile == true, values.isSymbolicLink != true {
+                Self.markQuarantined(url)
+                return url
+            }
+            try fm.removeItem(at: url)
+        }
         let data = try await client(for: message.accountId)
             .getAttachment(messageId: message.gmailId, attachmentId: attachment.gmailAttachmentId)
-        try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
-        try data.write(to: url)
+        try fm.createDirectory(at: dir, withIntermediateDirectories: true,
+                               attributes: [.posixPermissions: 0o700])
+        try data.write(to: url, options: .atomic)
+        let written = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
+        guard written.isRegularFile == true, written.isSymbolicLink != true else {
+            try? fm.removeItem(at: url)
+            throw CocoaError(.fileWriteUnknown)
+        }
         Self.markQuarantined(url)
         return url
+    }
+
+    /// Picks a non-existing destination so sender-controlled duplicate names
+    /// cannot overwrite each other or a file already present in the folder.
+    static func availableAttachmentURL(in directory: URL, filename: String) -> URL {
+        let fm = FileManager.default
+        let safe = MessageParser.safeFilename(filename)
+        let original = directory.appendingPathComponent(safe)
+        guard fm.fileExists(atPath: original.path) else { return original }
+        let ns = safe as NSString
+        let stem = ns.deletingPathExtension
+        let ext = ns.pathExtension
+        for index in 2...10_000 {
+            let candidateName = ext.isEmpty ? "\(stem) \(index)" : "\(stem) \(index).\(ext)"
+            let candidate = directory.appendingPathComponent(candidateName)
+            if !fm.fileExists(atPath: candidate.path) { return candidate }
+        }
+        return directory.appendingPathComponent("\(UUID().uuidString)-\(safe)")
     }
 
     func openAttachment(_ attachment: AttachmentRow, message: Message) {
@@ -2745,7 +2798,12 @@ final class MailStore: ObservableObject {
             do {
                 let data = try await client(for: message.accountId)
                     .getAttachment(messageId: message.gmailId, attachmentId: attachment.gmailAttachmentId)
-                try data.write(to: destination)
+                let values = try? destination.resourceValues(
+                    forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
+                if values?.isSymbolicLink == true {
+                    throw CocoaError(.fileWriteNoPermission)
+                }
+                try data.write(to: destination, options: .atomic)
                 Self.markQuarantined(destination)
                 await MainActor.run {
                     NSWorkspace.shared.activateFileViewerSelecting([destination])
