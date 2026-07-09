@@ -58,7 +58,12 @@ struct ThreadDetailView: View {
             // Separate ToolbarItems, not a ToolbarItemGroup: on macOS 26 a
             // group shares one glass capsule, so the whole cluster (plus the
             // adjacent view icon) rendered as a single pill that lit up
-            // together on any interaction.
+            // together on any interaction. The ToolbarSpacers on either side
+            // detach the trio from the list column's icon and "Inbox" title
+            // so it reads as its own group instead of one crammed row.
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.fixed, placement: .navigation)
+            }
             ToolbarItem(placement: .navigation) {
                 Button {
                     // Keep the selection so the list stays where you are.
@@ -85,6 +90,11 @@ struct ThreadDetailView: View {
                 .help("Next thread (\(store.keyBindings.key(for: .next)))")
                 .focusable(false)
                 .focusEffectDisabled()
+            }
+            // Detach the close/prev/next trio from the list column's "Inbox"
+            // title so it reads as its own group instead of one crammed row.
+            if #available(macOS 26.0, *) {
+                ToolbarSpacer(.fixed, placement: .navigation)
             }
             ToolbarItemGroup {
                 Button { store.archive(thread) } label: {
