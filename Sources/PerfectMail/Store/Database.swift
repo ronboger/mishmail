@@ -579,47 +579,51 @@ final class AppDatabase {
                 t.prefixes = [2, 3]
             }
         }
-        // Composite indexes for hot list + badge queries at scale. Each index
-        // matches a real filter in MailStore.baseQuery / fetchSidebarCounts
-        // (and the usual ORDER BY lastDate DESC on list reloads). Single-column
-        // indexes on inInbox / lastDate / accountId already exist from v1;
-        // these multi-column indexes reduce page scans under SQLCipher when
-        // filtering denorm flags + inTrash together.
+        // Composite indexes for hot *list* queries at scale (MailStore.baseQuery
+        // + ORDER BY lastDate DESC LIMIT N). Each index covers a denorm flag
+        // filter, inTrash, and lastDate so SQLite can satisfy the ORDER BY
+        // without sorting all matching rows (important for Sent etc. at 50k+).
+        //
+        // Not for fetchSidebarCounts: that path is a single full-table
+        // `SELECT SUM(CASE …) FROM thread` with no WHERE — SQLite cannot use
+        // these indexes for it. Badge/count speed needs a separate change
+        // (per-count WHERE queries or partial indexes on isUnread).
+        // Single-column inInbox / lastDate / accountId indexes already exist
+        // from v1; these multi-column ones cut list page scans under SQLCipher.
         m.registerMigration("v18") { db in
-            // Inbox list + badge: inInbox=1 AND inTrash=0 ORDER BY lastDate DESC
-            // (baseQuery .inbox / .account; fetchSidebarCounts inbox/badge CASEs).
+            // Inbox list: inInbox=1 AND inTrash=0 ORDER BY lastDate DESC
+            // (baseQuery .inbox / .account).
             try db.create(
                 index: "thread_on_inInbox_inTrash_lastDate",
                 on: "thread",
                 columns: ["inInbox", "inTrash", "lastDate"])
-            // Drafts list + drafts sidebar count: inDrafts=1 AND inTrash=0.
+            // Drafts list: inDrafts=1 AND inTrash=0 ORDER BY lastDate DESC.
             try db.create(
-                index: "thread_on_inDrafts_inTrash",
+                index: "thread_on_inDrafts_inTrash_lastDate",
                 on: "thread",
-                columns: ["inDrafts", "inTrash"])
-            // Sent list: inSent=1 AND inTrash=0.
+                columns: ["inDrafts", "inTrash", "lastDate"])
+            // Sent list: inSent=1 AND inTrash=0 ORDER BY lastDate DESC.
             try db.create(
-                index: "thread_on_inSent_inTrash",
+                index: "thread_on_inSent_inTrash_lastDate",
                 on: "thread",
-                columns: ["inSent", "inTrash"])
-            // Promotions list + count: inPromotions=1 AND inTrash=0.
+                columns: ["inSent", "inTrash", "lastDate"])
+            // Promotions list: inPromotions=1 AND inTrash=0 ORDER BY lastDate DESC.
             try db.create(
-                index: "thread_on_inPromotions_inTrash",
+                index: "thread_on_inPromotions_inTrash_lastDate",
                 on: "thread",
-                columns: ["inPromotions", "inTrash"])
-            // Social list + count: inSocial=1 AND inTrash=0.
+                columns: ["inPromotions", "inTrash", "lastDate"])
+            // Social list: inSocial=1 AND inTrash=0 ORDER BY lastDate DESC.
             try db.create(
-                index: "thread_on_inSocial_inTrash",
+                index: "thread_on_inSocial_inTrash_lastDate",
                 on: "thread",
-                columns: ["inSocial", "inTrash"])
-            // Starred list + count: isStarred=1 AND inTrash=0.
+                columns: ["inSocial", "inTrash", "lastDate"])
+            // Starred list: isStarred=1 AND inTrash=0 ORDER BY lastDate DESC.
             try db.create(
-                index: "thread_on_isStarred_inTrash",
+                index: "thread_on_isStarred_inTrash_lastDate",
                 on: "thread",
-                columns: ["isStarred", "inTrash"])
-            // Account-scoped lists (ORDER BY lastDate) and multi-account badge
-            // CASE WHEN accountId = ?. accountId alone is indexed from v1;
-            // pairing with lastDate covers the common ORDER BY without a sort.
+                columns: ["isStarred", "inTrash", "lastDate"])
+            // Account-scoped lists (ORDER BY lastDate). accountId alone is
+            // indexed from v1; pairing with lastDate covers the common ORDER BY.
             try db.create(
                 index: "thread_on_accountId_lastDate",
                 on: "thread",

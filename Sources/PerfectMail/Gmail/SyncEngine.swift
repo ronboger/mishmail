@@ -223,7 +223,9 @@ actor SyncEngine {
                 }
             }
             fetched += refs.count
-            if fetched > 0 { progress?("Downloaded \(fetched) messages…") }
+            // "Fetched" not "Downloaded": up to writeChunkSize-1 may still be
+            // buffered uncommitted; a failed final flush rolls those back.
+            if fetched > 0 { progress?("Fetched \(fetched) messages…") }
             pageToken = page.nextPageToken
         } while pageToken != nil && listed < limit
         try await flushUpserts(&writeBuffer, into: &touchedKeys)

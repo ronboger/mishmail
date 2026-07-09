@@ -27,14 +27,14 @@ final class DatabaseMigrationTests: XCTestCase {
                 "SELECT sql FROM sqlite_master WHERE name = 'message_fts'") ?? ""
             XCTAssertFalse(ftsSQL.lowercased().contains("bodytext"),
                            "v17 FTS must omit bodyText")
-            // v18 composite indexes for hot list / badge queries.
+            // v18 composite indexes for hot list queries (flag + inTrash + lastDate).
             for name in [
                 "thread_on_inInbox_inTrash_lastDate",
-                "thread_on_inDrafts_inTrash",
-                "thread_on_inSent_inTrash",
-                "thread_on_inPromotions_inTrash",
-                "thread_on_inSocial_inTrash",
-                "thread_on_isStarred_inTrash",
+                "thread_on_inDrafts_inTrash_lastDate",
+                "thread_on_inSent_inTrash_lastDate",
+                "thread_on_inPromotions_inTrash_lastDate",
+                "thread_on_inSocial_inTrash_lastDate",
+                "thread_on_isStarred_inTrash_lastDate",
                 "thread_on_accountId_lastDate",
             ] {
                 let exists = try Bool.fetchOne(db, sql:
@@ -357,7 +357,8 @@ final class DatabaseMigrationTests: XCTestCase {
         }
     }
 
-    /// v18 adds composite indexes for hot mailbox list + badge filters.
+    /// v18 adds composite indexes for hot mailbox list filters (including
+    /// lastDate so ORDER BY need not sort all matching rows).
     /// Applies cleanly on a pre-seeded DB and leaves existing rows intact.
     func testUpgradeToV18AddsCompositeThreadIndexes() throws {
         let q = try DatabaseQueue()
@@ -384,12 +385,12 @@ final class DatabaseMigrationTests: XCTestCase {
         }
         let expected = [
             "thread_on_accountId_lastDate",
-            "thread_on_inDrafts_inTrash",
+            "thread_on_inDrafts_inTrash_lastDate",
             "thread_on_inInbox_inTrash_lastDate",
-            "thread_on_inPromotions_inTrash",
-            "thread_on_inSent_inTrash",
-            "thread_on_inSocial_inTrash",
-            "thread_on_isStarred_inTrash",
+            "thread_on_inPromotions_inTrash_lastDate",
+            "thread_on_inSent_inTrash_lastDate",
+            "thread_on_inSocial_inTrash_lastDate",
+            "thread_on_isStarred_inTrash_lastDate",
         ]
         for name in expected {
             XCTAssertTrue(indexNames.contains(name), "missing index \(name); got \(indexNames)")
