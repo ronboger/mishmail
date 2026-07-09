@@ -20,6 +20,11 @@ enum ComposeLinks {
 
     /// Accepts http(s)/mailto, bare emails → `mailto:`, bare hosts → `https://`.
     /// Rejects empty input and dangerous schemes (`javascript:`, `data:`, …).
+    ///
+    /// Scheme detection is conservative: only `http` / `https` / `mailto` are
+    /// treated as schemes. That way `example.com:8080` and `example.com/a:b`
+    /// fall through to `https://…` instead of being rejected because the
+    /// substring before the first `:` looked scheme-like.
     static func normalizeURL(_ raw: String) -> String? {
         var s = raw.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !s.isEmpty else { return nil }
@@ -30,12 +35,18 @@ enum ComposeLinks {
             guard !s.isEmpty else { return nil }
         }
         if let colon = s.firstIndex(of: ":") {
-            let scheme = s[..<colon].lowercased()
-            // Only schemes mail clients should follow from an authored link.
-            guard scheme == "http" || scheme == "https" || scheme == "mailto" else {
-                return nil
+            let prefix = String(s[..<colon])
+            // Allowlisted schemes only — never treat "example.com" as a scheme.
+            if let scheme = recognizedScheme(prefix) {
+                if scheme == "mailto" {
+                    let address = s[s.index(after: colon)...]
+                    guard !address.isEmpty else { return nil }
+                }
+                return s
             }
-            return s
+            // Pure scheme token (no dots) that we don't allow → reject.
+            // host:port / path:with:colons fall through (they contain '.' or '/').
+            if isSchemeToken(prefix) { return nil }
         }
         // bare email → mailto
         if s.contains("@"),
@@ -44,6 +55,24 @@ enum ComposeLinks {
             return "mailto:\(s)"
         }
         return "https://\(s)"
+    }
+
+    /// `http` / `https` / `mailto` (case-insensitive), else nil.
+    private static func recognizedScheme(_ prefix: String) -> String? {
+        let scheme = prefix.lowercased()
+        guard scheme == "http" || scheme == "https" || scheme == "mailto" else {
+            return nil
+        }
+        return scheme
+    }
+
+    /// RFC 3986 scheme shape: `ALPHA *( ALPHA / DIGIT / "+" / "-" / "." )`,
+    /// but we additionally require no `.` so `example.com:8080` is not a scheme.
+    private static func isSchemeToken(_ prefix: String) -> Bool {
+        guard let first = prefix.first, first.isLetter else { return false }
+        return prefix.allSatisfy { ch in
+            ch.isLetter || ch.isNumber || ch == "+" || ch == "-"
+        }
     }
 
     // MARK: - Insert / edit / remove
@@ -142,8 +171,11 @@ enum ComposeLinks {
 
     /// Markdown links first, then bare URLs in the remaining gaps (no overlap).
     private static func nonOverlappingLinkSpans(in body: String) -> [LinkSpan] {
-        let md = markdownLinks(in: body).map {
-            LinkSpan(range: $0.range, label: $0.text, href: $0.url)
+        let md = markdownLinks(in: body).compactMap { link -> LinkSpan? in
+            // Always emit the *normalized* href so hand-typed `[x](example.com)`
+            // becomes `https://example.com`, not a relative `example.com`.
+            guard let href = normalizeURL(link.url) else { return nil }
+            return LinkSpan(range: link.range, label: link.text, href: href)
         }
         var occupied = md.map(\.range)
         var bare: [LinkSpan] = []

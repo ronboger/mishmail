@@ -24,6 +24,17 @@ final class ComposeLinksTests: XCTestCase {
                        "https://example.com/path")
     }
 
+    func testNormalizeHostPortGetsHTTPS() {
+        // Colon is port, not a scheme separator — must not reject.
+        XCTAssertEqual(ComposeLinks.normalizeURL("example.com:8080/dash"),
+                       "https://example.com:8080/dash")
+    }
+
+    func testNormalizePathWithColonGetsHTTPS() {
+        XCTAssertEqual(ComposeLinks.normalizeURL("example.com/a:b"),
+                       "https://example.com/a:b")
+    }
+
     func testNormalizeBareEmailGetsMailto() {
         XCTAssertEqual(ComposeLinks.normalizeURL("a@b.com"),
                        "mailto:a@b.com")
@@ -40,6 +51,7 @@ final class ComposeLinksTests: XCTestCase {
         XCTAssertNil(ComposeLinks.normalizeURL("javascript:alert(1)"))
         XCTAssertNil(ComposeLinks.normalizeURL("data:text/html,hi"))
         XCTAssertNil(ComposeLinks.normalizeURL("file:///etc/passwd"))
+        XCTAssertNil(ComposeLinks.normalizeURL("mailto:"))  // empty address
     }
 
     // MARK: - apply / remove / find
@@ -105,10 +117,28 @@ final class ComposeLinksTests: XCTestCase {
                        "read <a href=\"https://example.com/a\">the docs</a>")
     }
 
+    func testHTMLNormalizesBareHostInMarkdown() {
+        // Hand-typed markdown without a scheme must not emit a relative href.
+        let html = ComposeLinks.htmlFragment(from: "[x](example.com)")
+        XCTAssertEqual(html, "<a href=\"https://example.com\">x</a>")
+    }
+
     func testHTMLAutolinksBareHTTPS() {
         let html = ComposeLinks.htmlFragment(from: "go https://example.com/x now")
         XCTAssertEqual(html,
                        "go <a href=\"https://example.com/x\">https://example.com/x</a> now")
+    }
+
+    func testHTMLAutolinkTrimsTrailingPunctuation() {
+        let html = ComposeLinks.htmlFragment(from: "see https://example.com/x.")
+        XCTAssertEqual(html,
+                       "see <a href=\"https://example.com/x\">https://example.com/x</a>.")
+    }
+
+    func testHTMLAutolinkTrimsTrailingParen() {
+        let html = ComposeLinks.htmlFragment(from: "see https://example.com/x)")
+        XCTAssertEqual(html,
+                       "see <a href=\"https://example.com/x\">https://example.com/x</a>)")
     }
 
     func testHTMLDoesNotDoubleLinkMarkdown() {
@@ -133,6 +163,11 @@ final class ComposeLinksTests: XCTestCase {
         let html = ComposeLinks.htmlFragment(from: "[x](javascript:alert(1))")
         XCTAssertFalse(html.contains("<a "))
         XCTAssertTrue(html.contains("javascript:alert(1)"))
+    }
+
+    func testHTMLUnicodeAroundLink() {
+        let html = ComposeLinks.htmlFragment(from: "café [docs](https://example.com)")
+        XCTAssertEqual(html, "café <a href=\"https://example.com\">docs</a>")
     }
 
     // MARK: - UTF-16 bridge

@@ -899,8 +899,10 @@ struct ComposeView: View {
         slashKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
             let mods = event.modifierFlags.intersection([.command, .option, .control])
             // Gmail-style link insert. ContentView already stands down on
-            // ⌘K while compose text has focus; we own it here.
+            // ⌘K while compose text has focus; we own it here. Require pure
+            // ⌘ (no ⇧/⌥/⌃) so ⌘⇧K doesn't open the sheet.
             if mods == .command,
+               !event.modifierFlags.contains(.shift),
                event.charactersIgnoringModifiers?.lowercased() == "k",
                bodyFocused {
                 openLinkSheet()

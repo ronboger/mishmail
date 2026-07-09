@@ -261,6 +261,9 @@ struct ComposeLinkSheet: View {
 
     @State private var text: String = ""
     @State private var url: String = ""
+    /// Guards against Return firing both TextField.onSubmit and the default
+    /// button's keyboardShortcut in the same event cycle.
+    @State private var didApply = false
     @FocusState private var urlFocused: Bool
 
     private var canApply: Bool {
@@ -287,6 +290,9 @@ struct ComposeLinkSheet: View {
                 TextField("https://…", text: $url)
                     .textFieldStyle(.roundedBorder)
                     .focused($urlFocused)
+                    // Return while focused in the URL field. The Insert button
+                    // also has .defaultAction; applyIfValid is once-only so both
+                    // binding to Return cannot double-insert.
                     .onSubmit { applyIfValid() }
             }
 
@@ -317,12 +323,14 @@ struct ComposeLinkSheet: View {
         .onAppear {
             text = initialText
             url = initialURL
+            didApply = false
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { urlFocused = true }
         }
     }
 
     private func applyIfValid() {
-        guard canApply else { return }
+        guard !didApply, canApply else { return }
+        didApply = true
         onApply(text, url)
         dismiss()
     }
