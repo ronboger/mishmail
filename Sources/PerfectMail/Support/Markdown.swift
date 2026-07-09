@@ -120,7 +120,11 @@ enum Markdown {
                     i = j
                     continue
                 }
-                // No closer — leave the opening line as a normal paragraph.
+                // No closer — emit the opening line as a normal paragraph and
+                // advance (must not fall through or `i` stalls forever on `$$`).
+                html.append("<p>\(inlineHTML(line))</p>")
+                i += 1
+                continue
             }
 
             // Blank line → paragraph break.
@@ -193,7 +197,13 @@ enum Markdown {
                 para.append(l)
                 i += 1
             }
-            html.append("<p>\(para.map { inlineHTML($0) }.joined(separator: "<br>"))</p>")
+            // Safety: never stall if a "special" line matched no handler above.
+            if para.isEmpty {
+                html.append("<p>\(inlineHTML(lines[i]))</p>")
+                i += 1
+            } else {
+                html.append("<p>\(para.map { inlineHTML($0) }.joined(separator: "<br>"))</p>")
+            }
         }
         return html.joined(separator: "\n")
     }

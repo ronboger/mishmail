@@ -13,6 +13,48 @@ final class MarkdownTests: XCTestCase {
         XCTAssertTrue(Markdown.looksLikeMarkdown("[link](https://example.com)"))
         XCTAssertFalse(Markdown.looksLikeMarkdown("Just a plain email.\nTwo lines."))
         XCTAssertFalse(Markdown.looksLikeMarkdown(""))
+        // Single list item / money prose must not force an HTML part.
+        XCTAssertFalse(Markdown.looksLikeMarkdown("- Ron"))
+        XCTAssertFalse(Markdown.looksLikeMarkdown("I owe you $5 and $10 total"))
+    }
+
+    func testNestedCodeInsideBoldDoesNotLeakPlaceholders() {
+        let html = Markdown.toHTML("**see `x` here**")
+        XCTAssertTrue(html.contains("<strong>"), html)
+        XCTAssertTrue(html.contains("<code>x</code>"), html)
+        XCTAssertFalse(html.contains("\u{FFFC}"), "placeholder leaked: \(html)")
+    }
+
+    func testMoneyAmountsAreNotMath() {
+        let prose = "I owe you $5 and $10 total"
+        XCTAssertFalse(Markdown.looksLikeMarkdown(prose))
+        // Even if forced through toHTML (e.g. mixed with other markers), no math span.
+        let html = Markdown.toHTML("Thanks!\n\n" + prose)
+        XCTAssertFalse(html.contains("font-family:Cambria"), html)
+        XCTAssertTrue(html.contains("$5"), html)
+        XCTAssertTrue(html.contains("$10"), html)
+    }
+
+    func testLiteralObjectReplacementCharIsStripped() {
+        let html = Markdown.toHTML("hi \u{FFFC}1\u{FFFC} there")
+        XCTAssertFalse(html.contains("\u{FFFC}"))
+        XCTAssertTrue(html.contains("hi 1 there") || html.contains("hi  there"))
+    }
+
+    func testUnclosedDisplayMathDoesNotSwallowBody() {
+        let html = Markdown.toHTML("$$\nno closer\n\nStill here")
+        XCTAssertTrue(html.contains("Still here"), html)
+        // Opening line falls through as a paragraph, not a math div for the rest.
+        XCTAssertFalse(html.contains("no closer</div>"), html)
+    }
+
+    func testLinkNormalizationParity() {
+        let ok = Markdown.toHTML("[x](example.com:8080)")
+        XCTAssertTrue(ok.contains("href=\"https://example.com:8080\""), ok)
+        // Invalid scheme stays as escaped literal text, not an anchor.
+        let bad = Markdown.toHTML("[x](javascript:alert(1))")
+        XCTAssertFalse(bad.contains("<a href"), bad)
+        XCTAssertTrue(bad.contains("[x](javascript:alert(1))"), bad)
     }
 
     // MARK: - Block rendering
@@ -122,6 +164,28 @@ final class MarkdownTests: XCTestCase {
         let (t2, _) = Markdown.toggleLinePrefix(t1, selection: NSRange(location: 0, length: 0),
                                                 prefix: "# ")
         XCTAssertEqual(t2, "Title\nBody")
+    }
+
+    func testToggleLinePrefixHeadingLevelSwitch() {
+        let src = "# Title"
+        let (t, _) = Markdown.toggleLinePrefix(src, selection: NSRange(location: 0, length: 0),
+                                               prefix: "## ")
+        XCTAssertEqual(t, "## Title")
+    }
+
+    func testToggleLinePrefixEmptyLine() {
+        let (t, _) = Markdown.toggleLinePrefix("", selection: NSRange(location: 0, length: 0),
+                                               prefix: "# ")
+        XCTAssertEqual(t, "# ")
+    }
+
+    func testToggleItalicDoesNotEatBoldMarkers() {
+        let bold = "**hello**"
+        // Select just "hello" (UTF-16: starts at 2, length 5).
+        let (t, _) = Markdown.toggleWrap(bold, selection: NSRange(location: 2, length: 5),
+                                         open: "*", close: "*")
+        // Should wrap with italic, not strip one star from bold.
+        XCTAssertEqual(t, "***hello***")
     }
 
     func testReplyQuoteStillRenders() {
