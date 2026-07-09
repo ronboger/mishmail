@@ -792,7 +792,7 @@ final class MailStore: ObservableObject {
                                          existingNames: snippets().map(\.name))
         try? db.write { db in
             for item in planned {
-                var s = Snippet(id: nil, name: item.name, body: item.body,
+                let s = Snippet(id: nil, name: item.name, body: item.body,
                                 movesToBcc: item.movesToBcc ?? false)
                 try s.insert(db)
             }
@@ -1612,7 +1612,7 @@ final class MailStore: ObservableObject {
             v.chipsJSON = try? JSONEncoder().encode(chips)
         }
         try? db.write { db in
-            var toSave = v
+            let toSave = v
             try toSave.save(db)
         }
         reloadSavedViews()
@@ -2763,7 +2763,7 @@ final class MailStore: ObservableObject {
 
     func saveSnippet(name: String, body: String, movesToBcc: Bool = false) {
         try? db.write { db in
-            var s = Snippet(id: nil, name: name, body: body, movesToBcc: movesToBcc)
+            let s = Snippet(id: nil, name: name, body: body, movesToBcc: movesToBcc)
             try s.insert(db)
         }
         objectWillChange.send()
@@ -2788,7 +2788,7 @@ final class MailStore: ObservableObject {
         let planned = SnippetImport.plan(items, existingNames: snippets().map(\.name))
         try db.write { db in
             for item in planned {
-                var s = Snippet(id: nil, name: item.name.trimmingCharacters(in: .whitespaces),
+                let s = Snippet(id: nil, name: item.name.trimmingCharacters(in: .whitespaces),
                                 body: item.body, movesToBcc: item.movesToBcc ?? false)
                 try s.insert(db)
             }

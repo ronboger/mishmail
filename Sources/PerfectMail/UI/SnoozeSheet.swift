@@ -61,7 +61,7 @@ struct SnoozeSheet: View {
                 .focused($fieldFocused)
                 .padding(.horizontal, 10).padding(.vertical, 8)
                 .background(Color.primary.opacity(0.05), in: RoundedRectangle(cornerRadius: 6))
-                .onChange(of: query) { _ in highlight = 0 }
+                .onChange(of: query) { highlight = 0 }
 
             if options.isEmpty {
                 Text("No date matches — try \"tomorrow\", \"friday\", \"in 3 days\", \"aug 12 5pm\"")
