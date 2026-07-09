@@ -91,6 +91,7 @@ targets:
       - Sources/PerfectMail/Support/SnippetInsertion.swift
       - Sources/PerfectMail/Support/UpdateChecker.swift
       - Sources/PerfectMail/Support/HTMLBodyCSP.swift
+      - Sources/PerfectMail/Support/HTMLBodyDarkMode.swift
       - Sources/PerfectMail/Support/Ollama.swift
       - Sources/PerfectMail/Auth/OAuth.swift
     dependencies:

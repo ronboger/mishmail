@@ -66,9 +66,11 @@ struct ThreadDetailView: View {
                     // Keep the selection so the list stays where you are.
                     readingPaneHidden = true
                 } label: {
-                    Label("Close", systemImage: "chevron.right.2")
+                    Label("Hide Reading Pane", systemImage: "chevron.right.2")
                 }
-                .help("Close (esc)")
+                // Collapses the reading pane so the list fills the window;
+                // selection stays put — click a thread (or press Enter) to reopen.
+                .help("Hide reading pane (esc)")
                 .focusable(false)
                 .focusEffectDisabled()
             }
@@ -77,7 +79,7 @@ struct ThreadDetailView: View {
                 Button { store.moveSelection(-1) } label: {
                     Label("Previous", systemImage: "chevron.up")
                 }
-                .help("Previous thread (\(store.keyBindings.key(for: .prev)))")
+                .help("Previous conversation (\(store.keyBindings.key(for: .prev)))")
                 .focusable(false)
                 .focusEffectDisabled()
             }
@@ -86,7 +88,7 @@ struct ThreadDetailView: View {
                 Button { store.moveSelection(1) } label: {
                     Label("Next", systemImage: "chevron.down")
                 }
-                .help("Next thread (\(store.keyBindings.key(for: .next)))")
+                .help("Next conversation (\(store.keyBindings.key(for: .next)))")
                 .focusable(false)
                 .focusEffectDisabled()
             }
@@ -98,20 +100,28 @@ struct ThreadDetailView: View {
                 Button { store.archive(thread) } label: {
                     Label("Archive", systemImage: "archivebox")
                 }
+                .help("Archive (\(store.keyBindings.key(for: .archive)))")
                 Button { store.toggleStar(thread) } label: {
-                    Label("Star", systemImage: thread.isStarred ? "star.fill" : "star")
+                    Label(thread.isStarred ? "Unstar" : "Star",
+                          systemImage: thread.isStarred ? "star.fill" : "star")
                         .foregroundStyle(thread.isStarred ? .yellow : .primary)
                 }
+                .help(thread.isStarred
+                      ? "Unstar (\(store.keyBindings.key(for: .toggleStar)))"
+                      : "Star (\(store.keyBindings.key(for: .toggleStar)))")
                 Button { store.openLabelPicker() } label: {
                     Label("Label", systemImage: "tag")
                 }
+                .help("Labels (\(store.keyBindings.key(for: .label)))")
                 Button(role: .destructive) { store.trash(thread) } label: {
                     Label("Trash", systemImage: "trash")
                 }
+                .help("Move to Trash (\(store.keyBindings.key(for: .trash)))")
                 if let last = messages.last {
                     Button { onReply(last) } label: {
                         Label("Reply", systemImage: "arrowshape.turn.up.left")
                     }
+                    .help("Reply (\(store.keyBindings.key(for: .reply)))")
                 }
                 Menu {
                     Button {
@@ -122,6 +132,7 @@ struct ThreadDetailView: View {
                 } label: {
                     Label("More", systemImage: "ellipsis")
                 }
+                .help("More actions")
             }
         }
         // Long threads open with the top of the newest message at the top of
@@ -771,42 +782,11 @@ struct HTMLBodyView: NSViewRepresentable {
         context.coordinator.loadedKey = key
         context.coordinator.setHeight = { self.height = $0 }
         let csp = HTMLBodyCSP.metaTag(allowRemoteImages: allowRemoteImages)
-        // Notion-style dark override: most HTML mail hardcodes color:#000 /
-        // black on spans (Outlook/Word, corporate sigs). A non-!important body
-        // rule loses to those inlines → black-on-gray. Force light text with
-        // !important; clear only pure-white panels so brand banners keep their
-        // fills and images stay untouched.
-        let style = """
-            <style>
-            :root { color-scheme: light dark; }
-            html, body { height: auto !important; min-height: 0 !important; }
-            body { font: \(Int(14.5 * fontScale))px -apple-system, sans-serif; color: canvastext; margin: 0; background: transparent; }
-            img { max-width: 100%; height: auto; }
-            @media (prefers-color-scheme: dark) {
-              body, body :not(a):not(a *) { color: #e6e6e6 !important; }
-              a, a * { color: #6cb2ff !important; }
-              body [style*="background-color:white" i],
-              body [style*="background-color: white" i],
-              body [style*="background-color:#fff" i],
-              body [style*="background-color: #fff" i],
-              body [style*="background-color:#ffffff" i],
-              body [style*="background-color: #ffffff" i],
-              body [style*="background:white" i],
-              body [style*="background: white" i],
-              body [style*="background:#fff" i],
-              body [style*="background: #fff" i],
-              body [style*="background:#ffffff" i],
-              body [style*="background: #ffffff" i],
-              body [bgcolor="white" i],
-              body [bgcolor="#fff" i],
-              body [bgcolor="#ffffff" i] {
-                background-color: transparent !important;
-                background-image: none !important;
-              }
-            }
-            \(collapseQuote ? QuotedReply.hideQuoteCSS : "")
-            </style>
-            """
+        // Plain mail: force light text over dark chrome. Designed mail (owns a
+        // light bg): leave author colors alone — see HTMLBodyDarkMode.
+        let css = HTMLBodyDarkMode.injectedCSS(
+            fontScale: fontScale, collapseQuote: collapseQuote, html: html)
+        let style = "<style>\n\(css)\n</style>"
         webView.loadHTMLString("<html><head>\(csp)\(style)</head><body>\(html)</body></html>", baseURL: nil)
     }
 
