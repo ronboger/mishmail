@@ -743,45 +743,87 @@ final class MailStore: ObservableObject {
 
     // MARK: - Contacts (derived from synced mail; no extra Google scopes)
 
-    struct Contact: Identifiable, Hashable {
-        let name: String
-        let email: String
-        let weight: Int
-        var id: String { email }
-        var display: String { name.isEmpty ? email : "\(name) — \(email)" }
-    }
+    /// UI-facing contact type (stable path for AddressField / search).
+    typealias Contact = ContactMiner.Contact
 
     @Published private(set) var contacts: [Contact] = []
+    /// Full weight map kept in memory so incremental passes merge correctly
+    /// (the published list is only the top 2000).
+    private var contactWeights: ContactMiner.WeightMap = [:]
+    /// Own addresses the current weight map was built under — account add/remove
+    /// forces a full rebuild so own-mail exclusion stays correct.
+    private var contactsOwnAddresses: Set<String> = []
+    private var contactsRebuildGeneration = 0
+    private static let contactsHighWaterKey = "contacts.highWaterRowId"
 
-    func rebuildContacts() {
+    /// Re-mine contacts from message headers. Incremental by default (messages
+    /// with rowid above the high-water mark); full when forced, on first run,
+    /// when the in-memory map is empty, or when the account set changes.
+    func rebuildContacts(forceFull: Bool = false) {
         let ownAddresses = Set(accounts.map { $0.id.lowercased() })
-        Task {
-            let rows = (try? await db.read { db -> [Row] in
-                try Row.fetchAll(db, sql: "SELECT fromHeader, toHeader, ccHeader, labelIds FROM message")
-            }) ?? []
-            var weights: [String: (name: String, weight: Int)] = [:]
-            for row in rows {
-                let isSent = (row["labelIds"] as String).contains("SENT")
-                for header in [row["fromHeader"] as String, row["toHeader"] as String, row["ccHeader"] as String] {
-                    for piece in MessageParser.splitAddresses(header) {
-                        let email = MessageParser.emailAddress(piece).lowercased()
-                        guard email.contains("@"), !email.contains(" "),
-                              !ownAddresses.contains(email) else { continue }
-                        let name = MessageParser.displayName(fromHeader: piece)
-                        // People you send to matter more than newsletter senders.
-                        let add = isSent ? 5 : 1
-                        let prev = weights[email] ?? ("", 0)
-                        weights[email] = (prev.name.count >= name.count ? prev.name : name,
-                                          prev.weight + add)
-                    }
+        let accountsChanged = ownAddresses != contactsOwnAddresses
+        let full = forceFull || accountsChanged
+            || contactWeights.isEmpty
+            || UserDefaults.standard.integer(forKey: Self.contactsHighWaterKey) == 0
+        if full {
+            contactWeights = [:]
+            UserDefaults.standard.set(0, forKey: Self.contactsHighWaterKey)
+        }
+        let afterRowId = full
+            ? Int64(0)
+            : Int64(UserDefaults.standard.integer(forKey: Self.contactsHighWaterKey))
+        contactsRebuildGeneration += 1
+        let generation = contactsRebuildGeneration
+        let pool = db
+        // Capture for the background read; merge happens back on MainActor.
+        Task { [weak self] in
+            let rows: [ContactMiner.MessageHeaders] = (try? await pool.read { db in
+                let sql: String
+                let args: StatementArguments
+                if afterRowId > 0 {
+                    sql = """
+                        SELECT rowid, fromHeader, toHeader, ccHeader, labelIds FROM message
+                        WHERE rowid > ? ORDER BY rowid
+                        """
+                    args = [afterRowId]
+                } else {
+                    sql = """
+                        SELECT rowid, fromHeader, toHeader, ccHeader, labelIds FROM message
+                        ORDER BY rowid
+                        """
+                    args = []
                 }
+                return try Row.fetchAll(db, sql: sql, arguments: args).map { row in
+                    ContactMiner.MessageHeaders(
+                        rowid: row["rowid"],
+                        fromHeader: row["fromHeader"],
+                        toHeader: row["toHeader"],
+                        ccHeader: row["ccHeader"],
+                        labelIds: row["labelIds"])
+                }
+            }) ?? []
+            await MainActor.run {
+                guard let self, generation == self.contactsRebuildGeneration else { return }
+                // Accounts changed mid-flight — restart with the current set
+                // (we may have already cleared weights for a full pass).
+                let currentOwn = Set(self.accounts.map { $0.id.lowercased() })
+                if ownAddresses != currentOwn {
+                    self.rebuildContacts(forceFull: true)
+                    return
+                }
+                // Full passes already wiped the map; re-clear in case a stale
+                // incremental applied nothing after we reset (generation guards
+                // the common race; this keeps full-pass semantics explicit).
+                if full { self.contactWeights = [:] }
+                let maxSeen = ContactMiner.merge(messages: rows,
+                                                 into: &self.contactWeights,
+                                                 excluding: ownAddresses)
+                if maxSeen > 0 {
+                    UserDefaults.standard.set(Int(maxSeen), forKey: Self.contactsHighWaterKey)
+                }
+                self.contactsOwnAddresses = ownAddresses
+                self.contacts = ContactMiner.ranked(from: self.contactWeights)
             }
-            let ranked = weights
-                .map { Contact(name: $0.value.name == $0.key ? "" : $0.value.name,
-                               email: $0.key, weight: $0.value.weight) }
-                .sorted { $0.weight > $1.weight }
-                .prefix(2000)
-            await MainActor.run { self.contacts = Array(ranked) }
         }
     }
 
@@ -871,12 +913,18 @@ final class MailStore: ObservableObject {
         savedViews = (try? db.read { try SavedView.order(Column("name")).fetchAll($0) }) ?? []
     }
 
-    private static let categoryLabels = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"]
+    // nonisolated: pure constants used from pool-read query builders.
+    nonisolated private static let categoryLabels = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"]
 
     /// Chip toggles arrive in bursts (typing a sender, flipping several
     /// filters); coalesce them into one reload instead of a full 300-thread
     /// query per change. View switches keep calling reloadThreads() directly.
     private var chipReloadTask: Task<Void, Never>?
+    /// In-flight list reload; a newer generation discards older results so
+    /// chip debounce + view switch races don't clobber fresher state.
+    private var threadReloadTask: Task<Void, Never>?
+    private var threadReloadGeneration = 0
+
     func reloadThreadsDebounced() {
         chipReloadTask?.cancel()
         chipReloadTask = Task { [weak self] in
@@ -886,8 +934,15 @@ final class MailStore: ObservableObject {
         }
     }
 
+    /// Async thread-list reload. Captures filter inputs on the main actor,
+    /// reads off the critical path, then applies only if this generation is
+    /// still current. Does not clear `threads` while loading (no flicker).
     func reloadThreads() {
         chipReloadTask?.cancel()   // a direct reload supersedes a pending debounced one
+        threadReloadGeneration += 1
+        let generation = threadReloadGeneration
+        // Capture everything the query needs up front so the pool read never
+        // touches MainActor state mid-flight.
         let view = selectedView
         let search = committedSearch.trimmingCharacters(in: .whitespaces)
         let chips = chips
@@ -895,83 +950,93 @@ final class MailStore: ObservableObject {
         if !readStateFilterActive { readStateKeepIds.removeAll() }
         let keepIds = Array(readStateKeepIds)
         let allLabels = labelsByAccount.values.flatMap { $0 }
-        threads = (try? db.read { [weak self] db -> [MailThread] in
-            if !search.isEmpty {
-                let parsed = SearchQuery.parse(search)
-                var q = MailThread.all()
-                if !parsed.text.isEmpty {
-                    let ids = try Row.fetchAll(db, sql: """
-                        SELECT DISTINCT message.threadId FROM message
-                        JOIN message_fts ON message_fts.rowid = message.rowid
-                        WHERE message_fts MATCH ?
-                        """, arguments: [FTS5Pattern(matchingAllPrefixesIn: parsed.text)])
-                        .map { $0["threadId"] as String }
-                    q = q.filter(ids.contains(Column("id")))
-                }
-                if let from = parsed.from {
-                    // fromDisplay/participants hold display names, so an email
-                    // query ("from:x@y.com") must also check the raw header.
-                    let pattern = "%\(from)%"
-                    q = q.filter(sql: """
-                        (fromDisplay LIKE ? OR participants LIKE ?
-                         OR EXISTS (SELECT 1 FROM message
+        let savedViewsSnapshot = savedViews
+        let pool = db
+
+        threadReloadTask?.cancel()
+        threadReloadTask = Task { [weak self] in
+            let result: [MailThread] = (try? await pool.read { db -> [MailThread] in
+                if !search.isEmpty {
+                    let parsed = SearchQuery.parse(search)
+                    var q = MailThread.all()
+                    if !parsed.text.isEmpty {
+                        let ids = try Row.fetchAll(db, sql: """
+                            SELECT DISTINCT message.threadId FROM message
+                            JOIN message_fts ON message_fts.rowid = message.rowid
+                            WHERE message_fts MATCH ?
+                            """, arguments: [FTS5Pattern(matchingAllPrefixesIn: parsed.text)])
+                            .map { $0["threadId"] as String }
+                        q = q.filter(ids.contains(Column("id")))
+                    }
+                    if let from = parsed.from {
+                        // fromDisplay/participants hold display names, so an email
+                        // query ("from:x@y.com") must also check the raw header.
+                        let pattern = "%\(from)%"
+                        q = q.filter(sql: """
+                            (fromDisplay LIKE ? OR participants LIKE ?
+                             OR EXISTS (SELECT 1 FROM message
+                                        WHERE message.threadId = thread.id
+                                          AND message.fromHeader LIKE ?))
+                            """, arguments: [pattern, pattern, pattern])
+                    }
+                    if let to = parsed.to {
+                        // Recipient headers live on messages, so match via EXISTS.
+                        q = q.filter(sql: """
+                            EXISTS (SELECT 1 FROM message
                                     WHERE message.threadId = thread.id
-                                      AND message.fromHeader LIKE ?))
-                        """, arguments: [pattern, pattern, pattern])
+                                      AND (message.toHeader LIKE ? OR message.ccHeader LIKE ?
+                                           OR message.bccHeader LIKE ?))
+                            """, arguments: ["%\(to)%", "%\(to)%", "%\(to)%"])
+                    }
+                    if let subject = parsed.subject {
+                        q = q.filter(sql: "subject LIKE ?", arguments: ["%\(subject)%"])
+                    }
+                    if let unread = parsed.unread {
+                        q = q.filter(Column("isUnread") == unread)
+                    }
+                    if parsed.starred {
+                        q = q.filter(Column("labelIds").like("%STARRED%"))
+                    }
+                    if let after = parsed.after {
+                        q = q.filter(Column("lastDate") >= after)
+                    }
+                    if let before = parsed.before {
+                        q = q.filter(Column("lastDate") < before)
+                    }
+                    for name in parsed.labels {
+                        // A label name resolves to Gmail label ids (it can exist on
+                        // several accounts); unknown names fall back to the raw
+                        // token uppercased, which covers system labels (STARRED…).
+                        var ids = allLabels
+                            .filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+                            .map(\.gmailLabelId)
+                        if ids.isEmpty { ids = [name.uppercased()] }
+                        let conditions = ids.map { _ in "labelIds LIKE ?" }.joined(separator: " OR ")
+                        q = q.filter(sql: "(\(conditions))",
+                                     arguments: StatementArguments(ids.map { "%\($0)%" }))
+                    }
+                    if parsed.hasAttachment { q = q.filter(Column("hasAttachment") == true) }
+                    if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
+                    return try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
                 }
-                if let to = parsed.to {
-                    // Recipient headers live on messages, so match via EXISTS.
-                    q = q.filter(sql: """
-                        EXISTS (SELECT 1 FROM message
-                                WHERE message.threadId = thread.id
-                                  AND (message.toHeader LIKE ? OR message.ccHeader LIKE ?
-                                       OR message.bccHeader LIKE ?))
-                        """, arguments: ["%\(to)%", "%\(to)%", "%\(to)%"])
+                var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
+                if chips.showArchived || chips.showSent {
+                    // Widen from inbox-only before layering the other chips.
+                    q = MailStore.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
                 }
-                if let subject = parsed.subject {
-                    q = q.filter(sql: "subject LIKE ?", arguments: ["%\(subject)%"])
-                }
-                if let unread = parsed.unread {
-                    q = q.filter(Column("isUnread") == unread)
-                }
-                if parsed.starred {
-                    q = q.filter(Column("labelIds").like("%STARRED%"))
-                }
-                if let after = parsed.after {
-                    q = q.filter(Column("lastDate") >= after)
-                }
-                if let before = parsed.before {
-                    q = q.filter(Column("lastDate") < before)
-                }
-                for name in parsed.labels {
-                    // A label name resolves to Gmail label ids (it can exist on
-                    // several accounts); unknown names fall back to the raw
-                    // token uppercased, which covers system labels (STARRED…).
-                    var ids = allLabels
-                        .filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-                        .map(\.gmailLabelId)
-                    if ids.isEmpty { ids = [name.uppercased()] }
-                    let conditions = ids.map { _ in "labelIds LIKE ?" }.joined(separator: " OR ")
-                    q = q.filter(sql: "(\(conditions))",
-                                 arguments: StatementArguments(ids.map { "%\($0)%" }))
-                }
-                if parsed.hasAttachment { q = q.filter(Column("hasAttachment") == true) }
+                q = MailStore.applyChips(q, chips, keepIds: keepIds)
                 if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                return try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
+                return try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
+            }) ?? []
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self, generation == self.threadReloadGeneration else { return }
+                self.threads = result
+                self.loadAICategories()
+                self.refreshVIPThreadIds()
+                self.refreshCountsAndBadge()
             }
-            guard let self else { return [] }
-            var q = Self.baseQuery(for: view, savedViews: self.savedViews, keepIds: keepIds)
-            if chips.showArchived || chips.showSent {
-                // Widen from inbox-only before layering the other chips.
-                q = Self.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
-            }
-            q = Self.applyChips(q, chips, keepIds: keepIds)
-            if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-            return try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
-        }) ?? []
-        loadAICategories()
-        refreshVIPThreadIds()
-        refreshCountsAndBadge()
+        }
     }
 
     // MARK: - Server-side search
@@ -1014,7 +1079,8 @@ final class MailStore: ObservableObject {
     /// `keepIds` are threads that must stay visible even if they no longer match
     /// the read-state chip (e.g. a thread you just marked read under an
     /// unread-only filter), so the row doesn't vanish under your cursor.
-    static func applyChips(_ query: QueryInterfaceRequest<MailThread>, _ chips: FilterChips,
+    // nonisolated: pure query builder — safe to call from DatabasePool.read.
+    nonisolated static func applyChips(_ query: QueryInterfaceRequest<MailThread>, _ chips: FilterChips,
                            keepIds: [String] = []) -> QueryInterfaceRequest<MailThread> {
         var q = query
         for cat in chips.category.hide {
@@ -1078,7 +1144,7 @@ final class MailStore: ObservableObject {
         return q
     }
 
-    private static func baseQuery(for view: MailboxView, savedViews: [SavedView],
+    nonisolated private static func baseQuery(for view: MailboxView, savedViews: [SavedView],
                                   keepIds: [String] = []) -> QueryInterfaceRequest<MailThread> {
         var q = MailThread.all()
         let now = Date()
@@ -1150,7 +1216,7 @@ final class MailStore: ObservableObject {
         return q
     }
 
-    private static func widen(_ q: QueryInterfaceRequest<MailThread>, for view: MailboxView,
+    nonisolated private static func widen(_ q: QueryInterfaceRequest<MailThread>, for view: MailboxView,
                               archived: Bool, sent: Bool) -> QueryInterfaceRequest<MailThread> {
         // Rebuild without the inbox constraint for views where it applies.
         // "Show archived" widens to everything not trashed; "Show sent" alone
@@ -1369,6 +1435,8 @@ final class MailStore: ObservableObject {
         clients[id] = nil
         reloadAccounts()
         reloadThreads()
+        // Own-address set changed — drop the weight map and re-mine.
+        rebuildContacts(forceFull: true)
     }
 
     // MARK: - Sync
@@ -1737,6 +1805,9 @@ final class MailStore: ObservableObject {
         local(&copy)
         let updated = copy
         try? db.write { db in try updated.save(db) }
+        // Optimistic list update so archive/trash auto-advance still sees the
+        // row leave immediately; async reload reconciles with DB filters next.
+        applyOptimisticThreadUpdate(updated)
         reloadThreads()
         let client = client(for: thread.accountId)
         let gmailThreadId = thread.gmailThreadId
@@ -1746,6 +1817,52 @@ final class MailStore: ObservableObject {
                 await MainActor.run { self.lastError = error.localizedDescription }
                 await self.sync(accountId: thread.accountId)
             }
+        }
+    }
+
+    /// Apply a local mutation to the in-memory list without waiting for the
+    /// async DB reload. Drops the row when it no longer belongs in the current
+    /// view (archive from inbox, trash, etc.) so selection advance works.
+    private func applyOptimisticThreadUpdate(_ updated: MailThread) {
+        guard let idx = threads.firstIndex(where: { $0.id == updated.id }) else { return }
+        if readStateKeepIds.contains(updated.id) {
+            threads[idx] = updated
+            return
+        }
+        if threadLeavesCurrentList(updated) {
+            threads.remove(at: idx)
+        } else {
+            threads[idx] = updated
+        }
+    }
+
+    /// Best-effort visibility check for the common leave-list mutations.
+    /// Async reload is the source of truth for edge-case chip combinations.
+    private func threadLeavesCurrentList(_ t: MailThread) -> Bool {
+        if t.inTrash {
+            if case .trash = selectedView { return false }
+            return true
+        }
+        switch selectedView {
+        case .inbox, .account:
+            if chips.showArchived { return false }
+            if let until = t.snoozeUntil, until > Date() { return true }
+            if !t.inInbox {
+                if chips.showSent && t.labelIds.contains("SENT") { return false }
+                return true
+            }
+            return false
+        case .starred:
+            return !t.isStarred
+        case .snoozed:
+            guard let until = t.snoozeUntil else { return true }
+            return until <= Date()
+        case .trash:
+            return !t.inTrash
+        case .allMail:
+            return false
+        default:
+            return false
         }
     }
 

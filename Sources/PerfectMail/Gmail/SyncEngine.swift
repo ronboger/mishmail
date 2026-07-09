@@ -250,11 +250,15 @@ actor SyncEngine {
                 touchedKeys.insert(threadKey)
             }
         }
-        for id in touched {
-            if let msg = try? await client.getMessage(id: id) {
-                touchedKeys.insert(try await upsert(msg))
-            }
-        }
+        // Parallel download (concurrency 8, same as fetchAll), serial upsert
+        // as each result arrives. getMessage failures are skipped (try?),
+        // matching the prior serial loop.
+        try await Self.withBoundedConcurrency(ids: Array(touched), concurrency: 8,
+                                              fetch: { [client] id in
+            try? await client.getMessage(id: id)
+        }, onValue: { msg in
+            touchedKeys.insert(try await self.upsert(msg))
+        })
 
         // Recompute thread rows for anything affected, exactly once each.
         if !touchedKeys.isEmpty {
@@ -267,6 +271,42 @@ actor SyncEngine {
             try await removeOrphanedThreads()
         }
         return latest
+    }
+
+    // MARK: - Bounded concurrency
+
+    /// Runs `fetch` over `ids` with at most `concurrency` tasks in flight.
+    /// Each non-nil result is handed to `onValue` serially as it arrives
+    /// (never from a concurrent child). Nil from `fetch` means "skip"
+    /// (failed download). Empty `ids` is a no-op. Extracted so tests can
+    /// inject a fetcher and assert peak concurrency + full coverage.
+    static func withBoundedConcurrency<ID: Sendable, Value: Sendable>(
+        ids: [ID],
+        concurrency: Int = 8,
+        fetch: @Sendable @escaping (ID) async -> Value?,
+        onValue: (Value) async throws -> Void
+    ) async rethrows {
+        guard !ids.isEmpty else { return }
+        let limit = max(1, concurrency)
+        try await withThrowingTaskGroup(of: Value?.self) { group in
+            var pending = 0
+            var iterator = ids.makeIterator()
+            func addNext() {
+                if let id = iterator.next() {
+                    group.addTask { await fetch(id) }
+                    pending += 1
+                }
+            }
+            for _ in 0..<min(limit, ids.count) { addNext() }
+            while pending > 0 {
+                let value = try await group.next()!
+                pending -= 1
+                if let value {
+                    try await onValue(value)
+                }
+                addNext()
+            }
+        }
     }
 
     // MARK: - Local writes
