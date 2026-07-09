@@ -13,13 +13,16 @@ minor versions may still change behavior.
 - **HTML CSP tightened** — `base-uri 'none'`, explicit `form-action` /
   `frame-src` / `object-src 'none'`; remote images are HTTPS-only when enabled.
 - **Update verification** — "Update App" downloads the release zip, verifies
-  the embedded app's code signature via Security.framework, then reveals it in
-  Finder; failed checks open the GitHub release page instead.
+  published **SHA-256** (`SHA256SUMS` from `make release`), code signature,
+  **Team ID** continuity, and **notarization** for Developer ID builds, then
+  reveals the app in Finder; failed checks open the GitHub release page.
 - **Remote Ollama opt-in** — non-loopback endpoints need an explicit Settings
   toggle (and HTTPS) before mail content is sent.
-- **Distribution entitlements** — `PerfectMail.Distribution.entitlements` keeps
-  library validation on for Developer ID / notarized builds (ad-hoc Debug still
-  needs the disable for the separately-signed GRDB framework).
+- **Distribution entitlements** — `make release` / `make install` switch to
+  `PerfectMail.Distribution.entitlements` (library validation on) when
+  `Config/Local.xcconfig` sets `DEVELOPMENT_TEAM`.
+- **Risky attachment prompt** — Open warns before launching app/script/installer
+  filenames (still quarantined for Gatekeeper).
 
 ### Added
 - **Slash-trigger snippets** — type `/` in the compose body (Notion Mail-style)

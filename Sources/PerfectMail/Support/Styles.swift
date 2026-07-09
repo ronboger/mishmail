@@ -85,6 +85,20 @@ extension View {
     }
 }
 
+extension ToolbarContent {
+    /// Hide the macOS 26 liquid-glass shared capsule on a toolbar item so
+    /// adjacent controls don't merge into one pill that lights up on scroll.
+    /// No-op on earlier OSes (deployment target is 14).
+    @ToolbarContentBuilder
+    func pmHideSharedBackground() -> some ToolbarContent {
+        if #available(macOS 26.0, *) {
+            self.sharedBackgroundVisibility(.hidden)
+        } else {
+            self
+        }
+    }
+}
+
 /// Notion Mail-style switch: a proper pill, larger than the AppKit default.
 struct NotionSwitchStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {

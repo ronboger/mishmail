@@ -42,4 +42,63 @@ final class UpdateCheckerTests: XCTestCase {
         try? FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         XCTAssertThrowsError(try UpdateChecker.verifyCodeSignature(of: dir))
     }
+
+    func testParseChecksumGNUAndBare() {
+        let gnu = """
+        # comment
+        e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855  PerfectMail-0.2.0.zip
+        deadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef  other.zip
+        """
+        XCTAssertEqual(
+            UpdateChecker.parseChecksum(gnu, assetName: "PerfectMail-0.2.0.zip"),
+            "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+        )
+        // Binary-mode asterisk form
+        let star = "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899 *PerfectMail-0.2.0.zip\n"
+        XCTAssertEqual(
+            UpdateChecker.parseChecksum(star, assetName: "PerfectMail-0.2.0.zip"),
+            "aabbccddeeff00112233445566778899aabbccddeeff00112233445566778899"
+        )
+        let bare = "ccddeeff00112233445566778899aabbccddeeff00112233445566778899aabb\n"
+        XCTAssertEqual(
+            UpdateChecker.parseChecksum(bare, assetName: "anything.zip"),
+            "ccddeeff00112233445566778899aabbccddeeff00112233445566778899aabb"
+        )
+        XCTAssertNil(UpdateChecker.parseChecksum("not-a-hash  file.zip", assetName: "file.zip"))
+    }
+
+    func testPickChecksumAssetPrefersSHA256SUMS() {
+        let names = ["PerfectMail-1.0.0.zip", "SHA256SUMS", "notes.txt"]
+        let urls = names.map { URL(string: "https://example.com/\($0)")! }
+        let picked = UpdateChecker.pickChecksumAsset(from: names, urls: urls,
+                                                     zipName: "PerfectMail-1.0.0.zip")
+        XCTAssertEqual(picked?.lastPathComponent, "SHA256SUMS")
+    }
+
+    func testEvaluateTrustSameBuildAccepted() throws {
+        guard let app = Self.builtAppIfPresent() else {
+            throw XCTSkip("No built app for trust smoke")
+        }
+        // Same binary as both sides (ad-hoc or Apple Development) — personal
+        // release path. Must not require Developer ID notarization.
+        XCTAssertNoThrow(
+            try UpdateChecker.evaluateTrust(updateApp: app, runningApp: app,
+                                            officialRelease: true)
+        )
+    }
+
+    private static func builtAppIfPresent() -> URL? {
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        for rel in [
+            "build/dd.noindex/Build/Products/Debug/PerfectMail Debug.app",
+            "build/dd.noindex/Build/Products/Release/PerfectMail.app",
+        ] {
+            let url = repo.appendingPathComponent(rel)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return nil
+    }
 }

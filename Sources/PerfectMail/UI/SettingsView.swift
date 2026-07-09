@@ -241,7 +241,7 @@ struct UpdatesSettings: View {
                         Text(status).font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text("Update App downloads the release zip, checks the app’s code signature, then reveals it in Finder — drag into Applications to install. If verification fails, the GitHub release page opens instead. Quiet daily checks also surface an update button in the sidebar.")
+                    Text("Update App downloads the release zip, checks SHA-256 (when published), code signature, Team ID, and notarization for Developer ID builds, then reveals the app in Finder — drag into Applications to install. Failed checks open the GitHub release page instead. Quiet daily checks also surface an update button in the sidebar.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {

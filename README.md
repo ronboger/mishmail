@@ -62,8 +62,13 @@ for the reasoning.)
    - Copy the **Client ID** and **Client Secret** (or download the
      `client_secret_*.json`).
 5. Launch PerfectMail → **Settings (Cmd-,) → Google API** → paste both.
-6. Sidebar → **Add Google Account…** → your browser opens → sign in → done.
-   Repeat for each account.
+   (Debug and Release are separate apps with separate Keychains — paste into
+   whichever build you're using. Never commit client secrets; each person brings
+   their own free Desktop client.)
+6. Sidebar → **Add Google Account…** → your browser opens → sign in → the
+   browser redirects to `http://127.0.0.1:<port>/oauth2/callback` → you should
+   see **“Signed in.”** → return to PerfectMail; the account appears. Repeat for
+   each account.
 
 > During sign-in Google shows a **"Google hasn't verified this app"** screen
 > because it's your own unverified test client. That's expected — click
@@ -212,16 +217,23 @@ mail content is sent to a remote HTTPS host.
   policy so crafted mail can't redirect, auto-submit forms, or reach the
   network. Links open in your default browser.
 - **Attachments** written to disk are tagged with the quarantine attribute, so
-  Gatekeeper's first-open checks still apply.
+  Gatekeeper's first-open checks still apply; opening app/script/installer-like
+  filenames asks for confirmation first.
 - **Updates are verified** — "Update App" downloads the release zip, checks the
-  embedded app's code signature, then reveals it in Finder; a failed check
-  opens the GitHub release page instead of handing you an unverified binary.
+  published **SHA-256**, the embedded app's code signature, **Team ID** continuity
+  with the running build, and **notarization** for Developer ID releases, then
+  reveals the app in Finder. A failed check opens the GitHub release page
+  instead of handing you an unverified binary.
 - **App Sandbox** enabled with a minimal entitlement set (network client, the
   transient loopback listener for sign-in, and user-selected file access).
-  Developer ID builds should use `PerfectMail.Distribution.entitlements` so
-  library validation stays on (see [docs/RELEASING.md](docs/RELEASING.md)).
+  `make release` uses `PerfectMail.Distribution.entitlements` (library validation
+  on) whenever `Config/Local.xcconfig` sets a `DEVELOPMENT_TEAM` — see
+  [docs/RELEASING.md](docs/RELEASING.md).
 - **No secret logging**, parameterized SQL throughout, CRLF-folded MIME headers,
   and path-traversal-safe attachment filenames.
+- **No bundled Google secrets** — every user (and every Debug vs Release copy)
+  pastes their own OAuth client in Settings; nothing leaves the machine except
+  calls to Google.
 - Snooze and reminders are local-only (Gmail's API has no snooze); everything
   else — archive, trash, star, read state, send/reply — syncs to Gmail
   immediately.

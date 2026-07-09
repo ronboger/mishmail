@@ -178,6 +178,29 @@ enum MessageParser {
         return (base.isEmpty || base == "." || base == "..") ? "attachment" : base
     }
 
+    /// Extensions that typically launch code / installers when "Open" hands
+    /// them to Launch Services. Used to prompt before opening — not a hard
+    /// block (the user may still need a `.dmg` from someone they trust).
+    private static let riskyExtensions: Set<String> = [
+        "app", "command", "tool", "workflow", "action", "osax", "scptd",
+        "dmg", "pkg", "mpkg", "appimage",
+        "sh", "bash", "zsh", "csh", "ksh", "fish",
+        "command", "js", "jxa", "py", "rb", "pl", "php", "ps1",
+        "exe", "msi", "com", "bat", "cmd", "scr", "jar", "bin",
+        "ipa", "apk",
+    ]
+
+    /// True when the filename looks executable / installer-like, including
+    /// double extensions (`invoice.pdf.app`, `readme.txt.sh`).
+    static func isRiskyAttachmentFilename(_ name: String) -> Bool {
+        let base = safeFilename(name).lowercased()
+        let parts = base.split(separator: ".")
+        guard parts.count >= 2 else { return false }
+        // Any extension segment that is risky (not only the last) — catches
+        // `malware.app.zip` after unzip elsewhere, and `file.pdf.app`.
+        return parts.dropFirst().contains { riskyExtensions.contains(String($0)) }
+    }
+
     /// Splits an address-list header on commas, respecting quoted display
     /// names like `"Boger, Ron" <ron@x.com>`.
     static func splitAddresses(_ header: String) -> [String] {

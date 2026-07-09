@@ -2338,6 +2338,16 @@ final class MailStore: ObservableObject {
     }
 
     func openAttachment(_ attachment: AttachmentRow, message: Message) {
+        if MessageParser.isRiskyAttachmentFilename(attachment.filename) {
+            let alert = NSAlert()
+            alert.messageText = "Open potentially dangerous attachment?"
+            alert.informativeText =
+                "“\(MessageParser.safeFilename(attachment.filename))” looks like an app, script, or installer. Only open it if you trust the sender."
+            alert.alertStyle = .warning
+            alert.addButton(withTitle: "Open")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+        }
         Task {
             do {
                 let url = try await attachmentTempURL(attachment, message: message)

@@ -29,6 +29,16 @@ VERSION = $(shell awk '/MARKETING_VERSION:/ {print $$2}' project.yml)
 DD = build/dd.noindex
 DEBUG_APP = $(DD)/Build/Products/Debug/PerfectMail Debug.app
 RELEASE_APP = $(DD)/Build/Products/Release/PerfectMail.app
+RELEASE_DIR = $(DD)/Build/Products/Release
+ZIP_NAME = PerfectMail-$(VERSION).zip
+# When Config/Local.xcconfig sets a DEVELOPMENT_TEAM, ship with Distribution
+# entitlements (library validation ON). Ad-hoc default keeps the looser file.
+TEAM = $(shell awk -F' *= *' '/^DEVELOPMENT_TEAM/ {print $$2; exit}' Config/Local.xcconfig 2>/dev/null)
+ifneq ($(strip $(TEAM)),)
+RELEASE_SIGN_FLAGS = CODE_SIGN_ENTITLEMENTS=Sources/PerfectMail/PerfectMail.Distribution.entitlements
+else
+RELEASE_SIGN_FLAGS =
+endif
 
 .PHONY: test build run demo install gen hooks release clean
 
@@ -62,24 +72,34 @@ demo: build
 # my machine" verb. Replaces whatever PerfectMail.app is there.
 install: gen
 	xcodebuild build -project $(PROJECT) -scheme PerfectMail -configuration Release \
-		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet
+		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet $(RELEASE_SIGN_FLAGS)
 	rm -rf /Applications/PerfectMail.app
 	ditto "$(RELEASE_APP)" /Applications/PerfectMail.app
 	@echo "Installed PerfectMail.app → /Applications (your daily driver)."
 
-# Build Release, zip the app bundle, and publish it as a GitHub release
-# tagged v<MARKETING_VERSION>. The app's Settings → Updates pane (and the
-# sidebar "Update app" button) pick it up from the GitHub Releases API.
+# Build Release, zip the app bundle, write SHA256SUMS, and publish a GitHub
+# release tagged v<MARKETING_VERSION>. The in-app updater verifies the zip
+# against SHA256SUMS, then the app's code signature / Team ID / notarization.
 # Bump MARKETING_VERSION in project.yml first; requires the gh CLI.
+# When Config/Local.xcconfig has DEVELOPMENT_TEAM, builds with Distribution
+# entitlements (full library validation).
 release: test
+	@if [ -n "$(TEAM)" ]; then \
+		echo "Release signing team $(TEAM) — using PerfectMail.Distribution.entitlements"; \
+	else \
+		echo "No DEVELOPMENT_TEAM in Config/Local.xcconfig — ad-hoc Release (fine for self-update)"; \
+	fi
 	xcodebuild build -project $(PROJECT) -scheme PerfectMail -configuration Release \
-		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet
-	cd $(DD)/Build/Products/Release && \
-		ditto -c -k --keepParent PerfectMail.app PerfectMail-$(VERSION).zip
+		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet $(RELEASE_SIGN_FLAGS)
+	cd $(RELEASE_DIR) && \
+		ditto -c -k --keepParent PerfectMail.app $(ZIP_NAME) && \
+		shasum -a 256 $(ZIP_NAME) > SHA256SUMS && \
+		echo "Checksum:" && cat SHA256SUMS
 	gh release create v$(VERSION) \
-		$(DD)/Build/Products/Release/PerfectMail-$(VERSION).zip \
+		$(RELEASE_DIR)/$(ZIP_NAME) \
+		$(RELEASE_DIR)/SHA256SUMS \
 		--title "PerfectMail $(VERSION)" --generate-notes
-	@echo "Released v$(VERSION) — running apps will offer the update within a day."
+	@echo "Released v$(VERSION) with SHA256SUMS — running apps will offer the update within a day."
 
 # Reclaim all build output — the local ./build tree plus any stray per-project
 # DerivedData caches Xcode may have left in ~/Library.

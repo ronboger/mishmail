@@ -55,12 +55,9 @@ struct ThreadDetailView: View {
         }
         .toolbar {
             // Notion Mail-style left cluster: close the pane, prev/next thread.
-            // Separate ToolbarItems, not a ToolbarItemGroup: on macOS 26 a
-            // group shares one glass capsule, so the whole cluster (plus the
-            // adjacent view icon) rendered as a single pill that lit up
-            // together on any interaction. The ToolbarSpacers on either side
-            // detach the trio from the list column's icon and "Inbox" title
-            // so it reads as its own group instead of one crammed row.
+            // Separate ToolbarItems (not a group) + hidden shared glass on
+            // macOS 26 so they don't merge into one capsule that lights up
+            // when the thread scrolls. Spacers keep the trio off the title.
             if #available(macOS 26.0, *) {
                 ToolbarSpacer(.fixed, placement: .navigation)
             }
@@ -75,6 +72,7 @@ struct ThreadDetailView: View {
                 .focusable(false)
                 .focusEffectDisabled()
             }
+            .pmHideSharedBackground()
             ToolbarItem(placement: .navigation) {
                 Button { store.moveSelection(-1) } label: {
                     Label("Previous", systemImage: "chevron.up")
@@ -83,6 +81,7 @@ struct ThreadDetailView: View {
                 .focusable(false)
                 .focusEffectDisabled()
             }
+            .pmHideSharedBackground()
             ToolbarItem(placement: .navigation) {
                 Button { store.moveSelection(1) } label: {
                     Label("Next", systemImage: "chevron.down")
@@ -91,8 +90,7 @@ struct ThreadDetailView: View {
                 .focusable(false)
                 .focusEffectDisabled()
             }
-            // Detach the close/prev/next trio from the list column's "Inbox"
-            // title so it reads as its own group instead of one crammed row.
+            .pmHideSharedBackground()
             if #available(macOS 26.0, *) {
                 ToolbarSpacer(.fixed, placement: .navigation)
             }

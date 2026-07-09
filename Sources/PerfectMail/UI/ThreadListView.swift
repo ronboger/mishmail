@@ -277,12 +277,14 @@ struct ThreadListView: View {
         .background(Color.notionContent)
         .navigationTitle(store.selectedView.title)
         .toolbar {
-            // The view's colored icon next to its title, like Notion Mail's
-            // red inbox glyph.
+            // Notion-style view glyph next to the title. Shared glass is
+            // hidden so it stays a bare colored icon — no capsule, no
+            // scroll-edge flicker with the detail nav trio.
             ToolbarItem(placement: .navigation) {
                 Image(systemName: store.selectedView.icon)
                     .foregroundStyle(store.selectedView.iconColor)
             }
+            .pmHideSharedBackground()
             // While searching, let the user reach past the local cache to Gmail.
             if !store.committedSearch.trimmingCharacters(in: .whitespaces).isEmpty {
                 ToolbarItem(placement: .automatic) {

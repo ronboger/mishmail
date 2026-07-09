@@ -58,23 +58,28 @@ everyone." This doc is about `make release`.
    ```
 
 4. **Cut the release.** `make release` runs the full test suite first, then
-   builds Release, zips the app, and creates the GitHub release. It will refuse
-   to proceed if tests fail.
+   builds Release, zips the app, writes **SHA256SUMS**, and creates the GitHub
+   release. It will refuse to proceed if tests fail.
    ```sh
    make release
    ```
    This runs, in order:
    - `make test` (gate — must pass)
-   - `xcodebuild ... -configuration Release` → `build/Build/Products/Release/PerfectMail.app`
+   - `xcodebuild ... -configuration Release` (with Distribution entitlements
+     when `Config/Local.xcconfig` defines `DEVELOPMENT_TEAM`)
    - `ditto -c -k --keepParent PerfectMail.app PerfectMail-<version>.zip`
-   - `gh release create v<version> …PerfectMail-<version>.zip --generate-notes`
+   - `shasum -a 256 … > SHA256SUMS`
+   - `gh release create v<version> PerfectMail-<version>.zip SHA256SUMS --generate-notes`
 
 5. **Verify.**
    ```sh
-   gh release view v0.2.0 --web     # opens the release; confirm the zip is attached
+   gh release view v0.2.0 --web     # zip + SHA256SUMS both attached
+   cat build/dd.noindex/Build/Products/Release/SHA256SUMS
    ```
    Running apps pick it up within ~a day, or immediately via **Settings →
-   Updates → Check for Updates**.
+   Updates → Check for Updates**. The updater downloads the zip, checks
+   SHA-256 against `SHA256SUMS`, then verifies code signature / Team ID /
+   notarization before revealing the app in Finder.
 
 ## Tag & version rules
 
@@ -96,24 +101,26 @@ users. To ship a binary anyone can open:
    CODE_SIGN_STYLE = Manual
    DEVELOPMENT_TEAM = XXXXXXXXXX
    CODE_SIGN_IDENTITY = Developer ID Application
-   // Full library validation (no disable-library-validation):
-   CODE_SIGN_ENTITLEMENTS = Sources/PerfectMail/PerfectMail.Distribution.entitlements
    ```
-   Keep `ENABLE_HARDENED_RUNTIME` on (it already is in `project.yml`). The
-   default `PerfectMail.entitlements` disables library validation so ad-hoc
-   Debug/CI builds can load the separately-signed GRDB framework; distribution
-   builds re-sign GRDB with your team and must use the Distribution entitlements
-   so the shipping binary stays fully hardened.
-2. Build Release, then **notarize** the zip before (or instead of) attaching it:
+   Keep `ENABLE_HARDENED_RUNTIME` on (it already is in `project.yml`).
+   **`make release` / `make install` automatically pass
+   `CODE_SIGN_ENTITLEMENTS=…/PerfectMail.Distribution.entitlements`** whenever
+   `DEVELOPMENT_TEAM` is set, so library validation stays ON for shipping
+   builds. (Ad-hoc CI/Debug still use the looser entitlements so the
+   separately-signed GRDB framework can load.)
+2. **Notarize** before (or right after) `make release` so the updater's
+   notarization check passes for Developer ID builds:
    ```sh
-   xcrun notarytool submit PerfectMail-<version>.zip \
+   xcrun notarytool submit build/dd.noindex/Build/Products/Release/PerfectMail-<version>.zip \
      --apple-id <you@example.com> --team-id XXXXXXXXXX --wait
-   xcrun stapler staple build/Build/Products/Release/PerfectMail.app
+   xcrun stapler staple build/dd.noindex/Build/Products/Release/PerfectMail.app
    ```
-   Re-zip after stapling if you notarized the app rather than the zip.
+   Re-zip + regenerate `SHA256SUMS` after stapling if you staple the app rather
+   than the zip, then attach both assets to the GitHub release.
 
-Each user still needs their own Google OAuth client (see the README), so
-building from source remains a first-class path regardless of signing.
+Each user still needs their own Google OAuth client (see the README) — no
+client secrets are ever committed. Building from source remains a first-class
+path regardless of signing.
 
 ## Troubleshooting
 
