@@ -94,7 +94,7 @@ struct ThreadDetailView: View {
                     Label("Star", systemImage: thread.isStarred ? "star.fill" : "star")
                         .foregroundStyle(thread.isStarred ? .yellow : .primary)
                 }
-                Button { store.showLabelPicker = true } label: {
+                Button { store.openLabelPicker() } label: {
                     Label("Label", systemImage: "tag")
                 }
                 Button(role: .destructive) { store.trash(thread) } label: {
@@ -186,7 +186,7 @@ struct ThreadDetailView: View {
                                 in: RoundedRectangle(cornerRadius: 5))
                 }
                 Button {
-                    store.showLabelPicker = true
+                    store.openLabelPicker()
                 } label: {
                     Text("Add category")
                         .font(.system(size: 12 * fontScale))

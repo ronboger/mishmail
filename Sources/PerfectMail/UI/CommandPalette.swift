@@ -93,7 +93,7 @@ struct CommandPalette: View {
                         s.composeRequest = .init(replyTo: last)
                     }
                 },
-                Command(id: "act.label", title: "Label Conversation…", icon: "tag") { $0.showLabelPicker = true },
+                Command(id: "act.label", title: "Label Conversation…", icon: "tag") { $0.openLabelPicker() },
             ])
         }
         let builtins: [MailboxView] = [.inbox, .promotions, .social, .starred, .snoozed,

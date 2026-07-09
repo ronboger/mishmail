@@ -186,6 +186,27 @@ struct FilterChips: Equatable, Codable {
     }
 }
 
+/// Per-keystroke label picker state, split out of MailStore so typing and
+/// arrow keys only re-render the picker — the rest of the window observes
+/// MailStore and must not churn on every character.
+@MainActor
+final class LabelPickerState: ObservableObject {
+    // The filter text lives here (not @State in the view) so the window key
+    // monitor can route typed characters in while the text field is still
+    // winning the focus race — otherwise a fast second keystroke falls
+    // through to the thread list's type-select.
+    @Published var query = "" {
+        didSet { if query != oldValue { navigated = false } }
+    }
+    // Arrow-key highlight. Driven by the window-level key monitor (the
+    // picker's text field eats arrow events before SwiftUI's onKeyPress sees
+    // them); the view clamps it to the filtered list.
+    @Published var highlight = 0
+    // True once arrows moved the highlight; space then toggles the
+    // highlighted label instead of typing into the filter. Typing resets it.
+    var navigated = false
+}
+
 @MainActor
 final class MailStore: ObservableObject {
     @Published var accounts: [Account] = []
@@ -213,7 +234,7 @@ final class MailStore: ObservableObject {
     /// wide command-K-style results panel over the message list.
     @Published var searchActive = false
     /// ↑/↓ highlight in the search dropdown (the panel clamps to its rows,
-    /// same pattern as labelPickerHighlight).
+    /// same pattern as the label picker's highlight).
     @Published var searchHighlight = 0
     /// Bumped by Enter while the dropdown is open; the panel runs the
     /// highlighted row.
@@ -293,20 +314,20 @@ final class MailStore: ObservableObject {
     @Published var showLabelOrganizer = false
     @Published var snoozingThread: MailThread?   // custom snooze date sheet
     @Published var confirmingDraftDelete: MailThread?   // delete-draft confirmation alert
-    // Arrow-key highlight for the label picker. Driven by the window-level
-    // key monitor (the picker's text field eats arrow events before SwiftUI's
-    // onKeyPress sees them); the view clamps it to the filtered list.
-    @Published var labelPickerHighlight = 0
-    // The picker's filter text lives here (not @State in the view) so the key
-    // monitor can route typed characters in while the text field is still
-    // winning the focus race — otherwise a fast second keystroke falls
-    // through to the thread list's type-select.
-    @Published var labelPickerQuery = "" {
-        didSet { if labelPickerQuery != oldValue { labelPickerNavigated = false } }
+    // Per-keystroke picker state lives in its own object (constant reference,
+    // so mutations don't fire MailStore.objectWillChange) — otherwise every
+    // typed character re-renders the whole window, not just the picker.
+    let labelPicker = LabelPickerState()
+
+    /// Open the label picker with fresh state — every entry point (shortcut,
+    /// command palette, toolbar/"Add category") must go through here so a
+    /// stale query/highlight from the last use never leaks in.
+    func openLabelPicker() {
+        labelPicker.query = ""
+        labelPicker.highlight = 0
+        labelPicker.navigated = false
+        showLabelPicker = true
     }
-    // True once arrows moved the picker highlight; space then toggles the
-    // highlighted label instead of typing into the filter. Typing resets it.
-    var labelPickerNavigated = false
     @Published var showCommandPalette = false
     @Published var showFilterMenu = false   // "+ Filter" popover (Ctrl-F)
     @Published var unreadCounts: [String: Int] = [:]   // sidebar badges
@@ -1545,12 +1566,7 @@ final class MailStore: ObservableObject {
         case .forward: if let t = selectedThread {
                            composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, forward: true)
                        }
-        case .label: if selectedThread != nil {
-                         labelPickerHighlight = 0
-                         labelPickerQuery = ""
-                         labelPickerNavigated = false
-                         showLabelPicker = true
-                     }
+        case .label: if selectedThread != nil { openLabelPicker() }
         case .undo: if let undo = undoAction { undo.undo() }
         case .compose: composeRequest = ComposeRequest(replyTo: nil)
         }
@@ -1576,13 +1592,13 @@ final class MailStore: ObservableObject {
     /// locale-aware case/diacritic-insensitive comparison.
     func labelPickerLabels(for thread: MailThread) -> [LabelRow] {
         userLabels(forAccount: thread.accountId)
-            .filter { LabelSearch.matches($0.name, query: labelPickerQuery) }
+            .filter { LabelSearch.matches($0.name, query: labelPicker.query) }
     }
 
     /// The "Create <query>" row's label name: the trimmed query, when it
     /// wouldn't duplicate an existing label on the thread's account.
     func labelPickerCreateName(for thread: MailThread) -> String? {
-        let name = labelPickerQuery.trimmingCharacters(in: .whitespaces)
+        let name = labelPicker.query.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return nil }
         let exists = userLabels(forAccount: thread.accountId)
             .contains { $0.name.compare(name, options: [.caseInsensitive, .diacriticInsensitive]) == .orderedSame }
@@ -1605,10 +1621,10 @@ final class MailStore: ObservableObject {
                                      color: l.color?.backgroundColor).save(db)
                     }
                     self.reloadAccounts()
-                    self.labelPickerQuery = ""
+                    self.labelPicker.query = ""
                     if let idx = self.userLabels(forAccount: accountId)
                         .firstIndex(where: { $0.gmailLabelId == l.id }) {
-                        self.labelPickerHighlight = idx
+                        self.labelPicker.highlight = idx
                     }
                     self.toggleLabel(thread, labelId: l.id)
                 }
@@ -1621,7 +1637,7 @@ final class MailStore: ObservableObject {
     /// When the query matches a label that only exists on a *different*
     /// account, name it so the miss isn't silent (labels apply per account).
     func labelPickerOtherAccountMatch(excluding accountId: String) -> LabelRow? {
-        guard !labelPickerQuery.trimmingCharacters(in: .whitespaces).isEmpty,
+        guard !labelPicker.query.trimmingCharacters(in: .whitespaces).isEmpty,
               accounts.count > 1 else { return nil }
         let localNames = Set(userLabels(forAccount: accountId).map { $0.name.lowercased() })
         return labelsByAccount
@@ -1629,7 +1645,7 @@ final class MailStore: ObservableObject {
             .values.flatMap { $0 }
             .first { label in
                 !localNames.contains(label.name.lowercased())
-                    && LabelSearch.matches(label.name, query: labelPickerQuery)
+                    && LabelSearch.matches(label.name, query: labelPicker.query)
             }
     }
 

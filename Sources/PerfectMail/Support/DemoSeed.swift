@@ -79,6 +79,10 @@ enum DemoSeed {
         DemoLabel(id: "Label_work", name: "Work", color: "#6E56CF", order: 0),
         DemoLabel(id: "Label_research", name: "Research", color: "#30A46C", order: 1),
         DemoLabel(id: "Label_personal", name: "Personal", color: "#E5484D", order: 2),
+        // Near-duplicate names (case + wording) so label-picker search can be
+        // exercised: typing "inv" must surface both of these.
+        DemoLabel(id: "Label_investment", name: "Investment Updates", color: "#0091FF", order: 3),
+        DemoLabel(id: "Label_investor", name: "investor updates", color: "#F76B15", order: 4),
     ]
 
     private static func date(_ hoursAgo: Double) -> Date {
@@ -178,7 +182,7 @@ enum DemoSeed {
             subject: "Your invoice from the App Store",
             snippet: "Invoice for your recent purchase. Total: $2.99.",
             body: "Your invoice from the App Store.\n\nTotal: $2.99.",
-            hoursAgo: 44, unread: false, attachment: true)
+            hoursAgo: 44, unread: false, attachment: true, extraLabels: ["Label_investment"])
 
         add("t10", from: "Jordan Lee <jordan@example.com>",
             subject: "Dinner Saturday?",

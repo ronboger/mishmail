@@ -5,12 +5,17 @@ import SwiftUI
 /// (Space only toggles after arrow navigation; while typing it stays a
 /// literal space so multi-word label names remain searchable.)
 ///
-/// The highlight index lives in MailStore and is driven by the window-level
-/// key monitor in ContentView — the text field's field editor consumes arrow
-/// key events before SwiftUI's onKeyPress ever sees them, so handling arrows
-/// here doesn't work while the field is focused.
+/// The highlight index lives in LabelPickerState and is driven by the
+/// window-level key monitor in ContentView — the text field's field editor
+/// consumes arrow and Return events before SwiftUI's onKeyPress ever sees
+/// them, so handling them here doesn't work while the field is focused.
+/// (That's also why there's no .onSubmit: Return is committed by the
+/// monitor, which sees the event first regardless of focus.)
 struct LabelPicker: View {
     @EnvironmentObject var store: MailStore
+    // Observed separately from MailStore so per-keystroke query/highlight
+    // changes re-render only this view, not the whole window.
+    @ObservedObject var picker: LabelPickerState
     @FocusState private var focused: Bool
 
     var body: some View {
@@ -25,21 +30,14 @@ struct LabelPicker: View {
                 // with the same up/down highlight.
                 let createName = store.labelPickerCreateName(for: thread)
                 let rowCount = labels.count + (createName != nil ? 1 : 0)
-                let highlighted = min(store.labelPickerHighlight, max(rowCount - 1, 0))
+                let highlighted = min(picker.highlight, max(rowCount - 1, 0))
                 VStack(spacing: 0) {
-                    TextField("Label as…", text: $store.labelPickerQuery)
+                    TextField("Label as…", text: $picker.query)
                         .textFieldStyle(.plain)
                         .font(.system(size: 15))
                         .padding(12)
                         .focused($focused)
-                        .onSubmit {
-                            if let label = labels[safe: highlighted] {
-                                store.toggleLabel(thread, labelId: label.gmailLabelId)
-                            } else if let createName {
-                                store.createLabelAndApply(name: createName, thread: thread)
-                            }
-                        }
-                        .onChange(of: store.labelPickerQuery) { store.labelPickerHighlight = 0 }
+                        .onChange(of: picker.query) { picker.highlight = 0 }
                     if store.accounts.count > 1 {
                         Text(thread.accountId)
                             .font(.caption).foregroundStyle(.secondary)
@@ -64,7 +62,7 @@ struct LabelPicker: View {
                                     .background(idx == highlighted ? Color.notionAccent.opacity(0.18) : .clear)
                                     .contentShape(Rectangle())
                                     .onTapGesture { store.toggleLabel(thread, labelId: label.gmailLabelId) }
-                                    .onHover { if $0 { store.labelPickerHighlight = idx } }
+                                    .onHover { if $0 { picker.highlight = idx } }
                                     .id(idx)
                                 }
                                 if let createName {
@@ -78,7 +76,7 @@ struct LabelPicker: View {
                                     .background(highlighted == labels.count ? Color.notionAccent.opacity(0.18) : .clear)
                                     .contentShape(Rectangle())
                                     .onTapGesture { store.createLabelAndApply(name: createName, thread: thread) }
-                                    .onHover { if $0 { store.labelPickerHighlight = labels.count } }
+                                    .onHover { if $0 { picker.highlight = labels.count } }
                                     .id(labels.count)
                                 }
                                 if labels.isEmpty, createName == nil {
@@ -97,12 +95,12 @@ struct LabelPicker: View {
                             }
                         }
                         .frame(maxHeight: 260)
-                        .onChange(of: store.labelPickerHighlight) {
+                        .onChange(of: picker.highlight) {
                             // Keep the monitor-driven index in bounds and visible.
-                            if store.labelPickerHighlight > max(rowCount - 1, 0) {
-                                store.labelPickerHighlight = max(rowCount - 1, 0)
+                            if picker.highlight > max(rowCount - 1, 0) {
+                                picker.highlight = max(rowCount - 1, 0)
                             }
-                            proxy.scrollTo(store.labelPickerHighlight, anchor: .center)
+                            proxy.scrollTo(picker.highlight, anchor: .center)
                         }
                     }
                     Divider()
@@ -123,6 +121,17 @@ struct LabelPicker: View {
                 .shadow(radius: 24)
                 .padding(.top, 130)
                 .onAppear { focused = true }
+                .onChange(of: focused) {
+                    // When the field finally wins focus, macOS selects all —
+                    // the next keystroke would replace text the key monitor
+                    // already routed into the query. Park the caret at the end.
+                    guard focused, !picker.query.isEmpty else { return }
+                    DispatchQueue.main.async {
+                        if let editor = NSApp.keyWindow?.fieldEditor(false, for: nil) as? NSTextView {
+                            editor.selectedRange = NSRange(location: (editor.string as NSString).length, length: 0)
+                        }
+                    }
+                }
             }
         }
     }
