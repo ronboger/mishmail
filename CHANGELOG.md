@@ -6,6 +6,8 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-07-09
+
 ### Security
 - **OAuth loopback hardening** — 5-minute timeout tears down the catcher if
   sign-in is abandoned; only `/oauth2/callback` (and bare `/`) is accepted;
@@ -97,6 +99,27 @@ minor versions may still change behavior.
 - OAuth: surfaces Google's actual error (e.g. `access_denied`) instead of a
   generic "malformed redirect".
 - **Hardened Runtime** is enabled (engages when signed with a real identity).
+- **Per-view ephemeral WKWebView store** — HTML email views no longer share a
+  single data store; each new view gets its own non-persistent store (JS still
+  off), so remote-image cookies/cache cannot bleed across messages. Recycled
+  views clear the DOM before re-use.
+
+### Performance
+- **Lazy message bodies** — the reading pane opens on headers only and hydrates
+  a body when its card expands (last message always hydrated). AI summary still
+  pulls full bodies for the whole thread.
+- **Label-only Gmail history** — label add/remove on already-cached messages
+  applies as a local delta (one write transaction per batch) instead of a full
+  `getMessage` download; unknown local messages still full-fetch.
+- **Thread denorm columns** (schema v16) — `inSent` / `inDrafts` /
+  `inPromotions` / `inSocial` / `fromEmail` keep sidebar counts, mailbox
+  filters, and VIP/blocklist short-circuits off the main-thread list path.
+  VIP and blocklist still match *any* message From (denorm is a positive
+  short-circuit only), so a reply cannot drop Priority or skip a block.
+- **Parallel multi-account sync** — each account's `SyncEngine` runs in its own
+  task; MainActor reloads (threads, blocklist, contacts) run once at the end.
+- **FTS trim** (schema v17) — `message_fts` indexes subject + fromHeader only;
+  body search falls back to server search. Prefix indexes kept.
 
 ### Packaging / open source
 - Added `LICENSE` (MIT), `CONTRIBUTING.md`, `SECURITY.md`, this changelog, and a
