@@ -72,6 +72,29 @@ struct ComposeView: View {
         quotedTail.isEmpty ? body_ : body_ + "\n\n" + quotedTail
     }
 
+    /// While the quote is collapsed, size the body editor to the authored
+    /// text so a normal reply (greeting + a few lines + sign-off) fits
+    /// without internal scroll — the "…" pill stays just under the text
+    /// instead of clipping into it. Cap high enough for longer drafts so
+    /// the card footer stays on-screen; floor so an empty reply still has
+    /// a usable writing surface.
+    private var bodyEditorMaxHeight: CGFloat {
+        guard !quotedTail.isEmpty else { return .infinity }
+        // 14pt body font + 5pt lineSpacing ≈ 19pt per line; +16 for the
+        // editor's top/bottom padding around the first/last fragment.
+        let lineHeight: CGFloat = 19
+        // Card is 620pt wide with ~14pt chrome; ~72 chars fit at 14pt.
+        let charsPerLine = 72
+        var visualLines: CGFloat = 0
+        for line in body_.components(separatedBy: "\n") {
+            let len = max(line.count, 1)
+            visualLines += CGFloat((len + charsPerLine - 1) / charsPerLine)
+        }
+        if visualLines < 1 { visualLines = 1 }
+        let contentHeight = 16 + visualLines * lineHeight
+        return min(max(contentHeight, 120), 280)
+    }
+
     /// Focuses the body editor. Setting the FocusState synchronously in
     /// onAppear fires before the TextEditor is ready and gets dropped —
     /// same trick as AddressField's autoFocus, delayed a beat.
@@ -308,9 +331,10 @@ struct ComposeView: View {
                 // body text lines up with the Subject/From/To column.
                 .padding(.horizontal, -5)
                 .padding(.bottom, 6)
-                // While the quote is collapsed, don't let the editor swallow
-                // the card — keeps the "…" pill near the text, not the footer.
-                .frame(minHeight: 120, maxHeight: quotedTail.isEmpty ? .infinity : 160)
+                // Grow with authored content while the quote is collapsed so
+                // short replies don't scroll under the "…" pill; see
+                // bodyEditorMaxHeight.
+                .frame(minHeight: 120, maxHeight: bodyEditorMaxHeight)
                 .onChange(of: body_) {
                     slashSelection = 0
                     if slashToken == nil { slashDismissed = false }
