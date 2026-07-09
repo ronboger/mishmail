@@ -174,6 +174,11 @@ actor SyncEngine {
     /// Downloads messages matching `query` that aren't already cached.
     /// Returns the set of thread keys touched, so callers can batch
     /// re-derivation instead of recomputing every thread in the account.
+    ///
+    /// Network: bounded concurrent `getMessage` (8). Writes: buffered and
+    /// committed in chunks of `writeChunkSize` (one SQLCipher transaction per
+    /// chunk). A failure mid-chunk rolls back that chunk only; earlier chunks
+    /// stay committed. Progress reports download totals periodically per page.
     @discardableResult
     private func fetchAll(query: String?, limit: Int,
                           progress: (@Sendable (String) -> Void)?) async throws -> Set<String> {
@@ -182,6 +187,8 @@ actor SyncEngine {
                                     arguments: [accountId]))
         }
         var touchedKeys = Set<String>()
+        var writeBuffer: [PendingUpsert] = []
+        writeBuffer.reserveCapacity(Self.writeChunkSize)
         var pageToken: String?
         var listed = 0
         var fetched = 0
@@ -202,7 +209,11 @@ actor SyncEngine {
                 while pending > 0 {
                     let msg = try await group.next()!
                     pending -= 1
-                    touchedKeys.insert(try await self.upsert(msg))
+                    let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
+                    writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
+                    if writeBuffer.count >= Self.writeChunkSize {
+                        try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                    }
                     addNext()
                 }
             }
@@ -210,6 +221,7 @@ actor SyncEngine {
             if fetched > 0 { progress?("Downloaded \(fetched) messages…") }
             pageToken = page.nextPageToken
         } while pageToken != nil && listed < limit
+        try await flushUpserts(&writeBuffer, into: &touchedKeys)
         return touchedKeys
     }
 
@@ -296,15 +308,23 @@ actor SyncEngine {
             for id in missing { fullFetch.insert(id) }
         }
 
-        // Parallel download (concurrency 8, same as fetchAll), serial upsert
-        // as each result arrives. getMessage failures are skipped (try?),
-        // matching the prior serial loop.
+        // Parallel download (concurrency 8, same as fetchAll); buffer writes
+        // into chunks so SQLCipher transaction overhead does not dominate.
+        // getMessage failures are skipped (try?), matching the prior loop.
+        // Failure mid-chunk rolls back that chunk only (earlier chunks stick).
+        var writeBuffer: [PendingUpsert] = []
+        writeBuffer.reserveCapacity(Self.writeChunkSize)
         try await Self.withBoundedConcurrency(ids: Array(fullFetch), concurrency: 8,
                                               fetch: { [client] id in
             try? await client.getMessage(id: id)
-        }, onValue: { msg in
-            touchedKeys.insert(try await self.upsert(msg))
+        }, onValue: { [accountId] msg in
+            let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
+            writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
+            if writeBuffer.count >= Self.writeChunkSize {
+                try await self.flushUpserts(&writeBuffer, into: &touchedKeys)
+            }
         })
+        try await flushUpserts(&writeBuffer, into: &touchedKeys)
 
         // Recompute thread rows for anything affected, exactly once each.
         if !touchedKeys.isEmpty {
@@ -368,19 +388,50 @@ actor SyncEngine {
 
     // MARK: - Local writes
 
-    /// Saves a message (and its attachments) locally. Does NOT derive the
-    /// thread row — callers batch that via `deriveThreads(for:)` once all
-    /// messages in the sync pass have been upserted. Returns the message's
-    /// thread key so callers can accumulate the affected set.
+    /// Messages per write transaction on backfill / full-fetch paths.
+    /// Tuned to amortize SQLCipher commit cost without holding huge buffers.
+    static let writeChunkSize = 32
+
+    /// Parsed message + attachment rows ready for a batched local write.
+    struct PendingUpsert {
+        let message: Message
+        let attachments: [AttachmentRow]
+    }
+
+    /// Writes a batch of messages (and attachments) in the caller's open
+    /// transaction. Does NOT derive thread rows — callers batch that via
+    /// `deriveThreads(for:)` once all messages in the sync pass are upserted.
+    ///
+    /// **Failure behavior:** if any row fails, the whole chunk rolls back with
+    /// the transaction (earlier committed chunks are unaffected). Safe for
+    /// retry of the failed chunk.
+    ///
+    /// Returns the set of thread keys touched. Empty `items` is a no-op.
     @discardableResult
-    private func upsert(_ g: GMessage) async throws -> String {
-        let (message, attachments) = MessageParser.parse(g, accountId: accountId)
-        try await db.write { db in
-            try message.save(db)
-            try AttachmentRow.filter(Column("messageId") == message.id).deleteAll(db)
-            for var att in attachments { try att.insert(db) }
+    static func upsertPending(_ db: Database, items: [PendingUpsert]) throws -> Set<String> {
+        var keys = Set<String>()
+        for item in items {
+            try item.message.save(db)
+            try AttachmentRow.filter(Column("messageId") == item.message.id).deleteAll(db)
+            for att in item.attachments {
+                try att.insert(db)
+            }
+            keys.insert(item.message.threadId)
         }
-        return message.threadId
+        return keys
+    }
+
+    /// Commits `items` in one write transaction and unions thread keys into
+    /// `touchedKeys`, then clears the buffer.
+    private func flushUpserts(_ items: inout [PendingUpsert],
+                              into touchedKeys: inout Set<String>) async throws {
+        guard !items.isEmpty else { return }
+        let batch = items  // copy: escaping write closure cannot capture inout
+        let keys = try await db.write { db in
+            try Self.upsertPending(db, items: batch)
+        }
+        touchedKeys.formUnion(keys)
+        items.removeAll(keepingCapacity: true)
     }
 
     /// Re-derives exactly the threads named by `keys` — once each — in a
