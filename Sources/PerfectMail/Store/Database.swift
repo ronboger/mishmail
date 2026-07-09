@@ -579,6 +579,52 @@ final class AppDatabase {
                 t.prefixes = [2, 3]
             }
         }
+        // Composite indexes for hot list + badge queries at scale. Each index
+        // matches a real filter in MailStore.baseQuery / fetchSidebarCounts
+        // (and the usual ORDER BY lastDate DESC on list reloads). Single-column
+        // indexes on inInbox / lastDate / accountId already exist from v1;
+        // these multi-column indexes reduce page scans under SQLCipher when
+        // filtering denorm flags + inTrash together.
+        m.registerMigration("v18") { db in
+            // Inbox list + badge: inInbox=1 AND inTrash=0 ORDER BY lastDate DESC
+            // (baseQuery .inbox / .account; fetchSidebarCounts inbox/badge CASEs).
+            try db.create(
+                index: "thread_on_inInbox_inTrash_lastDate",
+                on: "thread",
+                columns: ["inInbox", "inTrash", "lastDate"])
+            // Drafts list + drafts sidebar count: inDrafts=1 AND inTrash=0.
+            try db.create(
+                index: "thread_on_inDrafts_inTrash",
+                on: "thread",
+                columns: ["inDrafts", "inTrash"])
+            // Sent list: inSent=1 AND inTrash=0.
+            try db.create(
+                index: "thread_on_inSent_inTrash",
+                on: "thread",
+                columns: ["inSent", "inTrash"])
+            // Promotions list + count: inPromotions=1 AND inTrash=0.
+            try db.create(
+                index: "thread_on_inPromotions_inTrash",
+                on: "thread",
+                columns: ["inPromotions", "inTrash"])
+            // Social list + count: inSocial=1 AND inTrash=0.
+            try db.create(
+                index: "thread_on_inSocial_inTrash",
+                on: "thread",
+                columns: ["inSocial", "inTrash"])
+            // Starred list + count: isStarred=1 AND inTrash=0.
+            try db.create(
+                index: "thread_on_isStarred_inTrash",
+                on: "thread",
+                columns: ["isStarred", "inTrash"])
+            // Account-scoped lists (ORDER BY lastDate) and multi-account badge
+            // CASE WHEN accountId = ?. accountId alone is indexed from v1;
+            // pairing with lastDate covers the common ORDER BY without a sort.
+            try db.create(
+                index: "thread_on_accountId_lastDate",
+                on: "thread",
+                columns: ["accountId", "lastDate"])
+        }
         return m
     }
 }

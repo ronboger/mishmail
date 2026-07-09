@@ -27,6 +27,21 @@ final class DatabaseMigrationTests: XCTestCase {
                 "SELECT sql FROM sqlite_master WHERE name = 'message_fts'") ?? ""
             XCTAssertFalse(ftsSQL.lowercased().contains("bodytext"),
                            "v17 FTS must omit bodyText")
+            // v18 composite indexes for hot list / badge queries.
+            for name in [
+                "thread_on_inInbox_inTrash_lastDate",
+                "thread_on_inDrafts_inTrash",
+                "thread_on_inSent_inTrash",
+                "thread_on_inPromotions_inTrash",
+                "thread_on_inSocial_inTrash",
+                "thread_on_isStarred_inTrash",
+                "thread_on_accountId_lastDate",
+            ] {
+                let exists = try Bool.fetchOne(db, sql:
+                    "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+                    arguments: [name]) ?? false
+                XCTAssertTrue(exists, "v18 must create index \(name)")
+            }
         }
     }
 
@@ -340,5 +355,49 @@ final class DatabaseMigrationTests: XCTestCase {
                 "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'quick'") ?? 0
             XCTAssertEqual(body, 0, "body terms must not be indexed after v17")
         }
+    }
+
+    /// v18 adds composite indexes for hot mailbox list + badge filters.
+    /// Applies cleanly on a pre-seeded DB and leaves existing rows intact.
+    func testUpgradeToV18AddsCompositeThreadIndexes() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v17")
+        try q.write { db in
+            try db.execute(sql: "INSERT INTO account (id, displayName, senderName) VALUES ('ron@x.com', 'P', '')")
+            try db.execute(sql: """
+                INSERT INTO thread (id, accountId, gmailThreadId, subject, snippet, fromDisplay,
+                    lastDate, isUnread, isStarred, inInbox, inTrash, labelIds, participants,
+                    messageCount, hasAttachment, inSent, inDrafts, inPromotions, inSocial, fromEmail)
+                VALUES
+                ('ron@x.com:t1', 'ron@x.com', 't1', 's', 'sn', 'Jane',
+                 '2026-01-02 00:00:00', 1, 0, 1, 0, 'INBOX', 'Jane', 1, 0, 0, 0, 0, 0, 'jane@y.com')
+                """)
+        }
+        try AppDatabase.migrator.migrate(q)
+
+        let indexNames = try q.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT name FROM sqlite_master
+                WHERE type = 'index' AND tbl_name = 'thread' AND name LIKE 'thread_on_%'
+                ORDER BY name
+                """)
+        }
+        let expected = [
+            "thread_on_accountId_lastDate",
+            "thread_on_inDrafts_inTrash",
+            "thread_on_inInbox_inTrash_lastDate",
+            "thread_on_inPromotions_inTrash",
+            "thread_on_inSent_inTrash",
+            "thread_on_inSocial_inTrash",
+            "thread_on_isStarred_inTrash",
+        ]
+        for name in expected {
+            XCTAssertTrue(indexNames.contains(name), "missing index \(name); got \(indexNames)")
+        }
+
+        // Pre-seeded row survives the index-only migration.
+        let thread = try q.read { try MailThread.fetchOne($0, key: "ron@x.com:t1") }
+        XCTAssertEqual(thread?.fromEmail, "jane@y.com")
+        XCTAssertEqual(thread?.inInbox, true)
     }
 }
