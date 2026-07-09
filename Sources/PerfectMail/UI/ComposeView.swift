@@ -15,7 +15,11 @@ struct ComposeView: View {
     /// The Gmail draft being edited, if any.
     private var editingDraft: Message? { request.editDraft }
 
-    @State private var fromAccount: String = ""
+    /// Selected From identity email (primary or send-as). The API mailbox is
+    /// derived from this identity — never switch GmailClient independently.
+    @State private var fromEmail: String = ""
+    /// OAuth mailbox that owns `fromEmail` (and any reply threadId).
+    @State private var fromAccountId: String = ""
     @State private var toTokens: [String] = []
     @State private var toDraft = ""
     @State private var ccTokens: [String] = []
@@ -141,8 +145,9 @@ struct ComposeView: View {
             // the re-saved draft would silently drop them.
             let pendingSource = loadingAttachments
                 ? (editingDraft ?? (request.forward ? original : nil)) : nil
-            let (from, to, cc, bcc, subj, body, old) =
-                (fromAccount, toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
+            let (apiAccount, identity, to, cc, bcc, subj, body, old) =
+                (fromAccountId, fromEmail,
+                 toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
                  bccTokens.joined(separator: ", "), subject, fullBody, editingDraft)
             // Like the send path, a forward's original rides along so the
             // draft keeps its HTML formatting (it won't thread the draft).
@@ -152,7 +157,8 @@ struct ComposeView: View {
                 if let source = pendingSource {
                     atts = ((try? await store.loadAttachments(for: source)) ?? []) + atts
                 }
-                await store.saveDraft(from: from, to: to, cc: cc, bcc: bcc, subject: subj,
+                await store.saveDraft(from: apiAccount, fromEmail: identity,
+                                      to: to, cc: cc, bcc: bcc, subject: subj,
                                       body: body, replyTo: reply, forward: isForward,
                                       attachments: atts, replacing: old)
             }
@@ -215,19 +221,22 @@ struct ComposeView: View {
             }
 
             // From row — laid out like the address rows (30pt label gutter)
-            // so the account text lines up with the To/Cc/Bcc fields.
+            // so the identity text lines up with the To/Cc/Bcc fields.
+            // Reply/forward/draft: only identities for the message's mailbox
+            // (primary + Gmail send-as). Never other OAuth accounts — their
+            // threadIds are not valid on this mailbox.
             HStack(alignment: .center, spacing: 6) {
                 Text("From")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .frame(width: 30, alignment: .leading)
                 Menu {
-                    ForEach(store.accounts) { account in
-                        Button(menuTitle(account)) { fromAccount = account.id }
+                    ForEach(availableFromIdentities) { identity in
+                        Button(menuTitle(identity)) { selectFrom(identity) }
                     }
                 } label: {
                     HStack(spacing: 5) {
-                        Text(fromAccount.isEmpty ? "Select account" : fromAccount)
+                        Text(fromEmail.isEmpty ? "Select account" : fromEmail)
                             .font(.system(size: 13, weight: .medium))
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
@@ -240,6 +249,8 @@ struct ComposeView: View {
                 .buttonStyle(.plain)
                 .menuIndicator(.hidden)
                 .fixedSize()
+                // Hide the chevron when there's only one choice (common on reply).
+                .disabled(availableFromIdentities.count <= 1)
                 Spacer()
             }
             .padding(.vertical, 7)
@@ -522,9 +533,12 @@ struct ComposeView: View {
         }
         .onChange(of: store.accounts) {
             // Accounts can finish loading after the card appears — backfill From.
-            if fromAccount.isEmpty {
-                fromAccount = store.activeAccountId ?? store.accounts.first?.id ?? ""
-            }
+            if fromEmail.isEmpty { ensureFromSelection() }
+        }
+        .onChange(of: store.sendIdentities) {
+            // Send-as aliases arrive after first sync — re-scope the menu and
+            // keep a still-valid selection (or pick the preferred default).
+            ensureFromSelection(preferCurrent: true)
         }
         .sheet(isPresented: $showScheduleSheet) {
             ScheduleSendSheet { date in scheduleSend(at: date) }
@@ -536,14 +550,69 @@ struct ComposeView: View {
     }
 
     private var cannotSend: Bool {
-        fromAccount.isEmpty
+        fromEmail.isEmpty || fromAccountId.isEmpty
             || loadingAttachments   // forwarded files still downloading
             || (toTokens.isEmpty && !toDraft.contains("@")
                 && bccTokens.isEmpty && !bccDraft.contains("@"))
     }
 
-    private func menuTitle(_ account: Account) -> String {
-        account.displayName == account.id ? account.id : "\(account.displayName) — \(account.id)"
+    /// Mailbox that owns this compose session. Non-nil locks From to that
+    /// mailbox's primary + send-as only (reply / forward / draft edit).
+    private var fixedMailboxAccountId: String? {
+        if let r = request.restore { return r.accountId }
+        if let draft = editingDraft { return draft.accountId }
+        if let original { return original.accountId }
+        return nil
+    }
+
+    private var availableFromIdentities: [SendIdentity] {
+        store.fromIdentities(forMailbox: fixedMailboxAccountId)
+    }
+
+    private func menuTitle(_ identity: SendIdentity) -> String {
+        SendIdentityResolver.menuTitle(identity, all: store.sendIdentities.isEmpty
+            ? availableFromIdentities : store.sendIdentities)
+    }
+
+    private func selectFrom(_ identity: SendIdentity) {
+        fromEmail = identity.email
+        fromAccountId = identity.accountId
+    }
+
+    /// Pick a valid From identity for the current mode. When
+    /// `preferCurrent` is true, keep the selection if it still appears in
+    /// the available list (send-as refresh shouldn't clobber a user pick).
+    private func ensureFromSelection(preferCurrent: Bool = false) {
+        let options = availableFromIdentities
+        if preferCurrent,
+           let keep = options.first(where: {
+               $0.email.caseInsensitiveCompare(fromEmail) == .orderedSame
+                   && $0.accountId.caseInsensitiveCompare(fromAccountId) == .orderedSame
+           }) {
+            selectFrom(keep)
+            return
+        }
+        if let mailbox = fixedMailboxAccountId,
+           let preferred = SendIdentityResolver.preferred(
+            store.sendIdentities.isEmpty ? options : store.sendIdentities,
+            in: mailbox) {
+            selectFrom(preferred)
+            return
+        }
+        // New compose: active account's preferred identity, else first option.
+        if let active = store.activeAccountId,
+           let preferred = SendIdentityResolver.preferred(
+            store.sendIdentities.isEmpty ? options : store.sendIdentities,
+            in: active) {
+            selectFrom(preferred)
+            return
+        }
+        if let first = options.first {
+            selectFrom(first)
+        } else if let account = store.accounts.first {
+            fromEmail = account.id
+            fromAccountId = account.id
+        }
     }
 
     private func footerButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
@@ -557,7 +626,8 @@ struct ComposeView: View {
     private func prefill() {
         // Undone send: restore exactly what was about to go out.
         if let r = request.restore {
-            fromAccount = r.accountId
+            fromAccountId = r.accountId
+            fromEmail = r.effectiveFromEmail
             toTokens = MessageParser.splitAddresses(r.to).filter { $0.contains("@") }
             ccTokens = MessageParser.splitAddresses(r.cc).filter { $0.contains("@") }
             if !ccTokens.isEmpty { showCc = true }
@@ -573,7 +643,16 @@ struct ComposeView: View {
 
         // Editing an existing Gmail draft: load its fields verbatim.
         if let draft = editingDraft {
-            fromAccount = draft.accountId
+            fromAccountId = draft.accountId
+            // Prefer the draft's own From header when it's a send-as identity.
+            let draftFrom = MessageParser.emailAddress(draft.fromHeader)
+            if !draftFrom.isEmpty,
+               store.fromIdentities(forMailbox: draft.accountId)
+                .contains(where: { $0.email.caseInsensitiveCompare(draftFrom) == .orderedSame }) {
+                fromEmail = draftFrom
+            } else {
+                ensureFromSelection()
+            }
             toTokens = MessageParser.splitAddresses(draft.toHeader)
                 .map { MessageParser.emailAddress($0) }.filter { $0.contains("@") }
             ccTokens = MessageParser.splitAddresses(draft.ccHeader)
@@ -591,10 +670,9 @@ struct ComposeView: View {
             return
         }
 
-        // Reply/forward: send from the account that received it. New mail:
-        // the account currently in view, falling back to the primary account.
-        fromAccount = original?.accountId ?? store.activeAccountId
-            ?? store.accounts.first?.id ?? ""
+        // Reply/forward: only identities for the mailbox that holds the
+        // message. New mail: active account (or first) preferred identity.
+        ensureFromSelection()
         defer {
             // Prefill (reply recipients, "Re:" subject, quote) isn't authored content.
             initialSubject = subject
@@ -607,7 +685,7 @@ struct ComposeView: View {
             return
         }
         guard let original else { return }
-        let ownAddresses = Set(store.accounts.map { $0.id.lowercased() })
+        let ownAddresses = store.ownEmailAddresses
         let sender = MessageParser.emailAddress(original.fromHeader)
 
         if request.forward {
@@ -707,9 +785,9 @@ struct ComposeView: View {
                 originalBody: MessageParser.replyQuotableText(
                     text: original.bodyText, html: original.bodyHTML),
                 intent: intent,
-                userEmail: fromAccount)
+                userEmail: fromEmail)
         } else {
-            prompt = Ollama.draftNew(intent: intent, userEmail: fromAccount)
+            prompt = Ollama.draftNew(intent: intent, userEmail: fromEmail)
         }
         let quoteTail = quote.isEmpty ? "" : "\n" + quote
         Task {
@@ -827,7 +905,12 @@ struct ComposeView: View {
     private func expandSnippet(_ snippet: Snippet) -> String {
         var ctx = SnippetExpander.Context()
         ctx.date = SnippetExpander.today(Date())
-        ctx.myName = store.accounts.first { $0.id == fromAccount }?.senderName ?? ""
+        ctx.myName = store.sendIdentities.first {
+            $0.email.caseInsensitiveCompare(fromEmail) == .orderedSame
+                && $0.accountId.caseInsensitiveCompare(fromAccountId) == .orderedSame
+        }?.displayName
+            ?? store.accounts.first { $0.id == fromAccountId }?.senderName
+            ?? ""
         if snippet.movesToBcc {
             if let intro = toTokens.first {
                 (ctx.bccName, ctx.bccEmail) = person(from: intro)
@@ -892,7 +975,8 @@ struct ComposeView: View {
         do {
             let attachments = try collectAttachments()
             return MailStore.PendingSend(
-                accountId: fromAccount,
+                accountId: fromAccountId,
+                fromEmail: fromEmail,
                 to: toTokens.joined(separator: ", "),
                 cc: ccTokens.joined(separator: ", "),
                 bcc: bccTokens.joined(separator: ", "),

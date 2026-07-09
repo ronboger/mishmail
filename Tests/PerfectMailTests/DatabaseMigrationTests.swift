@@ -43,6 +43,9 @@ final class DatabaseMigrationTests: XCTestCase {
                     arguments: [name]) ?? false
                 XCTAssertTrue(exists, "v18 must create index \(name)")
             }
+            let scheduledCols = try db.columns(in: "scheduledSend").map(\.name)
+            XCTAssertTrue(scheduledCols.contains("fromEmail"),
+                          "v20 must add fromEmail on scheduledSend")
         }
     }
 

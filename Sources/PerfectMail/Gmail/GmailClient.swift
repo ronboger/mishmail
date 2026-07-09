@@ -69,6 +69,18 @@ struct GFilter: Decodable, Identifiable, Hashable {
     let action: Action?
 }
 
+/// A Gmail "Send mail as" identity (settings.sendAs). Primary + verified
+/// aliases are the only addresses that mailbox may put in From: when sending.
+struct GSendAs: Decodable, Hashable {
+    let sendAsEmail: String
+    let displayName: String?
+    let isPrimary: Bool?
+    let isDefault: Bool?
+    /// "accepted" | "pending" | … — non-primary rows need accepted to send.
+    let verificationStatus: String?
+    let treatAsAlias: Bool?
+}
+
 struct GHistoryList: Decodable {
     struct Item: Decodable {
         struct MsgWrap: Decodable { let message: GMessageList.Ref }
@@ -183,6 +195,14 @@ actor GmailClient {
         struct List: Decodable { let filter: [GFilter]? }
         let list: List = try await request("GET", "/settings/filters")
         return list.filter ?? []
+    }
+
+    /// "Send mail as" identities for this mailbox (primary + aliases).
+    /// Same settings.basic scope as filters; 403 for pre-scope tokens.
+    func listSendAs() async throws -> [GSendAs] {
+        struct List: Decodable { let sendAs: [GSendAs]? }
+        let list: List = try await request("GET", "/settings/sendAs")
+        return list.sendAs ?? []
     }
 
     struct GLabelDetail: Decodable {

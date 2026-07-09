@@ -210,6 +210,9 @@ final class LabelPickerState: ObservableObject {
 @MainActor
 final class MailStore: ObservableObject {
     @Published var accounts: [Account] = []
+    /// From identities (primary + Gmail send-as) across all linked accounts.
+    /// Used by compose's From picker; never confuse `email` with API mailbox.
+    @Published private(set) var sendIdentities: [SendIdentity] = []
     @Published var labelsByAccount: [String: [LabelRow]] = [:]
     @Published var threads: [MailThread] = []
     @Published var savedViews: [SavedView] = []
@@ -757,13 +760,18 @@ final class MailStore: ObservableObject {
     init() {
         DemoSeed.seedIfRequested(AppDatabase.shared.dbPool)
         reloadAccounts()
+        // Primaries immediately; send-as aliases fill in after the API call.
+        sendIdentities = fallbackIdentities()
         reloadSavedViews()
         loadVIPs()
         loadBlocked()
         reloadThreads()
         reloadScheduledSends()
         // Anything that came due while the app was closed goes out now.
-        Task { await self.fireDueScheduledSends() }
+        Task {
+            await self.fireDueScheduledSends()
+            await self.refreshSendIdentities()
+        }
         knownUnreadInboxIds = currentUnreadInboxIds()
         notifiedThreadIds = knownUnreadInboxIds
         Notifier.requestPermission()
@@ -807,11 +815,77 @@ final class MailStore: ObservableObject {
     private var contactsRebuildGeneration = 0
     private static let contactsHighWaterKey = "contacts.highWaterRowId"
 
+    /// Every address we consider "me" for reply recipient filtering: linked
+    /// account primaries plus send-as aliases (so replying to own mail as an
+    /// alias doesn't put that alias in To).
+    var ownEmailAddresses: Set<String> {
+        var set = Set(accounts.map { $0.id.lowercased() })
+        for id in sendIdentities { set.insert(id.email.lowercased()) }
+        return set
+    }
+
+    /// From identities offered for a compose mode. Pass the mailbox that
+    /// owns the thread/draft for reply/forward/edit; nil for brand-new mail.
+    func fromIdentities(forMailbox mailboxAccountId: String?) -> [SendIdentity] {
+        let all = sendIdentities.isEmpty ? fallbackIdentities() : sendIdentities
+        return SendIdentityResolver.available(all: all, forMailbox: mailboxAccountId)
+    }
+
+    /// Synthetic primaries when send-as hasn't been fetched yet (offline /
+    /// first paint / scope missing).
+    private func fallbackIdentities() -> [SendIdentity] {
+        accounts.map {
+            SendIdentity(email: $0.id, displayName: $0.senderName,
+                         accountId: $0.id, isPrimary: true, isDefault: true)
+        }
+    }
+
+    /// Refresh send-as identities for one account (or all). Failures leave
+    /// that account as primary-only so compose still works.
+    func refreshSendIdentities(accountId: String? = nil) async {
+        let targets = accountId.map { [$0] } ?? accounts.map(\.id)
+        guard !targets.isEmpty else {
+            sendIdentities = []
+            return
+        }
+        var byAccount: [String: [SendIdentity]] = Dictionary(
+            uniqueKeysWithValues: sendIdentities
+                .reduce(into: [String: [SendIdentity]]()) { dict, id in
+                    dict[id.accountId, default: []].append(id)
+                }
+                .map { ($0.key, $0.value) }
+        )
+        // Keep non-targeted accounts; replace targeted ones.
+        for id in targets {
+            let senderName = accounts.first { $0.id == id }?.senderName ?? ""
+            let rows: [GSendAs]
+            do {
+                rows = try await client(for: id).listSendAs()
+            } catch {
+                // Pre-scope tokens get 403; network blips too. Primary-only.
+                rows = []
+            }
+            byAccount[id] = SendIdentityResolver.identities(
+                accountId: id, senderName: senderName, sendAs: rows)
+        }
+        // Drop removed accounts.
+        let live = Set(accounts.map(\.id))
+        sendIdentities = byAccount
+            .filter { live.contains($0.key) }
+            .values
+            .flatMap { $0 }
+            .sorted { a, b in
+                if a.accountId != b.accountId { return a.accountId < b.accountId }
+                if a.isPrimary != b.isPrimary { return a.isPrimary }
+                return a.email.lowercased() < b.email.lowercased()
+            }
+    }
+
     /// Re-mine contacts from message headers. Incremental by default (messages
     /// with rowid above the high-water mark); full when forced, on first run,
     /// when the in-memory map is empty, or when the account set changes.
     func rebuildContacts(forceFull: Bool = false) {
-        let ownAddresses = Set(accounts.map { $0.id.lowercased() })
+        let ownAddresses = ownEmailAddresses
         let accountsChanged = ownAddresses != contactsOwnAddresses
         let full = forceFull || accountsChanged
             || contactWeights.isEmpty
@@ -1592,6 +1666,7 @@ final class MailStore: ObservableObject {
                                       senderName: info.name ?? "")
                 try await db.write { db in try account.save(db) }
                 reloadAccounts()
+                await refreshSendIdentities(accountId: info.email)
                 await sync(accountId: info.email)
             } catch {
                 lastError = error.localizedDescription
@@ -1605,6 +1680,7 @@ final class MailStore: ObservableObject {
         engines[id] = nil
         clients[id] = nil
         reloadAccounts()
+        sendIdentities.removeAll { $0.accountId == id }
         reloadThreads()
         // Own-address set changed — drop the weight map and re-mine.
         rebuildContacts(forceFull: true)
@@ -1670,6 +1746,7 @@ final class MailStore: ObservableObject {
                     lastError = "\(id): \(error.localizedDescription)"
                 } else {
                     await backfillSenderNameIfNeeded(accountId: id)
+                    await refreshSendIdentities(accountId: id)
                 }
             }
         }
@@ -1692,6 +1769,7 @@ final class MailStore: ObservableObject {
             }
             syncStatus = ""
             await backfillSenderNameIfNeeded(accountId: accountId)
+            await refreshSendIdentities(accountId: accountId)
             reloadAccounts()
             reloadThreads()
         } catch {
@@ -1711,11 +1789,28 @@ final class MailStore: ObservableObject {
         try? await db.write { db in try updated.update(db) }
     }
 
-    /// RFC 2822 From value: "Ron Boger <ron@x.com>" when a name is known.
+    /// RFC 2822 From value for a mailbox primary (legacy call sites / new
+    /// mail default). Prefer `fromHeader(accountId:fromEmail:)` when a
+    /// send-as identity may be selected.
     func fromHeader(for accountId: String) -> String {
-        guard let account = accounts.first(where: { $0.id == accountId }),
-              !account.senderName.isEmpty else { return accountId }
-        return "\(account.senderName) <\(accountId)>"
+        fromHeader(accountId: accountId, fromEmail: accountId)
+    }
+
+    /// RFC 2822 From for a chosen identity. Uses the send-as display name
+    /// when present; falls back to the account's senderName for primaries.
+    func fromHeader(accountId: String, fromEmail: String) -> String {
+        let email = fromEmail.isEmpty ? accountId : fromEmail
+        if let identity = SendIdentityResolver.identity(
+            email: email, inMailbox: accountId, from: sendIdentities) {
+            return identity.fromHeader
+        }
+        // Identity list not loaded or email is the primary.
+        if email.caseInsensitiveCompare(accountId) == .orderedSame {
+            guard let account = accounts.first(where: { $0.id == accountId }),
+                  !account.senderName.isEmpty else { return accountId }
+            return "\(account.senderName) <\(accountId)>"
+        }
+        return email
     }
 
     // MARK: - New-mail notifications
@@ -2228,7 +2323,11 @@ final class MailStore: ObservableObject {
 
     /// A composed message waiting out the undo-send window.
     struct PendingSend {
+        /// Gmail API mailbox (OAuth account) — owns the threadId for replies.
         let accountId: String
+        /// Address written in From: (primary or send-as of `accountId`).
+        /// Empty means the primary (`accountId`).
+        var fromEmail: String = ""
         let to: String
         let cc: String
         let bcc: String
@@ -2238,6 +2337,11 @@ final class MailStore: ObservableObject {
         let forward: Bool
         let attachments: [MIMEBuilder.Attachment]
         let replacingDraft: Message?
+
+        /// Effective From identity email.
+        var effectiveFromEmail: String {
+            fromEmail.isEmpty ? accountId : fromEmail
+        }
     }
 
     @Published private(set) var pendingSend: PendingSend?
@@ -2283,7 +2387,8 @@ final class MailStore: ObservableObject {
 
     private func performSend(_ p: PendingSend) async {
         do {
-            try await send(from: p.accountId, to: p.to, cc: p.cc, bcc: p.bcc,
+            try await send(from: p.accountId, fromEmail: p.effectiveFromEmail,
+                           to: p.to, cc: p.cc, bcc: p.bcc,
                            subject: p.subject, body: p.body, replyTo: p.replyTo,
                            forward: p.forward,
                            attachments: p.attachments, replacingDraft: p.replacingDraft)
@@ -2312,7 +2417,8 @@ final class MailStore: ObservableObject {
     /// anything overdue sends on next launch.
     func scheduleSend(_ p: PendingSend, at date: Date) {
         let row = ScheduledSend(
-            id: nil, accountId: p.accountId, toHeader: p.to, ccHeader: p.cc,
+            id: nil, accountId: p.accountId, fromEmail: p.effectiveFromEmail,
+            toHeader: p.to, ccHeader: p.cc,
             bccHeader: p.bcc, subject: p.subject, body: p.body, sendAt: date,
             replyToMessageId: p.replyTo?.id, forward: p.forward,
             replacingDraftId: p.replacingDraft?.id,
@@ -2355,7 +2461,8 @@ final class MailStore: ObservableObject {
         let draft = s.replacingDraftId.flatMap { id in
             (try? db.read { try Message.fetchOne($0, key: id) }) ?? nil
         }
-        return PendingSend(accountId: s.accountId, to: s.toHeader, cc: s.ccHeader,
+        return PendingSend(accountId: s.accountId, fromEmail: s.effectiveFromEmail,
+                           to: s.toHeader, cc: s.ccHeader,
                            bcc: s.bccHeader, subject: s.subject, body: s.body,
                            replyTo: replyTo, forward: s.forward,
                            attachments: s.attachments, replacingDraft: draft)
@@ -2385,27 +2492,37 @@ final class MailStore: ObservableObject {
         reloadScheduledSends()
     }
 
-    func send(from accountId: String, to: String, cc: String, bcc: String = "", subject: String,
+    func send(from accountId: String, fromEmail: String = "",
+              to: String, cc: String, bcc: String = "", subject: String,
               body: String, replyTo message: Message? = nil, forward: Bool = false,
               attachments: [MIMEBuilder.Attachment] = [],
               replacingDraft draft: Message? = nil) async throws {
         // For a forward, `message` is the forwarded original: it supplies the
         // HTML body below, but must not thread the send into its conversation.
         let threadParent = forward ? nil : message
+        // Replies/drafts must send through the mailbox that owns the thread.
+        // A mismatched From account used to pass a foreign threadId → Gmail 404.
+        let apiAccountId = SendIdentityResolver.apiAccountId(
+            requested: accountId,
+            replyAccountId: threadParent?.accountId,
+            draftAccountId: draft?.accountId)
+        let identityEmail = fromEmail.isEmpty ? apiAccountId : fromEmail
         let bodyHTML = htmlAlternative(body: body, forwardOf: forward ? message : nil,
                                        draft: draft)
         let raw = MIMEBuilder.build(
-            from: fromHeader(for: accountId), to: to, cc: cc, bcc: bcc, subject: subject,
+            from: fromHeader(accountId: apiAccountId, fromEmail: identityEmail),
+            to: to, cc: cc, bcc: bcc, subject: subject,
             bodyText: body, bodyHTML: bodyHTML,
             inReplyTo: threadParent?.messageIdHeader,
             references: threadParent?.referencesHeader ?? draft?.referencesHeader,
             attachments: attachments
         )
         // A reply keeps its thread; so does a draft that lives in one.
+        // Only pass threadId when it belongs to apiAccountId (always true after resolve).
         let gmailThreadId = (threadParent ?? draft).map { String($0.threadId.split(separator: ":").last!) }
-        try await client(for: accountId).send(raw: raw, threadId: gmailThreadId)
+        try await client(for: apiAccountId).send(raw: raw, threadId: gmailThreadId)
         if let draft { await deleteUnderlyingDraft(draft, silent: true) }
-        await sync(accountId: accountId)
+        await sync(accountId: apiAccountId)
     }
 
     /// The HTML alternative an outgoing message can carry without ever
@@ -2434,15 +2551,22 @@ final class MailStore: ObservableObject {
 
     /// Saves compose state as a real Gmail draft (shows up in Gmail too).
     /// Replaces `replacing` when re-saving an edited draft.
-    func saveDraft(from accountId: String, to: String, cc: String, bcc: String = "", subject: String,
+    func saveDraft(from accountId: String, fromEmail: String = "",
+                   to: String, cc: String, bcc: String = "", subject: String,
                    body: String, replyTo message: Message? = nil, forward: Bool = false,
                    attachments: [MIMEBuilder.Attachment] = [],
                    replacing draft: Message? = nil) async {
         // Same rules as send(): a forward's original doesn't thread the
         // draft, but supplies the HTML body when the quote is untouched.
         let threadParent = forward ? nil : message
+        let apiAccountId = SendIdentityResolver.apiAccountId(
+            requested: accountId,
+            replyAccountId: threadParent?.accountId,
+            draftAccountId: draft?.accountId)
+        let identityEmail = fromEmail.isEmpty ? apiAccountId : fromEmail
         let raw = MIMEBuilder.build(
-            from: fromHeader(for: accountId), to: to, cc: cc, bcc: bcc, subject: subject, bodyText: body,
+            from: fromHeader(accountId: apiAccountId, fromEmail: identityEmail),
+            to: to, cc: cc, bcc: bcc, subject: subject, bodyText: body,
             bodyHTML: htmlAlternative(body: body, forwardOf: forward ? message : nil, draft: draft),
             inReplyTo: threadParent?.messageIdHeader,
             references: threadParent?.referencesHeader ?? draft?.referencesHeader,
@@ -2450,10 +2574,10 @@ final class MailStore: ObservableObject {
         )
         let gmailThreadId = ((threadParent ?? draft).map { String($0.threadId.split(separator: ":").last!) })
         do {
-            try await client(for: accountId).createDraft(raw: raw, threadId: gmailThreadId)
+            try await client(for: apiAccountId).createDraft(raw: raw, threadId: gmailThreadId)
             if let draft { await deleteUnderlyingDraft(draft, silent: true) }
             showNotice("Draft saved — find it in Drafts")
-            await sync(accountId: accountId)
+            await sync(accountId: apiAccountId)
         } catch {
             lastError = "Draft not saved: \(error.localizedDescription)"
         }

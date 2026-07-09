@@ -150,6 +150,9 @@ struct ScheduledSend: Codable, Identifiable, Hashable, FetchableRecord, Persista
     static let databaseTableName = "scheduledSend"
     var id: Int64?
     var accountId: String
+    /// From identity email (send-as or primary). Empty → treat as accountId
+    /// (rows scheduled before v20).
+    var fromEmail: String = ""
     var toHeader: String
     var ccHeader: String
     var bccHeader: String
@@ -162,6 +165,11 @@ struct ScheduledSend: Codable, Identifiable, Hashable, FetchableRecord, Persista
     var attachmentsJSON: Data       // JSON-encoded [MIMEBuilder.Attachment]
     var createdAt: Date
     mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+
+    /// Effective From address for MIME (send-as or the mailbox primary).
+    var effectiveFromEmail: String {
+        fromEmail.isEmpty ? accountId : fromEmail
+    }
 
     var attachments: [MIMEBuilder.Attachment] {
         (try? JSONDecoder().decode([MIMEBuilder.Attachment].self, from: attachmentsJSON)) ?? []
@@ -646,6 +654,14 @@ final class AppDatabase {
                             OR labelIds LIKE '% SPAM'
                             OR labelIds LIKE '% SPAM %')
                 """)
+        }
+
+        // v20: remember which From identity a scheduled send uses (primary or
+        // send-as). Empty string means "same as accountId" for old rows.
+        m.registerMigration("v20") { db in
+            try db.alter(table: "scheduledSend") { t in
+                t.add(column: "fromEmail", .text).notNull().defaults(to: "")
+            }
         }
         return m
     }

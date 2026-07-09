@@ -84,6 +84,7 @@ targets:
       - Sources/PerfectMail/Support/SnoozeDateParser.swift
       - Sources/PerfectMail/Support/PrioritySplit.swift
       - Sources/PerfectMail/Support/SendSchedule.swift
+      - Sources/PerfectMail/Support/SendIdentity.swift
       - Sources/PerfectMail/Support/Classifier.swift
       - Sources/PerfectMail/Support/SnippetDefaults.swift
       - Sources/PerfectMail/Support/SnippetExpander.swift
