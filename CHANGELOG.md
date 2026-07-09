@@ -6,6 +6,21 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Security
+- **OAuth loopback hardening** — 5-minute timeout tears down the catcher if
+  sign-in is abandoned; only `/oauth2/callback` (and bare `/`) is accepted;
+  wrong-state probes are ignored instead of aborting a legitimate flow.
+- **HTML CSP tightened** — `base-uri 'none'`, explicit `form-action` /
+  `frame-src` / `object-src 'none'`; remote images are HTTPS-only when enabled.
+- **Update verification** — "Update App" downloads the release zip, verifies
+  the embedded app's code signature via Security.framework, then reveals it in
+  Finder; failed checks open the GitHub release page instead.
+- **Remote Ollama opt-in** — non-loopback endpoints need an explicit Settings
+  toggle (and HTTPS) before mail content is sent.
+- **Distribution entitlements** — `PerfectMail.Distribution.entitlements` keeps
+  library validation on for Developer ID / notarized builds (ad-hoc Debug still
+  needs the disable for the separately-signed GRDB framework).
+
 ### Added
 - **Slash-trigger snippets** — type `/` in the compose body (Notion Mail-style)
   to pop a snippet picker; keep typing to filter, ↑/↓ to choose, Return to

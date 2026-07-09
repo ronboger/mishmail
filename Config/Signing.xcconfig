@@ -12,6 +12,12 @@
 //     DEVELOPMENT_TEAM = XXXXXXXXXX
 //     CODE_SIGN_IDENTITY = Apple Development
 //
+// For Developer ID / notarized shipping builds, also switch to the distribution
+// entitlements (library validation stays ON — the embedded GRDB framework is
+// re-signed with your team, so the ad-hoc-only disable is unnecessary):
+//
+//     CODE_SIGN_ENTITLEMENTS = Sources/PerfectMail/PerfectMail.Distribution.entitlements
+//
 // The optional include below picks it up automatically when present.
 
 CODE_SIGN_STYLE = Manual

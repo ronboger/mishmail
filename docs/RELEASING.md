@@ -96,8 +96,14 @@ users. To ship a binary anyone can open:
    CODE_SIGN_STYLE = Manual
    DEVELOPMENT_TEAM = XXXXXXXXXX
    CODE_SIGN_IDENTITY = Developer ID Application
+   // Full library validation (no disable-library-validation):
+   CODE_SIGN_ENTITLEMENTS = Sources/PerfectMail/PerfectMail.Distribution.entitlements
    ```
-   Keep `ENABLE_HARDENED_RUNTIME` on (it already is in `project.yml`).
+   Keep `ENABLE_HARDENED_RUNTIME` on (it already is in `project.yml`). The
+   default `PerfectMail.entitlements` disables library validation so ad-hoc
+   Debug/CI builds can load the separately-signed GRDB framework; distribution
+   builds re-sign GRDB with your team and must use the Distribution entitlements
+   so the shipping binary stays fully hardened.
 2. Build Release, then **notarize** the zip before (or instead of) attaching it:
    ```sh
    xcrun notarytool submit PerfectMail-<version>.zip \

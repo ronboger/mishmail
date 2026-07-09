@@ -187,9 +187,9 @@ ollama pull llama3.2
 
 Then in **Settings → AI** point PerfectMail at your local Ollama (default
 `http://127.0.0.1:11434`). You get "Draft with AI" in compose and thread
-summaries — all computed locally. PerfectMail refuses to send message content
-to a non-loopback endpoint over plain HTTP, so your mail can't be exfiltrated
-by a mis-typed URL.
+summaries — all computed locally. PerfectMail refuses cleartext non-loopback
+endpoints, and requires an explicit “Allow remote Ollama” toggle before any
+mail content is sent to a remote HTTPS host.
 
 ## Where things live
 
@@ -199,20 +199,27 @@ by a mis-typed URL.
 ## Security
 
 - **OAuth 2.0 Authorization Code + PKCE**, loopback redirect bound to
-  `127.0.0.1` only (RFC 8252). Sign-in happens in your own browser; tokens go
-  straight to the Keychain (device-bound, not synced to iCloud, excluded from
-  backups).
+  `127.0.0.1` only (RFC 8252), fixed callback path, 5-minute listener timeout,
+  and state-checked responses so a local probe can't abort or hijack sign-in.
+  Tokens go straight to the Keychain (device-bound, not synced to iCloud,
+  excluded from backups).
 - **Encrypted at rest** — the local mail cache is SQLCipher-encrypted with a
   256-bit key held only in the Keychain.
 - **HTML email is sandboxed** — rendered with JavaScript disabled, a strict CSP
-  (`default-src 'none'`), remote images blocked until you opt in per message
-  (no tracking pixels), an ephemeral web data store, and a default-deny
-  navigation policy so crafted mail can't redirect, auto-submit forms, or reach
-  the network. Links open in your default browser.
+  (`default-src 'none'`, `base-uri 'none'`, no forms/frames/objects), remote
+  images blocked until you opt in per message (HTTPS only — no cleartext
+  tracking pixels), an ephemeral web data store, and a default-deny navigation
+  policy so crafted mail can't redirect, auto-submit forms, or reach the
+  network. Links open in your default browser.
 - **Attachments** written to disk are tagged with the quarantine attribute, so
   Gatekeeper's first-open checks still apply.
+- **Updates are verified** — "Update App" downloads the release zip, checks the
+  embedded app's code signature, then reveals it in Finder; a failed check
+  opens the GitHub release page instead of handing you an unverified binary.
 - **App Sandbox** enabled with a minimal entitlement set (network client, the
   transient loopback listener for sign-in, and user-selected file access).
+  Developer ID builds should use `PerfectMail.Distribution.entitlements` so
+  library validation stays on (see [docs/RELEASING.md](docs/RELEASING.md)).
 - **No secret logging**, parameterized SQL throughout, CRLF-folded MIME headers,
   and path-traversal-safe attachment filenames.
 - Snooze and reminders are local-only (Gmail's API has no snooze); everything

@@ -12,17 +12,27 @@ enum Ollama {
         set { UserDefaults.standard.set(newValue, forKey: "ollama.model") }
     }
 
+    /// User explicitly allowed sending mail content to a non-loopback Ollama
+    /// endpoint (Settings → AI). Loopback never needs this.
+    static var allowRemoteEndpoint: Bool {
+        get { UserDefaults.standard.bool(forKey: "ollama.allowRemote") }
+        set { UserDefaults.standard.set(newValue, forKey: "ollama.allowRemote") }
+    }
+
     struct GenerateResponse: Decodable { let response: String }
 
     enum OllamaError: LocalizedError {
         case unreachable
         case insecureEndpoint
+        case remoteNotAllowed
         var errorDescription: String? {
             switch self {
             case .unreachable:
                 return "Couldn't reach Ollama at \(Ollama.baseURL). Install it from ollama.com and run: ollama pull \(Ollama.model)"
             case .insecureEndpoint:
                 return "Ollama endpoint \(Ollama.baseURL) is neither local nor HTTPS. Your email content won't be sent over an unencrypted connection to a remote host — use http://127.0.0.1:11434 or an https:// URL."
+            case .remoteNotAllowed:
+                return "Ollama endpoint \(Ollama.baseURL) is not on this Mac. Enable “Allow remote Ollama” in Settings → AI if you intend to send mail content there over HTTPS."
             }
         }
     }
@@ -33,10 +43,17 @@ enum Ollama {
         return host == "127.0.0.1" || host == "localhost" || host == "::1"
     }
 
+    /// Shared guard for generate / generateStream: loopback OK; remote must
+    /// be HTTPS *and* explicitly opted in.
+    static func validateEndpoint(_ url: URL) throws {
+        if isLoopback { return }
+        if url.scheme?.lowercased() != "https" { throw OllamaError.insecureEndpoint }
+        if !allowRemoteEndpoint { throw OllamaError.remoteNotAllowed }
+    }
+
     static func generate(prompt: String) async throws -> String {
         guard let url = URL(string: "\(baseURL)/api/generate") else { throw OllamaError.unreachable }
-        // Never send message content in cleartext to a non-local host.
-        if !isLoopback, url.scheme?.lowercased() != "https" { throw OllamaError.insecureEndpoint }
+        try validateEndpoint(url)
         var req = URLRequest(url: url)
         req.httpMethod = "POST"
         req.timeoutInterval = 120
@@ -68,7 +85,7 @@ enum Ollama {
             let task = Task {
                 do {
                     guard let url = URL(string: "\(baseURL)/api/generate") else { throw OllamaError.unreachable }
-                    if !isLoopback, url.scheme?.lowercased() != "https" { throw OllamaError.insecureEndpoint }
+                    try validateEndpoint(url)
                     var req = URLRequest(url: url)
                     req.httpMethod = "POST"
                     req.setValue("application/json", forHTTPHeaderField: "Content-Type")

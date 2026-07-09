@@ -218,17 +218,30 @@ struct UpdatesSettings: View {
                                 .lineLimit(8)
                         }
                         HStack {
-                            Button("Update App") { updates.openUpdate() }
-                                .buttonStyle(.borderedProminent)
-                            Button("View on GitHub") {
-                                NSWorkspace.shared.open(release.htmlURL)
+                            Button {
+                                updates.openUpdate()
+                            } label: {
+                                if updates.installing {
+                                    HStack(spacing: 6) {
+                                        ProgressView().controlSize(.small)
+                                        Text("Verifying…")
+                                    }
+                                } else {
+                                    Text("Update App")
+                                }
                             }
+                            .buttonStyle(.borderedProminent)
+                            .disabled(updates.installing)
+                            Button("View on GitHub") { updates.openReleasePage() }
                         }
                     } else if let status = updates.status {
                         Text(status).font(.system(size: 12)).foregroundStyle(.secondary)
                     }
+                    if updates.available != nil, let status = updates.status {
+                        Text(status).font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
                 } footer: {
-                    Text("Update App downloads the latest release; drag the new PerfectMail into Applications to replace this copy. The app also checks quietly once a day and shows an update button in the sidebar when one is available.")
+                    Text("Update App downloads the release zip, checks the app’s code signature, then reveals it in Finder — drag into Applications to install. If verification fails, the GitHub release page opens instead. Quiet daily checks also surface an update button in the sidebar.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {
@@ -1173,7 +1186,13 @@ private struct VIPRow: View {
 struct AISettings: View {
     @State private var url: String = Ollama.baseURL
     @State private var model: String = Ollama.model
+    @State private var allowRemote: Bool = Ollama.allowRemoteEndpoint
     @AppStorage(MailStore.autoClassifyKey) private var autoClassify = true
+
+    private var endpointIsRemote: Bool {
+        guard let host = URL(string: url)?.host?.lowercased() else { return false }
+        return host != "127.0.0.1" && host != "localhost" && host != "::1"
+    }
 
     var body: some View {
         PaneScaffold(title: "AI") {
@@ -1183,10 +1202,16 @@ struct AISettings: View {
                         .onChange(of: url) { Ollama.baseURL = url }
                     TextField("Model", text: $model)
                         .onChange(of: model) { Ollama.model = model }
+                    if endpointIsRemote {
+                        Toggle("Allow remote Ollama (sends mail content over HTTPS)", isOn: $allowRemote)
+                            .onChange(of: allowRemote) { Ollama.allowRemoteEndpoint = allowRemote }
+                    }
                 } header: {
                     Text("Local AI drafting (Ollama)")
                 } footer: {
-                    Text("AI drafting runs entirely on this Mac via Ollama. Install from ollama.com, then run: ollama pull \(model). The Draft with AI button appears when replying.")
+                    Text(endpointIsRemote
+                         ? "This URL is not on this Mac. PerfectMail will only send message content there if you enable the toggle above, and only over HTTPS."
+                         : "AI drafting runs entirely on this Mac via Ollama. Install from ollama.com, then run: ollama pull \(model). The Draft with AI button appears when replying.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

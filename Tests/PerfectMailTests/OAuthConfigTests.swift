@@ -26,4 +26,16 @@ final class OAuthConfigTests: XCTestCase {
         XCTAssertNil(OAuthConfig.parseCredentialsJSON(Data(#"{"foo":1}"#.utf8)))
         XCTAssertNil(OAuthConfig.parseCredentialsJSON(Data(#"{"installed":{"client_id":""}}"#.utf8)))
     }
+
+    func testCallbackPathAcceptsRegisteredAndRoot() {
+        XCTAssertTrue(OAuthService.isOAuthCallbackPath("/oauth2/callback"))
+        XCTAssertTrue(OAuthService.isOAuthCallbackPath("/"))
+        XCTAssertTrue(OAuthService.isOAuthCallbackPath(""))
+    }
+
+    func testCallbackPathRejectsUnrelatedProbes() {
+        XCTAssertFalse(OAuthService.isOAuthCallbackPath("/favicon.ico"))
+        XCTAssertFalse(OAuthService.isOAuthCallbackPath("/oauth2/callback/extra"))
+        XCTAssertFalse(OAuthService.isOAuthCallbackPath("/admin"))
+    }
 }
