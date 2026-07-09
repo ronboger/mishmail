@@ -174,7 +174,8 @@ Fixed shortcuts (not customizable):
 | ↑ / ↓ | Browse threads (without opening the reading pane) |
 | Return | Open selected thread · Esc closes the reading pane |
 | ? | Show the keyboard-shortcut cheat sheet |
-| Cmd-K | Command palette · Ctrl-F filter menu |
+| Cmd-K | Command palette · in compose body: insert/edit link |
+| Ctrl-F | Filter menu |
 | Cmd-N | Compose · Cmd-Enter send |
 | / (in compose body) | Snippet picker — type `/name` to filter, Return inserts |
 | Cmd-/ (in compose) | Toggle the snippets panel |

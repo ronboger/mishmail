@@ -242,6 +242,92 @@ private struct SnippetRow: View {
     }
 }
 
+// MARK: - Insert / edit hyperlink (⌘K)
+
+/// Gmail-style link sheet: label + URL. The compose body stays plain text;
+/// the result is stored as markdown `[label](url)` and turned into a real
+/// `<a href>` on send.
+struct ComposeLinkSheet: View {
+    @Environment(\.dismiss) private var dismiss
+
+    /// Prefill for the display-text field (selection or existing label).
+    let initialText: String
+    /// Prefill for the URL field (empty for new links).
+    let initialURL: String
+    /// True when editing an existing `[text](url)` — shows Remove.
+    let isEditing: Bool
+    let onApply: (_ text: String, _ url: String) -> Void
+    let onRemove: () -> Void
+
+    @State private var text: String = ""
+    @State private var url: String = ""
+    @FocusState private var urlFocused: Bool
+
+    private var canApply: Bool {
+        ComposeLinks.normalizeURL(url) != nil
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(isEditing ? "Edit link" : "Insert link")
+                .font(.system(size: 13, weight: .semibold))
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Text")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                TextField("Display text", text: $text)
+                    .textFieldStyle(.roundedBorder)
+            }
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text("URL")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                TextField("https://…", text: $url)
+                    .textFieldStyle(.roundedBorder)
+                    .focused($urlFocused)
+                    .onSubmit { applyIfValid() }
+            }
+
+            Text("http(s) and mailto only · bare hosts get https://")
+                .font(.system(size: 10))
+                .foregroundStyle(.tertiary)
+
+            Divider()
+
+            HStack {
+                if isEditing {
+                    Button("Remove link", role: .destructive) {
+                        onRemove()
+                        dismiss()
+                    }
+                }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button(isEditing ? "Update" : "Insert") { applyIfValid() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(!canApply)
+            }
+        }
+        .padding(16)
+        .frame(width: 360)
+        .onAppear {
+            text = initialText
+            url = initialURL
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { urlFocused = true }
+        }
+    }
+
+    private func applyIfValid() {
+        guard canApply else { return }
+        onApply(text, url)
+        dismiss()
+    }
+}
+
 // MARK: - Schedule send (custom date & time)
 
 /// Window sheet for picking an exact send time. A sheet (not a popover)

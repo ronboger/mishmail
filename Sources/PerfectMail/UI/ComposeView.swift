@@ -53,6 +53,13 @@ struct ComposeView: View {
     /// before SwiftUI's onKeyPress ever sees them.
     @State private var slashKeyMonitor: Any?
     @State private var showScheduleSheet = false
+    /// ⌘K link sheet — UTF-16 offsets into `body_` captured when the sheet opens.
+    @State private var showLinkSheet = false
+    @State private var linkSelLocation = 0
+    @State private var linkSelLength = 0
+    @State private var linkInitialText = ""
+    @State private var linkInitialURL = ""
+    @State private var linkIsEditing = false
     @State private var drafting = false
     @State private var error: String?
     @FocusState private var bodyFocused: Bool
@@ -428,6 +435,8 @@ struct ComposeView: View {
             HStack(spacing: 10) {
                 footerButton("paperclip", help: "Attach files") { showFilePicker = true }
 
+                footerButton("link", help: "Insert link (⌘K)") { openLinkSheet() }
+
                 Button {
                     withAnimation(.easeOut(duration: 0.12)) { showSnippets.toggle() }
                 } label: {
@@ -544,6 +553,15 @@ struct ComposeView: View {
         }
         .sheet(isPresented: $showScheduleSheet) {
             ScheduleSendSheet { date in scheduleSend(at: date) }
+        }
+        .sheet(isPresented: $showLinkSheet) {
+            ComposeLinkSheet(
+                initialText: linkInitialText,
+                initialURL: linkInitialURL,
+                isEditing: linkIsEditing,
+                onApply: { text, url in applyLink(text: text, url: url) },
+                onRemove: { removeLinkAtSelection() }
+            )
         }
         .fileImporter(isPresented: $showFilePicker,
                       allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
@@ -873,13 +891,22 @@ struct ComposeView: View {
         }
     }
 
-    /// Routes ↑/↓/Return/Tab/Esc to the `/` picker while it's showing.
-    /// Unmodified keys only — ⌘-Return (send) and friends pass through.
+    /// Routes compose-body chords the NSTextView would otherwise swallow:
+    /// ⌘K → link sheet; ↑/↓/Return/Tab/Esc → `/` picker while it's showing.
+    /// Unmodified keys only for the picker — ⌘-Return (send) and friends pass.
     private func installSlashKeyMonitor() {
         guard slashKeyMonitor == nil else { return }
         slashKeyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-            guard event.modifierFlags.intersection([.command, .option, .control]).isEmpty
-            else { return event }
+            let mods = event.modifierFlags.intersection([.command, .option, .control])
+            // Gmail-style link insert. ContentView already stands down on
+            // ⌘K while compose text has focus; we own it here.
+            if mods == .command,
+               event.charactersIgnoringModifiers?.lowercased() == "k",
+               bodyFocused {
+                openLinkSheet()
+                return nil
+            }
+            guard mods.isEmpty else { return event }
             guard slashActive else { return event }
             // Esc drops the picker even when nothing matches (so the trigger
             // is escapable); the rest only act when there's a snippet to pick.
@@ -903,6 +930,60 @@ struct ComposeView: View {
                 return event
             }
         }
+    }
+
+    /// Captures the body selection (or caret) and opens the link sheet.
+    /// If the caret sits inside an existing `[text](url)`, edit that span.
+    private func openLinkSheet() {
+        // Prefer the live field editor so we get the real selection; fall
+        // back to end-of-body when focus hasn't landed yet.
+        let nsBody = body_ as NSString
+        var location = nsBody.length
+        var length = 0
+        if let tv = NSApp.keyWindow?.firstResponder as? NSTextView,
+           tv.string == body_ {
+            location = tv.selectedRange().location
+            length = tv.selectedRange().length
+            // Clamp in case the binding and view briefly diverge.
+            if location > nsBody.length { location = nsBody.length; length = 0 }
+            if location + length > nsBody.length { length = nsBody.length - location }
+        }
+        let sel = NSRange(location: location, length: length)
+        guard let range = ComposeLinks.stringRange(nsRange: sel, in: body_) else { return }
+
+        if length == 0, let existing = ComposeLinks.link(at: range.lowerBound, in: body_) {
+            let full = ComposeLinks.nsRange(of: existing.range, in: body_)
+            linkSelLocation = full.location
+            linkSelLength = full.length
+            linkInitialText = existing.text
+            linkInitialURL = existing.url
+            linkIsEditing = true
+        } else {
+            linkSelLocation = location
+            linkSelLength = length
+            linkInitialText = length > 0 ? nsBody.substring(with: sel) : ""
+            linkInitialURL = ""
+            linkIsEditing = false
+        }
+        showLinkSheet = true
+    }
+
+    private func applyLink(text: String, url: String) {
+        let sel = NSRange(location: linkSelLocation, length: linkSelLength)
+        guard let range = ComposeLinks.stringRange(nsRange: sel, in: body_),
+              let next = ComposeLinks.applyLink(in: body_, selection: range,
+                                                text: text.isEmpty ? nil : text,
+                                                url: url) else { return }
+        body_ = next
+        bodyFocused = true
+    }
+
+    private func removeLinkAtSelection() {
+        let sel = NSRange(location: linkSelLocation, length: linkSelLength)
+        guard let range = ComposeLinks.stringRange(nsRange: sel, in: body_),
+              let existing = ComposeLinks.link(at: range.lowerBound, in: body_) else { return }
+        body_ = ComposeLinks.removeLink(existing, in: body_)
+        bodyFocused = true
     }
 
     /// Replaces the typed `/query` with the chosen snippet, expanded.

@@ -6,6 +6,13 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Added
+- **Compose hyperlinks (⌘K)** — select text in the compose body and press
+  ⌘K (or the link button in the footer) to insert a Gmail-style link. Links
+  are stored as markdown `[label](url)` in the plain-text editor and converted
+  to real `<a href>` anchors on send; bare `https://…` URLs are auto-linked
+  too. Outside compose, ⌘K still opens the command palette.
+
 ### Fixed
 - **Promotions/Social no longer show spam or archived mail** — lists and
   sidebar badges now match gmail.com (inbox + category, excluding SPAM and

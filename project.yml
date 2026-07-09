@@ -75,6 +75,7 @@ targets:
       - Sources/PerfectMail/Gmail
       - Sources/PerfectMail/Store/Database.swift
       - Sources/PerfectMail/Support/ContactMiner.swift
+      - Sources/PerfectMail/Support/ComposeLinks.swift
       - Sources/PerfectMail/Support/HTMLEntities.swift
       - Sources/PerfectMail/Support/KeyBindings.swift
       - Sources/PerfectMail/Support/LabelSearch.swift
