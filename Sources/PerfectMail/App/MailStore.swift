@@ -547,30 +547,50 @@ final class MailStore: ObservableObject {
         return email.contains("@") ? email : nil
     }
 
-    /// Recomputes which of the loaded threads came from a VIP. One query per
-    /// reload, none when the VIP list is empty.
+    /// Recomputes which of the loaded threads came from a VIP. Prefers the
+    /// denormalized `fromEmail` column; falls back to a message scan only for
+    /// threads where that column is still empty. Prefer the off-main path in
+    /// `reloadThreads` — this MainActor entry point is for VIP list mutations
+    /// that already hold the thread list in memory.
     func refreshVIPThreadIds() {
         let active = activeVIPEmails
         guard !active.isEmpty, !threads.isEmpty else {
             if !vipThreadIds.isEmpty { vipThreadIds = [] }
             return
         }
-        let ids = threads.map(\.id)
-        let placeholders = ids.map { _ in "?" }.joined(separator: ",")
-        let rows = (try? db.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT DISTINCT threadId, fromHeader FROM message
-                WHERE threadId IN (\(placeholders))
-                """, arguments: StatementArguments(ids))
+        let snapshot = threads
+        vipThreadIds = (try? db.read { db in
+            try Self.computeVIPThreadIds(threads: snapshot, activeVIP: active, db: db)
         }) ?? []
+    }
+
+    /// VIP hits for a thread list. Pure DB helper — safe off MainActor.
+    nonisolated static func computeVIPThreadIds(threads: [MailThread],
+                                                activeVIP: Set<String>,
+                                                db: Database) throws -> Set<String> {
+        guard !activeVIP.isEmpty, !threads.isEmpty else { return [] }
         var hits = Set<String>()
+        var fallbackIds: [String] = []
+        for t in threads {
+            if !t.fromEmail.isEmpty {
+                if activeVIP.contains(t.fromEmail) { hits.insert(t.id) }
+            } else {
+                fallbackIds.append(t.id)
+            }
+        }
+        guard !fallbackIds.isEmpty else { return hits }
+        let placeholders = fallbackIds.map { _ in "?" }.joined(separator: ",")
+        let rows = try Row.fetchAll(db, sql: """
+            SELECT DISTINCT threadId, fromHeader FROM message
+            WHERE threadId IN (\(placeholders))
+            """, arguments: StatementArguments(fallbackIds))
         for row in rows {
             let header: String = row["fromHeader"]
-            if active.contains(MessageParser.emailAddress(header).lowercased()) {
+            if activeVIP.contains(MessageParser.emailAddress(header).lowercased()) {
                 hits.insert(row["threadId"])
             }
         }
-        vipThreadIds = hits
+        return hits
     }
 
     // MARK: - Blocked senders
@@ -607,28 +627,54 @@ final class MailStore: ObservableObject {
     /// Moves every inbox thread from a blocked sender to Spam. Quiet (no
     /// per-thread undo toast — blocking is the undoable act, via Unblock).
     /// Runs on block and after each sync so new arrivals never linger.
+    /// Prefers denormalized `fromEmail`; only joins messages for threads
+    /// where that column is still empty.
     func applyBlocklist() {
         guard !blockedEmails.isEmpty else { return }
-        let rows = (try? db.read { db in
-            try Row.fetchAll(db, sql: """
-                SELECT DISTINCT thread.id AS threadId, message.fromHeader AS fromHeader
-                FROM thread JOIN message ON message.threadId = thread.id
-                WHERE thread.inInbox = 1 AND thread.inTrash = 0
+        let blocked = Array(blockedEmails)
+        let hits = (try? db.read { db -> [MailThread] in
+            var hitIds = Set<String>()
+            // Fast path: match the denormalized newest-From email.
+            let byEmail = try MailThread
+                .filter(Column("inInbox") == true && Column("inTrash") == false)
+                .filter(Column("fromEmail") != "")
+                .filter(blocked.contains(Column("fromEmail")))
+                .fetchAll(db)
+            hitIds.formUnion(byEmail.map(\.id))
+
+            // Fallback: empty fromEmail → scan message headers for those rows.
+            let emptyIds = try String.fetchAll(db, sql: """
+                SELECT id FROM thread
+                WHERE inInbox = 1 AND inTrash = 0 AND fromEmail = ''
                 """)
-        }) ?? []
-        var hitIds = Set<String>()
-        for row in rows {
-            let header: String = row["fromHeader"]
-            if blockedEmails.contains(MessageParser.emailAddress(header).lowercased()) {
-                hitIds.insert(row["threadId"])
+            if !emptyIds.isEmpty {
+                let placeholders = emptyIds.map { _ in "?" }.joined(separator: ",")
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT DISTINCT message.threadId AS threadId, message.fromHeader AS fromHeader
+                    FROM message
+                    WHERE message.threadId IN (\(placeholders))
+                    """, arguments: StatementArguments(emptyIds))
+                let blockedSet = Set(blocked)
+                for row in rows {
+                    let header: String = row["fromHeader"]
+                    if blockedSet.contains(MessageParser.emailAddress(header).lowercased()) {
+                        hitIds.insert(row["threadId"])
+                    }
+                }
             }
-        }
-        guard !hitIds.isEmpty else { return }
-        let hits = (try? db.read { db in
-            try MailThread.filter(hitIds.contains(Column("id"))).fetchAll(db)
+            guard !hitIds.isEmpty else { return [] }
+            return try MailThread.filter(hitIds.contains(Column("id"))).fetchAll(db)
         }) ?? []
         for thread in hits {
-            mutateThread(thread) { $0.inInbox = false } remote: { client, id in
+            mutateThread(thread) { t in
+                t.inInbox = false
+                // Keep labelIds / denorm coherent with the SPAM move.
+                var labels = Set(t.labels)
+                labels.remove("INBOX")
+                labels.insert("SPAM")
+                t.labelIds = labels.sorted().joined(separator: " ")
+                t.syncFlagsFromLabelIds()
+            } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
             }
         }
@@ -913,9 +959,6 @@ final class MailStore: ObservableObject {
         savedViews = (try? db.read { try SavedView.order(Column("name")).fetchAll($0) }) ?? []
     }
 
-    // nonisolated: pure constants used from pool-read query builders.
-    nonisolated private static let categoryLabels = ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"]
-
     /// Chip toggles arrive in bursts (typing a sender, flipping several
     /// filters); coalesce them into one reload instead of a full 300-thread
     /// query per change. View switches keep calling reloadThreads() directly.
@@ -935,8 +978,9 @@ final class MailStore: ObservableObject {
     }
 
     /// Async thread-list reload. Captures filter inputs on the main actor,
-    /// reads off the critical path, then applies only if this generation is
-    /// still current. Does not clear `threads` while loading (no flicker).
+    /// reads off the critical path (threads + VIP hits + sidebar counts), then
+    /// applies only if this generation is still current. Does not clear
+    /// `threads` while loading (no flicker).
     func reloadThreads() {
         chipReloadTask?.cancel()   // a direct reload supersedes a pending debounced one
         threadReloadGeneration += 1
@@ -951,11 +995,27 @@ final class MailStore: ObservableObject {
         let keepIds = Array(readStateKeepIds)
         let allLabels = labelsByAccount.values.flatMap { $0 }
         let savedViewsSnapshot = savedViews
+        let activeVIP = activeVIPEmails
+        let badgeAccount: String? = {
+            switch Self.badgeScope {
+            case .all: return nil
+            case .focused: return activeAccount
+            case .account(let id): return id
+            }
+        }()
+        let apiCountsSnapshot = apiCounts
         let pool = db
 
         threadReloadTask?.cancel()
         threadReloadTask = Task { [weak self] in
-            let result: [MailThread] = (try? await pool.read { db -> [MailThread] in
+            struct ReloadPayload {
+                var threads: [MailThread]
+                var vipHits: Set<String>
+                var counts: [String: Int]
+                var badge: Int
+            }
+            let payload: ReloadPayload? = try? await pool.read { db -> ReloadPayload in
+                let result: [MailThread]
                 if !search.isEmpty {
                     let parsed = SearchQuery.parse(search)
                     var q = MailThread.all()
@@ -971,13 +1031,16 @@ final class MailStore: ObservableObject {
                     if let from = parsed.from {
                         // fromDisplay/participants hold display names, so an email
                         // query ("from:x@y.com") must also check the raw header.
+                        // Prefer denorm fromEmail when present; still check headers
+                        // for threads not yet backfilled.
                         let pattern = "%\(from)%"
                         q = q.filter(sql: """
                             (fromDisplay LIKE ? OR participants LIKE ?
+                             OR fromEmail LIKE ?
                              OR EXISTS (SELECT 1 FROM message
                                         WHERE message.threadId = thread.id
                                           AND message.fromHeader LIKE ?))
-                            """, arguments: [pattern, pattern, pattern])
+                            """, arguments: [pattern, pattern, pattern, pattern])
                     }
                     if let to = parsed.to {
                         // Recipient headers live on messages, so match via EXISTS.
@@ -995,7 +1058,7 @@ final class MailStore: ObservableObject {
                         q = q.filter(Column("isUnread") == unread)
                     }
                     if parsed.starred {
-                        q = q.filter(Column("labelIds").like("%STARRED%"))
+                        q = q.filter(Column("isStarred") == true)
                     }
                     if let after = parsed.after {
                         q = q.filter(Column("lastDate") >= after)
@@ -1017,24 +1080,42 @@ final class MailStore: ObservableObject {
                     }
                     if parsed.hasAttachment { q = q.filter(Column("hasAttachment") == true) }
                     if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                    return try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
+                    result = try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
+                } else {
+                    var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
+                    if chips.showArchived || chips.showSent {
+                        // Widen from inbox-only before layering the other chips.
+                        q = MailStore.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
+                    }
+                    q = MailStore.applyChips(q, chips, keepIds: keepIds)
+                    if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
+                    result = try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
                 }
-                var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
-                if chips.showArchived || chips.showSent {
-                    // Widen from inbox-only before layering the other chips.
-                    q = MailStore.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
-                }
-                q = MailStore.applyChips(q, chips, keepIds: keepIds)
-                if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                return try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
-            }) ?? []
-            guard !Task.isCancelled else { return }
+                let vipHits = try MailStore.computeVIPThreadIds(
+                    threads: result, activeVIP: activeVIP, db: db)
+                let (counts, badge) = try MailStore.fetchSidebarCounts(
+                    db: db, activeAccount: activeAccount, badgeAccount: badgeAccount)
+                return ReloadPayload(threads: result, vipHits: vipHits,
+                                     counts: counts, badge: badge)
+            }
+            guard let payload, !Task.isCancelled else { return }
+
+            // Gmail API counts still override local promotions/social totals.
+            var counts = payload.counts
+            let scoped = activeAccount.map { id in apiCountsSnapshot.filter { $0.key == id } }
+                ?? apiCountsSnapshot
+            if !scoped.isEmpty {
+                counts["promotions"] = scoped.values.reduce(0) { $0 + ($1["CATEGORY_PROMOTIONS"] ?? 0) }
+                counts["social"] = scoped.values.reduce(0) { $0 + ($1["CATEGORY_SOCIAL"] ?? 0) }
+            }
+
             await MainActor.run {
                 guard let self, generation == self.threadReloadGeneration else { return }
-                self.threads = result
+                self.threads = payload.threads
+                self.vipThreadIds = payload.vipHits
+                self.unreadCounts = counts
+                Notifier.setBadge(payload.badge)
                 self.loadAICategories()
-                self.refreshVIPThreadIds()
-                self.refreshCountsAndBadge()
             }
         }
     }
@@ -1084,15 +1165,29 @@ final class MailStore: ObservableObject {
                            keepIds: [String] = []) -> QueryInterfaceRequest<MailThread> {
         var q = query
         for cat in chips.category.hide {
-            q = q.filter(!Column("labelIds").like("%\(cat)%"))
+            // Prefer denorm flags for the two categories that have them.
+            switch cat {
+            case "CATEGORY_PROMOTIONS": q = q.filter(Column("inPromotions") == false)
+            case "CATEGORY_SOCIAL": q = q.filter(Column("inSocial") == false)
+            default: q = q.filter(!Column("labelIds").like("%\(cat)%"))
+            }
         }
         if !chips.category.show.isEmpty {
-            // Contains any of the selected categories (values bound, not interpolated).
-            let conditions = chips.category.show
-                .map { _ in "labelIds LIKE ?" }
-                .joined(separator: " OR ")
-            let patterns = chips.category.show.map { "%\($0)%" }
-            q = q.filter(sql: conditions, arguments: StatementArguments(patterns))
+            // Contains any of the selected categories. Denorm for promo/social;
+            // labelIds LIKE for Updates/Forums (no denorm columns yet).
+            var parts: [String] = []
+            var args: [any DatabaseValueConvertible] = []
+            for cat in chips.category.show {
+                switch cat {
+                case "CATEGORY_PROMOTIONS": parts.append("inPromotions = 1")
+                case "CATEGORY_SOCIAL": parts.append("inSocial = 1")
+                default:
+                    parts.append("labelIds LIKE ?")
+                    args.append("%\(cat)%")
+                }
+            }
+            q = q.filter(sql: parts.joined(separator: " OR "),
+                         arguments: StatementArguments(args))
         }
         if chips.unreadOnly { q = q.filter(Column("isUnread") == true || keepIds.contains(Column("id"))) }
         if chips.readOnly { q = q.filter(Column("isUnread") == false || keepIds.contains(Column("id"))) }
@@ -1109,10 +1204,13 @@ final class MailStore: ObservableObject {
                          arguments: [pattern, pattern])
         }
         if let sender = chips.fromEmailContains, !sender.isEmpty {
+            // Prefer denorm fromEmail; fall back to message headers for empty rows.
             q = q.filter(sql: """
-                EXISTS (SELECT 1 FROM message
-                        WHERE message.threadId = thread.id AND message.fromHeader LIKE ?)
-                """, arguments: ["%\(sender)%"])
+                (fromEmail LIKE ?
+                 OR (fromEmail = '' AND EXISTS (
+                        SELECT 1 FROM message
+                        WHERE message.threadId = thread.id AND message.fromHeader LIKE ?)))
+                """, arguments: ["%\(sender)%", "%\(sender)%"])
         }
         for (header, value) in [("toHeader", chips.toContains),
                                 ("ccHeader", chips.ccContains),
@@ -1156,9 +1254,9 @@ final class MailStore: ObservableObject {
             // Category filtering is handled by the Categories chip.
             q = notSnoozed(q.filter(Column("inInbox") == true && Column("inTrash") == false))
         case .promotions:
-            q = q.filter(Column("inTrash") == false && Column("labelIds").like("%CATEGORY_PROMOTIONS%"))
+            q = q.filter(Column("inTrash") == false && Column("inPromotions") == true)
         case .social:
-            q = q.filter(Column("inTrash") == false && Column("labelIds").like("%CATEGORY_SOCIAL%"))
+            q = q.filter(Column("inTrash") == false && Column("inSocial") == true)
         case .starred:
             q = q.filter(Column("isStarred") == true && Column("inTrash") == false)
         case .snoozed:
@@ -1170,12 +1268,12 @@ final class MailStore: ObservableObject {
         case .reminders:
             q = q.filter(Column("reminderAt") != nil)
         case .drafts:
-            q = q.filter(Column("labelIds").like("%DRAFT%") && Column("inTrash") == false)
+            q = q.filter(Column("inDrafts") == true && Column("inTrash") == false)
         case .scheduled:
             // Scheduled sends aren't threads; ScheduledListView renders them.
             q = q.none()
         case .sent:
-            q = q.filter(Column("labelIds").like("%SENT%") && Column("inTrash") == false)
+            q = q.filter(Column("inSent") == true && Column("inTrash") == false)
         case .allMail:
             q = q.filter(Column("inTrash") == false)
         case .trash:
@@ -1209,9 +1307,15 @@ final class MailStore: ObservableObject {
                              || Column("participants").like("%\(v.senderContains)%"))
             }
             if v.excludePromotions {
-                for cat in categoryLabels { q = q.filter(!Column("labelIds").like("%\(cat)%")) }
+                q = q.filter(Column("inPromotions") == false && Column("inSocial") == false)
             }
-            if let cat = v.category { q = q.filter(Column("labelIds").like("%\(cat)%")) }
+            if let cat = v.category {
+                switch cat {
+                case "CATEGORY_PROMOTIONS": q = q.filter(Column("inPromotions") == true)
+                case "CATEGORY_SOCIAL": q = q.filter(Column("inSocial") == true)
+                default: q = q.filter(Column("labelIds").like("%\(cat)%"))
+                }
+            }
         }
         return q
     }
@@ -1223,7 +1327,7 @@ final class MailStore: ObservableObject {
         // widens to inbox-or-sent. (Category chips are layered on afterwards.)
         func widened(_ w: QueryInterfaceRequest<MailThread>) -> QueryInterfaceRequest<MailThread> {
             if archived { return w }
-            return w.filter(Column("inInbox") == true || Column("labelIds").like("%SENT%"))
+            return w.filter(Column("inInbox") == true || Column("inSent") == true)
         }
         switch view {
         case .inbox:
@@ -1276,6 +1380,7 @@ final class MailStore: ObservableObject {
 
     private func refreshCountsAndBadge() {
         // Local counts (fallback + reminders, which Gmail doesn't know about).
+        // Single aggregate SQL — same helper used off-main in reloadThreads.
         let activeAccount = activeAccountId
         // The account the badge counts: nil = every account. "Focused"
         // follows the sidebar (unified view = every account).
@@ -1287,39 +1392,8 @@ final class MailStore: ObservableObject {
             }
         }()
         let (local, badgeTotal): ([String: Int], Int) = (try? db.read { db in
-            func count(_ q: QueryInterfaceRequest<MailThread>,
-                       scopedTo account: String?) -> Int {
-                var q = q
-                if let a = account { q = q.filter(Column("accountId") == a) }
-                return (try? q.fetchCount(db)) ?? 0
-            }
-            func count(_ q: QueryInterfaceRequest<MailThread>) -> Int {
-                count(q, scopedTo: activeAccount)
-            }
-            let unread = MailThread.filter(Column("isUnread") == true && Column("inTrash") == false)
-            var inboxUnread = unread.filter(Column("inInbox") == true)
-            for cat in Self.categoryLabels {
-                inboxUnread = inboxUnread.filter(!Column("labelIds").like("%\(cat)%"))
-            }
-            let inboxLocal = count(inboxUnread)
-            let counts = [
-                "inbox": inboxLocal,
-                "promotions": count(unread.filter(Column("labelIds").like("%CATEGORY_PROMOTIONS%"))),
-                "social": count(unread.filter(Column("labelIds").like("%CATEGORY_SOCIAL%"))),
-                "reminders": count(MailThread.filter(Column("reminderAt") != nil)),
-                // Totals (not unread), matching each view's query exactly.
-                "starred": count(MailThread.filter(
-                    Column("isStarred") == true && Column("inTrash") == false)),
-                "snoozed": count(MailThread.filter(
-                    Column("snoozeUntil") != nil && Column("snoozeUntil") > Date()
-                        && Column("inTrash") == false)),
-                "drafts": count(MailThread.filter(
-                    Column("labelIds").like("%DRAFT%") && Column("inTrash") == false)),
-            ]
-            // Same scope as the sidebar inbox count → reuse it.
-            let badge = badgeAccount == activeAccount
-                ? inboxLocal : count(inboxUnread, scopedTo: badgeAccount)
-            return (counts, badge)
+            try Self.fetchSidebarCounts(db: db, activeAccount: activeAccount,
+                                        badgeAccount: badgeAccount)
         }) ?? ([:], 0)
 
         var counts = local
@@ -1338,10 +1412,93 @@ final class MailStore: ObservableObject {
         Notifier.setBadge(badgeTotal)
     }
 
+    /// One SQL with conditional aggregates for every sidebar count + dock badge.
+    /// `activeAccount`/`badgeAccount` nil = every account. Safe off MainActor.
+    nonisolated static func fetchSidebarCounts(
+        db: Database,
+        activeAccount: String?,
+        badgeAccount: String?,
+        now: Date = Date()
+    ) throws -> (counts: [String: Int], badge: Int) {
+        // ?1 = activeAccount, ?2 = badgeAccount, ?3 = now (snoozed cutoff).
+        let row = try Row.fetchOne(db, sql: """
+            SELECT
+              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
+                AND isUnread = 1 AND inTrash = 0 AND inInbox = 1
+                AND inPromotions = 0 AND inSocial = 0 THEN 1 ELSE 0 END), 0) AS inbox,
+              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
+                AND isUnread = 1 AND inTrash = 0 AND inPromotions = 1 THEN 1 ELSE 0 END), 0) AS promotions,
+              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
+                AND isUnread = 1 AND inTrash = 0 AND inSocial = 1 THEN 1 ELSE 0 END), 0) AS social,
+              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
+                AND reminderAt IS NOT NULL THEN 1 ELSE 0 END), 0) AS reminders,
+              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
+                AND isStarred = 1 AND inTrash = 0 THEN 1 ELSE 0 END), 0) AS starred,
+              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
+                AND snoozeUntil IS NOT NULL AND snoozeUntil > ?3 AND inTrash = 0 THEN 1 ELSE 0 END), 0) AS snoozed,
+              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
+                AND inDrafts = 1 AND inTrash = 0 THEN 1 ELSE 0 END), 0) AS drafts,
+              COALESCE(SUM(CASE WHEN (?2 IS NULL OR accountId = ?2)
+                AND isUnread = 1 AND inTrash = 0 AND inInbox = 1
+                AND inPromotions = 0 AND inSocial = 0 THEN 1 ELSE 0 END), 0) AS badge
+            FROM thread
+            """, arguments: [activeAccount, badgeAccount, now])
+        guard let row else { return ([:], 0) }
+        let counts: [String: Int] = [
+            "inbox": row["inbox"],
+            "promotions": row["promotions"],
+            "social": row["social"],
+            "reminders": row["reminders"],
+            "starred": row["starred"],
+            "snoozed": row["snoozed"],
+            "drafts": row["drafts"],
+        ]
+        let badge: Int = row["badge"]
+        return (counts, badge)
+    }
+
+    /// Full messages including bodies — used by compose / reply / forward.
     func messages(inThread threadId: String) -> [Message] {
         (try? db.read {
             try Message.filter(Column("threadId") == threadId).order(Column("date")).fetchAll($0)
         }) ?? []
+    }
+
+    /// Headers + snippet only (empty body fields). Cheap open path for the
+    /// reading pane; hydrate bodies with `messageBody(id:)` on expand.
+    func messageHeaders(inThread threadId: String) -> [Message] {
+        (try? db.read { db in
+            try Message.fetchAll(
+                db,
+                sql: """
+                    SELECT id, accountId, gmailId, threadId, fromHeader, toHeader, ccHeader,
+                           bccHeader, subject, date, snippet,
+                           '' AS bodyText, NULL AS bodyHTML,
+                           messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment
+                    FROM message
+                    WHERE threadId = ?
+                    ORDER BY date
+                    """,
+                arguments: [threadId]
+            )
+        }) ?? []
+    }
+
+    /// One message with full body fields.
+    func messageBody(id: String) -> Message? {
+        (try? db.read {
+            try Message.filter(Column("id") == id).fetchOne($0)
+        }) ?? nil
+    }
+
+    /// Load bodies for specific message ids, preserving the order of `ids`.
+    func messagesWithBodies(ids: [String]) -> [Message] {
+        guard !ids.isEmpty else { return [] }
+        let fetched = (try? db.read {
+            try Message.filter(ids.contains(Column("id"))).fetchAll($0)
+        }) ?? []
+        let byId = Dictionary(uniqueKeysWithValues: fetched.map { ($0.id, $0) })
+        return ids.compactMap { byId[$0] }
     }
 
     func attachments(for messageId: String) -> [AttachmentRow] {
@@ -1458,8 +1615,54 @@ final class MailStore: ObservableObject {
         }
     }
 
+    /// Sync every account with true parallelism at the SyncEngine layer
+    /// (each engine is an independent actor). MainActor work — reload,
+    /// blocklist, contacts — runs once at the end.
     func syncAll() async {
-        for account in accounts { await sync(accountId: account.id) }
+        let ids = accounts.map(\.id)
+        guard !ids.isEmpty else {
+            applyBlocklist()
+            notifyNewMail()
+            rebuildContacts()
+            autoClassifyNewMail()
+            return
+        }
+        for id in ids where engines[id] == nil {
+            engines[id] = SyncEngine(accountId: id)
+        }
+        // Capture engine refs before leaving MainActor for the task group.
+        let pairs: [(String, SyncEngine)] = ids.compactMap { id in
+            engines[id].map { (id, $0) }
+        }
+        syncStatus = ids.count == 1
+            ? "Syncing \(ids[0])…"
+            : "Syncing \(ids.count) accounts…"
+
+        await withTaskGroup(of: (String, Error?).self) { group in
+            for (id, engine) in pairs {
+                group.addTask {
+                    do {
+                        try await engine.syncNow { status in
+                            Task { @MainActor [weak self] in self?.syncStatus = status }
+                        }
+                        return (id, nil)
+                    } catch {
+                        return (id, error)
+                    }
+                }
+            }
+            for await (id, error) in group {
+                if let error {
+                    lastError = "\(id): \(error.localizedDescription)"
+                } else {
+                    await refreshApiCounts(accountId: id)
+                    await backfillSenderNameIfNeeded(accountId: id)
+                }
+            }
+        }
+        syncStatus = ""
+        reloadAccounts()
+        reloadThreads()  // once for all accounts, not once per account
         applyBlocklist()
         notifyNewMail()
         rebuildContacts()
@@ -1521,9 +1724,14 @@ final class MailStore: ObservableObject {
 
     private func currentUnreadInboxIds() -> Set<String> {
         Set((try? db.read { db -> [String] in
-            var q = MailThread.filter(Column("isUnread") == true && Column("inInbox") == true && Column("inTrash") == false)
-            for cat in Self.categoryLabels { q = q.filter(!Column("labelIds").like("%\(cat)%")) }
-            return try q.fetchAll(db).map(\.id)
+            // Prefer denormalized category flags when present (schema v11+).
+            try MailThread
+                .filter(Column("isUnread") == true)
+                .filter(Column("inInbox") == true)
+                .filter(Column("inTrash") == false)
+                .filter(Column("inPromotions") == false)
+                .filter(Column("inSocial") == false)
+                .fetchAll(db).map(\.id)
         }) ?? [])
     }
 
@@ -1766,6 +1974,7 @@ final class MailStore: ObservableObject {
             var labels = Set(t.labelIds.split(separator: " ").map(String.init))
             if has { labels.remove(labelId) } else { labels.insert(labelId) }
             t.labelIds = labels.sorted().joined(separator: " ")
+            t.syncFlagsFromLabelIds()
         } remote: { client, id in
             try await client.modifyThread(id: id, add: has ? [] : [labelId],
                                           remove: has ? [labelId] : [])

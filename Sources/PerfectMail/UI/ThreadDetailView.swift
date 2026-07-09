@@ -46,7 +46,8 @@ struct ThreadDetailView: View {
                 ForEach(messages) { message in
                     MessageCard(message: message,
                                 isLast: message.id == messages.last?.id,
-                                onReply: { onReply(message) })
+                                onReply: { onReply(message) },
+                                onNeedBody: { loadBodyIfNeeded(id: message.id) })
                         .padding(.horizontal)
                 }
             }
@@ -140,14 +141,34 @@ struct ThreadDetailView: View {
         // visible jump.
         .scrollPosition(id: $scrolledMessageId, anchor: .top)
         .task(id: thread.id) {
-            messages = store.messages(inThread: thread.id)
-            threadAttachments = messages.flatMap { msg in
+            // Headers only first — skip pulling every body on open. The last
+            // message is always expanded, so hydrate its body immediately.
+            var loaded = store.messageHeaders(inThread: thread.id)
+            if let lastId = loaded.last?.id, let full = store.messageBody(id: lastId) {
+                loaded[loaded.count - 1] = full
+            }
+            messages = loaded
+            // Attachment rows key off messageId; header rows are enough.
+            threadAttachments = loaded.flatMap { msg in
                 store.attachments(for: msg.id).map { (message: msg, attachment: $0) }
             }
             scrolledMessageId = messages.count > 1 ? messages.last?.id : nil
             aiSummary = nil; summaryError = nil; summarizing = false
             if thread.isUnread { store.setRead(thread, read: true) }
         }
+    }
+
+    /// True when a reading-pane message still needs a body fetch.
+    static func needsBodyLoad(_ message: Message) -> Bool {
+        message.bodyText.isEmpty && (message.bodyHTML == nil || message.bodyHTML?.isEmpty == true)
+    }
+
+    /// Hydrate one message's body into `messages` when the user expands it.
+    private func loadBodyIfNeeded(id: String) {
+        guard let idx = messages.firstIndex(where: { $0.id == id }) else { return }
+        guard Self.needsBodyLoad(messages[idx]) else { return }
+        guard let full = store.messageBody(id: id) else { return }
+        messages[idx] = full
     }
 
     /// Notion Mail-style meta row under the subject: an attachments menu
@@ -285,7 +306,12 @@ struct ThreadDetailView: View {
         summarizing = true
         summaryError = nil
         aiSummary = nil
-        let body = messages.map(\.bodyText).joined(separator: "\n\n---\n\n")
+        // Summary needs full bodies; hydrate anything still header-only.
+        let ids = messages.map(\.id)
+        let fullById = Dictionary(uniqueKeysWithValues:
+            store.messagesWithBodies(ids: ids).map { ($0.id, $0) })
+        let body = messages.map { fullById[$0.id]?.bodyText ?? $0.bodyText }
+            .joined(separator: "\n\n---\n\n")
         let prompt = Ollama.summarize(subject: thread.subject, body: body)
         Task {
             do {
@@ -321,6 +347,8 @@ struct MessageCard: View {
     let message: Message
     let isLast: Bool
     let onReply: () -> Void
+    /// Parent loads the body when a collapsed header-only card expands.
+    let onNeedBody: () -> Void
     @State private var expanded: Bool
     // Full FROM/TO/CC rows (Notion Mail's "Show more"); compact by default.
     @State private var recipientsExpanded = false
@@ -341,17 +369,21 @@ struct MessageCard: View {
     /// The trail scans are whole-body regexes and the parent ForEach re-inits
     /// every card whenever the store publishes, so results are cached per
     /// message — bodies are immutable. Cleared wholesale when it grows past
-    /// a few threads' worth.
+    /// a few threads' worth. Only cache when a body is present so lazy-loaded
+    /// headers don't poison the entry with an empty-body result.
     private static var trailCache: [String: (head: String?, hasTrail: Bool)] = [:]
 
-    init(message: Message, isLast: Bool, onReply: @escaping () -> Void) {
+    init(message: Message, isLast: Bool, onReply: @escaping () -> Void,
+         onNeedBody: @escaping () -> Void = {}) {
         self.message = message
         self.isLast = isLast
         self.onReply = onReply
+        self.onNeedBody = onNeedBody
         _expanded = State(initialValue: isLast)
-        if let cached = Self.trailCache[message.id] {
+        let hasBody = !ThreadDetailView.needsBodyLoad(message)
+        if hasBody, let cached = Self.trailCache[message.id] {
             (textHead, hasQuotedTrail) = cached
-        } else {
+        } else if hasBody {
             if let html = message.bodyHTML, !html.isEmpty {
                 textHead = nil
                 hasQuotedTrail = QuotedReply.hasHTMLQuote(html)
@@ -361,6 +393,22 @@ struct MessageCard: View {
             }
             if Self.trailCache.count > 512 { Self.trailCache.removeAll() }
             Self.trailCache[message.id] = (textHead, hasQuotedTrail)
+        } else {
+            textHead = nil
+            hasQuotedTrail = false
+        }
+    }
+
+    private func toggleExpanded() {
+        let willExpand = !expanded
+        withAnimation { expanded.toggle() }
+        if willExpand { onNeedBody() }
+    }
+
+    private func expandCard() {
+        if !expanded {
+            withAnimation { expanded = true }
+            onNeedBody()
         }
     }
 
@@ -425,7 +473,7 @@ struct MessageCard: View {
                 Text(message.date, format: .dateTime.month(.abbreviated).day().hour().minute())
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Button {
-                    withAnimation { expanded.toggle() }
+                    toggleExpanded()
                 } label: {
                     Image(systemName: expanded ? "chevron.up" : "chevron.down")
                 }
@@ -434,20 +482,22 @@ struct MessageCard: View {
             }
             .contentShape(Rectangle())
             .onTapGesture {
-                withAnimation { expanded.toggle() }
+                toggleExpanded()
             }
             .onHover { inside in
                 if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
             }
 
             if expanded {
+                // Collapsed cards never mount HTMLBodyView (gated on expanded).
+                // Header-only rows show nothing until the parent hydrates the body.
                 if let html = message.bodyHTML, !html.isEmpty {
                     HTMLBodyView(html: html, allowRemoteImages: loadRemoteImages,
                                  fontScale: fontScale,
                                  collapseQuote: hasQuotedTrail && !showQuoted,
                                  height: $htmlHeight)
                         .frame(height: htmlHeight)
-                } else {
+                } else if !message.bodyText.isEmpty {
                     Text((showQuoted ? nil : textHead) ?? message.bodyText)
                         .font(.system(size: 14.5 * fontScale))
                         .lineSpacing(3)
@@ -583,7 +633,7 @@ struct MessageCard: View {
         .contentShape(Rectangle())
         .onTapGesture {
             if !expanded {
-                withAnimation { expanded = true }
+                expandCard()
                 if cardCursorPushed { NSCursor.pop(); cardCursorPushed = false }
             }
         }
@@ -595,6 +645,10 @@ struct MessageCard: View {
             } else if cardCursorPushed {
                 NSCursor.pop(); cardCursorPushed = false
             }
+        }
+        .onAppear {
+            // Last card starts expanded; ask parent to hydrate if still headers-only.
+            if expanded { onNeedBody() }
         }
     }
 
@@ -747,6 +801,9 @@ struct MessageCard: View {
 /// Sandboxed HTML rendering: page JavaScript disabled; remote content blocked
 /// by CSP unless the user opts in per message. Sizes itself to its content.
 /// External links open in the default browser.
+///
+/// Web views are drawn from `HTMLWebViewPool` (shared config + recycle) so
+/// expanding/collapsing cards does not thrash WKWebView process creation.
 struct HTMLBodyView: NSViewRepresentable {
     let html: String
     let allowRemoteImages: Bool
@@ -756,21 +813,8 @@ struct HTMLBodyView: NSViewRepresentable {
     var collapseQuote: Bool = false
     @Binding var height: CGFloat
 
-    /// The web view is sized to its full content, so it must never trap
-    /// scroll events — forward them to the enclosing SwiftUI ScrollView.
-    final class PassthroughWebView: WKWebView {
-        override func scrollWheel(with event: NSEvent) {
-            nextResponder?.scrollWheel(with: event)
-        }
-    }
-
     func makeNSView(context: Context) -> WKWebView {
-        let config = WKWebViewConfiguration()
-        config.defaultWebpagePreferences.allowsContentJavaScript = false
-        // Ephemeral store: any remote image an email is allowed to load can't
-        // drop cookies/cache that persist or bleed across accounts.
-        config.websiteDataStore = .nonPersistent()
-        let webView = PassthroughWebView(frame: .zero, configuration: config)
+        let webView = HTMLWebViewPool.dequeue()
         webView.navigationDelegate = context.coordinator
         webView.setValue(false, forKey: "drawsBackground")
         return webView
@@ -790,6 +834,12 @@ struct HTMLBodyView: NSViewRepresentable {
         webView.loadHTMLString("<html><head>\(csp)\(style)</head><body>\(html)</body></html>", baseURL: nil)
     }
 
+    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
+        coordinator.loadedKey = nil
+        coordinator.setHeight = nil
+        HTMLWebViewPool.recycle(nsView)
+    }
+
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator: NSObject, WKNavigationDelegate {
@@ -803,6 +853,8 @@ struct HTMLBodyView: NSViewRepresentable {
         /// Content (images, layout) can settle after didFinish; re-measure a
         /// few times and keep the tallest stable value.
         private func measure(_ webView: WKWebView, attempt: Int) {
+            // JS is disabled for page content; WebKit still allows evaluateJavaScript
+            // from the app process for measurement.
             webView.evaluateJavaScript("Math.ceil(Math.max(document.body.scrollHeight, document.body.getBoundingClientRect().height))") { [weak self] result, _ in
                 if let h = result as? CGFloat, h > 0 {
                     DispatchQueue.main.async { self?.setHeight?(max(h, 40)) }

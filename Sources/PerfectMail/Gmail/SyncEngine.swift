@@ -218,21 +218,35 @@ actor SyncEngine {
     private func incrementalSync(since historyId: String, progress: (@Sendable (String) -> Void)?) async throws -> String {
         var pageToken: String?
         var latest = historyId
-        var touched = Set<String>()   // gmail message ids to refetch
+        // messagesAdded (and label changes for unknown local messages) need a
+        // full getMessage; label-only changes on cached messages apply locally.
+        var fullFetch = Set<String>()
         var deleted = Set<String>()
+        // Ordered per-message label ops so add/remove sequences apply correctly.
+        var labelOps: [String: [(add: [String], remove: [String])]] = [:]
         repeat {
             let page = try await client.history(since: historyId, pageToken: pageToken)
             for item in page.history ?? [] {
-                for m in item.messagesAdded ?? [] { touched.insert(m.message.id) }
-                for m in item.labelsAdded ?? [] { touched.insert(m.message.id) }
-                for m in item.labelsRemoved ?? [] { touched.insert(m.message.id) }
+                for m in item.messagesAdded ?? [] { fullFetch.insert(m.message.id) }
+                for m in item.labelsAdded ?? [] {
+                    let id = m.message.id
+                    if fullFetch.contains(id) { continue }
+                    labelOps[id, default: []].append((add: m.labelIds ?? [], remove: []))
+                }
+                for m in item.labelsRemoved ?? [] {
+                    let id = m.message.id
+                    if fullFetch.contains(id) { continue }
+                    labelOps[id, default: []].append((add: [], remove: m.labelIds ?? []))
+                }
                 for m in item.messagesDeleted ?? [] { deleted.insert(m.message.id) }
             }
             if let h = page.historyId { latest = h }
             pageToken = page.nextPageToken
         } while pageToken != nil
 
-        touched.subtract(deleted)
+        fullFetch.subtract(deleted)
+        for id in deleted { labelOps.removeValue(forKey: id) }
+        for id in fullFetch { labelOps.removeValue(forKey: id) }
 
         // Collect the distinct thread keys affected by this batch so each
         // thread is re-derived exactly once, after all message upserts/
@@ -250,10 +264,34 @@ actor SyncEngine {
                 touchedKeys.insert(threadKey)
             }
         }
+
+        // Label-only history: patch labelIds/isUnread in place when the
+        // message is already cached; otherwise promote to a full fetch.
+        var labelOnlyCount = 0
+        for (gmailId, ops) in labelOps {
+            let key = "\(accountId):\(gmailId)"
+            let threadKey = try await db.write { db -> String? in
+                guard var msg = try Message.fetchOne(db, key: key) else { return nil }
+                for op in ops {
+                    msg.labelIds = Self.applyLabelDelta(labelIds: msg.labelIds,
+                                                        add: op.add, remove: op.remove)
+                }
+                msg.isUnread = msg.labelIds.split(separator: " ").contains("UNREAD")
+                try msg.save(db)
+                return msg.threadId
+            }
+            if let threadKey {
+                touchedKeys.insert(threadKey)
+                labelOnlyCount += 1
+            } else {
+                fullFetch.insert(gmailId)
+            }
+        }
+
         // Parallel download (concurrency 8, same as fetchAll), serial upsert
         // as each result arrives. getMessage failures are skipped (try?),
         // matching the prior serial loop.
-        try await Self.withBoundedConcurrency(ids: Array(touched), concurrency: 8,
+        try await Self.withBoundedConcurrency(ids: Array(fullFetch), concurrency: 8,
                                               fetch: { [client] id in
             try? await client.getMessage(id: id)
         }, onValue: { msg in
@@ -263,7 +301,7 @@ actor SyncEngine {
         // Recompute thread rows for anything affected, exactly once each.
         if !touchedKeys.isEmpty {
             try await deriveThreads(for: touchedKeys)
-            progress?("Updated \(touched.count) messages")
+            progress?("Updated \(fullFetch.count + labelOnlyCount) messages")
         }
         // A thread can lose all its messages (e.g. every message deleted);
         // drop those rows rather than leaving a stale thread behind.
@@ -271,6 +309,16 @@ actor SyncEngine {
             try await removeOrphanedThreads()
         }
         return latest
+    }
+
+    /// Merges label add/remove deltas into a space-separated labelIds string.
+    /// Removes first, then adds (matches a single history LabelChange event).
+    /// Pure — unit-tested.
+    static func applyLabelDelta(labelIds: String, add: [String], remove: [String]) -> String {
+        var labels = Set(labelIds.split(separator: " ").map(String.init).filter { !$0.isEmpty })
+        for r in remove where !r.isEmpty { labels.remove(r) }
+        for a in add where !a.isEmpty { labels.insert(a) }
+        return labels.sorted().joined(separator: " ")
     }
 
     // MARK: - Bounded concurrency
@@ -393,7 +441,12 @@ actor SyncEngine {
             messageCount: messages.count,
             hasAttachment: messages.contains { $0.hasAttachment },
             reminderAt: existing?.reminderAt,
-            reminderSetAt: existing?.reminderSetAt
+            reminderSetAt: existing?.reminderSetAt,
+            inSent: allLabels.contains("SENT"),
+            inDrafts: allLabels.contains("DRAFT"),
+            inPromotions: allLabels.contains("CATEGORY_PROMOTIONS"),
+            inSocial: allLabels.contains("CATEGORY_SOCIAL"),
+            fromEmail: MessageParser.emailAddress(newest.fromHeader).lowercased()
         )
     }
 

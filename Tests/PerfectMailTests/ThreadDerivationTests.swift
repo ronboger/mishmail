@@ -47,6 +47,23 @@ final class ThreadDerivationTests: XCTestCase {
         XCTAssertTrue(t.hasAttachment)
         XCTAssertEqual(t.messageCount, 2)
         XCTAssertEqual(t.labelIds, "INBOX SENT STARRED UNREAD")
+        XCTAssertTrue(t.inSent, "SENT anywhere in the thread sets inSent")
+        XCTAssertFalse(t.inDrafts)
+        XCTAssertFalse(t.inPromotions)
+        XCTAssertFalse(t.inSocial)
+        XCTAssertEqual(t.fromEmail, "jane@y.com", "newest From, lowercased bare email")
+    }
+
+    func testLabelDenormFlagsAndFromEmail() throws {
+        let newest = msg(id: "m2", from: "Promo Bot <PROMO@Shop.COM>", daysAgo: 0,
+                         labels: "CATEGORY_PROMOTIONS CATEGORY_SOCIAL")
+        let oldest = msg(id: "m1", from: account, daysAgo: 1, labels: "DRAFT")
+        let t = try XCTUnwrap(derive([newest, oldest]))
+        XCTAssertFalse(t.inSent)
+        XCTAssertTrue(t.inDrafts)
+        XCTAssertTrue(t.inPromotions)
+        XCTAssertTrue(t.inSocial)
+        XCTAssertEqual(t.fromEmail, "promo@shop.com")
     }
 
     func testParticipantsChronologicalDedupedAndMe() throws {
@@ -94,6 +111,60 @@ final class ThreadDerivationTests: XCTestCase {
         let t = try XCTUnwrap(derive([msg(id: "m1", from: "a@b.com", daysAgo: 0, labels: "TRASH")]))
         XCTAssertTrue(t.inTrash)
         XCTAssertFalse(t.inInbox)
+    }
+}
+
+/// SyncEngine.applyLabelDelta — pure label-string merge used by metadata-only
+/// history (label add/remove without a full getMessage).
+final class LabelDeltaTests: XCTestCase {
+
+    func testAddAndRemove() {
+        let afterRemove = SyncEngine.applyLabelDelta(labelIds: "INBOX UNREAD",
+                                                     add: [], remove: ["UNREAD"])
+        XCTAssertEqual(afterRemove, "INBOX")
+        let afterAdd = SyncEngine.applyLabelDelta(labelIds: afterRemove,
+                                                  add: ["STARRED"], remove: [])
+        XCTAssertEqual(afterAdd, "INBOX STARRED")
+    }
+
+    func testAddIsIdempotentAndSorted() {
+        let result = SyncEngine.applyLabelDelta(labelIds: "INBOX STARRED",
+                                                add: ["STARRED", "IMPORTANT"], remove: [])
+        XCTAssertEqual(result, "IMPORTANT INBOX STARRED")
+    }
+
+    func testRemoveMissingIsNoOp() {
+        let result = SyncEngine.applyLabelDelta(labelIds: "INBOX",
+                                                add: [], remove: ["UNREAD", "STARRED"])
+        XCTAssertEqual(result, "INBOX")
+    }
+
+    func testEmptyStartAndEmptyResult() {
+        XCTAssertEqual(SyncEngine.applyLabelDelta(labelIds: "", add: ["INBOX"], remove: []),
+                       "INBOX")
+        XCTAssertEqual(SyncEngine.applyLabelDelta(labelIds: "UNREAD", add: [], remove: ["UNREAD"]),
+                       "")
+    }
+
+    func testRemoveThenAddSameLabel() {
+        // Single-event semantics: remove first, then add — so a simultaneous
+        // add+remove of the same id ends up present.
+        let result = SyncEngine.applyLabelDelta(labelIds: "INBOX",
+                                                add: ["UNREAD"], remove: ["UNREAD"])
+        XCTAssertEqual(result, "INBOX UNREAD")
+    }
+
+    func testSequentialOpsMatchHistoryOrder() {
+        // History: add UNREAD, then remove UNREAD → net absent.
+        var labels = "INBOX"
+        labels = SyncEngine.applyLabelDelta(labelIds: labels, add: ["UNREAD"], remove: [])
+        labels = SyncEngine.applyLabelDelta(labelIds: labels, add: [], remove: ["UNREAD"])
+        XCTAssertEqual(labels, "INBOX")
+        // History: remove UNREAD, then add UNREAD → net present.
+        labels = "INBOX UNREAD"
+        labels = SyncEngine.applyLabelDelta(labelIds: labels, add: [], remove: ["UNREAD"])
+        labels = SyncEngine.applyLabelDelta(labelIds: labels, add: ["UNREAD"], remove: [])
+        XCTAssertEqual(labels, "INBOX UNREAD")
     }
 }
 

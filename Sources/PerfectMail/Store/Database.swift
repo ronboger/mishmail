@@ -32,8 +32,30 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var hasAttachment: Bool
     var reminderAt: Date?   // local follow-up reminder
     var reminderSetAt: Date? = nil  // thread activity cutoff for "remind if no reply"
+    // Denormalized label/category flags — avoids scanning labelIds / messages
+    // for common mailbox filters (Sent, Drafts, Promotions, Social).
+    var inSent: Bool = false
+    var inDrafts: Bool = false
+    var inPromotions: Bool = false
+    var inSocial: Bool = false
+    /// Lowercased email of the newest message's From (for VIP matching without scanning messages).
+    var fromEmail: String = ""
 
     var labels: [String] { labelIds.split(separator: " ").map(String.init) }
+
+    /// Re-derive boolean flags from the space-separated `labelIds` string so
+    /// local label mutations stay coherent with list/badge filters that use
+    /// the denormalized columns.
+    mutating func syncFlagsFromLabelIds() {
+        let set = Set(labels)
+        isStarred = set.contains("STARRED")
+        inInbox = set.contains("INBOX")
+        inTrash = set.contains("TRASH")
+        inSent = set.contains("SENT")
+        inDrafts = set.contains("DRAFT")
+        inPromotions = set.contains("CATEGORY_PROMOTIONS")
+        inSocial = set.contains("CATEGORY_SOCIAL")
+    }
 }
 
 struct Message: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
@@ -492,6 +514,68 @@ final class AppDatabase {
                 t.column("subject")
                 t.column("fromHeader")
                 t.column("bodyText")
+                t.prefixes = [2, 3]
+            }
+        }
+        // Denormalized label flags + newest-from email on thread for fast
+        // mailbox filters / VIP matching without scanning messages or
+        // parsing labelIds strings on every list query.
+        m.registerMigration("v16") { db in
+            try db.alter(table: "thread") { t in
+                t.add(column: "inSent", .boolean).notNull().defaults(to: false)
+                t.add(column: "inDrafts", .boolean).notNull().defaults(to: false)
+                t.add(column: "inPromotions", .boolean).notNull().defaults(to: false)
+                t.add(column: "inSocial", .boolean).notNull().defaults(to: false)
+                t.add(column: "fromEmail", .text).notNull().defaults(to: "")
+            }
+            // Token-aware label matches: labelIds is space-separated. Bound
+            // each id with spaces (and allow start/end of string) so SENT
+            // doesn't false-positive on a hypothetical *SENT* user label.
+            try db.execute(sql: """
+                UPDATE thread SET
+                  inSent = (labelIds = 'SENT' OR labelIds LIKE 'SENT %'
+                            OR labelIds LIKE '% SENT' OR labelIds LIKE '% SENT %'),
+                  inDrafts = (labelIds = 'DRAFT' OR labelIds LIKE 'DRAFT %'
+                              OR labelIds LIKE '% DRAFT' OR labelIds LIKE '% DRAFT %'),
+                  inPromotions = (labelIds = 'CATEGORY_PROMOTIONS'
+                                  OR labelIds LIKE 'CATEGORY_PROMOTIONS %'
+                                  OR labelIds LIKE '% CATEGORY_PROMOTIONS'
+                                  OR labelIds LIKE '% CATEGORY_PROMOTIONS %'),
+                  inSocial = (labelIds = 'CATEGORY_SOCIAL'
+                              OR labelIds LIKE 'CATEGORY_SOCIAL %'
+                              OR labelIds LIKE '% CATEGORY_SOCIAL'
+                              OR labelIds LIKE '% CATEGORY_SOCIAL %')
+                """)
+            // Newest message From → lowercased bare email (mirrors
+            // MessageParser.emailAddress + lowercased). Angle-bracket form
+            // first; else the whole header trimmed of brackets/spaces.
+            try db.execute(sql: """
+                UPDATE thread SET fromEmail = lower(coalesce((
+                    SELECT CASE
+                        WHEN instr(m.fromHeader, '<') > 0
+                             AND instr(m.fromHeader, '>') > instr(m.fromHeader, '<')
+                        THEN substr(m.fromHeader,
+                                    instr(m.fromHeader, '<') + 1,
+                                    instr(m.fromHeader, '>') - instr(m.fromHeader, '<') - 1)
+                        ELSE trim(m.fromHeader, '<> ')
+                    END
+                    FROM message m
+                    WHERE m.threadId = thread.id
+                    ORDER BY m.date DESC
+                    LIMIT 1
+                ), ''))
+                """)
+        }
+        // Trim message_fts: index subject + fromHeader only. Body text is
+        // large and rarely hit from the live search dropdown; body search
+        // falls back to server search (`searchAllGmail` / `searchServer`).
+        m.registerMigration("v17") { db in
+            try db.dropFTS5SynchronizationTriggers(forTable: "message_fts")
+            try db.drop(table: "message_fts")
+            try db.create(virtualTable: "message_fts", using: FTS5()) { t in
+                t.synchronize(withTable: "message")
+                t.column("subject")
+                t.column("fromHeader")
                 t.prefixes = [2, 3]
             }
         }

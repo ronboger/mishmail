@@ -19,6 +19,14 @@ final class DatabaseMigrationTests: XCTestCase {
             XCTAssertTrue(messageCols.contains("hasAttachment"))
             let accountCols = try db.columns(in: "account").map(\.name)
             XCTAssertTrue(accountCols.contains("senderName"), "v3 must add senderName")
+            let threadCols = try db.columns(in: "thread").map(\.name)
+            for name in ["inSent", "inDrafts", "inPromotions", "inSocial", "fromEmail"] {
+                XCTAssertTrue(threadCols.contains(name), "v16 must add \(name)")
+            }
+            let ftsSQL = try String.fetchOne(db, sql:
+                "SELECT sql FROM sqlite_master WHERE name = 'message_fts'") ?? ""
+            XCTAssertFalse(ftsSQL.lowercased().contains("bodytext"),
+                           "v17 FTS must omit bodyText")
         }
     }
 
@@ -211,7 +219,7 @@ final class DatabaseMigrationTests: XCTestCase {
                     '<id@mail>', '', 'INBOX', 1, 0)
                 """)
         }
-        try AppDatabase.migrator.migrate(q)   // through v15
+        try AppDatabase.migrator.migrate(q, upTo: "v15")
 
         // The rebuilt FTS table declares prefix indexes.
         let sql = try q.read { db in
@@ -238,5 +246,99 @@ final class DatabaseMigrationTests: XCTestCase {
                 "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'zebra'") ?? 0
         }
         XCTAssertEqual(after, 0, "sync triggers must survive the FTS rebuild")
+    }
+
+    /// v16 adds denormalized label flags + fromEmail on thread, backfilled
+    /// from existing labelIds / newest message From.
+    func testUpgradeToV16AddsLabelDenormColumns() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v15")
+        try q.write { db in
+            try db.execute(sql: "INSERT INTO account (id, displayName, senderName) VALUES ('ron@x.com', 'P', '')")
+            try db.execute(sql: """
+                INSERT INTO thread (id, accountId, gmailThreadId, subject, snippet, fromDisplay,
+                    lastDate, isUnread, isStarred, inInbox, inTrash, labelIds, participants,
+                    messageCount, hasAttachment)
+                VALUES
+                ('ron@x.com:t1', 'ron@x.com', 't1', 's', 'sn', 'Jane',
+                 '2026-01-02 00:00:00', 0, 0, 1, 0, 'INBOX SENT CATEGORY_PROMOTIONS', 'Jane', 1, 0),
+                ('ron@x.com:t2', 'ron@x.com', 't2', 'd', 'sn', 'Me',
+                 '2026-01-02 00:00:00', 0, 0, 0, 0, 'DRAFT CATEGORY_SOCIAL', 'me', 1, 0)
+                """)
+            try db.execute(sql: """
+                INSERT INTO message (id, accountId, gmailId, threadId, fromHeader, toHeader,
+                    ccHeader, bccHeader, subject, date, snippet, bodyText, messageIdHeader,
+                    referencesHeader, labelIds, isUnread, hasAttachment)
+                VALUES
+                ('ron@x.com:m1', 'ron@x.com', 'm1', 'ron@x.com:t1', 'Old <old@y.com>', '',
+                 '', '', 's', '2026-01-01 00:00:00', '', '', '', '', 'INBOX', 0, 0),
+                ('ron@x.com:m2', 'ron@x.com', 'm2', 'ron@x.com:t1', 'Jane Doe <Jane@Y.com>', '',
+                 '', '', 's', '2026-01-02 00:00:00', '', '', '', '', 'INBOX SENT', 0, 0),
+                ('ron@x.com:m3', 'ron@x.com', 'm3', 'ron@x.com:t2', 'bare@z.com', '',
+                 '', '', 'd', '2026-01-02 00:00:00', '', '', '', '', 'DRAFT', 0, 0)
+                """)
+        }
+        try AppDatabase.migrator.migrate(q)  // through v16/v17
+
+        let cols = try q.read { try $0.columns(in: "thread").map(\.name) }
+        for name in ["inSent", "inDrafts", "inPromotions", "inSocial", "fromEmail"] {
+            XCTAssertTrue(cols.contains(name), "v16 must add \(name)")
+        }
+
+        let (t1, t2) = try q.read { db in
+            (try MailThread.fetchOne(db, key: "ron@x.com:t1"),
+             try MailThread.fetchOne(db, key: "ron@x.com:t2"))
+        }
+        XCTAssertEqual(t1?.inSent, true)
+        XCTAssertEqual(t1?.inDrafts, false)
+        XCTAssertEqual(t1?.inPromotions, true)
+        XCTAssertEqual(t1?.inSocial, false)
+        XCTAssertEqual(t1?.fromEmail, "jane@y.com", "newest message From, lowercased")
+
+        XCTAssertEqual(t2?.inSent, false)
+        XCTAssertEqual(t2?.inDrafts, true)
+        XCTAssertEqual(t2?.inPromotions, false)
+        XCTAssertEqual(t2?.inSocial, true)
+        XCTAssertEqual(t2?.fromEmail, "bare@z.com")
+    }
+
+    /// v17 rebuilds message_fts without bodyText (subject + fromHeader only).
+    func testUpgradeToV17TrimsFTSBodyText() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v16")
+        try q.write { db in
+            try db.execute(sql: "INSERT INTO account (id, displayName, senderName) VALUES ('ron@x.com', 'P', '')")
+            try db.execute(sql: """
+                INSERT INTO message (id, accountId, gmailId, threadId, fromHeader, toHeader,
+                    ccHeader, bccHeader, subject, date, snippet, bodyText, messageIdHeader,
+                    referencesHeader, labelIds, isUnread, hasAttachment)
+                VALUES ('ron@x.com:m1', 'ron@x.com', 'm1', 'ron@x.com:t1', 'jane@y.com', '',
+                    '', '', 'Zebra migration plans', '2026-01-01 00:00:00', '', 'the quick brown fox',
+                    '<id@mail>', '', 'INBOX', 1, 0)
+                """)
+        }
+        try AppDatabase.migrator.migrate(q)
+
+        let sql = try q.read { db in
+            try String.fetchOne(db, sql: "SELECT sql FROM sqlite_master WHERE name = 'message_fts'") ?? ""
+        }
+        let lower = sql.lowercased()
+        XCTAssertTrue(lower.contains("subject"), "v17 FTS must index subject; got: \(sql)")
+        XCTAssertTrue(lower.contains("fromheader") || lower.contains("fromHeader".lowercased()),
+                      "v17 FTS must index fromHeader; got: \(sql)")
+        XCTAssertFalse(lower.contains("bodytext"),
+                       "v17 FTS must not index bodyText; got: \(sql)")
+        XCTAssertTrue(lower.contains("prefix"), "v17 must keep prefix indexes; got: \(sql)")
+
+        try q.read { db in
+            // Subject still searchable…
+            let subj = try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'zebra'") ?? 0
+            XCTAssertEqual(subj, 1)
+            // …but body text is not in the index.
+            let body = try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'quick'") ?? 0
+            XCTAssertEqual(body, 0, "body terms must not be indexed after v17")
+        }
     }
 }
