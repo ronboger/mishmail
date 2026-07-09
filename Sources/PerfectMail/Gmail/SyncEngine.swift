@@ -267,25 +267,33 @@ actor SyncEngine {
 
         // Label-only history: patch labelIds/isUnread in place when the
         // message is already cached; otherwise promote to a full fetch.
+        // One write transaction for the whole batch (bulk mark-read etc.).
         var labelOnlyCount = 0
-        for (gmailId, ops) in labelOps {
-            let key = "\(accountId):\(gmailId)"
-            let threadKey = try await db.write { db -> String? in
-                guard var msg = try Message.fetchOne(db, key: key) else { return nil }
-                for op in ops {
-                    msg.labelIds = Self.applyLabelDelta(labelIds: msg.labelIds,
-                                                        add: op.add, remove: op.remove)
+        if !labelOps.isEmpty {
+            let opsSnapshot = labelOps
+            let account = accountId
+            let (patchedKeys, missing) = try await db.write { db -> (Set<String>, [String]) in
+                var keys = Set<String>()
+                var missing: [String] = []
+                for (gmailId, ops) in opsSnapshot {
+                    let key = "\(account):\(gmailId)"
+                    guard var msg = try Message.fetchOne(db, key: key) else {
+                        missing.append(gmailId)
+                        continue
+                    }
+                    for op in ops {
+                        msg.labelIds = Self.applyLabelDelta(labelIds: msg.labelIds,
+                                                            add: op.add, remove: op.remove)
+                    }
+                    msg.isUnread = msg.labelIds.split(separator: " ").contains("UNREAD")
+                    try msg.save(db)
+                    keys.insert(msg.threadId)
                 }
-                msg.isUnread = msg.labelIds.split(separator: " ").contains("UNREAD")
-                try msg.save(db)
-                return msg.threadId
+                return (keys, missing)
             }
-            if let threadKey {
-                touchedKeys.insert(threadKey)
-                labelOnlyCount += 1
-            } else {
-                fullFetch.insert(gmailId)
-            }
+            touchedKeys.formUnion(patchedKeys)
+            labelOnlyCount = opsSnapshot.count - missing.count
+            for id in missing { fullFetch.insert(id) }
         }
 
         // Parallel download (concurrency 8, same as fetchAll), serial upsert
@@ -312,7 +320,8 @@ actor SyncEngine {
     }
 
     /// Merges label add/remove deltas into a space-separated labelIds string.
-    /// Removes first, then adds (matches a single history LabelChange event).
+    /// Removes first, then adds. History events are applied in the order they
+    /// were recorded (add-ops and remove-ops as separate sequential steps).
     /// Pure — unit-tested.
     static func applyLabelDelta(labelIds: String, add: [String], remove: [String]) -> String {
         var labels = Set(labelIds.split(separator: " ").map(String.init).filter { !$0.isEmpty })

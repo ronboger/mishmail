@@ -547,10 +547,9 @@ final class MailStore: ObservableObject {
         return email.contains("@") ? email : nil
     }
 
-    /// Recomputes which of the loaded threads came from a VIP. Prefers the
-    /// denormalized `fromEmail` column; falls back to a message scan only for
-    /// threads where that column is still empty. Prefer the off-main path in
-    /// `reloadThreads` — this MainActor entry point is for VIP list mutations
+    /// Recomputes which of the loaded threads came from a VIP. Any message From
+    /// in the thread can pin it (not only the newest). Prefer the off-main path
+    /// in `reloadThreads` — this MainActor entry point is for VIP list mutations
     /// that already hold the thread list in memory.
     func refreshVIPThreadIds() {
         let active = activeVIPEmails
@@ -564,26 +563,30 @@ final class MailStore: ObservableObject {
         }) ?? []
     }
 
-    /// VIP hits for a thread list. Pure DB helper — safe off MainActor.
+    /// VIP hits for a thread list. A thread pins if *any* message's From is VIP
+    /// (replying must not drop Priority). Denorm `fromEmail` is a positive
+    /// short-circuit only; non-hits still scan messages. Safe off MainActor.
     nonisolated static func computeVIPThreadIds(threads: [MailThread],
                                                 activeVIP: Set<String>,
                                                 db: Database) throws -> Set<String> {
         guard !activeVIP.isEmpty, !threads.isEmpty else { return [] }
         var hits = Set<String>()
-        var fallbackIds: [String] = []
+        var needScan: [String] = []
         for t in threads {
-            if !t.fromEmail.isEmpty {
-                if activeVIP.contains(t.fromEmail) { hits.insert(t.id) }
+            // Newest From is VIP → hit without a message join.
+            if !t.fromEmail.isEmpty, activeVIP.contains(t.fromEmail) {
+                hits.insert(t.id)
             } else {
-                fallbackIds.append(t.id)
+                // Still scan: an older message may be from a VIP.
+                needScan.append(t.id)
             }
         }
-        guard !fallbackIds.isEmpty else { return hits }
-        let placeholders = fallbackIds.map { _ in "?" }.joined(separator: ",")
+        guard !needScan.isEmpty else { return hits }
+        let placeholders = needScan.map { _ in "?" }.joined(separator: ",")
         let rows = try Row.fetchAll(db, sql: """
             SELECT DISTINCT threadId, fromHeader FROM message
             WHERE threadId IN (\(placeholders))
-            """, arguments: StatementArguments(fallbackIds))
+            """, arguments: StatementArguments(needScan))
         for row in rows {
             let header: String = row["fromHeader"]
             if activeVIP.contains(MessageParser.emailAddress(header).lowercased()) {
@@ -627,14 +630,15 @@ final class MailStore: ObservableObject {
     /// Moves every inbox thread from a blocked sender to Spam. Quiet (no
     /// per-thread undo toast — blocking is the undoable act, via Unblock).
     /// Runs on block and after each sync so new arrivals never linger.
-    /// Prefers denormalized `fromEmail`; only joins messages for threads
-    /// where that column is still empty.
+    /// Any message From can match (not only newest); denorm `fromEmail` is a
+    /// positive short-circuit only.
     func applyBlocklist() {
         guard !blockedEmails.isEmpty else { return }
         let blocked = Array(blockedEmails)
+        let blockedSet = Set(blocked)
         let hits = (try? db.read { db -> [MailThread] in
             var hitIds = Set<String>()
-            // Fast path: match the denormalized newest-From email.
+            // Fast path: denormalized newest-From is blocked.
             let byEmail = try MailThread
                 .filter(Column("inInbox") == true && Column("inTrash") == false)
                 .filter(Column("fromEmail") != "")
@@ -642,19 +646,20 @@ final class MailStore: ObservableObject {
                 .fetchAll(db)
             hitIds.formUnion(byEmail.map(\.id))
 
-            // Fallback: empty fromEmail → scan message headers for those rows.
-            let emptyIds = try String.fetchAll(db, sql: """
+            // Remaining inbox threads: any message From may still match a
+            // blocked sender even when newest From does not.
+            let remaining = try String.fetchAll(db, sql: """
                 SELECT id FROM thread
-                WHERE inInbox = 1 AND inTrash = 0 AND fromEmail = ''
+                WHERE inInbox = 1 AND inTrash = 0
                 """)
-            if !emptyIds.isEmpty {
-                let placeholders = emptyIds.map { _ in "?" }.joined(separator: ",")
+            let toScan = remaining.filter { !hitIds.contains($0) }
+            if !toScan.isEmpty {
+                let placeholders = toScan.map { _ in "?" }.joined(separator: ",")
                 let rows = try Row.fetchAll(db, sql: """
                     SELECT DISTINCT message.threadId AS threadId, message.fromHeader AS fromHeader
                     FROM message
                     WHERE message.threadId IN (\(placeholders))
-                    """, arguments: StatementArguments(emptyIds))
-                let blockedSet = Set(blocked)
+                    """, arguments: StatementArguments(toScan))
                 for row in rows {
                     let header: String = row["fromHeader"]
                     if blockedSet.contains(MessageParser.emailAddress(header).lowercased()) {

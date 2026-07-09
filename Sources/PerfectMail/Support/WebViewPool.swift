@@ -9,28 +9,24 @@ final class PassthroughWebView: WKWebView {
     }
 }
 
-/// Shared configuration + small recycle pool for HTML email `WKWebView`s.
+/// Small recycle pool for HTML email `WKWebView`s.
 ///
-/// Creating a `WKWebView` is expensive (process + configuration). The reading
-/// pane expands/collapses cards frequently, so we:
-/// 1. Share one ephemeral, JS-off configuration across all instances.
-/// 2. Keep up to `capacity` views after dismantle, clearing the DOM first.
+/// Creating a `WKWebView` is expensive. The reading pane expands/collapses
+/// cards frequently, so we keep up to `capacity` views after dismantle,
+/// clearing the DOM first. Each *new* view gets its own ephemeral data store
+/// (JS off) so remote-image cookies/cache do not bleed across messages;
+/// a recycled view reuses its instance store after DOM clear.
 enum HTMLWebViewPool {
     static let capacity = 3
 
     private static let lock = NSLock()
     private static var pool: [PassthroughWebView] = []
 
-    /// Ephemeral store + JS disabled. Safe to reuse for many web views.
-    static let sharedConfiguration: WKWebViewConfiguration = {
-        makeConfiguration()
-    }()
-
     static func makeConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
-        // Ephemeral store: any remote image an email is allowed to load can't
-        // drop cookies/cache that persist or bleed across accounts.
+        // Fresh non-persistent store per new view: cookies/cache do not
+        // persist to disk and do not share with other message views.
         config.websiteDataStore = .nonPersistent()
         return config
     }
@@ -43,7 +39,7 @@ enum HTMLWebViewPool {
         if let recycled {
             return recycled
         }
-        return PassthroughWebView(frame: .zero, configuration: sharedConfiguration)
+        return PassthroughWebView(frame: .zero, configuration: makeConfiguration())
     }
 
     /// Drop heavy DOM and return the view to the pool (or let it deallocate).

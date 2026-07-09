@@ -14,6 +14,9 @@ struct ThreadDetailView: View {
     @State private var aiSummary: String?
     @State private var summarizing = false
     @State private var summaryError: String?
+    /// Message ids we already tried to hydrate — avoids re-querying forever
+    /// for genuinely empty bodies (`needsBodyLoad` stays true).
+    @State private var bodyLoadAttempted: Set<String> = []
 
     var body: some View {
         ScrollView {
@@ -143,9 +146,11 @@ struct ThreadDetailView: View {
         .task(id: thread.id) {
             // Headers only first — skip pulling every body on open. The last
             // message is always expanded, so hydrate its body immediately.
+            bodyLoadAttempted = []
             var loaded = store.messageHeaders(inThread: thread.id)
             if let lastId = loaded.last?.id, let full = store.messageBody(id: lastId) {
                 loaded[loaded.count - 1] = full
+                bodyLoadAttempted.insert(lastId)
             }
             messages = loaded
             // Attachment rows key off messageId; header rows are enough.
@@ -167,6 +172,8 @@ struct ThreadDetailView: View {
     private func loadBodyIfNeeded(id: String) {
         guard let idx = messages.firstIndex(where: { $0.id == id }) else { return }
         guard Self.needsBodyLoad(messages[idx]) else { return }
+        guard !bodyLoadAttempted.contains(id) else { return }
+        bodyLoadAttempted.insert(id)
         guard let full = store.messageBody(id: id) else { return }
         messages[idx] = full
     }
@@ -802,8 +809,8 @@ struct MessageCard: View {
 /// by CSP unless the user opts in per message. Sizes itself to its content.
 /// External links open in the default browser.
 ///
-/// Web views are drawn from `HTMLWebViewPool` (shared config + recycle) so
-/// expanding/collapsing cards does not thrash WKWebView process creation.
+/// Web views are drawn from `HTMLWebViewPool` (recycle + per-view ephemeral
+/// store) so expanding/collapsing cards does not thrash WKWebView creation.
 struct HTMLBodyView: NSViewRepresentable {
     let html: String
     let allowRemoteImages: Bool

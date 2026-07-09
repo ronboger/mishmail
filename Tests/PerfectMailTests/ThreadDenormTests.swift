@@ -167,27 +167,28 @@ final class ThreadDenormTests: XCTestCase {
         XCTAssertEqual(badgeScoped, 1)           // b only
     }
 
-    // MARK: - VIP fromEmail prefer + fallback
+    // MARK: - VIP any-message matching
 
-    /// Mirrors MailStore.computeVIPThreadIds (Database.swift-level pure helper).
+    /// Mirrors MailStore.computeVIPThreadIds: denorm fromEmail is a positive
+    /// short-circuit only; non-hits still scan every message From.
     private func computeVIPThreadIds(threads: [MailThread], activeVIP: Set<String>,
                                      db: Database) throws -> Set<String> {
         guard !activeVIP.isEmpty, !threads.isEmpty else { return [] }
         var hits = Set<String>()
-        var fallbackIds: [String] = []
+        var needScan: [String] = []
         for t in threads {
-            if !t.fromEmail.isEmpty {
-                if activeVIP.contains(t.fromEmail) { hits.insert(t.id) }
+            if !t.fromEmail.isEmpty, activeVIP.contains(t.fromEmail) {
+                hits.insert(t.id)
             } else {
-                fallbackIds.append(t.id)
+                needScan.append(t.id)
             }
         }
-        guard !fallbackIds.isEmpty else { return hits }
-        let placeholders = fallbackIds.map { _ in "?" }.joined(separator: ",")
+        guard !needScan.isEmpty else { return hits }
+        let placeholders = needScan.map { _ in "?" }.joined(separator: ",")
         let rows = try Row.fetchAll(db, sql: """
             SELECT DISTINCT threadId, fromHeader FROM message
             WHERE threadId IN (\(placeholders))
-            """, arguments: StatementArguments(fallbackIds))
+            """, arguments: StatementArguments(needScan))
         for row in rows {
             let header: String = row["fromHeader"]
             if activeVIP.contains(MessageParser.emailAddress(header).lowercased()) {
@@ -197,13 +198,13 @@ final class ThreadDenormTests: XCTestCase {
         return hits
     }
 
-    func testVIPPrefersFromEmailAndFallsBackToMessageScan() throws {
+    func testVIPShortCircuitAndEmptyFromEmailScan() throws {
         let q = try makeDB()
         let account = "a@x.com"
         try q.write { db in
             try Account(id: account, displayName: "A", historyId: nil,
                         lastSyncAt: nil, senderName: "").insert(db)
-            // Thread with denorm fromEmail filled.
+            // Thread with denorm fromEmail filled (newest is VIP).
             let filled = MailThread(
                 id: "\(account):t1", accountId: account, gmailThreadId: "t1",
                 subject: "s", snippet: "", fromDisplay: "Vip",
@@ -257,5 +258,172 @@ final class ThreadDenormTests: XCTestCase {
                 db: $0)
         }
         XCTAssertEqual(hits, ["\(account):t1", "\(account):t2"])
+    }
+
+    /// Newest From is the user; an older message is from a VIP — thread must
+    /// still pin (replying must not drop Priority).
+    func testVIPMatchesOlderParticipantNotJustNewest() throws {
+        let q = try makeDB()
+        let account = "me@x.com"
+        try q.write { db in
+            try Account(id: account, displayName: "Me", historyId: nil,
+                        lastSyncAt: nil, senderName: "").insert(db)
+            let thread = MailThread(
+                id: "\(account):t1", accountId: account, gmailThreadId: "t1",
+                subject: "s", snippet: "", fromDisplay: "Me",
+                lastDate: Date(), isUnread: false, isStarred: false,
+                inInbox: true, inTrash: false, labelIds: "INBOX SENT",
+                snoozeUntil: nil, participants: "Vip .. me", messageCount: 2,
+                hasAttachment: false, reminderAt: nil,
+                fromEmail: "me@x.com")  // newest is self, not VIP
+            try thread.insert(db)
+            try Message(
+                id: "\(account):m1", accountId: account, gmailId: "m1",
+                threadId: "\(account):t1",
+                fromHeader: "VIP Person <vip@x.com>", toHeader: account,
+                ccHeader: "", bccHeader: "", subject: "s",
+                date: Date().addingTimeInterval(-3600),
+                snippet: "", bodyText: "hi", bodyHTML: nil,
+                messageIdHeader: "", referencesHeader: "", labelIds: "INBOX",
+                isUnread: false, hasAttachment: false).insert(db)
+            try Message(
+                id: "\(account):m2", accountId: account, gmailId: "m2",
+                threadId: "\(account):t1",
+                fromHeader: "Me <me@x.com>", toHeader: "vip@x.com",
+                ccHeader: "", bccHeader: "", subject: "Re: s",
+                date: Date(),
+                snippet: "", bodyText: "re", bodyHTML: nil,
+                messageIdHeader: "", referencesHeader: "", labelIds: "SENT",
+                isUnread: false, hasAttachment: false).insert(db)
+        }
+
+        let threads = try q.read { try MailThread.fetchAll($0) }
+        let hits = try q.read {
+            try self.computeVIPThreadIds(
+                threads: threads, activeVIP: ["vip@x.com"], db: $0)
+        }
+        XCTAssertEqual(hits, ["\(account):t1"],
+                       "older VIP participant must pin even when newest From is self")
+    }
+
+    /// Blocklist matching: any message From (not only denorm newest).
+    func testBlocklistMatchesOlderParticipant() throws {
+        let q = try makeDB()
+        let account = "me@x.com"
+        let blocked = "spam@x.com"
+        try q.write { db in
+            try Account(id: account, displayName: "Me", historyId: nil,
+                        lastSyncAt: nil, senderName: "").insert(db)
+            // Newest From is self; older message is from blocked sender.
+            let thread = MailThread(
+                id: "\(account):t1", accountId: account, gmailThreadId: "t1",
+                subject: "s", snippet: "", fromDisplay: "Me",
+                lastDate: Date(), isUnread: false, isStarred: false,
+                inInbox: true, inTrash: false, labelIds: "INBOX SENT",
+                snoozeUntil: nil, participants: "Spam .. me", messageCount: 2,
+                hasAttachment: false, reminderAt: nil,
+                fromEmail: "me@x.com")
+            try thread.insert(db)
+            try Message(
+                id: "\(account):m1", accountId: account, gmailId: "m1",
+                threadId: "\(account):t1",
+                fromHeader: "Spam <\(blocked)>", toHeader: account,
+                ccHeader: "", bccHeader: "", subject: "s",
+                date: Date().addingTimeInterval(-3600),
+                snippet: "", bodyText: "hi", bodyHTML: nil,
+                messageIdHeader: "", referencesHeader: "", labelIds: "INBOX",
+                isUnread: false, hasAttachment: false).insert(db)
+            try Message(
+                id: "\(account):m2", accountId: account, gmailId: "m2",
+                threadId: "\(account):t1",
+                fromHeader: "Me <me@x.com>", toHeader: blocked,
+                ccHeader: "", bccHeader: "", subject: "Re: s",
+                date: Date(),
+                snippet: "", bodyText: "re", bodyHTML: nil,
+                messageIdHeader: "", referencesHeader: "", labelIds: "SENT",
+                isUnread: false, hasAttachment: false).insert(db)
+            // Control: inbox thread with no blocked sender.
+            let clean = MailThread(
+                id: "\(account):t2", accountId: account, gmailThreadId: "t2",
+                subject: "ok", snippet: "", fromDisplay: "Friend",
+                lastDate: Date(), isUnread: true, isStarred: false,
+                inInbox: true, inTrash: false, labelIds: "INBOX",
+                snoozeUntil: nil, participants: "Friend", messageCount: 1,
+                hasAttachment: false, reminderAt: nil,
+                fromEmail: "friend@x.com")
+            try clean.insert(db)
+            try Message(
+                id: "\(account):m3", accountId: account, gmailId: "m3",
+                threadId: "\(account):t2",
+                fromHeader: "Friend <friend@x.com>", toHeader: account,
+                ccHeader: "", bccHeader: "", subject: "ok", date: Date(),
+                snippet: "", bodyText: "hi", bodyHTML: nil,
+                messageIdHeader: "", referencesHeader: "", labelIds: "INBOX",
+                isUnread: true, hasAttachment: false).insert(db)
+        }
+
+        let blockedSet: Set<String> = [blocked]
+        let hitIds = try q.read { db -> Set<String> in
+            var hits = Set<String>()
+            // Fast path: denorm fromEmail.
+            let byEmail = try MailThread
+                .filter(Column("inInbox") == true && Column("inTrash") == false)
+                .filter(Column("fromEmail") != "")
+                .filter(Array(blockedSet).contains(Column("fromEmail")))
+                .fetchAll(db)
+            hits.formUnion(byEmail.map(\.id))
+            // Scan remaining for any-message match.
+            let remaining = try String.fetchAll(db, sql: """
+                SELECT id FROM thread WHERE inInbox = 1 AND inTrash = 0
+                """)
+            let toScan = remaining.filter { !hits.contains($0) }
+            if !toScan.isEmpty {
+                let placeholders = toScan.map { _ in "?" }.joined(separator: ",")
+                let rows = try Row.fetchAll(db, sql: """
+                    SELECT DISTINCT message.threadId AS threadId, message.fromHeader AS fromHeader
+                    FROM message WHERE message.threadId IN (\(placeholders))
+                    """, arguments: StatementArguments(toScan))
+                for row in rows {
+                    let header: String = row["fromHeader"]
+                    if blockedSet.contains(MessageParser.emailAddress(header).lowercased()) {
+                        hits.insert(row["threadId"])
+                    }
+                }
+            }
+            return hits
+        }
+        XCTAssertEqual(hitIds, ["\(account):t1"],
+                       "blocked older participant must match even when newest From is self")
+        XCTAssertFalse(hitIds.contains("\(account):t2"))
+    }
+
+    /// Optimistic label mutation keeps denorm flags coherent with labelIds.
+    func testSyncFlagsAfterOptimisticLabelMutation() {
+        var t = MailThread(
+            id: "a:t1", accountId: "a", gmailThreadId: "t1",
+            subject: "s", snippet: "sn", fromDisplay: "F",
+            lastDate: Date(), isUnread: false, isStarred: false,
+            inInbox: true, inTrash: false,
+            labelIds: "INBOX",
+            snoozeUntil: nil, participants: "F", messageCount: 1,
+            hasAttachment: false, reminderAt: nil)
+        t.syncFlagsFromLabelIds()
+        // Toggle CATEGORY_PROMOTIONS on (mirrors toggleLabel).
+        var labels = Set(t.labels)
+        labels.insert("CATEGORY_PROMOTIONS")
+        labels.insert("SENT")
+        t.labelIds = labels.sorted().joined(separator: " ")
+        t.syncFlagsFromLabelIds()
+        XCTAssertTrue(t.inPromotions)
+        XCTAssertTrue(t.inSent)
+        XCTAssertTrue(t.inInbox)
+        // Blocklist-style SPAM move.
+        labels.remove("INBOX")
+        labels.insert("SPAM")
+        t.labelIds = labels.sorted().joined(separator: " ")
+        t.syncFlagsFromLabelIds()
+        XCTAssertFalse(t.inInbox)
+        XCTAssertTrue(t.inPromotions)
+        XCTAssertTrue(t.inSent)
     }
 }
