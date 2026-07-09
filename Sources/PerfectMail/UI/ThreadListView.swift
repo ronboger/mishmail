@@ -131,7 +131,7 @@ struct ThreadListView: View {
                     .padding(.horizontal, 8).padding(.vertical, 2)
                     .background(tint.opacity(0.16), in: Capsule())
                 Text("\(count)")
-                    .font(.system(size: 11 * fontScale))
+                    .font(.system(size: 11 * fontScale).monospacedDigit())
                     .foregroundStyle(.secondary)
                 Image(systemName: "chevron.right")
                     .font(.system(size: 9 * fontScale, weight: .semibold))
@@ -195,7 +195,7 @@ struct ThreadListView: View {
                     Text("\u{201C}\(store.committedSearch)\u{201D}")
                         .font(.system(size: 12, weight: .semibold)).lineLimit(1)
                     Text("· \(store.threads.count)")
-                        .font(.system(size: 12)).foregroundStyle(.secondary)
+                        .font(.system(size: 12).monospacedDigit()).foregroundStyle(.secondary)
                     Spacer()
                     Button {
                         store.clearSearch()
@@ -881,8 +881,9 @@ struct FilterBar: View {
             Text(title).font(.caption)
             Button(action: remove) {
                 Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                    .pmHitTarget(extra: 8)
             }
-            .buttonStyle(.plain).foregroundStyle(.secondary)
+            .buttonStyle(PressScaleButtonStyle()).foregroundStyle(.secondary)
         }
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(Color.notionAccent.opacity(0.2), in: Capsule())
@@ -1095,6 +1096,7 @@ struct FaviconView: View {
         }
         .frame(width: 16, height: 16)
         .clipShape(RoundedRectangle(cornerRadius: 3))
+        .pmImageOutline(cornerRadius: 3)
     }
 
     private var faviconURL: URL? {
@@ -1124,7 +1126,8 @@ struct ThreadRow: View {
                     .lineLimit(1)
                 if thread.messageCount > 1 {
                     Text("\(thread.messageCount)")
-                        .font(.system(size: 11.5 * fontScale)).foregroundStyle(.secondary)
+                        .font(.system(size: 11.5 * fontScale).monospacedDigit())
+                        .foregroundStyle(.secondary)
                 }
             }
             .frame(width: 168 * fontScale, alignment: .leading)
@@ -1160,7 +1163,8 @@ struct ThreadRow: View {
                     }
                     if userLabels.count > 2 {
                         Text("+\(userLabels.count - 2)")
-                            .font(.system(size: 11 * fontScale)).foregroundStyle(.secondary)
+                            .font(.system(size: 11 * fontScale).monospacedDigit())
+                            .foregroundStyle(.secondary)
                     }
                     if thread.hasAttachment {
                         Image(systemName: "paperclip")
@@ -1175,7 +1179,8 @@ struct ThreadRow: View {
                             .font(.system(size: 12 * fontScale)).foregroundStyle(.yellow)
                     }
                     Text(thread.lastDate, format: relativeFormat)
-                        .font(.system(size: 12 * fontScale)).foregroundStyle(.secondary)
+                        .font(.system(size: 12 * fontScale).monospacedDigit())
+                        .foregroundStyle(.secondary)
                         .frame(minWidth: 52, alignment: .trailing)
                 }
                 .opacity(hovering ? 0 : 1)
@@ -1187,13 +1192,17 @@ struct ThreadRow: View {
                     hoverButton("trash") { store.trash(thread) }
                 }
                 .opacity(hovering ? 1 : 0)
+                .scaleEffect(hovering ? 1 : 0.96)
             }
+            // Match the visual icon size (~13pt + small pad). Hit expansion is
+            // layout-neutral via pmHitTarget so rows stay dense.
             .frame(height: 18 * fontScale)
+            .animation(.easeOut(duration: 0.12), value: hovering)
         }
         .padding(.vertical, 3 * fontScale)
         .padding(.horizontal, 6)
         .background(hovering ? Color.primary.opacity(0.07) : .clear,
-                    in: RoundedRectangle(cornerRadius: 6))
+                    in: RoundedRectangle(cornerRadius: PMRadius.sm))
         .padding(.horizontal, -6)
         // No contentShape here: it hijacks the List row's click handling on
         // macOS, so clicking a thread would no longer select/open it.
@@ -1231,9 +1240,16 @@ struct ThreadRow: View {
             Image(systemName: filled ? "\(icon).fill" : icon)
                 .font(.system(size: 13 * fontScale))
                 .foregroundStyle(filled && icon == "star" ? .yellow : .secondary)
+                .padding(3)
+                // Dense row: expand hit without inflating the 18pt trailing strip
+                // (full 40×40 would collide with neighbors — skill allows shrink).
+                .pmHitTarget(extra: 6)
         }
-        .buttonStyle(.plain)
-        .padding(3)
+        .buttonStyle(PressScaleButtonStyle())
+        .help(icon == "star" ? (filled ? "Unstar" : "Star")
+              : icon == "archivebox" ? "Archive"
+              : icon == "clock" ? "Snooze"
+              : "Trash")
     }
 
     private var relativeFormat: Date.FormatStyle {

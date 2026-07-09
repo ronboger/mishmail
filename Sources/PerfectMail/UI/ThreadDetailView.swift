@@ -186,8 +186,9 @@ struct ThreadDetailView: View {
                         } label: {
                             Image(systemName: "xmark")
                                 .font(.system(size: 8, weight: .bold))
+                                .pmHitTarget(extra: 8)
                         }
-                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .buttonStyle(PressScaleButtonStyle()).foregroundStyle(.secondary)
                         .help("Remove \(chip.name)")
                     }
                     .foregroundStyle(chip.tint == nil ? Color.secondary : .primary)
@@ -247,7 +248,7 @@ struct ThreadDetailView: View {
                             .frame(maxWidth: .infinity, alignment: .leading)
                     }
                     .padding(10)
-                    .background(Color.notionAccent.opacity(0.08), in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.notionAccent.opacity(0.08), in: RoundedRectangle(cornerRadius: PMRadius.md))
                 } else {
                     Button { summarizeThread() } label: {
                         HStack(spacing: 4) {
@@ -413,7 +414,7 @@ struct MessageCard: View {
                     .help("Forward (\(store.keyBindings.key(for: .forward)))")
                 }
                 Text(message.date, format: .dateTime.month(.abbreviated).day().hour().minute())
-                    .font(.caption).foregroundStyle(.secondary)
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Button {
                     withAnimation { expanded.toggle() }
                 } label: {
@@ -528,9 +529,10 @@ struct MessageCard: View {
                                     .help("Save As… (you choose where)")
                                 }
                                 .padding(.horizontal, 12).padding(.vertical, 8)
+                                // Nested chips: flat fill only. Elevation lives on the
+                                // parent MessageCard so we don't stack soft shadows.
                                 .background(Color.secondary.opacity(0.1),
-                                            in: RoundedRectangle(cornerRadius: 8))
-                                .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+                                            in: RoundedRectangle(cornerRadius: PMRadius.md))
                                 .contextMenu {
                                     Button("Quick Look") { store.quickLookAttachment(att, message: message) }
                                     Button("Open") { store.openAttachment(att, message: message) }
@@ -565,10 +567,10 @@ struct MessageCard: View {
             }
         }
         .padding(12)
-        .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .controlBackgroundColor)))
-        // A visible bounding box makes each message in a thread read as its
-        // own card (Notion Mail-style).
-        .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
+        .background(RoundedRectangle(cornerRadius: PMRadius.md).fill(Color(nsColor: .controlBackgroundColor)))
+        // Layered elevation reads cleaner than a hard separator ring on varied
+        // backgrounds (light/dark, reading-pane chrome).
+        .pmCardElevation(cornerRadius: PMRadius.md)
         .contentShape(Rectangle())
         .onTapGesture {
             if !expanded {

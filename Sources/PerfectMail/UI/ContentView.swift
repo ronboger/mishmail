@@ -89,9 +89,8 @@ struct ContentView: View {
                     .id(request.id)
                     .frame(width: 620, height: 500)
                     .background(Color(nsColor: .windowBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 12))
-                    .overlay(RoundedRectangle(cornerRadius: 12).strokeBorder(.separator))
-                    .shadow(color: .black.opacity(0.35), radius: 24, y: 8)
+                    .clipShape(RoundedRectangle(cornerRadius: PMRadius.lg))
+                    .pmCardElevation(cornerRadius: PMRadius.lg, intense: true)
                     .padding(16)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -192,14 +191,17 @@ struct ContentView: View {
                         store.lastError = nil
                     } label: {
                         Image(systemName: "xmark").font(.system(size: 11, weight: .semibold))
+                            .pmHitTarget(extra: 8)
                     }
-                    .buttonStyle(.plain)
+                    .buttonStyle(PressScaleButtonStyle())
                     .foregroundStyle(.secondary)
+                    .help("Dismiss")
                 }
                 .padding(.horizontal, 18).padding(.vertical, 12)
-                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-                .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(.orange.opacity(0.4)))
-                .shadow(radius: 10)
+                .background(.regularMaterial, in: RoundedRectangle(cornerRadius: PMRadius.md + 2))
+                .overlay(RoundedRectangle(cornerRadius: PMRadius.md + 2).strokeBorder(.orange.opacity(0.4)))
+                .shadow(color: .black.opacity(0.12), radius: 12, y: 4)
+                .shadow(color: .black.opacity(0.06), radius: 3, y: 1)
                 .padding(.bottom, 76)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
@@ -714,9 +716,8 @@ struct SearchResultsPanel: View {
                 }
             }
         }
-        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 10))
-        .overlay(RoundedRectangle(cornerRadius: 10).strokeBorder(Color.primary.opacity(0.08)))
-        .shadow(color: .black.opacity(0.22), radius: 22, y: 8)
+        .background(.regularMaterial, in: RoundedRectangle(cornerRadius: PMRadius.md + 2))
+        .pmCardElevation(cornerRadius: PMRadius.md + 2, intense: true)
         .onAppear {
             store.searchHighlight = 0
             refreshThreadPreview()

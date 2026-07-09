@@ -18,6 +18,73 @@ enum PMSpacing {
     static let xl: CGFloat = 24
 }
 
+/// Corner radii. Prefer `outer(inner:padding:)` when nesting rounded surfaces
+/// so the outer arc stays concentric with the inner one.
+enum PMRadius {
+    static let xs: CGFloat = 4
+    static let sm: CGFloat = 6
+    static let md: CGFloat = 8
+    static let lg: CGFloat = 12
+    static let xl: CGFloat = 16
+
+    /// `outerRadius = innerRadius + padding` — the usual fix for nested cards
+    /// that otherwise look "off" with matching radii.
+    static func outer(inner: CGFloat, padding: CGFloat) -> CGFloat {
+        inner + padding
+    }
+}
+
+/// Tactile press: scale to 0.96 (never below 0.95 — anything smaller feels exaggerated).
+struct PressScaleButtonStyle: ButtonStyle {
+    var enabled = true
+
+    func makeBody(configuration: Configuration) -> some View {
+        configuration.label
+            .scaleEffect(enabled && configuration.isPressed ? 0.96 : 1)
+            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+    }
+}
+
+extension View {
+    /// Enlarge the interactive hit region without changing layout size.
+    ///
+    /// Positive padding + `contentShape` expands hit testing; negative padding
+    /// cancels the layout growth so parents (search HStacks, dense rows) don't
+    /// jump when the control appears. `extra` is half the padding on each side
+    /// (≈ total hit ≈ visual + 2×extra).
+    func pmHitTarget(extra: CGFloat = 8) -> some View {
+        self
+            .padding(extra)
+            .contentShape(Rectangle())
+            .padding(-extra)
+    }
+
+    /// Soft layered elevation for cards/popovers. Depth comes from dual
+    /// shadows (ambient + contact); a hairline pure primary ring at 6–8%
+    /// stands in for CSS `box-shadow: 0 0 0 1px` since SwiftUI has no spread.
+    /// Layout separators stay as `Divider` / `.separator` — not this helper.
+    func pmCardElevation(cornerRadius: CGFloat, intense: Bool = false) -> some View {
+        self
+            .shadow(color: .black.opacity(intense ? 0.18 : 0.10),
+                    radius: intense ? 18 : 8, y: intense ? 8 : 3)
+            .shadow(color: .black.opacity(intense ? 0.08 : 0.04),
+                    radius: intense ? 3 : 1.5, y: 1)
+            .overlay {
+                RoundedRectangle(cornerRadius: cornerRadius)
+                    .strokeBorder(Color.primary.opacity(intense ? 0.08 : 0.06), lineWidth: 0.5)
+            }
+    }
+
+    /// Neutral 1px image outline. `Color.primary` at 10% is pure black in light
+    /// mode and pure white in dark — never a tinted slate/zinc that dirties edges.
+    func pmImageOutline(cornerRadius: CGFloat = 0) -> some View {
+        self.overlay {
+            RoundedRectangle(cornerRadius: cornerRadius)
+                .strokeBorder(Color.primary.opacity(0.10), lineWidth: 1)
+        }
+    }
+}
+
 /// Notion Mail-style switch: a proper pill, larger than the AppKit default.
 struct NotionSwitchStyle: ToggleStyle {
     func makeBody(configuration: Configuration) -> some View {
@@ -37,6 +104,8 @@ struct NotionSwitchStyle: ToggleStyle {
                             .padding(2)
                             .shadow(radius: 1)
                     }
+                    // Expand hit without growing the 36×21 layout footprint.
+                    .pmHitTarget(extra: 10)
             }
             .contentShape(Rectangle())
         }
@@ -75,17 +144,20 @@ struct SearchField: View {
                 } label: {
                     Image(systemName: "xmark.circle.fill")
                         .font(.system(size: compact ? 9 : 11)).foregroundStyle(.secondary)
+                        // Hit expands; layout stays icon-sized so the field doesn't jump.
+                        .pmHitTarget(extra: compact ? 6 : 8)
                 }
-                .buttonStyle(.plain)
+                .buttonStyle(PressScaleButtonStyle())
+                .help("Clear")
             }
         }
         .padding(.horizontal, compact ? 6 : 7)
         .padding(.vertical, compact ? 3 : (emphasized ? 7 : 5))
         .background(Color.primary.opacity(emphasized ? 0.09 : 0.06),
-                    in: RoundedRectangle(cornerRadius: compact ? 5 : 6))
+                    in: RoundedRectangle(cornerRadius: compact ? PMRadius.xs + 1 : PMRadius.sm))
         .overlay {
             if emphasized {
-                RoundedRectangle(cornerRadius: compact ? 5 : 6)
+                RoundedRectangle(cornerRadius: compact ? PMRadius.xs + 1 : PMRadius.sm)
                     .strokeBorder(Color.notionAccent.opacity(0.7), lineWidth: 1.5)
             }
         }
@@ -113,15 +185,19 @@ struct NotionCheckStyle: ToggleStyle {
             configuration.isOn.toggle()
         } label: {
             HStack(spacing: 8) {
+                // Visible box stays 18×18. The whole row is the hit target via
+                // contentShape below — no layout-inflating frame on the box.
                 RoundedRectangle(cornerRadius: 5)
                     .fill(configuration.isOn ? Color.notionAccent : Color.secondary.opacity(0.18))
                     .frame(width: 18, height: 18)
                     .overlay {
-                        if configuration.isOn {
-                            Image(systemName: "checkmark")
-                                .font(.system(size: 11, weight: .bold))
-                                .foregroundStyle(.white)
-                        }
+                        // Keep the check in the tree so enter/exit can animate
+                        // (opacity + scale only — blur is costly for list rows).
+                        Image(systemName: "checkmark")
+                            .font(.system(size: 11, weight: .bold))
+                            .foregroundStyle(.white)
+                            .opacity(configuration.isOn ? 1 : 0)
+                            .scaleEffect(configuration.isOn ? 1 : 0.25)
                     }
                 configuration.label
                 Spacer(minLength: 0)
@@ -129,6 +205,6 @@ struct NotionCheckStyle: ToggleStyle {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .animation(.easeOut(duration: 0.1), value: configuration.isOn)
+        .animation(.easeOut(duration: 0.15), value: configuration.isOn)
     }
 }

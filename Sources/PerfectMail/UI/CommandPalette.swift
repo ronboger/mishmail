@@ -30,26 +30,31 @@ struct CommandPalette: View {
                     .onChange(of: query) { highlighted = 0 }
                 Divider()
                 ScrollView {
-                    LazyVStack(spacing: 0) {
+                    // Inner list padding so highlight pills sit concentrically inside the 12pt shell.
+                    LazyVStack(spacing: 2) {
                         ForEach(Array(filtered.enumerated()), id: \.element.id) { idx, cmd in
                             HStack {
                                 Image(systemName: cmd.icon).frame(width: 20)
                                 Text(cmd.title)
                                 Spacer()
                             }
-                            .padding(.horizontal, 14).padding(.vertical, 7)
-                            .background(idx == highlighted ? Color.notionAccent.opacity(0.2) : .clear)
+                            .padding(.horizontal, 10).padding(.vertical, 7)
+                            .background(
+                                idx == highlighted ? Color.notionAccent.opacity(0.2) : .clear,
+                                in: RoundedRectangle(cornerRadius: PMRadius.sm)
+                            )
                             .contentShape(Rectangle())
                             .onTapGesture { run(cmd) }
                             .onHover { if $0 { highlighted = idx } }
                         }
                     }
+                    .padding(6)
                 }
                 .frame(maxHeight: 280)
             }
-            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 12))
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: PMRadius.lg))
             .frame(width: 480)
-            .shadow(radius: 24)
+            .pmCardElevation(cornerRadius: PMRadius.lg, intense: true)
             .padding(.top, 120)
             .onAppear {
                 // Focus reliably once the overlay is in the hierarchy.

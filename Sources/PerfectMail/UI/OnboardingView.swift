@@ -36,7 +36,11 @@ struct OnboardingView: View {
                     linkButton("Open consent screen", "https://console.cloud.google.com/apis/credentials/consent")
                 }
 
-                step(3, "Create a Desktop OAuth client") {
+                // Concentric only here: dashed drop zone is 8pt radius, step
+                // padding is 12 → outer = 20. Other steps have no nested rounded
+                // surface, so they keep the default 10.
+                step(3, "Create a Desktop OAuth client",
+                     cornerRadius: PMRadius.outer(inner: PMRadius.md, padding: PMSpacing.md)) {
                     Text("Credentials → Create Credentials → OAuth client ID → **Desktop app**. Then either **drop the downloaded JSON** here or paste the two values.")
                         .font(PMFont.secondary()).foregroundStyle(.secondary)
                     linkButton("Open Credentials", "https://console.cloud.google.com/apis/credentials")
@@ -84,10 +88,11 @@ struct OnboardingView: View {
     }
 
     @ViewBuilder
-    private func step(_ n: Int, _ title: String, @ViewBuilder content: () -> some View) -> some View {
+    private func step(_ n: Int, _ title: String, cornerRadius: CGFloat = 10,
+                      @ViewBuilder content: () -> some View) -> some View {
         HStack(alignment: .top, spacing: PMSpacing.md) {
             Text("\(n)")
-                .font(.system(size: 13, weight: .bold))
+                .font(.system(size: 13, weight: .bold).monospacedDigit())
                 .foregroundStyle(.white)
                 .frame(width: 24, height: 24)
                 .background(Color.notionAccent, in: Circle())
@@ -98,11 +103,11 @@ struct OnboardingView: View {
         }
         .padding(PMSpacing.md)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: 10))
+        .background(Color.primary.opacity(0.04), in: RoundedRectangle(cornerRadius: cornerRadius))
     }
 
     private var credentialDrop: some View {
-        RoundedRectangle(cornerRadius: 8)
+        RoundedRectangle(cornerRadius: PMRadius.md)
             .strokeBorder(style: StrokeStyle(lineWidth: 1.5, dash: [5]))
             .foregroundStyle(.secondary.opacity(0.5))
             .frame(height: 54)
