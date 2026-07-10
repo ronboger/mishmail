@@ -60,4 +60,24 @@ enum ContactMiner {
                 .prefix(limit)
         )
     }
+
+    /// Prefix/substring match for live search and address fields.
+    /// Pure + allocation-light: lowercases the query once, scans email as-is
+    /// (emails are stored lowercased) and only lowercases `name` when needed.
+    static func suggestions(from contacts: [Contact], matching query: String,
+                            limit: Int = 6) -> [Contact] {
+        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !q.isEmpty else { return [] }
+        var out: [Contact] = []
+        out.reserveCapacity(limit)
+        for c in contacts {
+            if c.email.contains(q) {
+                out.append(c)
+            } else if !c.name.isEmpty, c.name.lowercased().contains(q) {
+                out.append(c)
+            }
+            if out.count >= limit { break }
+        }
+        return out
+    }
 }

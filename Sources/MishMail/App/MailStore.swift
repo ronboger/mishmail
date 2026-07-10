@@ -964,44 +964,50 @@ final class MailStore: ObservableObject {
 
     /// Top matches for an address-field token.
     func contactSuggestions(for query: String) -> [Contact] {
-        let q = query.trimmingCharacters(in: .whitespaces).lowercased()
+        let q = query.trimmingCharacters(in: .whitespaces)
         guard q.count >= 1 else { return [] }
         // Main-thread filter of the in-memory contacts list — if `search.contacts`
         // shows up in perf logs while typing `/`, this is the jank source (not FTS).
+        // Call only from onChange / explicit refresh, never from a SwiftUI
+        // computed `body` path (that re-runs on every layout pass).
         return PerfMetrics.measure(.searchContacts, meta: "qLen=\(q.count)") {
-            Array(contacts.lazy.filter {
-                $0.email.contains(q) || $0.name.lowercased().contains(q)
-            }.prefix(6))
+            ContactMiner.suggestions(from: contacts, matching: q, limit: 6)
         }
     }
 
-    /// A few matching threads for the live search dropdown — a cheap FTS lookup
-    /// over cached mail, newest first. Async so the per-keystroke lookup runs
-    /// on a pool reader connection instead of blocking the main thread while
-    /// SQLCipher decrypts pages.
+    /// A few matching threads for the live search dropdown — FTS over cached
+    /// mail, newest first. Async so the per-keystroke lookup runs on a pool
+    /// reader instead of blocking the main thread while SQLCipher decrypts.
+    ///
+    /// Skips FTS for single-character queries (too broad; contacts + "View all"
+    /// are enough). One JOIN query with a tight candidate cap — not "300 ids
+    /// then re-fetch threads".
     func threadSuggestions(for query: String, limit: Int = 5) async -> [MailThread] {
         let q = query.trimmingCharacters(in: .whitespaces)
-        guard q.count >= 1 else { return [] }
-        // Live `/` search panel path. If `search.preview` is multi-10ms+, the
-        // jank is FTS + thread re-fetch (debounced 120ms in ContentView).
+        // 1-char FTS matches half the mailbox under prefix indexes; skip until
+        // the user types enough for a useful typeahead.
+        guard q.count >= 2 else { return [] }
         return await PerfMetrics.measureAsync(.searchPreview, meta: "qLen=\(q.count)") {
             (try? await db.read { db -> [MailThread] in
-                // Build the pattern inside the read so nothing non-Sendable is
-                // captured across the suspension.
                 guard let pattern = FTS5Pattern(matchingAllPrefixesIn: q) else { return [] }
-                let ids = try Row.fetchAll(db, sql: """
-                    SELECT DISTINCT message.threadId FROM message
-                    JOIN message_fts ON message_fts.rowid = message.rowid
-                    WHERE message_fts MATCH ? LIMIT 300
-                    """, arguments: [pattern])
-                    .map { $0["threadId"] as String }
-                guard !ids.isEmpty else { return [] }
-                return try MailThread
-                    .filter(ids.contains(Column("id")))
-                    .filter(Column("inTrash") == false)
-                    .order(Column("lastDate").desc)
-                    .limit(limit)
-                    .fetchAll(db)
+                // Candidate cap: enough to rank by lastDate for a 5-row panel
+                // without materializing every FTS hit for short prefixes.
+                let candidateCap = max(limit * 16, 40)
+                return try MailThread.fetchAll(db, sql: """
+                    SELECT thread.*
+                    FROM (
+                        SELECT message.threadId AS tid
+                        FROM message_fts
+                        JOIN message ON message.rowid = message_fts.rowid
+                        WHERE message_fts MATCH ?
+                        GROUP BY message.threadId
+                        LIMIT ?
+                    ) AS hits
+                    JOIN thread ON thread.id = hits.tid
+                    WHERE thread.inTrash = 0
+                    ORDER BY thread.lastDate DESC
+                    LIMIT ?
+                    """, arguments: [pattern, candidateCap, limit])
             }) ?? []
         }
     }
@@ -1552,57 +1558,16 @@ final class MailStore: ObservableObject {
         Notifier.setBadge(badgeTotal)
     }
 
-    /// One SQL with conditional aggregates for every sidebar count + dock badge.
-    /// `activeAccount`/`badgeAccount` nil = every account. Safe off MainActor.
-    ///
-    /// **Sole source of truth for sidebar unread.** Do not merge Gmail
-    /// `labelInfo` / CATEGORY_* totals on top — those include spam and
-    /// archived threads and will disagree with `baseQuery` for Promotions/
-    /// Social. Keep this SQL aligned with those list filters and with the
-    /// mirrored copy in `ThreadDenormTests.fetchSidebarCounts`.
+    /// Sidebar counts + dock badge. Delegates to `SidebarCounts` (shared with
+    /// unit tests). Safe off MainActor.
     nonisolated static func fetchSidebarCounts(
         db: Database,
         activeAccount: String?,
         badgeAccount: String?,
         now: Date = Date()
     ) throws -> (counts: [String: Int], badge: Int) {
-        // ?1 = activeAccount, ?2 = badgeAccount, ?3 = now (snoozed cutoff).
-        let row = try Row.fetchOne(db, sql: """
-            SELECT
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-                AND inPromotions = 0 AND inSocial = 0 THEN 1 ELSE 0 END), 0) AS inbox,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-                AND inPromotions = 1 THEN 1 ELSE 0 END), 0) AS promotions,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-                AND inSocial = 1 THEN 1 ELSE 0 END), 0) AS social,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND reminderAt IS NOT NULL THEN 1 ELSE 0 END), 0) AS reminders,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isStarred = 1 AND inTrash = 0 THEN 1 ELSE 0 END), 0) AS starred,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND snoozeUntil IS NOT NULL AND snoozeUntil > ?3 AND inTrash = 0 THEN 1 ELSE 0 END), 0) AS snoozed,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND inDrafts = 1 AND inTrash = 0 THEN 1 ELSE 0 END), 0) AS drafts,
-              COALESCE(SUM(CASE WHEN (?2 IS NULL OR accountId = ?2)
-                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-                AND inPromotions = 0 AND inSocial = 0 THEN 1 ELSE 0 END), 0) AS badge
-            FROM thread
-            """, arguments: [activeAccount, badgeAccount, now])
-        guard let row else { return ([:], 0) }
-        let counts: [String: Int] = [
-            "inbox": row["inbox"],
-            "promotions": row["promotions"],
-            "social": row["social"],
-            "reminders": row["reminders"],
-            "starred": row["starred"],
-            "snoozed": row["snoozed"],
-            "drafts": row["drafts"],
-        ]
-        let badge: Int = row["badge"]
-        return (counts, badge)
+        try SidebarCounts.fetch(db: db, activeAccount: activeAccount,
+                                badgeAccount: badgeAccount, now: now)
     }
 
     /// Full messages including bodies — used by compose / reply / forward.

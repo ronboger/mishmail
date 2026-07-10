@@ -10,6 +10,25 @@ final class ContactMinerTests: XCTestCase {
                                     toHeader: to, ccHeader: cc, labelIds: labels)
     }
 
+    private func contact(_ email: String, name: String = "", weight: Int = 1) -> ContactMiner.Contact {
+        ContactMiner.Contact(name: name, email: email, weight: weight)
+    }
+
+    func testSuggestionsMatchEmailAndName() {
+        let list = [
+            contact("alice@x.com", name: "Alice"),
+            contact("bob@y.com", name: "Bobby"),
+            contact("carol@z.com"),
+        ]
+        let byEmail = ContactMiner.suggestions(from: list, matching: "bob")
+        XCTAssertEqual(byEmail.map(\.email), ["bob@y.com"])
+        let byName = ContactMiner.suggestions(from: list, matching: "ALI")
+        XCTAssertEqual(byName.map(\.email), ["alice@x.com"])
+        let limited = ContactMiner.suggestions(from: list, matching: "a", limit: 1)
+        XCTAssertEqual(limited.count, 1)
+        XCTAssertTrue(ContactMiner.suggestions(from: list, matching: "  ").isEmpty)
+    }
+
     func testIncrementalMergeAddsToPriorWeights() {
         var weights: ContactMiner.WeightMap = [:]
         let own: Set<String> = ["me@x.com"]

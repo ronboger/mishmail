@@ -616,6 +616,9 @@ struct SearchResultsPanel: View {
     @EnvironmentObject var store: MailStore
     // Live thread matches; refreshed as the query changes.
     @State private var threadPreview: [MailThread] = []
+    // Contact matches for the current query — @State so we filter once per
+    // keystroke, not on every SwiftUI body/layout pass (was a major / jank source).
+    @State private var contactPreview: [MailStore.Contact] = []
     // Natural content height, so the panel caps+scrolls at 460 but otherwise
     // shrinks to fit. Defaults to the cap so the first frame isn't collapsed.
     @State private var contentHeight: CGFloat = 460
@@ -642,14 +645,10 @@ struct SearchResultsPanel: View {
         }
     }
 
-    private var contactMatches: [MailStore.Contact] {
-        trimmedSearch.isEmpty ? [] : store.contactSuggestions(for: trimmedSearch)
-    }
-
     /// Contacts shown in the panel: matches while typing, top senders when the
     /// query is empty (so `/` opens a full panel immediately, Notion-style).
     private var shownContacts: [MailStore.Contact] {
-        trimmedSearch.isEmpty ? Array(store.contacts.prefix(3)) : contactMatches
+        trimmedSearch.isEmpty ? Array(store.contacts.prefix(3)) : contactPreview
     }
 
     private var rows: [Row] {
@@ -905,14 +904,23 @@ struct SearchResultsPanel: View {
         // Empty query: latest threads from the current list, so `/` opens a
         // full panel right away — instant, straight from memory.
         if q.isEmpty {
+            contactPreview = []
             threadPreview = Array(store.threads.prefix(4))
             return
         }
-        // Typing: debounce, then run the FTS lookup off the main thread. Keep
-        // the current rows visible until the new ones arrive so there's no
-        // flicker between keystrokes.
+        // Contacts: in-memory, update immediately once per keystroke (not in
+        // `body`). Threads: debounce, then FTS off the main thread. Keep the
+        // previous thread rows until the new ones arrive (no flicker).
+        contactPreview = store.contactSuggestions(for: q)
+        // 1-char queries skip FTS (too broad); clear stale multi-char results.
+        if q.count < 2 {
+            threadPreview = []
+            return
+        }
         previewTask = Task {
-            try? await Task.sleep(nanoseconds: 120_000_000)
+            // 80ms feels snappier than 120ms once the FTS path is a single
+            // limited JOIN; still coalesces fast typists.
+            try? await Task.sleep(nanoseconds: 80_000_000)
             guard !Task.isCancelled else { return }
             let matches = await store.threadSuggestions(for: q)
             guard !Task.isCancelled else { return }
