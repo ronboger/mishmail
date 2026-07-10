@@ -786,6 +786,7 @@ final class MailStore: ObservableObject {
         startPolling()
         rebuildMetadataIfNeeded()
         rebuildContacts()
+        reloadSnippets()
         seedDefaultSnippetsIfNeeded()
     }
 
@@ -796,7 +797,7 @@ final class MailStore: ObservableObject {
         let key = "didSeedDefaultSnippets"
         guard !UserDefaults.standard.bool(forKey: key) else { return }
         let planned = SnippetImport.plan(SnippetDefaults.items,
-                                         existingNames: snippets().map(\.name))
+                                         existingNames: allSnippets.map(\.name))
         try? db.write { db in
             for item in planned {
                 let s = Snippet(id: nil, name: item.name, body: item.body,
@@ -805,7 +806,10 @@ final class MailStore: ObservableObject {
             }
         }
         UserDefaults.standard.set(true, forKey: key)
-        if !planned.isEmpty { objectWillChange.send() }
+        if !planned.isEmpty {
+            reloadSnippets()
+            objectWillChange.send()
+        }
     }
 
     // MARK: - Contacts (derived from synced mail; no extra Google scopes)
@@ -2864,8 +2868,13 @@ final class MailStore: ObservableObject {
 
     // MARK: - Snippets
 
-    func snippets() -> [Snippet] {
-        (try? db.read { try Snippet.order(Column("name")).fetchAll($0) }) ?? []
+    /// Published, load-once cache of the snippets table. Every mutator below
+    /// (and the startup seed) refreshes it after writing, so compose's `/`
+    /// picker and Settings' table update live without a manual reload.
+    @Published private(set) var allSnippets: [Snippet] = []
+
+    private func reloadSnippets() {
+        allSnippets = (try? db.read { try Snippet.order(Column("name")).fetchAll($0) }) ?? []
     }
 
     func saveSnippet(name: String, body: String, movesToBcc: Bool = false) {
@@ -2873,16 +2882,19 @@ final class MailStore: ObservableObject {
             let s = Snippet(id: nil, name: name, body: body, movesToBcc: movesToBcc)
             try s.insert(db)
         }
+        reloadSnippets()
         objectWillChange.send()
     }
 
     func deleteSnippet(_ s: Snippet) {
         try? db.write { db in _ = try Snippet.deleteOne(db, key: s.id) }
+        reloadSnippets()
         objectWillChange.send()
     }
 
     func updateSnippet(_ s: Snippet) {
         try? db.write { db in try s.update(db) }
+        reloadSnippets()
         objectWillChange.send()
     }
 
@@ -2892,7 +2904,7 @@ final class MailStore: ObservableObject {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let items = try SnippetImport.decode(Data(contentsOf: url))
-        let planned = SnippetImport.plan(items, existingNames: snippets().map(\.name))
+        let planned = SnippetImport.plan(items, existingNames: allSnippets.map(\.name))
         try db.write { db in
             for item in planned {
                 let s = Snippet(id: nil, name: item.name.trimmingCharacters(in: .whitespaces),
@@ -2900,6 +2912,7 @@ final class MailStore: ObservableObject {
                 try s.insert(db)
             }
         }
+        reloadSnippets()
         objectWillChange.send()
         return (planned.count, items.count - planned.count)
     }

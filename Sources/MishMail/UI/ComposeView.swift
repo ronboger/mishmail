@@ -965,7 +965,7 @@ struct ComposeView: View {
     private var slashMatches: [Snippet] {
         guard let token = slashToken else { return [] }
         let q = token.query.trimmingCharacters(in: .whitespaces)
-        return store.snippets().filter {
+        return store.allSnippets.filter {
             q.isEmpty || $0.name.localizedCaseInsensitiveContains(q)
         }
     }

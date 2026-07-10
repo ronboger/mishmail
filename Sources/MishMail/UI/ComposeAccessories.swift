@@ -108,11 +108,9 @@ struct SnippetsPanel: View {
     let close: () -> Void
 
     @State private var query = ""
-    @State private var refresh = 0
 
     private var snippets: [Snippet] {
-        _ = refresh
-        return store.snippets()
+        store.allSnippets
     }
     private var filtered: [Snippet] {
         snippets.filter { $0.matches(query) }
@@ -163,7 +161,7 @@ struct SnippetsPanel: View {
                         ForEach(filtered) { snippet in
                             SnippetRow(snippet: snippet,
                                        insert: { insert(snippet) },
-                                       delete: { store.deleteSnippet(snippet); refresh += 1 })
+                                       delete: { store.deleteSnippet(snippet) })
                         }
                     }
                     .padding(4)

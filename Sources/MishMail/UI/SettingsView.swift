@@ -539,14 +539,11 @@ struct SnippetsSettings: View {
     @EnvironmentObject var store: MailStore
     @State private var search = ""
     @State private var editing: Snippet?
-    // Cached so search keystrokes and store publishes don't re-query
-    // SQLite; reloaded after every create/edit/delete.
-    @State private var all: [Snippet] = []
     @State private var showImporter = false
     @State private var importResult: String?
 
     private var filtered: [Snippet] {
-        all.filter { $0.matches(search) }
+        store.allSnippets.filter { $0.matches(search) }
     }
 
     var body: some View {
@@ -588,10 +585,7 @@ struct SnippetsSettings: View {
                         ForEach(filtered) { snippet in
                             SnippetTableRow(snippet: snippet,
                                             edit: { editing = snippet },
-                                            delete: {
-                                                store.deleteSnippet(snippet)
-                                                all = store.snippets()
-                                            })
+                                            delete: { store.deleteSnippet(snippet) })
                             Divider().padding(.leading, 20)
                         }
                         if filtered.isEmpty {
@@ -606,8 +600,7 @@ struct SnippetsSettings: View {
                 }
             }
         }
-        .onAppear { all = store.snippets() }
-        .sheet(item: $editing, onDismiss: { all = store.snippets() }) { snippet in
+        .sheet(item: $editing) { snippet in
             SnippetEditor(snippet: snippet)
         }
         .fileImporter(isPresented: $showImporter,
@@ -616,7 +609,6 @@ struct SnippetsSettings: View {
             case .success(let url):
                 do {
                     let counts = try store.importSnippets(from: url)
-                    all = store.snippets()
                     importResult = counts.skipped == 0
                         ? "Imported \(counts.added)"
                         : "Imported \(counts.added), skipped \(counts.skipped) existing"
