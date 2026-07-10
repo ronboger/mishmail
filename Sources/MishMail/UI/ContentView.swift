@@ -1036,12 +1036,16 @@ struct AccountSwitcher: View {
                 // on "All accounts" so avatars stay column-aligned.
                 if canReorderAccounts {
                     if account != nil {
+                        // Visual + pointer-tooltip only — hide from AX so the
+                        // row button's name stays "Name, address…" instead of
+                        // leading with "Drag to reorder". Hint lives on the
+                        // Button below; caption text covers static discovery.
                         Image(systemName: "line.3.horizontal")
                             .font(.system(size: 10, weight: .semibold))
                             .foregroundStyle(.tertiary)
                             .frame(width: 12)
                             .help("Drag to reorder")
-                            .accessibilityLabel("Drag to reorder")
+                            .accessibilityHidden(true)
                     } else {
                         Color.clear.frame(width: 12)
                     }
@@ -1077,6 +1081,7 @@ struct AccountSwitcher: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityHint(account != nil && canReorderAccounts ? "Drag to reorder" : "")
         .hoverTint()
     }
 
