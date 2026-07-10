@@ -1661,10 +1661,32 @@ final class MailStore: ObservableObject {
                 let info = try JSONDecoder().decode(UserInfo.self, from: data)
 
                 try Keychain.set(refresh, forKey: "refreshToken.\(info.email)")
-                let account = Account(id: info.email, displayName: info.name ?? info.email,
-                                      historyId: nil, lastSyncAt: nil,
-                                      senderName: info.name ?? "")
-                try await db.write { db in try account.save(db) }
+                try await db.write { db in
+                    if var existing = try Account.fetchOne(db, key: info.email) {
+                        // Reauthorizing an existing account must only replace
+                        // its refresh token. Preserve the history cursor and
+                        // last-sync timestamp so a bundle-id migration (or a
+                        // revoked token) does not trigger a full mailbox
+                        // backfill and burn through Gmail's per-user quota.
+                        if existing.displayName == existing.id,
+                           let name = info.name, !name.isEmpty {
+                            existing.displayName = name
+                        }
+                        if existing.senderName.isEmpty {
+                            existing.senderName = info.name ?? ""
+                        }
+                        try existing.update(db)
+                    } else {
+                        let account = Account(
+                            id: info.email,
+                            displayName: info.name ?? info.email,
+                            historyId: nil,
+                            lastSyncAt: nil,
+                            senderName: info.name ?? ""
+                        )
+                        try account.insert(db)
+                    }
+                }
                 reloadAccounts()
                 await refreshSendIdentities(accountId: info.email)
                 await sync(accountId: info.email)
