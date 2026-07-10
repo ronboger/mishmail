@@ -872,9 +872,9 @@ struct HTMLBodyView: NSViewRepresentable {
         var setHeight: ((CGFloat) -> Void)?
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Tag light surfaces from computed styles (style-block / class bgs
-            // that attribute selectors miss) before measuring height.
-            // Page scripts stay off; evaluateJavaScript is app-process only.
+            // Primary tag runs as WKUserScript at document-end (WebViewPool)
+            // before first paint. Re-run here so recycled views / late style
+            // application still pick up light surfaces, then measure.
             webView.evaluateJavaScript(HTMLBodyDarkMode.tagLightSurfacesJS) { [weak self] _, _ in
                 self?.measure(webView, attempt: 0)
             }
