@@ -4,13 +4,26 @@ import Foundation
 ///
 /// One stylesheet for all mail (not a plain-vs-designed branch):
 /// 1. Force light text over our dark chrome — beats Outlook/Word inline black.
-/// 2. Force dark text *inside* light surfaces (white sig cards, cream panels)
-///    so those islands stay readable without flipping the whole message.
+/// 2. Force dark text *inside* light surfaces (white sig cards, cream panels,
+///    full-bleed white transactional mail) so those islands stay readable
+///    without flipping the whole message.
+///
+/// Light surfaces are found two ways:
+/// - **Attribute fast path:** `bgcolor` / inline `style` selectors (no JS).
+/// - **Computed path:** after load, app-injected JS tags elements whose
+///   *computed* background is light with `.mm-light-bg`. That catches
+///   backgrounds declared only in `<style>` blocks or CSS classes —
+///   Notion Calendar, many marketing templates — which the attribute
+///   selectors miss (light-on-white regression).
 ///
 /// Binary classification failed on mixed mail (Ashley @ Gelt): a white
 /// signature in the authored head selected the "designed" path, leaving
 /// unstyled body text at `#222` on transparent dark chrome.
 enum HTMLBodyDarkMode {
+    /// Class stamped by `tagLightSurfacesJS` on elements with a light
+    /// computed background. Mirrored in CSS so descendants get dark text.
+    static let lightSurfaceClass = "mm-light-bg"
+
     /// Injected stylesheet contents (no outer `<style>` tags) for the message pane.
     static func injectedCSS(fontScale: Double, collapseQuote: Bool, html: String = "") -> String {
         // `html` kept for API stability / future per-message tweaks; unused now.
@@ -25,7 +38,11 @@ enum HTMLBodyDarkMode {
         // `A, B, C :not(a)` only styles C's children — cream/white wrappers
         // matched A/B but their text still got the body #e6e6e6 force (Urban
         // Adamah light-on-cream regression after 8aac8ea).
+        //
+        // `.mm-light-bg` is the computed-style twin of those attribute
+        // selectors (see `tagLightSurfacesJS`).
         let light = lightSurfaceSelector
+        let cls = lightSurfaceClass
         return """
         :root { color-scheme: light dark; }
         html, body { height: auto !important; min-height: 0 !important; }
@@ -35,15 +52,53 @@ enum HTMLBodyDarkMode {
           body, body :not(a):not(a *) { color: #e6e6e6 !important; }
           a, a * { color: #6cb2ff !important; }
           :is(\(light)),
-          :is(\(light)) :not(a):not(a *) {
+          :is(\(light)) :not(a):not(a *),
+          .\(cls),
+          .\(cls) :not(a):not(a *) {
             color: #222 !important;
           }
           :is(\(light)) a,
-          :is(\(light)) a * {
+          :is(\(light)) a *,
+          .\(cls) a,
+          .\(cls) a * {
             color: #0b57d0 !important;
           }
         }
         \(quote)
+        """
+    }
+
+    /// App-process JS (page scripts stay disabled). Walks the DOM and adds
+    /// `lightSurfaceClass` to every element whose *computed* background is
+    /// light and opaque enough to paint over the reading-pane chrome.
+    ///
+    /// Must run after the document is parsed so `<style>` rules and classes
+    /// resolve. Safe to re-run; re-tags without removing prior classes.
+    static var tagLightSurfacesJS: String {
+        let cls = lightSurfaceClass
+        // Luminance threshold ~0.72 ≈ mid-cream; alpha floor skips fully
+        // transparent layers so plain mail over dark chrome stays untagged.
+        return """
+        (function(){
+          var CLS='\(cls)';
+          function light(bg){
+            if(!bg||bg==='transparent') return false;
+            var m=bg.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)/i);
+            if(!m) return false;
+            var a=m[4]===undefined?1:parseFloat(m[4]);
+            if(a<0.5) return false;
+            var r=+m[1],g=+m[2],b=+m[3];
+            return (0.2126*r+0.7152*g+0.0722*b)/255>0.72;
+          }
+          function walk(el){
+            try{
+              if(light(getComputedStyle(el).backgroundColor)) el.classList.add(CLS);
+            }catch(e){}
+            var kids=el.children;
+            for(var i=0;i<kids.length;i++) walk(kids[i]);
+          }
+          if(document.documentElement) walk(document.documentElement);
+        })();
         """
     }
 

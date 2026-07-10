@@ -96,4 +96,33 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         XCTAssertTrue(isWrappedDescendant)
     }
 
+    /// Notion Calendar / style-block mail: attribute selectors miss backgrounds
+    /// declared only in `<style>`. CSS must style the computed-tag class, and
+    /// the tagger JS must stamp that class from getComputedStyle.
+    func testComputedLightSurfaceClassInCSS() {
+        let cls = HTMLBodyDarkMode.lightSurfaceClass
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        XCTAssertTrue(css.contains(".\(cls)"),
+                      "CSS must target .\(cls) stamped by post-load JS")
+        XCTAssertTrue(css.contains(".\(cls) :not(a):not(a *)"),
+                      "descendants of computed light surfaces get dark text")
+        XCTAssertTrue(css.contains(".\(cls) a"),
+                      "links inside computed light surfaces use dark blue")
+    }
+
+    func testTagLightSurfacesJSStampsClass() {
+        let cls = HTMLBodyDarkMode.lightSurfaceClass
+        let js = HTMLBodyDarkMode.tagLightSurfacesJS
+        XCTAssertTrue(js.contains(cls), "tagger must stamp \(cls)")
+        XCTAssertTrue(js.contains("getComputedStyle"),
+                      "tagger must use computed styles, not attributes")
+        XCTAssertTrue(js.contains("classList.add"),
+                      "tagger must add the light-surface class")
+        XCTAssertTrue(js.contains("backgroundColor"),
+                      "tagger reads backgroundColor")
+        // Luminance threshold present (opaque light only).
+        XCTAssertTrue(js.contains("0.72") || js.contains("0.2126"),
+                      "tagger uses relative luminance")
+    }
+
 }

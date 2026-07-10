@@ -43,6 +43,12 @@ minor versions may still change behavior.
   to reorder it; the order persists across restarts.
 
 ### Fixed
+- **Dark-mode light-on-white HTML mail** — transactional mail that paints a
+  white/cream canvas only via `<style>` or CSS classes (e.g. Notion Calendar
+  meeting updates) was force-colored light gray over that canvas. After load,
+  app-injected JS tags elements with a light *computed* background; CSS forces
+  dark text (and dark-blue links) inside those islands, while plain mail over
+  dark chrome stays light. Attribute selectors remain as a no-JS fast path.
 - **Expired/revoked sign-ins now prompt reauthorization** — when Google
   rejects a stored refresh token (`invalid_grant`) or none is stored, the
   affected account shows a warning icon and a "Reauthorize…" button in
