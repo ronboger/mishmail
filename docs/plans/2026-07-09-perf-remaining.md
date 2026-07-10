@@ -332,5 +332,9 @@ Instruments: Points of Interest, subsystem `dev.ronboger.MishMail.perf`.
 | `/` search panel jank | Contacts not refiltered in `body`; FTS min 2 chars; single JOIN + candidate cap; 80ms debounce |
 | Badge / `fetchSidebarCounts` | `SidebarCounts` per-predicate `COUNT(*)` + **v21** partial indexes |
 | Fable nits (post ship-with-nits) | Typeahead `ORDER BY MAX(date)`; **v22** reminder/snooze partials; EXPLAIN index tests; cached `isLoggingEnabled`; `onChange(contacts)` |
-| PR4 junction | Still deferred (measure Labels use) |
-| Phase 2 off-row bodies | Still deferred |
+| PR4 junction | **v23** `thread_label` + query JOIN; `allFromEmails` for blocklist |
+| Phase 2 off-row bodies | **v24** `message_body`; neighbor prefetch; DemoSeed split |
+| Blocklist | Uses `allFromEmails` (no full message header scan) |
+| Phase 3 batch get | `GmailBatch` + flag; `HistoryFetchFormat` helper |
+| Phase 4 pagination | `ThreadListPaging` + Load older UI |
+| Makefile | drop `-quiet` so Executed N tests shows |

@@ -46,8 +46,9 @@ gen:
 	xcodegen generate
 
 test: gen
+	# No -quiet: show "Executed N tests" (silent pass looked like a no-op).
 	xcodebuild test -project $(PROJECT) -scheme MishMailTests \
-		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet
+		-destination 'platform=macOS' -derivedDataPath $(DD)
 
 # The throwaway test app (Debug identity, isolated data).
 build: gen
