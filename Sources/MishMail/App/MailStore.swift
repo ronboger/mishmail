@@ -217,7 +217,10 @@ final class MailStore: ObservableObject {
     @Published var threads: [MailThread] = []
     @Published var savedViews: [SavedView] = []
     @Published var selectedView: MailboxView = .inbox {
-        didSet { readStateKeepIds.removeAll() }
+        didSet {
+            readStateKeepIds.removeAll()
+            resetListWindow()
+        }
     }
     @Published var selectedThreadId: String? {
         didSet {
@@ -258,6 +261,7 @@ final class MailStore: ObservableObject {
         searchText = q
         committedSearch = q
         recordSearch(q)
+        resetListWindow()
         reloadThreads()
     }
 
@@ -267,6 +271,7 @@ final class MailStore: ObservableObject {
         guard !searchText.isEmpty || !committedSearch.isEmpty else { return }
         searchText = ""
         committedSearch = ""
+        resetListWindow()
         reloadThreads()
     }
 
@@ -670,22 +675,33 @@ final class MailStore: ObservableObject {
     /// Moves every inbox thread from a blocked sender to Spam. Quiet (no
     /// per-thread undo toast — blocking is the undoable act, via Unblock).
     /// Runs on block and after each sync so new arrivals never linger.
-    /// Any message From can match via denorm `fromEmail` / `allFromEmails`
-    /// (no per-sync scan of all message headers).
+    /// Matches denorm `fromEmail` / `allFromEmails` in SQL (no full inbox load).
     func applyBlocklist() {
         guard !blockedEmails.isEmpty else { return }
-        let blockedSet = blockedEmails
-        let hits = PerfMetrics.measure(.syncBlocklist, meta: "blocked=\(blockedSet.count)") {
+        let blocked = Array(blockedEmails)
+        let hits = PerfMetrics.measure(.syncBlocklist, meta: "blocked=\(blocked.count)") {
             (try? db.read { db -> [MailThread] in
-                let inbox = try MailThread
-                    .filter(Column("inInbox") == true && Column("inTrash") == false)
-                    .fetchAll(db)
-                return inbox.filter {
-                    ThreadLabels.matchesBlocklist(
-                        fromEmail: $0.fromEmail,
-                        allFromEmails: $0.allFromEmails,
-                        blocked: blockedSet)
+                // Token match on space-separated allFromEmails + exact fromEmail.
+                var parts: [String] = []
+                var args: [String] = []
+                for e in blocked {
+                    parts.append("""
+                        (fromEmail = ?
+                         OR allFromEmails = ?
+                         OR allFromEmails LIKE ?
+                         OR allFromEmails LIKE ?
+                         OR allFromEmails LIKE ?)
+                        """)
+                    args.append(contentsOf: [e, e, "\(e) %", "% \(e)", "% \(e) %"])
                 }
+                return try MailThread.fetchAll(
+                    db,
+                    sql: """
+                        SELECT * FROM thread
+                        WHERE inInbox = 1 AND inTrash = 0
+                          AND (\(parts.joined(separator: " OR ")))
+                        """,
+                    arguments: StatementArguments(args))
             }) ?? []
         }
         for thread in hits {
@@ -1077,6 +1093,8 @@ final class MailStore: ObservableObject {
         chipReloadTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 180_000_000)
             guard !Task.isCancelled else { return }
+            // Chip toggles change the list identity — drop load-more depth.
+            self?.resetListWindow()
             self?.reloadThreads()
         }
     }
@@ -1085,8 +1103,13 @@ final class MailStore: ObservableObject {
     /// reads off the critical path (threads + VIP hits + sidebar counts), then
     /// applies only if this generation is still current. Does not clear
     /// `threads` while loading (no flicker).
+    ///
+    /// Reuses `listWindowLimit` so load-older pages survive sync/star reloads
+    /// (view/search changes call `resetListWindow()` first).
     func reloadThreads() {
         chipReloadTask?.cancel()   // a direct reload supersedes a pending debounced one
+        loadMoreTask?.cancel()
+        loadMoreTask = nil
         threadReloadGeneration += 1
         let generation = threadReloadGeneration
         // Capture everything the query needs up front so the pool read never
@@ -1100,6 +1123,10 @@ final class MailStore: ObservableObject {
         let allLabels = labelsByAccount.values.flatMap { $0 }
         let savedViewsSnapshot = savedViews
         let activeVIP = activeVIPEmails
+        // Search is single-window; mailbox views keep expanded load-more depth.
+        let windowLimit = search.isEmpty
+            ? max(ThreadListPaging.pageSize, listWindowLimit)
+            : ThreadListPaging.pageSize
         let badgeAccount: String? = {
             switch Self.badgeScope {
             case .all: return nil
@@ -1121,7 +1148,7 @@ final class MailStore: ObservableObject {
             let totalInterval = PerfMetrics.begin(.reloadTotal, meta: reloadKind)
             let payload: ReloadPayload? = try? await pool.read { db -> ReloadPayload in
                 let result: [MailThread] = try PerfMetrics.measure(
-                    .reloadList, meta: reloadKind
+                    .reloadList, meta: "\(reloadKind) limit=\(windowLimit)"
                 ) {
                     if !search.isEmpty {
                         let parsed = SearchQuery.parse(search)
@@ -1199,7 +1226,7 @@ final class MailStore: ObservableObject {
                         }
                         if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
                         return try q.order(Column("lastDate").desc, Column("id").desc)
-                            .limit(ThreadListPaging.pageSize).fetchAll(db)
+                            .limit(windowLimit).fetchAll(db)
                     } else {
                         var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
                         if chips.showArchived || chips.showSent {
@@ -1209,7 +1236,7 @@ final class MailStore: ObservableObject {
                         q = MailStore.applyChips(q, chips, keepIds: keepIds)
                         if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
                         return try q.order(Column("lastDate").desc, Column("id").desc)
-                            .limit(ThreadListPaging.pageSize).fetchAll(db)
+                            .limit(windowLimit).fetchAll(db)
                     }
                 }
                 let vipHits = try PerfMetrics.measure(.reloadVIP, meta: "n=\(result.count)") {
@@ -1233,7 +1260,14 @@ final class MailStore: ObservableObject {
             await MainActor.run {
                 guard let self, generation == self.threadReloadGeneration else { return }
                 self.threads = payload.threads
-                self.hasMoreThreads = ThreadListPaging.hasMore(fetchedCount: payload.threads.count)
+                // Keep expanded window across sync/star reloads; search never pages.
+                if search.isEmpty {
+                    self.listWindowLimit = max(self.listWindowLimit, payload.threads.count)
+                    self.hasMoreThreads = ThreadListPaging.hasMore(
+                        fetchedCount: payload.threads.count, pageSize: windowLimit)
+                } else {
+                    self.hasMoreThreads = false
+                }
                 self.listCursor = ThreadListPaging.nextCursor(after: payload.threads)
                 self.vipThreadIds = payload.vipHits
                 // Local sidebar counts only: they use the same denorm filters as
@@ -1247,32 +1281,39 @@ final class MailStore: ObservableObject {
         }
     }
 
-    /// Whether the current list window may have older rows past `pageSize`.
+    /// Whether the current list window may have older rows past the loaded depth.
     @Published private(set) var hasMoreThreads = false
     /// Cursor after the last loaded thread (for `loadMoreThreads`).
     private var listCursor: ThreadListCursor?
     private var loadMoreTask: Task<Void, Never>?
+    /// How many rows to re-fetch on reload so load-older survives star/sync.
+    private var listWindowLimit = ThreadListPaging.pageSize
+
+    /// Call when the list identity changes (view, search, chips base).
+    private func resetListWindow() {
+        listWindowLimit = ThreadListPaging.pageSize
+        listCursor = nil
+        hasMoreThreads = false
+        loadMoreTask?.cancel()
+        loadMoreTask = nil
+    }
 
     /// Append the next page of threads older than the current window.
-    /// No-op when `hasMoreThreads` is false or a load is already in flight.
+    /// No-op when `hasMoreThreads` is false, search is active, or a load is in flight.
     func loadMoreThreads() {
-        guard hasMoreThreads, let cursor = listCursor, loadMoreTask == nil else { return }
-        let view = selectedView
         let search = committedSearch.trimmingCharacters(in: .whitespaces)
+        guard search.isEmpty, hasMoreThreads, let cursor = listCursor, loadMoreTask == nil else { return }
+        let generation = threadReloadGeneration
+        let view = selectedView
         let chips = chips
         let activeAccount = activeAccountId
         let keepIds = Array(readStateKeepIds)
-        let allLabels = labelsByAccount.values.flatMap { $0 }
         let savedViewsSnapshot = savedViews
         let activeVIP = activeVIPEmails
         let pool = db
         loadMoreTask = Task { [weak self] in
             defer { Task { @MainActor in self?.loadMoreTask = nil } }
             let page: [MailThread]? = try? await pool.read { db in
-                if !search.isEmpty {
-                    // Search stays single-window for now (server search for depth).
-                    return []
-                }
                 var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
                 if chips.showArchived || chips.showSent {
                     q = MailStore.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
@@ -1284,20 +1325,26 @@ final class MailStore: ObservableObject {
                 return try q.order(Column("lastDate").desc, Column("id").desc)
                     .limit(ThreadListPaging.pageSize).fetchAll(db)
             }
-            guard let page, !page.isEmpty, let self else {
-                await MainActor.run { self?.hasMoreThreads = false }
+            guard let page, !page.isEmpty else {
+                await MainActor.run {
+                    guard let self, generation == self.threadReloadGeneration else { return }
+                    self.hasMoreThreads = false
+                }
                 return
             }
             let vipHits = (try? await pool.read { db in
                 try MailStore.computeVIPThreadIds(threads: page, activeVIP: activeVIP, db: db)
             }) ?? []
             await MainActor.run {
-                guard !Task.isCancelled else { return }
+                guard let self,
+                      generation == self.threadReloadGeneration,
+                      !Task.isCancelled else { return }
                 // Dedupe if a concurrent reload already included some rows.
                 let existing = Set(self.threads.map(\.id))
                 let fresh = page.filter { !existing.contains($0.id) }
                 self.threads.append(contentsOf: fresh)
                 self.vipThreadIds.formUnion(vipHits)
+                self.listWindowLimit = max(self.listWindowLimit, self.threads.count)
                 self.hasMoreThreads = ThreadListPaging.hasMore(fetchedCount: page.count)
                 self.listCursor = ThreadListPaging.nextCursor(after: page)
             }
@@ -2309,19 +2356,33 @@ final class MailStore: ObservableObject {
 
     /// Warm headers + last message body for prev/next in `displayOrder`
     /// (Phase 2). Cap concurrency at 1; cancel when selection changes.
+    /// Uses a detached pool read so SQLCipher work stays off the main actor.
     private func prefetchNeighborThreads() {
         neighborPrefetchTask?.cancel()
         let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
         let (prev, next) = NeighborPrefetch.neighbors(selected: selectedThreadId, in: order)
         let ids = [prev, next].compactMap { $0 }
         guard !ids.isEmpty else { return }
-        neighborPrefetchTask = Task { [weak self] in
+        let pool = db
+        neighborPrefetchTask = Task.detached {
             for id in ids {
-                guard !Task.isCancelled, let self else { return }
-                // Headers only first (cheap); last body for expand feel.
-                let headers = self.messageHeaders(inThread: id)
-                if let last = headers.last {
-                    _ = self.messageBody(id: last.id)
+                guard !Task.isCancelled else { return }
+                _ = try? await pool.read { db in
+                    let headers = try Message.fetchAll(
+                        db,
+                        sql: """
+                            SELECT id, accountId, gmailId, threadId, fromHeader, toHeader, ccHeader,
+                                   bccHeader, subject, date, snippet,
+                                   '' AS bodyText, NULL AS bodyHTML,
+                                   messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment
+                            FROM message
+                            WHERE threadId = ?
+                            ORDER BY date
+                            """,
+                        arguments: [id])
+                    if let last = headers.last {
+                        _ = try MessageBody.fetchOne(db, key: last.id)
+                    }
                 }
             }
         }

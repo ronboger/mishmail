@@ -283,15 +283,18 @@ actor GmailClient {
         return out
     }
 
+    /// Bounded concurrent singles. **Per-id failures are skipped** (404 when a
+    /// message is deleted between list and get is routine) so one miss cannot
+    /// drop the whole batch — history still advances and other messages land.
     private func getMessagesConcurrent(ids: [String], format: String) async throws -> [GMessage] {
-        try await withThrowingTaskGroup(of: GMessage.self) { group in
+        try await withThrowingTaskGroup(of: GMessage?.self) { group in
             var iterator = ids.makeIterator()
             var pending = 0
             var results: [GMessage] = []
             results.reserveCapacity(ids.count)
             func addNext() {
                 if let id = iterator.next() {
-                    group.addTask { try await self.getMessage(id: id, format: format) }
+                    group.addTask { try? await self.getMessage(id: id, format: format) }
                     pending += 1
                 }
             }
@@ -299,7 +302,7 @@ actor GmailClient {
             while pending > 0 {
                 let msg = try await group.next()!
                 pending -= 1
-                results.append(msg)
+                if let msg { results.append(msg) }
                 addNext()
             }
             return results

@@ -6,6 +6,9 @@ final class ThreadListPagingTests: XCTestCase {
         XCTAssertTrue(ThreadListPaging.hasMore(fetchedCount: 400))
         XCTAssertFalse(ThreadListPaging.hasMore(fetchedCount: 299))
         XCTAssertFalse(ThreadListPaging.hasMore(fetchedCount: 0))
+        // Expanded window: full page at that depth still means "maybe more".
+        XCTAssertTrue(ThreadListPaging.hasMore(fetchedCount: 600, pageSize: 600))
+        XCTAssertFalse(ThreadListPaging.hasMore(fetchedCount: 500, pageSize: 600))
     }
 
     func testNextCursorFromLast() {

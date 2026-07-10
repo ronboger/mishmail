@@ -2,12 +2,12 @@ import Foundation
 
 /// Decides Gmail `getMessage` format for history-driven fetches.
 ///
-/// - `messagesAdded`: always `full` (new payload, need bodies/snippet).
-/// - Local message missing: `full` (must create a coherent row).
-/// - Label-only change on a message we already have: no fetch (caller patches
-///   labelIds locally) — this helper is only for when a network get is needed.
-/// - Local exists but we still need a get (e.g. labelIds absent from history
-///   event and local row incomplete): prefer `metadata` when body is not required.
+/// Used by `SyncEngine.incrementalSync` when classifying `fullFetch` ids:
+/// - `messagesAdded` / local missing: always `full` (new payload, need bodies).
+/// - Local exists but still fetched (edge cases): prefer `metadata` when body
+///   is not required.
+/// - Label-only change on a cached message: `skip` — caller patches labelIds
+///   locally (those ids never enter fullFetch after the label-ops pass).
 enum HistoryFetchFormat {
     enum Reason: Equatable {
         case messagesAdded

@@ -819,8 +819,12 @@ final class AppDatabase {
                 INSERT INTO message_body (messageId, bodyText, bodyHTML)
                 SELECT id, bodyText, bodyHTML FROM message
                 """)
+            // Prefer WHERE so already-empty rows (if any) skip the write. FTS
+            // sync triggers still reindex subject+from for each updated row on
+            // first launch of this migration — expected pause on large caches.
             try db.execute(sql: """
                 UPDATE message SET bodyText = '', bodyHTML = NULL
+                WHERE bodyText != '' OR bodyHTML IS NOT NULL
                 """)
         }
         return m

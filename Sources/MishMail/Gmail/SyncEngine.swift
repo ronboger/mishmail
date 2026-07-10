@@ -327,13 +327,44 @@ actor SyncEngine {
 
         // Batch or concurrent getMessages; buffer writes into chunks so
         // SQLCipher transaction overhead does not dominate.
-        // Failures: getMessages falls back per-id; empty results skip.
+        // Per-id 404s are skipped inside getMessagesConcurrent (not whole-batch).
+        // HistoryFetchFormat picks full vs metadata when a local row already exists.
         // Failure mid-chunk rolls back that chunk only (earlier chunks stick).
         var writeBuffer: [PendingUpsert] = []
         writeBuffer.reserveCapacity(Self.writeChunkSize)
         let fullIds = Array(fullFetch)
         if !fullIds.isEmpty {
-            let fetchedMsgs = (try? await client.getMessages(ids: fullIds)) ?? []
+            let account = accountId
+            var needFull: [String] = []
+            var needMeta: [String] = []
+            needFull.reserveCapacity(fullIds.count)
+            for gmailId in fullIds {
+                let localExists = try await db.read { db in
+                    try Message.fetchOne(db, key: "\(account):\(gmailId)") != nil
+                }
+                // messagesAdded always land in fullFetch without a prior local row;
+                // HistoryFetchFormat maps that to .full(.localMissing / .messagesAdded).
+                switch HistoryFetchFormat.decide(
+                    isMessagesAdded: !localExists,
+                    localExists: localExists,
+                    historyHasLabelIds: false,
+                    needBody: !localExists
+                ) {
+                case .full:
+                    needFull.append(gmailId)
+                case .metadata:
+                    needMeta.append(gmailId)
+                case .skip:
+                    break
+                }
+            }
+            var fetchedMsgs: [GMessage] = []
+            if !needFull.isEmpty {
+                fetchedMsgs += (try? await client.getMessages(ids: needFull, format: "full")) ?? []
+            }
+            if !needMeta.isEmpty {
+                fetchedMsgs += (try? await client.getMessages(ids: needMeta, format: "metadata")) ?? []
+            }
             for msg in fetchedMsgs {
                 let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
                 writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
