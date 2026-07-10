@@ -5,8 +5,21 @@ import Foundation
 ///   from:alice  from:"Alice Smith"  to:bob  subject:invoice  label:work
 ///   label:"Deal Flow"  has:attachment  is:unread  is:starred
 ///   after:2026/07/01  before:2026-07-31
+///   in:trash  in:spam  in:anywhere
 /// Operators are case-insensitive; everything else is full-text search.
 struct SearchQuery: Equatable {
+    /// Gmail-style mailbox scope. Default excludes trash + spam (gmail.com).
+    enum Location: Equatable {
+        /// All mail except trash and spam.
+        case standard
+        /// Trash only.
+        case trash
+        /// Spam only.
+        case spam
+        /// Include trash and spam.
+        case anywhere
+    }
+
     var text = ""
     var from: String?
     var to: String?
@@ -20,12 +33,28 @@ struct SearchQuery: Equatable {
     var after: Date?
     /// Exclusive upper bound (messages strictly before this day, start-of-day).
     var before: Date?
+    /// Mailbox scope (`in:trash` / `in:spam` / `in:anywhere`). Default is
+    /// standard: hide trash and spam so a trash action removes the row from
+    /// search results instead of bouncing back after reload.
+    var location: Location = .standard
 
     /// True when the query is operators-only (no full-text part).
     var isFilterOnly: Bool {
         text.isEmpty && (from != nil || to != nil || subject != nil
             || !labels.isEmpty || hasAttachment || unread != nil || starred
-            || after != nil || before != nil)
+            || after != nil || before != nil || location != .standard)
+    }
+
+    /// Whether a thread falls inside this query's mailbox scope (trash/spam).
+    /// Shared by the SQL reload path and optimistic list updates so trash /
+    /// spam from a search result stay hidden after the async reload.
+    func includesLocation(inTrash: Bool, inSpam: Bool) -> Bool {
+        switch location {
+        case .standard: return !inTrash && !inSpam
+        case .trash: return inTrash
+        case .spam: return inSpam
+        case .anywhere: return true
+        }
     }
 
     static func parse(_ raw: String) -> SearchQuery {
@@ -53,6 +82,12 @@ struct SearchQuery: Equatable {
                 q.unread = false
             } else if lower == "is:starred" {
                 q.starred = true
+            } else if lower == "in:trash" {
+                q.location = .trash
+            } else if lower == "in:spam" {
+                q.location = .spam
+            } else if lower == "in:anywhere" {
+                q.location = .anywhere
             } else if lower.hasPrefix("after:"), let d = parseDate(String(token.dropFirst("after:".count))) {
                 q.after = d
             } else if lower.hasPrefix("before:"), let d = parseDate(String(token.dropFirst("before:".count))) {

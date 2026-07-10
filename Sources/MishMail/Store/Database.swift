@@ -60,6 +60,20 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         inSocial = set.contains("CATEGORY_SOCIAL")
         inSpam = set.contains("SPAM")
     }
+
+    /// Apply a local label add/remove and re-derive the denormalized flags.
+    /// Seeds STARRED/INBOX from `isStarred`/`inInbox` first: those flags can
+    /// be optimistically ahead of `labelIds` (star/archive/snooze mutate only
+    /// the flag), and syncFlagsFromLabelIds would otherwise clobber them.
+    mutating func applyLabelMutation(add: Set<String> = [], remove: Set<String> = []) {
+        var set = Set(labels)
+        if isStarred { set.insert("STARRED") } else { set.remove("STARRED") }
+        if inInbox { set.insert("INBOX") } else { set.remove("INBOX") }
+        set.subtract(remove)
+        set.formUnion(add)
+        labelIds = set.sorted().joined(separator: " ")
+        syncFlagsFromLabelIds()
+    }
 }
 
 struct Message: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {

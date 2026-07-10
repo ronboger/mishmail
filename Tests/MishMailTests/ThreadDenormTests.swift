@@ -65,6 +65,61 @@ final class ThreadDenormTests: XCTestCase {
         XCTAssertTrue(t.inInbox)
     }
 
+    // MARK: - applyLabelMutation
+
+    func testApplyLabelMutationPreservesOptimisticStar() {
+        // toggleStar sets only isStarred; a trash before sync must not wipe it.
+        var t = MailThread(
+            id: "a:t1", accountId: "a", gmailThreadId: "t1",
+            subject: "s", snippet: "sn", fromDisplay: "F",
+            lastDate: Date(), isUnread: false, isStarred: true,
+            inInbox: true, inTrash: false,
+            labelIds: "INBOX",
+            snoozeUntil: nil, participants: "F", messageCount: 1,
+            hasAttachment: false, reminderAt: nil)
+        t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
+        XCTAssertTrue(t.isStarred)
+        XCTAssertTrue(t.labels.contains("STARRED"))
+        XCTAssertTrue(t.inTrash)
+        XCTAssertFalse(t.inInbox)
+        XCTAssertFalse(t.labels.contains("INBOX"))
+    }
+
+    func testApplyLabelMutationDoesNotResurrectOptimisticUnstar() {
+        // Optimistic unstar: labelIds still has STARRED but isStarred is false.
+        var t = MailThread(
+            id: "a:t1", accountId: "a", gmailThreadId: "t1",
+            subject: "s", snippet: "sn", fromDisplay: "F",
+            lastDate: Date(), isUnread: false, isStarred: false,
+            inInbox: true, inTrash: false,
+            labelIds: "INBOX STARRED",
+            snoozeUntil: nil, participants: "F", messageCount: 1,
+            hasAttachment: false, reminderAt: nil)
+        t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
+        XCTAssertFalse(t.isStarred)
+        XCTAssertFalse(t.labels.contains("STARRED"))
+        XCTAssertTrue(t.inTrash)
+    }
+
+    func testApplyLabelMutationPreservesOptimisticArchive() {
+        // archive/snooze clear inInbox without touching labelIds; a spam
+        // mark's undo must not resurrect INBOX from stale labelIds... but the
+        // undo explicitly adds INBOX, so test the non-undo direction: a
+        // mutation that doesn't touch INBOX keeps the archived state.
+        var t = MailThread(
+            id: "a:t1", accountId: "a", gmailThreadId: "t1",
+            subject: "s", snippet: "sn", fromDisplay: "F",
+            lastDate: Date(), isUnread: false, isStarred: false,
+            inInbox: false, inTrash: false,
+            labelIds: "INBOX",
+            snoozeUntil: nil, participants: "F", messageCount: 1,
+            hasAttachment: false, reminderAt: nil)
+        t.applyLabelMutation(add: ["TRASH"])
+        XCTAssertFalse(t.inInbox)
+        XCTAssertFalse(t.labels.contains("INBOX"))
+        XCTAssertTrue(t.inTrash)
+    }
+
     // MARK: - Aggregate sidebar counts (in-memory DB)
 
     private func makeDB() throws -> DatabaseQueue {
