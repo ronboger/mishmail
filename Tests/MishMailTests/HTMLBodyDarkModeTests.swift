@@ -96,4 +96,69 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         XCTAssertTrue(isWrappedDescendant)
     }
 
+    /// Notion Calendar / style-block mail: attribute selectors miss backgrounds
+    /// declared only in `<style>`. CSS must style the computed-tag class, and
+    /// the tagger JS must stamp that class from getComputedStyle.
+    func testComputedLightSurfaceClassInCSS() {
+        let cls = HTMLBodyDarkMode.lightSurfaceClass
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        XCTAssertTrue(css.contains(".\(cls)"),
+                      "CSS must target .\(cls) stamped by post-load JS")
+        XCTAssertTrue(css.contains(".\(cls) :not(a):not(a *)"),
+                      "descendants of computed light surfaces get dark text")
+        XCTAssertTrue(css.contains(".\(cls) a"),
+                      "links inside computed light surfaces use dark blue")
+    }
+
+    func testTagLightSurfacesJSStampsClass() {
+        let cls = HTMLBodyDarkMode.lightSurfaceClass
+        let js = HTMLBodyDarkMode.tagLightSurfacesJS
+        XCTAssertTrue(js.contains(cls), "tagger must stamp \(cls)")
+        XCTAssertTrue(js.contains("getComputedStyle"),
+                      "tagger must use computed styles, not attributes")
+        XCTAssertTrue(js.contains("classList.add"),
+                      "tagger must add the light-surface class")
+        XCTAssertTrue(js.contains("backgroundColor"),
+                      "tagger reads backgroundColor")
+        // JS thresholds must match the Swift constants (no drift).
+        XCTAssertTrue(js.contains(String(HTMLBodyDarkMode.luminanceThreshold)),
+                      "JS embeds luminanceThreshold")
+        XCTAssertTrue(js.contains(String(HTMLBodyDarkMode.alphaFloor)),
+                      "JS embeds alphaFloor")
+    }
+
+    // MARK: - isLightBackground thresholds
+
+    func testWhiteIsLight() {
+        XCTAssertTrue(HTMLBodyDarkMode.isLightBackground(r: 255, g: 255, b: 255))
+    }
+
+    func testCreamIsLight() {
+        // #faf8f5 — Urban Adamah / common newsletter cream
+        XCTAssertTrue(HTMLBodyDarkMode.isLightBackground(r: 0xfa, g: 0xf8, b: 0xf5))
+    }
+
+    func testNearThresholdLuminance() {
+        // Synthetic grays around luminanceThreshold (0.72).
+        // L = gray/255; gray > 0.72*255 ≈ 183.6 → light.
+        XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 183, g: 183, b: 183),
+                       "just under threshold must stay untagged")
+        XCTAssertTrue(HTMLBodyDarkMode.isLightBackground(r: 184, g: 184, b: 184),
+                      "just over threshold must tag")
+    }
+
+    func testAlphaFloor() {
+        XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 255, g: 255, b: 255, a: 0.49),
+                       "mostly transparent white is not a light surface")
+        XCTAssertTrue(HTMLBodyDarkMode.isLightBackground(r: 255, g: 255, b: 255, a: 0.5))
+        XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 255, g: 255, b: 255, a: 0),
+                       "fully transparent never tags")
+    }
+
+    func testDarkChromeColorsNotLight() {
+        XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 0x1a, g: 0x1a, b: 0x2e))
+        XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 0x22, g: 0x22, b: 0x22))
+        XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 0, g: 0, b: 0))
+    }
+
 }
