@@ -297,7 +297,7 @@ struct AccountsSettings: View {
                             }
                             Spacer()
                             if store.accountsNeedingReauth.contains(account.id) {
-                                Button("Reauthorize…") { store.addAccount() }
+                                Button("Reauthorize…") { store.addAccount(reauthorizing: account.id) }
                             }
                             Button("Remove Account", role: .destructive) {
                                 store.removeAccount(account.id)

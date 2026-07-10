@@ -1654,10 +1654,10 @@ final class MailStore: ObservableObject {
 
     // MARK: - Account lifecycle
 
-    func addAccount() {
+    func addAccount(reauthorizing hint: String? = nil) {
         Task {
             do {
-                let (refresh, access) = try await OAuthService().signIn()
+                let (refresh, access) = try await OAuthService().signIn(loginHint: hint)
                 var req = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!)
                 req.setValue("Bearer \(access)", forHTTPHeaderField: "Authorization")
                 struct UserInfo: Decodable { let email: String; let name: String? }

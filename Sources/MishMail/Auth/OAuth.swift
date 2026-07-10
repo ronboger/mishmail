@@ -90,7 +90,9 @@ final class OAuthService {
     static var loopbackTimeout: Duration = .seconds(5 * 60)
 
     /// Runs the full interactive flow and returns (refreshToken, accessToken).
-    func signIn() async throws -> (refreshToken: String, accessToken: String) {
+    /// When `loginHint` is set (reauthorizing an existing account), Google
+    /// preselects that account instead of showing the account chooser.
+    func signIn(loginHint: String? = nil) async throws -> (refreshToken: String, accessToken: String) {
         guard OAuthConfig.isConfigured else { throw OAuthError.notConfigured }
 
         let verifier = try Self.randomURLSafe(64)
@@ -113,6 +115,9 @@ final class OAuthService {
             .init(name: "access_type", value: "offline"),
             .init(name: "prompt", value: "consent select_account"),
         ]
+        if let loginHint {
+            comps.queryItems?.append(.init(name: "login_hint", value: loginHint))
+        }
         let authURL = comps.url!
         _ = await MainActor.run { NSWorkspace.shared.open(authURL) }
 
@@ -164,7 +169,8 @@ final class OAuthService {
             .data(using: .utf8)
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
-            if oauthErrorCode(from: data) == "invalid_grant" {
+            let status = (resp as? HTTPURLResponse)?.statusCode
+            if status == 400, oauthErrorCode(from: data) == "invalid_grant" {
                 throw OAuthError.invalidGrant
             }
             throw OAuthError.tokenExchangeFailed(String(data: data, encoding: .utf8) ?? "unknown")
