@@ -1039,14 +1039,41 @@ struct ComposeView: View {
             linkInitialText = existing.text
             linkInitialURL = existing.url
             linkIsEditing = true
-        } else {
-            linkSelLocation = location
-            linkSelLength = length
-            linkInitialText = length > 0 ? nsBody.substring(with: sel) : ""
-            linkInitialURL = ""
-            linkIsEditing = false
+            showLinkSheet = true
+            return
         }
+
+        // ⌘K on a selection that's already a bare URL/email should just
+        // link it — no sheet, no retyping. Skip the short-circuit (and
+        // fall back to the sheet, same as before) when the selection
+        // overlaps an existing markdown link without exactly covering it;
+        // trying to be clever about partial overlaps isn't worth it.
+        if length > 0, !overlapsLinkWithoutExactCover(range) {
+            let selected = nsBody.substring(with: sel)
+            if let href = ComposeLinks.selfLink(forSelection: selected),
+               let next = ComposeLinks.applyLink(in: body_, selection: range,
+                                                 text: selected, url: href) {
+                body_ = next
+                bodyFocused = true
+                return
+            }
+        }
+
+        linkSelLocation = location
+        linkSelLength = length
+        linkInitialText = length > 0 ? nsBody.substring(with: sel) : ""
+        linkInitialURL = ""
+        linkIsEditing = false
         showLinkSheet = true
+    }
+
+    /// True when `range` overlaps an existing markdown link's span but
+    /// isn't exactly that span — the "partial overlap" case where we
+    /// deliberately fall back to the sheet instead of guessing intent.
+    private func overlapsLinkWithoutExactCover(_ range: Range<String.Index>) -> Bool {
+        ComposeLinks.markdownLinks(in: body_).contains { link in
+            link.range.overlaps(range) && link.range != range
+        }
     }
 
     private func applyLink(text: String, url: String) {

@@ -170,6 +170,63 @@ final class ComposeLinksTests: XCTestCase {
         XCTAssertEqual(html, "café <a href=\"https://example.com\">docs</a>")
     }
 
+    // MARK: - selfLink
+
+    func testSelfLinkAcceptsHTTPS() {
+        XCTAssertEqual(ComposeLinks.selfLink(forSelection: "https://example.com/a"),
+                       "https://example.com/a")
+    }
+
+    func testSelfLinkAcceptsHTTP() {
+        XCTAssertEqual(ComposeLinks.selfLink(forSelection: "http://example.com"),
+                       "http://example.com")
+    }
+
+    func testSelfLinkAcceptsBareHost() {
+        XCTAssertEqual(ComposeLinks.selfLink(forSelection: "foo.com"),
+                       "https://foo.com")
+    }
+
+    func testSelfLinkAcceptsBareEmail() {
+        XCTAssertEqual(ComposeLinks.selfLink(forSelection: "a@b.com"),
+                       "mailto:a@b.com")
+    }
+
+    func testSelfLinkAcceptsMailtoScheme() {
+        XCTAssertEqual(ComposeLinks.selfLink(forSelection: "mailto:a@b.com"),
+                       "mailto:a@b.com")
+    }
+
+    func testSelfLinkAcceptsTrimmedWhitespace() {
+        XCTAssertEqual(ComposeLinks.selfLink(forSelection: "  foo.com  "),
+                       "https://foo.com")
+    }
+
+    func testSelfLinkRejectsPlainWord() {
+        // normalizeURL would happily turn "hello" into "https://hello" —
+        // selfLink must not, since it doesn't plausibly look like a URL.
+        XCTAssertNil(ComposeLinks.selfLink(forSelection: "hello"))
+    }
+
+    func testSelfLinkRejectsMultiWordSelection() {
+        XCTAssertNil(ComposeLinks.selfLink(forSelection: "click foo.com"))
+        XCTAssertNil(ComposeLinks.selfLink(forSelection: "foo.com\nbar.com"))
+    }
+
+    func testSelfLinkRejectsDangerousSchemes() {
+        XCTAssertNil(ComposeLinks.selfLink(forSelection: "javascript:alert(1)"))
+        XCTAssertNil(ComposeLinks.selfLink(forSelection: "data:text/html,hi"))
+    }
+
+    func testSelfLinkRejectsTextAlreadyInsideMarkdownLink() {
+        XCTAssertNil(ComposeLinks.selfLink(forSelection: "[foo.com](https://foo.com)"))
+    }
+
+    func testSelfLinkRejectsEmptyAndWhitespaceOnly() {
+        XCTAssertNil(ComposeLinks.selfLink(forSelection: ""))
+        XCTAssertNil(ComposeLinks.selfLink(forSelection: "   "))
+    }
+
     // MARK: - UTF-16 bridge
 
     func testNSRangeRoundTrip() {

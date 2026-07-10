@@ -75,6 +75,37 @@ enum ComposeLinks {
         }
     }
 
+    // MARK: - ⌘K on an already-linkable selection
+
+    /// The href to use when ⌘K is pressed on a selection that already *is*
+    /// a URL/email — lets `openLinkSheet()` skip the sheet and link it
+    /// directly instead of making the user retype what they just selected.
+    ///
+    /// Qualifies only when the (trimmed) selection: is non-empty, has no
+    /// internal whitespace/newlines, isn't itself markdown link syntax
+    /// (`[text](url)`), `normalizeURL` accepts it, and it plausibly looks
+    /// like a URL/email (recognized scheme, contains `@`, or contains `.`).
+    /// The last check keeps plain words like "hello" from qualifying even
+    /// though `normalizeURL` would happily turn them into `https://hello`.
+    static func selfLink(forSelection selected: String) -> String? {
+        let trimmed = selected.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        guard !trimmed.contains(where: { $0.isWhitespace || $0.isNewline }) else { return nil }
+        // Selecting the raw markdown of an existing link (e.g. dragging over
+        // `[foo.com](https://foo.com)`) is not a bare URL to self-link.
+        guard markdownLinks(in: trimmed).isEmpty else { return nil }
+        guard looksLikeURLOrEmail(trimmed) else { return nil }
+        return normalizeURL(trimmed)
+    }
+
+    private static func looksLikeURLOrEmail(_ s: String) -> Bool {
+        let lower = s.lowercased()
+        if lower.hasPrefix("http://") || lower.hasPrefix("https://") || lower.hasPrefix("mailto:") {
+            return true
+        }
+        return s.contains("@") || s.contains(".")
+    }
+
     // MARK: - Insert / edit / remove
 
     /// Replaces `selection` with a markdown link. Display text prefers an
