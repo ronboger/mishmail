@@ -240,6 +240,91 @@ actor GmailClient {
         try await request("GET", "/messages/\(id)", query: ["format": format])
     }
 
+    /// Kill-switch for HTTP batch get. Env `MISHMAIL_GMAIL_BATCH=0` or
+    /// UserDefaults `gmail.batchGet` = false falls back to concurrent singles.
+    nonisolated static var batchGetEnabled: Bool {
+        if ProcessInfo.processInfo.environment["MISHMAIL_GMAIL_BATCH"] == "0" { return false }
+        if UserDefaults.standard.object(forKey: "gmail.batchGet") as? Bool == false { return false }
+        return true
+    }
+
+    /// Max messages per `batch/gmail/v1` request (Gmail allows up to 100).
+    nonisolated static let batchGetChunkSize = 50
+
+    /// Fetch many messages. When batch is enabled, uses multipart batch HTTP
+    /// (fewer RTTs); otherwise bounded concurrent `getMessage` (8).
+    /// Partial batch failures surface as `GmailError.http` only if **all**
+    /// parts fail; successful parts still return.
+    func getMessages(ids: [String], format: String = "full") async throws -> [GMessage] {
+        guard !ids.isEmpty else { return [] }
+        if !Self.batchGetEnabled || ids.count == 1 {
+            return try await getMessagesConcurrent(ids: ids, format: format)
+        }
+        var out: [GMessage] = []
+        out.reserveCapacity(ids.count)
+        var i = ids.startIndex
+        while i < ids.endIndex {
+            let end = ids.index(i, offsetBy: Self.batchGetChunkSize, limitedBy: ids.endIndex) ?? ids.endIndex
+            let chunk = Array(ids[i..<end])
+            let part = try await getMessagesBatch(ids: chunk, format: format)
+            if part.count < chunk.count {
+                // Partial success or batch unsupported — fill gaps concurrently.
+                let got = Set(part.map(\.id))
+                let missing = chunk.filter { !got.contains($0) }
+                out += part
+                if !missing.isEmpty {
+                    out += try await getMessagesConcurrent(ids: missing, format: format)
+                }
+            } else {
+                out += part
+            }
+            i = end
+        }
+        return out
+    }
+
+    private func getMessagesConcurrent(ids: [String], format: String) async throws -> [GMessage] {
+        try await withThrowingTaskGroup(of: GMessage.self) { group in
+            var iterator = ids.makeIterator()
+            var pending = 0
+            var results: [GMessage] = []
+            results.reserveCapacity(ids.count)
+            func addNext() {
+                if let id = iterator.next() {
+                    group.addTask { try await self.getMessage(id: id, format: format) }
+                    pending += 1
+                }
+            }
+            for _ in 0..<min(8, ids.count) { addNext() }
+            while pending > 0 {
+                let msg = try await group.next()!
+                pending -= 1
+                results.append(msg)
+                addNext()
+            }
+            return results
+        }
+    }
+
+    /// One multipart batch request. Pure parse of the response body is in
+    /// `GmailBatch.parseResponse` for unit tests.
+    private func getMessagesBatch(ids: [String], format: String) async throws -> [GMessage] {
+        let boundary = "batch_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
+        let body = GmailBatch.buildRequestBody(ids: ids, format: format, boundary: boundary)
+        var req = URLRequest(url: URL(string: "https://www.googleapis.com/batch/gmail/v1")!)
+        req.httpMethod = "POST"
+        req.setValue("Bearer \(try await validToken())", forHTTPHeaderField: "Authorization")
+        req.setValue("multipart/mixed; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+        req.httpBody = body
+        let (data, resp) = try await URLSession.shared.data(for: req)
+        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+        guard (200..<300).contains(code) else {
+            throw GmailError.http(code, String(data: data, encoding: .utf8) ?? "")
+        }
+        let contentType = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? ""
+        return try GmailBatch.parseResponse(data: data, contentType: contentType)
+    }
+
     func modifyMessage(id: String, add: [String] = [], remove: [String] = []) async throws {
         var body: [String: Any] = [:]
         if !add.isEmpty { body["addLabelIds"] = add }
