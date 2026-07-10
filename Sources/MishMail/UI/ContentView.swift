@@ -599,6 +599,16 @@ struct Sidebar: View {
         }
         .badge((badge ?? 0) > 0 ? badge! : 0)
         .tag(view)
+        // List(selection:) only fires onChange when the value *changes*, so
+        // re-clicking the already-selected row (e.g. Inbox while a committed
+        // `/` search is active) would otherwise be a no-op — same shape as the
+        // original gi bug. Only handle the already-selected case; cross-view
+        // clicks still go through the selection binding + onChange.
+        .simultaneousGesture(TapGesture().onEnded {
+            if store.selectedView == view {
+                store.goTo(view)
+            }
+        })
     }
 }
 

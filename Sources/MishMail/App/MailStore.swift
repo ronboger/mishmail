@@ -273,6 +273,9 @@ final class MailStore: ObservableObject {
             destinationIsCurrent: selectedView == view,
             searchText: searchText,
             committedSearch: committedSearch)
+        // Clear inline — do not call clearSearch(). That helper reloads, and a
+        // cross-view goTo already reloads once via ContentView's selectedView
+        // onChange; calling clearSearch would double-reload.
         if plan.clearSearch {
             searchText = ""
             committedSearch = ""
