@@ -46,6 +46,19 @@ final class DatabaseMigrationTests: XCTestCase {
             let scheduledCols = try db.columns(in: "scheduledSend").map(\.name)
             XCTAssertTrue(scheduledCols.contains("fromEmail"),
                           "v20 must add fromEmail on scheduledSend")
+            // v21 partial indexes for SidebarCounts COUNT(*) paths.
+            for name in [
+                "thread_unread_primary_inbox",
+                "thread_unread_promotions",
+                "thread_unread_social",
+                "thread_starred_active",
+                "thread_drafts_active",
+            ] {
+                let exists = try Bool.fetchOne(db, sql:
+                    "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+                    arguments: [name]) ?? false
+                XCTAssertTrue(exists, "v21 must create index \(name)")
+            }
         }
     }
 

@@ -146,49 +146,6 @@ final class ThreadDenormTests: XCTestCase {
         try t.insert(db)
     }
 
-    /// Mirrors `MailStore.fetchSidebarCounts` — kept here so we can assert
-    /// the aggregate SQL without compiling MailStore (AppKit). If you change
-    /// the production SQL, update this copy. Sidebar unread must stay on
-    /// local denorm counts only (no Gmail CATEGORY_* `labelInfo` override).
-    private func fetchSidebarCounts(
-        db: Database, activeAccount: String?, badgeAccount: String?,
-        now: Date = Date()
-    ) throws -> (counts: [String: Int], badge: Int) {
-        let row = try Row.fetchOne(db, sql: """
-            SELECT
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-                AND inPromotions = 0 AND inSocial = 0 THEN 1 ELSE 0 END), 0) AS inbox,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-                AND inPromotions = 1 THEN 1 ELSE 0 END), 0) AS promotions,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-                AND inSocial = 1 THEN 1 ELSE 0 END), 0) AS social,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND reminderAt IS NOT NULL THEN 1 ELSE 0 END), 0) AS reminders,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND isStarred = 1 AND inTrash = 0 THEN 1 ELSE 0 END), 0) AS starred,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND snoozeUntil IS NOT NULL AND snoozeUntil > ?3 AND inTrash = 0 THEN 1 ELSE 0 END), 0) AS snoozed,
-              COALESCE(SUM(CASE WHEN (?1 IS NULL OR accountId = ?1)
-                AND inDrafts = 1 AND inTrash = 0 THEN 1 ELSE 0 END), 0) AS drafts,
-              COALESCE(SUM(CASE WHEN (?2 IS NULL OR accountId = ?2)
-                AND isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-                AND inPromotions = 0 AND inSocial = 0 THEN 1 ELSE 0 END), 0) AS badge
-            FROM thread
-            """, arguments: [activeAccount, badgeAccount, now])!
-        return ([
-            "inbox": row["inbox"],
-            "promotions": row["promotions"],
-            "social": row["social"],
-            "reminders": row["reminders"],
-            "starred": row["starred"],
-            "snoozed": row["snoozed"],
-            "drafts": row["drafts"],
-        ], row["badge"])
-    }
-
     func testAggregateCountsUseDenormFlags() throws {
         let q = try makeDB()
         try q.write { db in
@@ -212,7 +169,7 @@ final class ThreadDenormTests: XCTestCase {
         }
 
         let (all, badgeAll) = try q.read {
-            try self.fetchSidebarCounts(db: $0, activeAccount: nil, badgeAccount: nil)
+            try SidebarCounts.fetch(db: $0, activeAccount: nil, badgeAccount: nil)
         }
         XCTAssertEqual(all["inbox"], 3)          // t1,t2,t7
         XCTAssertEqual(all["promotions"], 1)     // t3
@@ -222,8 +179,8 @@ final class ThreadDenormTests: XCTestCase {
         XCTAssertEqual(badgeAll, 3)
 
         let (scoped, badgeScoped) = try q.read {
-            try self.fetchSidebarCounts(db: $0, activeAccount: "a@x.com",
-                                        badgeAccount: "b@x.com")
+            try SidebarCounts.fetch(db: $0, activeAccount: "a@x.com",
+                                    badgeAccount: "b@x.com")
         }
         XCTAssertEqual(scoped["inbox"], 2)       // a only
         XCTAssertEqual(badgeScoped, 1)           // b only
@@ -255,7 +212,7 @@ final class ThreadDenormTests: XCTestCase {
         }
 
         let (counts, _) = try q.read {
-            try self.fetchSidebarCounts(db: $0, activeAccount: nil, badgeAccount: nil)
+            try SidebarCounts.fetch(db: $0, activeAccount: nil, badgeAccount: nil)
         }
         XCTAssertEqual(counts["promotions"], 1, "only in-inbox non-spam promotions")
         XCTAssertEqual(counts["social"], 1, "only in-inbox non-spam social")

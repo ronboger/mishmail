@@ -324,3 +324,12 @@ Ship-with-nits; none of these block PR1–PR3 merge. Track for later:
 | `sync.blocklist` | `applyBlocklist` | Denorm / bound scan |
 
 Instruments: Points of Interest, subsystem `dev.ronboger.MishMail.perf`.
+
+### Follow-on optimizations (post-harness)
+
+| Item | Status |
+|------|--------|
+| `/` search panel jank | Contacts not refiltered in `body`; FTS min 2 chars; single JOIN + candidate cap; 80ms debounce |
+| Badge / `fetchSidebarCounts` | `SidebarCounts` per-predicate `COUNT(*)` + **v21** partial indexes |
+| PR4 junction | Still deferred (measure Labels use) |
+| Phase 2 off-row bodies | Still deferred |

@@ -74,6 +74,7 @@ targets:
       - Tests/MishMailTests
       - Sources/MishMail/Gmail
       - Sources/MishMail/Store/Database.swift
+      - Sources/MishMail/Store/SidebarCounts.swift
       - Sources/MishMail/Support/ContactMiner.swift
       - Sources/MishMail/Support/ComposeLinks.swift
       - Sources/MishMail/Support/HTMLEntities.swift

@@ -677,6 +677,41 @@ final class AppDatabase {
                 t.add(column: "fromEmail", .text).notNull().defaults(to: "")
             }
         }
+        // v21: partial indexes for SidebarCounts per-predicate COUNT(*) queries.
+        // The v18 composites help list ORDER BY lastDate; they do not help
+        // full-table SUM(CASE) badge SQL. These partials make each count scan
+        // only matching rows (unread inbox, starred, drafts, …).
+        m.registerMigration("v21") { db in
+            // Primary inbox unread (+ dock badge same predicate).
+            try db.execute(sql: """
+                CREATE INDEX thread_unread_primary_inbox
+                ON thread(accountId)
+                WHERE isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
+                  AND inPromotions = 0 AND inSocial = 0
+                """)
+            try db.execute(sql: """
+                CREATE INDEX thread_unread_promotions
+                ON thread(accountId)
+                WHERE isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
+                  AND inPromotions = 1
+                """)
+            try db.execute(sql: """
+                CREATE INDEX thread_unread_social
+                ON thread(accountId)
+                WHERE isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
+                  AND inSocial = 1
+                """)
+            try db.execute(sql: """
+                CREATE INDEX thread_starred_active
+                ON thread(accountId)
+                WHERE isStarred = 1 AND inTrash = 0
+                """)
+            try db.execute(sql: """
+                CREATE INDEX thread_drafts_active
+                ON thread(accountId)
+                WHERE inDrafts = 1 AND inTrash = 0
+                """)
+        }
         return m
     }
 }
