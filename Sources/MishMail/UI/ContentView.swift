@@ -1008,6 +1008,17 @@ struct AccountSwitcher: View {
                         .onDrop(of: [.text], delegate: AccountDropDelegate(
                             target: account, draggingId: $draggingAccountId, store: store))
                 }
+                // Discoverability: grips alone can read as decoration; a
+                // one-line caption matches LabelOrganizer and only appears
+                // when reorder is possible (2+ accounts).
+                if canReorderAccounts {
+                    Text("Drag to reorder")
+                        .font(.system(size: 10.5))
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 6)
+                        .padding(.top, 4)
+                        .padding(.bottom, 2)
+                }
                 Divider().padding(.vertical, 4)
                 FilterMenuRow(icon: "plus", title: "Add Google Account…") {
                     showMenu = false
@@ -1038,8 +1049,13 @@ struct AccountSwitcher: View {
         }
     }
 
-    /// One row of the account popover: avatar, name + address, checkmark.
-    /// `shortcut` is the ⌘-digit that switches to this scope from anywhere.
+    /// True when the switcher can reorder — needs at least two real accounts.
+    /// "All accounts" stays pinned and never shows a grip.
+    private var canReorderAccounts: Bool { store.accounts.count > 1 }
+
+    /// One row of the account popover: optional drag grip, avatar, name +
+    /// address, checkmark. `shortcut` is the ⌘-digit that switches to this
+    /// scope from anywhere.
     private func accountRow(_ account: Account?, shortcut: Int? = nil) -> some View {
         let selected = store.activeAccountId == account?.id
         return Button {
@@ -1047,6 +1063,24 @@ struct AccountSwitcher: View {
             showMenu = false
         } label: {
             HStack(spacing: 8) {
+                // Leading grip on reorderable account rows; matching spacer
+                // on "All accounts" so avatars stay column-aligned.
+                if canReorderAccounts {
+                    if account != nil {
+                        // Visual + pointer-tooltip only — hide from AX so the
+                        // row button's name stays "Name, address…" instead of
+                        // leading with "Drag to reorder". Hint lives on the
+                        // Button below; caption text covers static discovery.
+                        Image(systemName: "line.3.horizontal")
+                            .font(.system(size: 10, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 12)
+                            .help("Drag to reorder")
+                            .accessibilityHidden(true)
+                    } else {
+                        Color.clear.frame(width: 12)
+                    }
+                }
                 if let account {
                     avatar(for: displayTitle(account), key: account.id, size: 24)
                 } else {
@@ -1078,6 +1112,7 @@ struct AccountSwitcher: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .accessibilityHint(account != nil && canReorderAccounts ? "Drag to reorder" : "")
         .hoverTint()
     }
 
