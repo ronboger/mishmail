@@ -978,36 +978,13 @@ final class MailStore: ObservableObject {
     /// A few matching threads for the live search dropdown — FTS over cached
     /// mail, newest first. Async so the per-keystroke lookup runs on a pool
     /// reader instead of blocking the main thread while SQLCipher decrypts.
-    ///
-    /// Skips FTS for single-character queries (too broad; contacts + "View all"
-    /// are enough). One JOIN query with a tight candidate cap — not "300 ids
-    /// then re-fetch threads".
+    /// SQL lives in `ThreadTypeahead` (shared with unit tests).
     func threadSuggestions(for query: String, limit: Int = 5) async -> [MailThread] {
         let q = query.trimmingCharacters(in: .whitespaces)
-        // 1-char FTS matches half the mailbox under prefix indexes; skip until
-        // the user types enough for a useful typeahead.
-        guard q.count >= 2 else { return [] }
+        guard q.count >= ThreadTypeahead.minimumQueryLength else { return [] }
         return await PerfMetrics.measureAsync(.searchPreview, meta: "qLen=\(q.count)") {
-            (try? await db.read { db -> [MailThread] in
-                guard let pattern = FTS5Pattern(matchingAllPrefixesIn: q) else { return [] }
-                // Candidate cap: enough to rank by lastDate for a 5-row panel
-                // without materializing every FTS hit for short prefixes.
-                let candidateCap = max(limit * 16, 40)
-                return try MailThread.fetchAll(db, sql: """
-                    SELECT thread.*
-                    FROM (
-                        SELECT message.threadId AS tid
-                        FROM message_fts
-                        JOIN message ON message.rowid = message_fts.rowid
-                        WHERE message_fts MATCH ?
-                        GROUP BY message.threadId
-                        LIMIT ?
-                    ) AS hits
-                    JOIN thread ON thread.id = hits.tid
-                    WHERE thread.inTrash = 0
-                    ORDER BY thread.lastDate DESC
-                    LIMIT ?
-                    """, arguments: [pattern, candidateCap, limit])
+            (try? await db.read { db in
+                try ThreadTypeahead.fetch(db: db, query: q, limit: limit)
             }) ?? []
         }
     }

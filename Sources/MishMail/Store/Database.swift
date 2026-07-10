@@ -712,6 +712,22 @@ final class AppDatabase {
                 WHERE inDrafts = 1 AND inTrash = 0
                 """)
         }
+        // v22: partial indexes for the two SidebarCounts paths that were still
+        // full-table scans after v21 (reminders + snoozed). The snooze cutoff
+        // (`snoozeUntil > now`) cannot live in the index WHERE; scanning only
+        // the snoozed subset is enough.
+        m.registerMigration("v22") { db in
+            try db.execute(sql: """
+                CREATE INDEX thread_has_reminder
+                ON thread(accountId)
+                WHERE reminderAt IS NOT NULL
+                """)
+            try db.execute(sql: """
+                CREATE INDEX thread_snoozed_active
+                ON thread(accountId)
+                WHERE snoozeUntil IS NOT NULL AND inTrash = 0
+                """)
+        }
         return m
     }
 }

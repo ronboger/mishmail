@@ -29,6 +29,22 @@ final class ContactMinerTests: XCTestCase {
         XCTAssertTrue(ContactMiner.suggestions(from: list, matching: "  ").isEmpty)
     }
 
+    /// Production mining lowercases emails (`ContactMiner.merge`); suggestions
+    /// only lowercases the query and compares email as stored. Document that
+    /// contract so mixed-case rows are not silently expected to match.
+    func testSuggestionsAssumeLowercasedEmails() {
+        let minedStyle = contact("alice@x.com", name: "Alice")
+        XCTAssertEqual(
+            ContactMiner.suggestions(from: [minedStyle], matching: "Alice@X.COM").map(\.email),
+            ["alice@x.com"])
+        // If a contact ever bypassed mining and kept uppercase, email match fails
+        // (name match still works). Lock the email half of the assumption.
+        let mixed = contact("Alice@X.COM", name: "")
+        XCTAssertTrue(
+            ContactMiner.suggestions(from: [mixed], matching: "alice@x.com").isEmpty,
+            "email side is case-sensitive; only mined lowercased emails match")
+    }
+
     func testIncrementalMergeAddsToPriorWeights() {
         var weights: ContactMiner.WeightMap = [:]
         let own: Set<String> = ["me@x.com"]

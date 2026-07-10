@@ -59,6 +59,13 @@ final class DatabaseMigrationTests: XCTestCase {
                     arguments: [name]) ?? false
                 XCTAssertTrue(exists, "v21 must create index \(name)")
             }
+            // v22: reminders + snoozed (were full scans after v21).
+            for name in ["thread_has_reminder", "thread_snoozed_active"] {
+                let exists = try Bool.fetchOne(db, sql:
+                    "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+                    arguments: [name]) ?? false
+                XCTAssertTrue(exists, "v22 must create index \(name)")
+            }
         }
     }
 

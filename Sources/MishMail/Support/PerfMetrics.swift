@@ -36,10 +36,14 @@ enum PerfMetrics {
         logger: Logger(subsystem: subsystem, category: "signpost"))
 
     /// Console logging on/off. Signposts always fire.
-    static var isLoggingEnabled: Bool {
+    /// Cached at first use — env never changes mid-run; flipping the
+    /// UserDefaults key requires a relaunch (acceptable for a debug harness).
+    static var isLoggingEnabled: Bool { loggingEnabled }
+
+    private static let loggingEnabled: Bool = {
         if ProcessInfo.processInfo.environment["MISHMAIL_PERF"] == "1" { return true }
         return UserDefaults.standard.bool(forKey: "perf.metrics.enabled")
-    }
+    }()
 
     /// Named intervals. Keep short and stable — Instruments groups by name.
     enum Event: String, CaseIterable {

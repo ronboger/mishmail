@@ -727,6 +727,12 @@ struct SearchResultsPanel: View {
             store.searchHighlight = 0
             refreshThreadPreview()
         }
+        // Contact mining can finish after the panel opened with a typed query;
+        // re-filter so matches aren't stuck empty until the next keystroke.
+        .onChange(of: store.contacts) {
+            guard !trimmedSearch.isEmpty else { return }
+            contactPreview = store.contactSuggestions(for: trimmedSearch)
+        }
         // The empty-query "latest threads" must track the list (it can reload
         // right after ✕ clears a committed search, in either observer order).
         .onChange(of: store.threads) { if trimmedSearch.isEmpty { refreshThreadPreview() } }
@@ -912,8 +918,8 @@ struct SearchResultsPanel: View {
         // `body`). Threads: debounce, then FTS off the main thread. Keep the
         // previous thread rows until the new ones arrive (no flicker).
         contactPreview = store.contactSuggestions(for: q)
-        // 1-char queries skip FTS (too broad); clear stale multi-char results.
-        if q.count < 2 {
+        // Short queries skip FTS (too broad); clear stale multi-char results.
+        if q.count < ThreadTypeahead.minimumQueryLength {
             threadPreview = []
             return
         }

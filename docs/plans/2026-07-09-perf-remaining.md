@@ -331,5 +331,6 @@ Instruments: Points of Interest, subsystem `dev.ronboger.MishMail.perf`.
 |------|--------|
 | `/` search panel jank | Contacts not refiltered in `body`; FTS min 2 chars; single JOIN + candidate cap; 80ms debounce |
 | Badge / `fetchSidebarCounts` | `SidebarCounts` per-predicate `COUNT(*)` + **v21** partial indexes |
+| Fable nits (post ship-with-nits) | Typeahead `ORDER BY MAX(date)`; **v22** reminder/snooze partials; EXPLAIN index tests; cached `isLoggingEnabled`; `onChange(contacts)` |
 | PR4 junction | Still deferred (measure Labels use) |
 | Phase 2 off-row bodies | Still deferred |
