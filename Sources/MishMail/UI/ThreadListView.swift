@@ -262,6 +262,23 @@ struct ThreadListView: View {
                         Color.clear.frame(height: 40 * fontScale)
                     }
                 }
+                if store.hasMoreThreads {
+                    Section {
+                        Button {
+                            store.loadMoreThreads()
+                        } label: {
+                            HStack {
+                                Spacer()
+                                Text("Load older conversations")
+                                    .font(.system(size: 12 * fontScale))
+                                    .foregroundStyle(.secondary)
+                                Spacer()
+                            }
+                            .padding(.vertical, 8)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                }
             }
             .listStyle(.plain)
             .scrollContentBackground(.hidden)
