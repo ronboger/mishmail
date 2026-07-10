@@ -40,7 +40,9 @@ minor versions may still change behavior.
   in the compose body, ⌘K links it directly instead of opening the link
   sheet.
 - **Drag to reorder accounts** — drag an account row in the inbox switcher
-  to reorder it; the order persists across restarts.
+  to reorder it; the order persists across restarts. With 2+ accounts, each
+  row shows a grip and a “Drag to reorder” caption so the affordance is
+  discoverable.
 
 ### Fixed
 - **Dark-mode HTML contrast from effective background** — force-light text
