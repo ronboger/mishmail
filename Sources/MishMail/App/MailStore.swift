@@ -643,40 +643,42 @@ final class MailStore: ObservableObject {
         guard !blockedEmails.isEmpty else { return }
         let blocked = Array(blockedEmails)
         let blockedSet = Set(blocked)
-        let hits = (try? db.read { db -> [MailThread] in
-            var hitIds = Set<String>()
-            // Fast path: denormalized newest-From is blocked.
-            let byEmail = try MailThread
-                .filter(Column("inInbox") == true && Column("inTrash") == false)
-                .filter(Column("fromEmail") != "")
-                .filter(blocked.contains(Column("fromEmail")))
-                .fetchAll(db)
-            hitIds.formUnion(byEmail.map(\.id))
+        let hits = PerfMetrics.measure(.syncBlocklist, meta: "blocked=\(blocked.count)") {
+            (try? db.read { db -> [MailThread] in
+                var hitIds = Set<String>()
+                // Fast path: denormalized newest-From is blocked.
+                let byEmail = try MailThread
+                    .filter(Column("inInbox") == true && Column("inTrash") == false)
+                    .filter(Column("fromEmail") != "")
+                    .filter(blocked.contains(Column("fromEmail")))
+                    .fetchAll(db)
+                hitIds.formUnion(byEmail.map(\.id))
 
-            // Remaining inbox threads: any message From may still match a
-            // blocked sender even when newest From does not.
-            let remaining = try String.fetchAll(db, sql: """
-                SELECT id FROM thread
-                WHERE inInbox = 1 AND inTrash = 0
-                """)
-            let toScan = remaining.filter { !hitIds.contains($0) }
-            if !toScan.isEmpty {
-                let placeholders = toScan.map { _ in "?" }.joined(separator: ",")
-                let rows = try Row.fetchAll(db, sql: """
-                    SELECT DISTINCT message.threadId AS threadId, message.fromHeader AS fromHeader
-                    FROM message
-                    WHERE message.threadId IN (\(placeholders))
-                    """, arguments: StatementArguments(toScan))
-                for row in rows {
-                    let header: String = row["fromHeader"]
-                    if blockedSet.contains(MessageParser.emailAddress(header).lowercased()) {
-                        hitIds.insert(row["threadId"])
+                // Remaining inbox threads: any message From may still match a
+                // blocked sender even when newest From does not.
+                let remaining = try String.fetchAll(db, sql: """
+                    SELECT id FROM thread
+                    WHERE inInbox = 1 AND inTrash = 0
+                    """)
+                let toScan = remaining.filter { !hitIds.contains($0) }
+                if !toScan.isEmpty {
+                    let placeholders = toScan.map { _ in "?" }.joined(separator: ",")
+                    let rows = try Row.fetchAll(db, sql: """
+                        SELECT DISTINCT message.threadId AS threadId, message.fromHeader AS fromHeader
+                        FROM message
+                        WHERE message.threadId IN (\(placeholders))
+                        """, arguments: StatementArguments(toScan))
+                    for row in rows {
+                        let header: String = row["fromHeader"]
+                        if blockedSet.contains(MessageParser.emailAddress(header).lowercased()) {
+                            hitIds.insert(row["threadId"])
+                        }
                     }
                 }
-            }
-            guard !hitIds.isEmpty else { return [] }
-            return try MailThread.filter(hitIds.contains(Column("id"))).fetchAll(db)
-        }) ?? []
+                guard !hitIds.isEmpty else { return [] }
+                return try MailThread.filter(hitIds.contains(Column("id"))).fetchAll(db)
+            }) ?? []
+        }
         for thread in hits {
             mutateThread(thread) { t in
                 t.inInbox = false
@@ -964,9 +966,13 @@ final class MailStore: ObservableObject {
     func contactSuggestions(for query: String) -> [Contact] {
         let q = query.trimmingCharacters(in: .whitespaces).lowercased()
         guard q.count >= 1 else { return [] }
-        return Array(contacts.lazy.filter {
-            $0.email.contains(q) || $0.name.lowercased().contains(q)
-        }.prefix(6))
+        // Main-thread filter of the in-memory contacts list — if `search.contacts`
+        // shows up in perf logs while typing `/`, this is the jank source (not FTS).
+        return PerfMetrics.measure(.searchContacts, meta: "qLen=\(q.count)") {
+            Array(contacts.lazy.filter {
+                $0.email.contains(q) || $0.name.lowercased().contains(q)
+            }.prefix(6))
+        }
     }
 
     /// A few matching threads for the live search dropdown — a cheap FTS lookup
@@ -976,24 +982,28 @@ final class MailStore: ObservableObject {
     func threadSuggestions(for query: String, limit: Int = 5) async -> [MailThread] {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard q.count >= 1 else { return [] }
-        return (try? await db.read { db -> [MailThread] in
-            // Build the pattern inside the read so nothing non-Sendable is
-            // captured across the suspension.
-            guard let pattern = FTS5Pattern(matchingAllPrefixesIn: q) else { return [] }
-            let ids = try Row.fetchAll(db, sql: """
-                SELECT DISTINCT message.threadId FROM message
-                JOIN message_fts ON message_fts.rowid = message.rowid
-                WHERE message_fts MATCH ? LIMIT 300
-                """, arguments: [pattern])
-                .map { $0["threadId"] as String }
-            guard !ids.isEmpty else { return [] }
-            return try MailThread
-                .filter(ids.contains(Column("id")))
-                .filter(Column("inTrash") == false)
-                .order(Column("lastDate").desc)
-                .limit(limit)
-                .fetchAll(db)
-        }) ?? []
+        // Live `/` search panel path. If `search.preview` is multi-10ms+, the
+        // jank is FTS + thread re-fetch (debounced 120ms in ContentView).
+        return await PerfMetrics.measureAsync(.searchPreview, meta: "qLen=\(q.count)") {
+            (try? await db.read { db -> [MailThread] in
+                // Build the pattern inside the read so nothing non-Sendable is
+                // captured across the suspension.
+                guard let pattern = FTS5Pattern(matchingAllPrefixesIn: q) else { return [] }
+                let ids = try Row.fetchAll(db, sql: """
+                    SELECT DISTINCT message.threadId FROM message
+                    JOIN message_fts ON message_fts.rowid = message.rowid
+                    WHERE message_fts MATCH ? LIMIT 300
+                    """, arguments: [pattern])
+                    .map { $0["threadId"] as String }
+                guard !ids.isEmpty else { return [] }
+                return try MailThread
+                    .filter(ids.contains(Column("id")))
+                    .filter(Column("inTrash") == false)
+                    .order(Column("lastDate").desc)
+                    .limit(limit)
+                    .fetchAll(db)
+            }) ?? []
+        }
     }
 
     /// Open a specific thread picked from search, even if it isn't in the
@@ -1115,102 +1125,116 @@ final class MailStore: ObservableObject {
                 var counts: [String: Int]
                 var badge: Int
             }
+            let reloadKind = search.isEmpty ? "view" : "search"
+            let totalInterval = PerfMetrics.begin(.reloadTotal, meta: reloadKind)
             let payload: ReloadPayload? = try? await pool.read { db -> ReloadPayload in
-                let result: [MailThread]
-                if !search.isEmpty {
-                    let parsed = SearchQuery.parse(search)
-                    var q = MailThread.all()
-                    if !parsed.text.isEmpty {
-                        let ids = try Row.fetchAll(db, sql: """
-                            SELECT DISTINCT message.threadId FROM message
-                            JOIN message_fts ON message_fts.rowid = message.rowid
-                            WHERE message_fts MATCH ?
-                            """, arguments: [FTS5Pattern(matchingAllPrefixesIn: parsed.text)])
-                            .map { $0["threadId"] as String }
-                        q = q.filter(ids.contains(Column("id")))
-                    }
-                    if let from = parsed.from {
-                        // fromDisplay/participants hold display names, so an email
-                        // query ("from:x@y.com") must also check the raw header.
-                        // Prefer denorm fromEmail when present; still check headers
-                        // for threads not yet backfilled.
-                        let pattern = "%\(from)%"
-                        q = q.filter(sql: """
-                            (fromDisplay LIKE ? OR participants LIKE ?
-                             OR fromEmail LIKE ?
-                             OR EXISTS (SELECT 1 FROM message
+                let result: [MailThread] = try PerfMetrics.measure(
+                    .reloadList, meta: reloadKind
+                ) {
+                    if !search.isEmpty {
+                        let parsed = SearchQuery.parse(search)
+                        var q = MailThread.all()
+                        if !parsed.text.isEmpty {
+                            let ids = try Row.fetchAll(db, sql: """
+                                SELECT DISTINCT message.threadId FROM message
+                                JOIN message_fts ON message_fts.rowid = message.rowid
+                                WHERE message_fts MATCH ?
+                                """, arguments: [FTS5Pattern(matchingAllPrefixesIn: parsed.text)])
+                                .map { $0["threadId"] as String }
+                            q = q.filter(ids.contains(Column("id")))
+                        }
+                        if let from = parsed.from {
+                            // fromDisplay/participants hold display names, so an email
+                            // query ("from:x@y.com") must also check the raw header.
+                            // Prefer denorm fromEmail when present; still check headers
+                            // for threads not yet backfilled.
+                            let pattern = "%\(from)%"
+                            q = q.filter(sql: """
+                                (fromDisplay LIKE ? OR participants LIKE ?
+                                 OR fromEmail LIKE ?
+                                 OR EXISTS (SELECT 1 FROM message
+                                            WHERE message.threadId = thread.id
+                                              AND message.fromHeader LIKE ?))
+                                """, arguments: [pattern, pattern, pattern, pattern])
+                        }
+                        if let to = parsed.to {
+                            // Recipient headers live on messages, so match via EXISTS.
+                            q = q.filter(sql: """
+                                EXISTS (SELECT 1 FROM message
                                         WHERE message.threadId = thread.id
-                                          AND message.fromHeader LIKE ?))
-                            """, arguments: [pattern, pattern, pattern, pattern])
+                                          AND (message.toHeader LIKE ? OR message.ccHeader LIKE ?
+                                               OR message.bccHeader LIKE ?))
+                                """, arguments: ["%\(to)%", "%\(to)%", "%\(to)%"])
+                        }
+                        if let subject = parsed.subject {
+                            q = q.filter(sql: "subject LIKE ?", arguments: ["%\(subject)%"])
+                        }
+                        if let unread = parsed.unread {
+                            q = q.filter(Column("isUnread") == unread)
+                        }
+                        if parsed.starred {
+                            q = q.filter(Column("isStarred") == true)
+                        }
+                        if let after = parsed.after {
+                            q = q.filter(Column("lastDate") >= after)
+                        }
+                        if let before = parsed.before {
+                            q = q.filter(Column("lastDate") < before)
+                        }
+                        for name in parsed.labels {
+                            // A label name resolves to Gmail label ids (it can exist on
+                            // several accounts); unknown names fall back to the raw
+                            // token uppercased, which covers system labels (STARRED…).
+                            var ids = allLabels
+                                .filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+                                .map(\.gmailLabelId)
+                            if ids.isEmpty { ids = [name.uppercased()] }
+                            let conditions = ids.map { _ in "labelIds LIKE ?" }.joined(separator: " OR ")
+                            q = q.filter(sql: "(\(conditions))",
+                                         arguments: StatementArguments(ids.map { "%\($0)%" }))
+                        }
+                        if parsed.hasAttachment { q = q.filter(Column("hasAttachment") == true) }
+                        // Gmail search excludes trash/spam unless in:trash / in:spam /
+                        // in:anywhere. Without this, optimistic trash removes the row
+                        // and the async reload immediately brings it back.
+                        switch parsed.location {
+                        case .standard:
+                            q = q.filter(Column("inTrash") == false && Column("inSpam") == false)
+                        case .trash:
+                            q = q.filter(Column("inTrash") == true)
+                        case .spam:
+                            q = q.filter(Column("inSpam") == true)
+                        case .anywhere:
+                            break
+                        }
+                        if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
+                        return try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
+                    } else {
+                        var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
+                        if chips.showArchived || chips.showSent {
+                            // Widen from inbox-only before layering the other chips.
+                            q = MailStore.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
+                        }
+                        q = MailStore.applyChips(q, chips, keepIds: keepIds)
+                        if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
+                        return try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
                     }
-                    if let to = parsed.to {
-                        // Recipient headers live on messages, so match via EXISTS.
-                        q = q.filter(sql: """
-                            EXISTS (SELECT 1 FROM message
-                                    WHERE message.threadId = thread.id
-                                      AND (message.toHeader LIKE ? OR message.ccHeader LIKE ?
-                                           OR message.bccHeader LIKE ?))
-                            """, arguments: ["%\(to)%", "%\(to)%", "%\(to)%"])
-                    }
-                    if let subject = parsed.subject {
-                        q = q.filter(sql: "subject LIKE ?", arguments: ["%\(subject)%"])
-                    }
-                    if let unread = parsed.unread {
-                        q = q.filter(Column("isUnread") == unread)
-                    }
-                    if parsed.starred {
-                        q = q.filter(Column("isStarred") == true)
-                    }
-                    if let after = parsed.after {
-                        q = q.filter(Column("lastDate") >= after)
-                    }
-                    if let before = parsed.before {
-                        q = q.filter(Column("lastDate") < before)
-                    }
-                    for name in parsed.labels {
-                        // A label name resolves to Gmail label ids (it can exist on
-                        // several accounts); unknown names fall back to the raw
-                        // token uppercased, which covers system labels (STARRED…).
-                        var ids = allLabels
-                            .filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-                            .map(\.gmailLabelId)
-                        if ids.isEmpty { ids = [name.uppercased()] }
-                        let conditions = ids.map { _ in "labelIds LIKE ?" }.joined(separator: " OR ")
-                        q = q.filter(sql: "(\(conditions))",
-                                     arguments: StatementArguments(ids.map { "%\($0)%" }))
-                    }
-                    if parsed.hasAttachment { q = q.filter(Column("hasAttachment") == true) }
-                    // Gmail search excludes trash/spam unless in:trash / in:spam /
-                    // in:anywhere. Without this, optimistic trash removes the row
-                    // and the async reload immediately brings it back.
-                    switch parsed.location {
-                    case .standard:
-                        q = q.filter(Column("inTrash") == false && Column("inSpam") == false)
-                    case .trash:
-                        q = q.filter(Column("inTrash") == true)
-                    case .spam:
-                        q = q.filter(Column("inSpam") == true)
-                    case .anywhere:
-                        break
-                    }
-                    if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                    result = try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
-                } else {
-                    var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
-                    if chips.showArchived || chips.showSent {
-                        // Widen from inbox-only before layering the other chips.
-                        q = MailStore.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
-                    }
-                    q = MailStore.applyChips(q, chips, keepIds: keepIds)
-                    if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                    result = try q.order(Column("lastDate").desc).limit(300).fetchAll(db)
                 }
-                let vipHits = try MailStore.computeVIPThreadIds(
-                    threads: result, activeVIP: activeVIP, db: db)
-                let (counts, badge) = try MailStore.fetchSidebarCounts(
-                    db: db, activeAccount: activeAccount, badgeAccount: badgeAccount)
+                let vipHits = try PerfMetrics.measure(.reloadVIP, meta: "n=\(result.count)") {
+                    try MailStore.computeVIPThreadIds(
+                        threads: result, activeVIP: activeVIP, db: db)
+                }
+                let (counts, badge) = try PerfMetrics.measure(.reloadCounts) {
+                    try MailStore.fetchSidebarCounts(
+                        db: db, activeAccount: activeAccount, badgeAccount: badgeAccount)
+                }
                 return ReloadPayload(threads: result, vipHits: vipHits,
                                      counts: counts, badge: badge)
+            }
+            if let payload {
+                totalInterval.end(extraMeta: "n=\(payload.threads.count)")
+            } else {
+                totalInterval.end(extraMeta: "cancelled_or_error")
             }
             guard let payload, !Task.isCancelled else { return }
 
@@ -1591,38 +1615,44 @@ final class MailStore: ObservableObject {
     /// Headers + snippet only (empty body fields). Cheap open path for the
     /// reading pane; hydrate bodies with `messageBody(id:)` on expand.
     func messageHeaders(inThread threadId: String) -> [Message] {
-        (try? db.read { db in
-            try Message.fetchAll(
-                db,
-                sql: """
-                    SELECT id, accountId, gmailId, threadId, fromHeader, toHeader, ccHeader,
-                           bccHeader, subject, date, snippet,
-                           '' AS bodyText, NULL AS bodyHTML,
-                           messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment
-                    FROM message
-                    WHERE threadId = ?
-                    ORDER BY date
-                    """,
-                arguments: [threadId]
-            )
-        }) ?? []
+        PerfMetrics.measure(.openHeaders) {
+            (try? db.read { db in
+                try Message.fetchAll(
+                    db,
+                    sql: """
+                        SELECT id, accountId, gmailId, threadId, fromHeader, toHeader, ccHeader,
+                               bccHeader, subject, date, snippet,
+                               '' AS bodyText, NULL AS bodyHTML,
+                               messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment
+                        FROM message
+                        WHERE threadId = ?
+                        ORDER BY date
+                        """,
+                    arguments: [threadId]
+                )
+            }) ?? []
+        }
     }
 
     /// One message with full body fields.
     func messageBody(id: String) -> Message? {
-        (try? db.read {
-            try Message.filter(Column("id") == id).fetchOne($0)
-        }) ?? nil
+        PerfMetrics.measure(.openBody, meta: "single") {
+            (try? db.read {
+                try Message.filter(Column("id") == id).fetchOne($0)
+            }) ?? nil
+        }
     }
 
     /// Load bodies for specific message ids, preserving the order of `ids`.
     func messagesWithBodies(ids: [String]) -> [Message] {
         guard !ids.isEmpty else { return [] }
-        let fetched = (try? db.read {
-            try Message.filter(ids.contains(Column("id"))).fetchAll($0)
-        }) ?? []
-        let byId = Dictionary(uniqueKeysWithValues: fetched.map { ($0.id, $0) })
-        return ids.compactMap { byId[$0] }
+        return PerfMetrics.measure(.openBody, meta: "n=\(ids.count)") {
+            let fetched = (try? db.read {
+                try Message.filter(ids.contains(Column("id"))).fetchAll($0)
+            }) ?? []
+            let byId = Dictionary(uniqueKeysWithValues: fetched.map { ($0.id, $0) })
+            return ids.compactMap { byId[$0] }
+        }
     }
 
     func attachments(for messageId: String) -> [AttachmentRow] {

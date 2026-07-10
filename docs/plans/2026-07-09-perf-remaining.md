@@ -309,3 +309,18 @@ Ship-with-nits; none of these block PR1–PR3 merge. Track for later:
 6. **`make test -quiet`** — prints no “Executed N tests” summary; a silent pass can look like a no-op. Optional Makefile: drop `-quiet` or pipe for `Executed`.
 7. **Measure before PR4 / Phase 2** — OSSignposter on `fetchAll`/flush + large real cache for a few days; only then junction table (PR4) or off-row bodies (PR5).
 8. **Human smoke (P1 riskiest, unit tests miss)** — long multi-message HTML expand; WebView pool isolation; empty body no refetch loop; bulk mark-read history; Sent/Drafts after v18; interrupt mid-backfill and relaunch.
+
+### Measurement harness (landed)
+
+`Sources/MishMail/Support/PerfMetrics.swift` — OSSignposter always on; console logs with `PERF=1 make run DEMO=0` (or `MISHMAIL_PERF=1`). Events:
+
+| Event | Path | Decision if slow |
+|-------|------|------------------|
+| `search.preview` | `/` live FTS dropdown | Fix live search (user pain) |
+| `search.contacts` | Main-thread contact filter on type | Contacts list / filter cost |
+| `reload.list` / `.counts` / `.vip` / `.total` | `reloadThreads` split | Badge rewrite vs list indexes vs VIP |
+| `open.headers` / `open.body` | Reading pane | Phase 2 off-row bodies |
+| `sync.flush` / `sync.fetchAll` | Backfill writes | Chunking already done; network next |
+| `sync.blocklist` | `applyBlocklist` | Denorm / bound scan |
+
+Instruments: Points of Interest, subsystem `dev.ronboger.MishMail.perf`.

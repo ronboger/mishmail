@@ -59,9 +59,12 @@ build: gen
 # so debugging never involves real mail; `make run DEMO=0` gets the empty
 # real-account Debug app for testing sign-in/sync.
 DEMO ?= 1
+# Perf harness console logs: PERF=1 make run DEMO=0
+# (signposts always emit; Console.app subsystem dev.ronboger.MishMail.perf)
+PERF ?= 0
 run: build
 	-pkill -f "MishMail Debug" 2>/dev/null || true
-	open -n "$(DEBUG_APP)" --env MISHMAIL_DEMO=$(DEMO)
+	open -n "$(DEBUG_APP)" --env MISHMAIL_DEMO=$(DEMO) --env MISHMAIL_PERF=$(PERF)
 
 # Explicit alias for the screenshot/demo verb.
 demo: build

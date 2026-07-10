@@ -185,51 +185,53 @@ actor SyncEngine {
     @discardableResult
     private func fetchAll(query: String?, limit: Int,
                           progress: (@Sendable (String) -> Void)?) async throws -> Set<String> {
-        var touchedKeys = Set<String>()
-        var writeBuffer: [PendingUpsert] = []
-        writeBuffer.reserveCapacity(Self.writeChunkSize)
-        var pageToken: String?
-        var listed = 0
-        var fetched = 0
-        repeat {
-            let page = try await client.listMessages(query: query, pageToken: pageToken, maxResults: 100)
-            let listedIds = (page.messages ?? []).map(\.id)
-            listed += listedIds.count
-            // Per-page missing check (PK IN …) — avoids O(mailbox) Set at start.
-            let missingIds = try await db.read { [accountId] db in
-                try Self.filterMissingGmailIds(db, accountId: accountId, listed: listedIds)
-            }
-            let missingSet = Set(missingIds)
-            let refs = (page.messages ?? []).filter { missingSet.contains($0.id) }
-            try await withThrowingTaskGroup(of: GMessage.self) { group in
-                var pending = 0
-                var iterator = refs.makeIterator()
-                func addNext() {
-                    if let ref = iterator.next() {
-                        group.addTask { [client] in try await client.getMessage(id: ref.id) }
-                        pending += 1
+        try await PerfMetrics.measureAsync(.syncFetchAll, meta: "limit=\(limit)") {
+            var touchedKeys = Set<String>()
+            var writeBuffer: [PendingUpsert] = []
+            writeBuffer.reserveCapacity(Self.writeChunkSize)
+            var pageToken: String?
+            var listed = 0
+            var fetched = 0
+            repeat {
+                let page = try await client.listMessages(query: query, pageToken: pageToken, maxResults: 100)
+                let listedIds = (page.messages ?? []).map(\.id)
+                listed += listedIds.count
+                // Per-page missing check (PK IN …) — avoids O(mailbox) Set at start.
+                let missingIds = try await db.read { [accountId] db in
+                    try Self.filterMissingGmailIds(db, accountId: accountId, listed: listedIds)
+                }
+                let missingSet = Set(missingIds)
+                let refs = (page.messages ?? []).filter { missingSet.contains($0.id) }
+                try await withThrowingTaskGroup(of: GMessage.self) { group in
+                    var pending = 0
+                    var iterator = refs.makeIterator()
+                    func addNext() {
+                        if let ref = iterator.next() {
+                            group.addTask { [client] in try await client.getMessage(id: ref.id) }
+                            pending += 1
+                        }
+                    }
+                    for _ in 0..<8 { addNext() }  // bounded concurrency
+                    while pending > 0 {
+                        let msg = try await group.next()!
+                        pending -= 1
+                        let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
+                        writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
+                        if writeBuffer.count >= Self.writeChunkSize {
+                            try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                        }
+                        addNext()
                     }
                 }
-                for _ in 0..<8 { addNext() }  // bounded concurrency
-                while pending > 0 {
-                    let msg = try await group.next()!
-                    pending -= 1
-                    let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
-                    writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
-                    if writeBuffer.count >= Self.writeChunkSize {
-                        try await flushUpserts(&writeBuffer, into: &touchedKeys)
-                    }
-                    addNext()
-                }
-            }
-            fetched += refs.count
-            // "Fetched" not "Downloaded": up to writeChunkSize-1 may still be
-            // buffered uncommitted; a failed final flush rolls those back.
-            if fetched > 0 { progress?("Fetched \(fetched) messages…") }
-            pageToken = page.nextPageToken
-        } while pageToken != nil && listed < limit
-        try await flushUpserts(&writeBuffer, into: &touchedKeys)
-        return touchedKeys
+                fetched += refs.count
+                // "Fetched" not "Downloaded": up to writeChunkSize-1 may still be
+                // buffered uncommitted; a failed final flush rolls those back.
+                if fetched > 0 { progress?("Fetched \(fetched) messages…") }
+                pageToken = page.nextPageToken
+            } while pageToken != nil && listed < limit
+            try await flushUpserts(&writeBuffer, into: &touchedKeys)
+            return touchedKeys
+        }
     }
 
     /// Returns gmailIds from `listed` that are not already stored for
@@ -454,8 +456,10 @@ actor SyncEngine {
                               into touchedKeys: inout Set<String>) async throws {
         guard !items.isEmpty else { return }
         let batch = items  // copy: escaping write closure cannot capture inout
-        let keys = try await db.write { db in
-            try Self.upsertPending(db, items: batch)
+        let keys = try await PerfMetrics.measureAsync(.syncFlush, meta: "n=\(batch.count)") {
+            try await db.write { db in
+                try Self.upsertPending(db, items: batch)
+            }
         }
         touchedKeys.formUnion(keys)
         items.removeAll(keepingCapacity: true)
