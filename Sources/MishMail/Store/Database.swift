@@ -43,8 +43,16 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     var inSpam: Bool = false
     /// Lowercased email of the newest message's From (for VIP matching without scanning messages).
     var fromEmail: String = ""
+    /// Space-separated unique lowercased From emails across all messages in
+    /// the thread (for blocklist any-message match without scanning messages).
+    var allFromEmails: String = ""
 
     var labels: [String] { labelIds.split(separator: " ").map(String.init) }
+
+    /// User-label Gmail ids (`Label_*`) from the space-separated `labelIds`.
+    var userLabelIds: [String] {
+        labels.filter { $0.hasPrefix("Label_") }
+    }
 
     /// Re-derive boolean flags from the space-separated `labelIds` string so
     /// local label mutations stay coherent with list/badge filters that use
@@ -89,6 +97,8 @@ struct Message: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     var subject: String
     var date: Date
     var snippet: String
+    /// Empty after v24 for rows written via upsert — body lives in `message_body`.
+    /// Still populated in-memory by the parser before split on write.
     var bodyText: String
     var bodyHTML: String?
     var messageIdHeader: String   // RFC Message-ID, for reply threading
@@ -96,6 +106,24 @@ struct Message: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     var labelIds: String
     var isUnread: Bool
     var hasAttachment: Bool
+}
+
+/// Off-row body storage (v24). Keeps fat HTML off the `message` row so header
+/// projections and list joins stay cheap under SQLCipher.
+struct MessageBody: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "message_body"
+    var id: String { messageId }
+    var messageId: String   // PK, FK → message
+    var bodyText: String
+    var bodyHTML: String?
+}
+
+/// User-label membership for a thread (v23). System labels stay on denorm
+/// flags / `labelIds`; queries for `Label_*` use this junction instead of LIKE.
+struct ThreadLabel: Codable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "thread_label"
+    var threadId: String
+    var labelId: String     // Gmail user label id, e.g. Label_42
 }
 
 struct AttachmentRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
@@ -726,6 +754,73 @@ final class AppDatabase {
                 CREATE INDEX thread_snoozed_active
                 ON thread(accountId)
                 WHERE snoozeUntil IS NOT NULL AND inTrash = 0
+                """)
+        }
+        // v23: user-label junction + allFromEmails for blocklist any-message match.
+        m.registerMigration("v23") { db in
+            try db.create(table: "thread_label") { t in
+                t.column("threadId", .text).notNull()
+                    .references("thread", onDelete: .cascade)
+                t.column("labelId", .text).notNull()
+                t.primaryKey(["threadId", "labelId"])
+            }
+            try db.create(
+                index: "thread_label_on_labelId",
+                on: "thread_label",
+                columns: ["labelId"])
+            try db.alter(table: "thread") { t in
+                t.add(column: "allFromEmails", .text).notNull().defaults(to: "")
+            }
+            // Backfill junction from space-separated labelIds (user labels only).
+            let rows = try Row.fetchAll(db, sql: "SELECT id, labelIds FROM thread")
+            for row in rows {
+                let tid: String = row["id"]
+                let labelIds: String = row["labelIds"]
+                for lab in labelIds.split(separator: " ").map(String.init)
+                    where lab.hasPrefix("Label_") {
+                    try db.execute(
+                        sql: "INSERT OR IGNORE INTO thread_label (threadId, labelId) VALUES (?, ?)",
+                        arguments: [tid, lab])
+                }
+            }
+            // Backfill allFromEmails from message From headers.
+            try db.execute(sql: """
+                UPDATE thread SET allFromEmails = coalesce((
+                    SELECT group_concat(email, ' ')
+                    FROM (
+                        SELECT DISTINCT lower(trim(
+                            CASE
+                                WHEN instr(m.fromHeader, '<') > 0
+                                     AND instr(m.fromHeader, '>') > instr(m.fromHeader, '<')
+                                THEN substr(m.fromHeader,
+                                            instr(m.fromHeader, '<') + 1,
+                                            instr(m.fromHeader, '>') - instr(m.fromHeader, '<') - 1)
+                                ELSE trim(m.fromHeader, '<> ')
+                            END
+                        )) AS email
+                        FROM message m
+                        WHERE m.threadId = thread.id
+                          AND instr(m.fromHeader, '@') > 0
+                    )
+                    WHERE email != ''
+                ), '')
+                """)
+        }
+        // v24: off-row message bodies. Copy then clear on-row columns so header
+        // fetches no longer pay SQLCipher costs for large HTML.
+        m.registerMigration("v24") { db in
+            try db.create(table: "message_body") { t in
+                t.primaryKey("messageId", .text)
+                    .references("message", onDelete: .cascade)
+                t.column("bodyText", .text).notNull().defaults(to: "")
+                t.column("bodyHTML", .text)
+            }
+            try db.execute(sql: """
+                INSERT INTO message_body (messageId, bodyText, bodyHTML)
+                SELECT id, bodyText, bodyHTML FROM message
+                """)
+            try db.execute(sql: """
+                UPDATE message SET bodyText = '', bodyHTML = NULL
                 """)
         }
         return m

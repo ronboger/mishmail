@@ -66,6 +66,10 @@ final class DatabaseMigrationTests: XCTestCase {
                     arguments: [name]) ?? false
                 XCTAssertTrue(exists, "v22 must create index \(name)")
             }
+            XCTAssertTrue(try db.tableExists("thread_label"), "v23")
+            XCTAssertTrue(try db.tableExists("message_body"), "v24")
+            let threadColsV23 = try db.columns(in: "thread").map(\.name)
+            XCTAssertTrue(threadColsV23.contains("allFromEmails"), "v23")
         }
     }
 

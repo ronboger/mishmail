@@ -75,6 +75,7 @@ targets:
       - Sources/MishMail/Gmail
       - Sources/MishMail/Store/Database.swift
       - Sources/MishMail/Store/SidebarCounts.swift
+      - Sources/MishMail/Store/ThreadLabels.swift
       - Sources/MishMail/Support/ContactMiner.swift
       - Sources/MishMail/Support/ComposeLinks.swift
       - Sources/MishMail/Support/HTMLEntities.swift
@@ -101,6 +102,9 @@ targets:
       - Sources/MishMail/Support/Ollama.swift
       - Sources/MishMail/Support/PerfMetrics.swift
       - Sources/MishMail/Support/ThreadTypeahead.swift
+      - Sources/MishMail/Support/HistoryFetchFormat.swift
+      - Sources/MishMail/Support/ThreadListCursor.swift
+      - Sources/MishMail/Support/NeighborPrefetch.swift
       - Sources/MishMail/Auth/OAuth.swift
     dependencies:
       - package: GRDB

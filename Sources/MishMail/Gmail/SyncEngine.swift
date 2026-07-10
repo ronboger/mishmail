@@ -201,29 +201,17 @@ actor SyncEngine {
                     try Self.filterMissingGmailIds(db, accountId: accountId, listed: listedIds)
                 }
                 let missingSet = Set(missingIds)
-                let refs = (page.messages ?? []).filter { missingSet.contains($0.id) }
-                try await withThrowingTaskGroup(of: GMessage.self) { group in
-                    var pending = 0
-                    var iterator = refs.makeIterator()
-                    func addNext() {
-                        if let ref = iterator.next() {
-                            group.addTask { [client] in try await client.getMessage(id: ref.id) }
-                            pending += 1
-                        }
-                    }
-                    for _ in 0..<8 { addNext() }  // bounded concurrency
-                    while pending > 0 {
-                        let msg = try await group.next()!
-                        pending -= 1
-                        let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
-                        writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
-                        if writeBuffer.count >= Self.writeChunkSize {
-                            try await flushUpserts(&writeBuffer, into: &touchedKeys)
-                        }
-                        addNext()
+                let missingGmailIds = (page.messages ?? []).map(\.id).filter { missingSet.contains($0) }
+                // Batch HTTP when enabled (flag/env); else concurrent singles.
+                let fetchedMsgs = try await client.getMessages(ids: missingGmailIds)
+                for msg in fetchedMsgs {
+                    let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
+                    writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
+                    if writeBuffer.count >= Self.writeChunkSize {
+                        try await flushUpserts(&writeBuffer, into: &touchedKeys)
                     }
                 }
-                fetched += refs.count
+                fetched += missingGmailIds.count
                 // "Fetched" not "Downloaded": up to writeChunkSize-1 may still be
                 // buffered uncommitted; a failed final flush rolls those back.
                 if fetched > 0 { progress?("Fetched \(fetched) messages…") }
@@ -337,22 +325,23 @@ actor SyncEngine {
             for id in missing { fullFetch.insert(id) }
         }
 
-        // Parallel download (concurrency 8, same as fetchAll); buffer writes
-        // into chunks so SQLCipher transaction overhead does not dominate.
-        // getMessage failures are skipped (try?), matching the prior loop.
+        // Batch or concurrent getMessages; buffer writes into chunks so
+        // SQLCipher transaction overhead does not dominate.
+        // Failures: getMessages falls back per-id; empty results skip.
         // Failure mid-chunk rolls back that chunk only (earlier chunks stick).
         var writeBuffer: [PendingUpsert] = []
         writeBuffer.reserveCapacity(Self.writeChunkSize)
-        try await Self.withBoundedConcurrency(ids: Array(fullFetch), concurrency: 8,
-                                              fetch: { [client] id in
-            try? await client.getMessage(id: id)
-        }, onValue: { [accountId] msg in
-            let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
-            writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
-            if writeBuffer.count >= Self.writeChunkSize {
-                try await self.flushUpserts(&writeBuffer, into: &touchedKeys)
+        let fullIds = Array(fullFetch)
+        if !fullIds.isEmpty {
+            let fetchedMsgs = (try? await client.getMessages(ids: fullIds)) ?? []
+            for msg in fetchedMsgs {
+                let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
+                writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
+                if writeBuffer.count >= Self.writeChunkSize {
+                    try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                }
             }
-        })
+        }
         try await flushUpserts(&writeBuffer, into: &touchedKeys)
 
         // Recompute thread rows for anything affected, exactly once each.
@@ -440,7 +429,15 @@ actor SyncEngine {
     static func upsertPending(_ db: Database, items: [PendingUpsert]) throws -> Set<String> {
         var keys = Set<String>()
         for item in items {
-            try item.message.save(db)
+            // Split body into message_body (v24); keep on-row columns empty so
+            // header projections stay cheap under SQLCipher.
+            var msg = item.message
+            let bodyText = msg.bodyText
+            let bodyHTML = msg.bodyHTML
+            msg.bodyText = ""
+            msg.bodyHTML = nil
+            try msg.save(db)
+            try MessageBody(messageId: msg.id, bodyText: bodyText, bodyHTML: bodyHTML).save(db)
             try AttachmentRow.filter(Column("messageId") == item.message.id).deleteAll(db)
             for att in item.attachments {
                 try att.insert(db)
@@ -494,6 +491,7 @@ actor SyncEngine {
                 threadKey: threadKey, gmailThreadId: gmailThreadId,
                 accountId: accountId, messages: messages, existing: existing) else { continue }
             try thread.save(db)
+            try ThreadLabels.rewrite(db, threadId: thread.id, labelIds: thread.labelIds)
         }
     }
 
@@ -538,7 +536,8 @@ actor SyncEngine {
             inPromotions: allLabels.contains("CATEGORY_PROMOTIONS"),
             inSocial: allLabels.contains("CATEGORY_SOCIAL"),
             inSpam: allLabels.contains("SPAM"),
-            fromEmail: MessageParser.emailAddress(newest.fromHeader).lowercased()
+            fromEmail: MessageParser.emailAddress(newest.fromHeader).lowercased(),
+            allFromEmails: ThreadLabels.allFromEmails(from: messages)
         )
     }
 
