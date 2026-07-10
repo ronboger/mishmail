@@ -36,12 +36,20 @@ minor versions may still change behavior.
   HTML-derived body so it matches the reading pane. Forward-all is matched
   before single-message at send (suffix-order fix). Unsent DRAFT rows are
   excluded from Forward all so they never leak to recipients.
+- **⌘K links a selected URL immediately** — with a `https://…` URL selected
+  in the compose body, ⌘K links it directly instead of opening the link
+  sheet.
+- **Drag to reorder accounts** — drag an account row in the inbox switcher
+  to reorder it; the order persists across restarts.
 
 ### Fixed
 - **Expired/revoked sign-ins now prompt reauthorization** — when Google
   rejects a stored refresh token (`invalid_grant`) or none is stored, the
   affected account shows a warning icon and a "Reauthorize…" button in
   Settings → Accounts instead of a raw token-exchange error.
+- **New snippets now appear in compose immediately** — the `/` picker and
+  Snippets panel pick up newly created snippets right away, without
+  restarting the app.
 - **Promotions/Social no longer show spam or archived mail** — lists and
   sidebar badges now match gmail.com (inbox + category, excluding SPAM and
   trash). Added denormalized `inSpam` (schema v19); mark-as-spam updates

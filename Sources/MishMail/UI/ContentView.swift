@@ -989,7 +989,19 @@ struct AccountSwitcher: View {
             }
             .padding(8)
             .frame(width: 280)
+            // Catch-all: a drop that lands on the divider, "Add Google
+            // Account…" row, or empty padding (not an account row) still
+            // needs to clear the fade — the per-row AccountDropDelegate
+            // only fires when the drop lands on another account row.
+            .onDrop(of: [.text], isTargeted: nil) { _ in
+                draggingAccountId = nil
+                return true
+            }
         }
+        // A drag that ends outside the popover (or the popover closing
+        // mid-drag) never reaches any onDrop — clear the fade so the source
+        // row isn't stuck dimmed after reopening.
+        .onChange(of: showMenu) { if !showMenu { draggingAccountId = nil } }
         .sheet(isPresented: $store.editingAccountLabels) {
             AccountLabelsEditor()
         }
