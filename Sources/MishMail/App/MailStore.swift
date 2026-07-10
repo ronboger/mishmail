@@ -1807,6 +1807,7 @@ final class MailStore: ObservableObject {
                         lastError = "\(id): \(error.localizedDescription)"
                     }
                 } else {
+                    accountsNeedingReauth.remove(id)
                     await backfillSenderNameIfNeeded(accountId: id)
                     await refreshSendIdentities(accountId: id)
                 }
@@ -1830,6 +1831,7 @@ final class MailStore: ObservableObject {
                 Task { @MainActor [weak self] in self?.syncStatus = status }
             }
             syncStatus = ""
+            accountsNeedingReauth.remove(accountId)
             await backfillSenderNameIfNeeded(accountId: accountId)
             await refreshSendIdentities(accountId: accountId)
             reloadAccounts()
