@@ -124,4 +124,45 @@ final class SearchQueryTests: XCTestCase {
         // A real leap day still parses.
         XCTAssertNotNil(SearchQuery.parse("after:2028/02/29").after)
     }
+
+    func testDefaultLocationExcludesTrashAndSpam() {
+        let q = SearchQuery.parse("invoice")
+        XCTAssertEqual(q.location, .standard)
+        XCTAssertTrue(q.includesLocation(inTrash: false, inSpam: false))
+        XCTAssertFalse(q.includesLocation(inTrash: true, inSpam: false),
+                       "trashed threads must leave default search results")
+        XCTAssertFalse(q.includesLocation(inTrash: false, inSpam: true),
+                       "spam threads must leave default search results")
+    }
+
+    func testInTrashOperator() {
+        let q = SearchQuery.parse("in:trash quarterly")
+        XCTAssertEqual(q.location, .trash)
+        XCTAssertEqual(q.text, "quarterly")
+        XCTAssertTrue(q.includesLocation(inTrash: true, inSpam: false))
+        XCTAssertFalse(q.includesLocation(inTrash: false, inSpam: false))
+        XCTAssertFalse(q.includesLocation(inTrash: false, inSpam: true))
+        XCTAssertTrue(q.isFilterOnly == false)
+        XCTAssertTrue(SearchQuery.parse("in:trash").isFilterOnly)
+    }
+
+    func testInSpamAndInAnywhereOperators() {
+        let spam = SearchQuery.parse("IN:SPAM")
+        XCTAssertEqual(spam.location, .spam)
+        XCTAssertTrue(spam.includesLocation(inTrash: false, inSpam: true))
+        XCTAssertFalse(spam.includesLocation(inTrash: true, inSpam: false))
+
+        let anywhere = SearchQuery.parse("in:anywhere report")
+        XCTAssertEqual(anywhere.location, .anywhere)
+        XCTAssertEqual(anywhere.text, "report")
+        XCTAssertTrue(anywhere.includesLocation(inTrash: true, inSpam: false))
+        XCTAssertTrue(anywhere.includesLocation(inTrash: false, inSpam: true))
+        XCTAssertTrue(anywhere.includesLocation(inTrash: false, inSpam: false))
+    }
+
+    func testUnknownInValueStaysText() {
+        let q = SearchQuery.parse("in:inbox hello")
+        XCTAssertEqual(q.location, .standard)
+        XCTAssertEqual(q.text, "in:inbox hello")
+    }
 }

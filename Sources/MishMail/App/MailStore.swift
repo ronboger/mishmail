@@ -1180,6 +1180,19 @@ final class MailStore: ObservableObject {
                                      arguments: StatementArguments(ids.map { "%\($0)%" }))
                     }
                     if parsed.hasAttachment { q = q.filter(Column("hasAttachment") == true) }
+                    // Gmail search excludes trash/spam unless in:trash / in:spam /
+                    // in:anywhere. Without this, optimistic trash removes the row
+                    // and the async reload immediately brings it back.
+                    switch parsed.location {
+                    case .standard:
+                        q = q.filter(Column("inTrash") == false && Column("inSpam") == false)
+                    case .trash:
+                        q = q.filter(Column("inTrash") == true)
+                    case .spam:
+                        q = q.filter(Column("inSpam") == true)
+                    case .anywhere:
+                        break
+                    }
                     if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
                     result = try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
                 } else {
@@ -2225,6 +2238,14 @@ final class MailStore: ObservableObject {
     /// Best-effort visibility check for the common leave-list mutations.
     /// Async reload is the source of truth for edge-case chip combinations.
     private func threadLeavesCurrentList(_ t: MailThread) -> Bool {
+        // A committed `/` search replaces the selected view's filters. Use the
+        // same mailbox scope as `reloadThreads` so optimistic trash/spam stay
+        // gone (and archive from search keeps the row — search includes archive).
+        let search = committedSearch.trimmingCharacters(in: .whitespaces)
+        if !search.isEmpty {
+            let parsed = SearchQuery.parse(search)
+            return !parsed.includesLocation(inTrash: t.inTrash, inSpam: t.inSpam)
+        }
         if t.inTrash {
             if case .trash = selectedView { return false }
             return true
@@ -2302,11 +2323,7 @@ final class MailStore: ObservableObject {
         let wasSelected = selectedThreadId == thread.id
         let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
         mutateThread(thread) { t in
-            var labels = Set(t.labels)
-            labels.remove("INBOX")
-            labels.insert("SPAM")
-            t.labelIds = labels.sorted().joined(separator: " ")
-            t.syncFlagsFromLabelIds()
+            t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
         } remote: { client, id in
             try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
         }
@@ -2314,11 +2331,7 @@ final class MailStore: ObservableObject {
         offerUndo("Marked as spam") { [weak self] in
             guard let self else { return }
             self.mutateThread(thread) { t in
-                var labels = Set(t.labels)
-                labels.remove("SPAM")
-                labels.insert("INBOX")
-                t.labelIds = labels.sorted().joined(separator: " ")
-                t.syncFlagsFromLabelIds()
+                t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
             } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
             }
@@ -2333,13 +2346,19 @@ final class MailStore: ObservableObject {
         // removes the row from `threads`.
         let wasSelected = selectedThreadId == thread.id
         let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
-        mutateThread(thread) { $0.inTrash = true; $0.inInbox = false } remote: { client, id in
+        // Keep labelIds + denorm flags coherent (same pattern as markSpam) so
+        // search filters on inTrash and any labelIds-based UI agree.
+        mutateThread(thread) { t in
+            t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
+        } remote: { client, id in
             try await client.trashThread(id: id)
         }
         advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
         offerUndo("Moved to Trash") { [weak self] in
             guard let self else { return }
-            self.mutateThread(thread) { $0.inTrash = false; $0.inInbox = true } remote: { client, id in
+            self.mutateThread(thread) { t in
+                t.applyLabelMutation(add: ["INBOX"], remove: ["TRASH"])
+            } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"], remove: ["TRASH"])
             }
             self.undoAction = nil
