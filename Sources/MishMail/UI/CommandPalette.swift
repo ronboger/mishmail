@@ -105,13 +105,13 @@ struct CommandPalette: View {
                                        .reminders, .drafts, .sent, .allMail, .trash]
         for v in builtins {
             cmds.append(Command(id: "view.\(v.title)", title: "Go to \(v.title)", icon: "tray") { s in
-                s.selectedView = v
+                s.goTo(v)
             })
         }
         for v in store.savedViews {
             cmds.append(Command(id: "saved.\(v.id ?? -1)", title: "Go to \(v.name)",
                                 icon: "line.3.horizontal.decrease.circle") { s in
-                s.selectedView = .saved(v.id ?? -1, v.name)
+                s.goTo(.saved(v.id ?? -1, v.name))
             })
         }
         return cmds

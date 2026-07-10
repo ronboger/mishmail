@@ -56,6 +56,13 @@ struct ContentView: View {
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
             store.resetChips()
+            // Sidebar click (or any selectedView write) should land on the
+            // real mailbox, not keep a committed `/` search overlay. goTo
+            // clears search first; this covers the List selection binding.
+            if !store.searchText.isEmpty || !store.committedSearch.isEmpty {
+                store.searchText = ""
+                store.committedSearch = ""
+            }
             store.reloadThreads()
         }
         .onChange(of: store.chips) { store.reloadThreadsDebounced() }
@@ -592,6 +599,16 @@ struct Sidebar: View {
         }
         .badge((badge ?? 0) > 0 ? badge! : 0)
         .tag(view)
+        // List(selection:) only fires onChange when the value *changes*, so
+        // re-clicking the already-selected row (e.g. Inbox while a committed
+        // `/` search is active) would otherwise be a no-op — same shape as the
+        // original gi bug. Only handle the already-selected case; cross-view
+        // clicks still go through the selection binding + onChange.
+        .simultaneousGesture(TapGesture().onEnded {
+            if store.selectedView == view {
+                store.goTo(view)
+            }
+        })
     }
 }
 
