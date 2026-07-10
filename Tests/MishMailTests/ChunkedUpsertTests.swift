@@ -61,8 +61,11 @@ final class ChunkedUpsertTests: XCTestCase {
         XCTAssertEqual(try q.read { try AttachmentRow.fetchCount($0) }, 1)
 
         let m0 = try q.read { try Message.fetchOne($0, key: "\(account):m0") }
-        XCTAssertEqual(m0?.bodyText, "body m0")
+        // v24: body lives in message_body; on-row columns stay empty.
+        XCTAssertEqual(m0?.bodyText, "")
         XCTAssertTrue(m0?.hasAttachment == true)
+        let body = try q.read { try MessageBody.fetchOne($0, key: "\(account):m0") }
+        XCTAssertEqual(body?.bodyText, "body m0")
     }
 
     func testBatchUpsertReplacesAttachments() throws {

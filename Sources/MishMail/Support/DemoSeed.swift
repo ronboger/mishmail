@@ -54,8 +54,14 @@ enum DemoSeed {
 
             var touched = Set<String>()
             for msg in messages() {
-                let m = msg
+                var m = msg
+                let bodyText = m.bodyText
+                let bodyHTML = m.bodyHTML
+                m.bodyText = ""
+                m.bodyHTML = nil
                 try m.insert(database)
+                try MessageBody(messageId: m.id, bodyText: bodyText, bodyHTML: bodyHTML)
+                    .insert(database)
                 touched.insert(m.threadId)
             }
             try SyncEngine.deriveThreads(database, for: touched, accountId: account)
