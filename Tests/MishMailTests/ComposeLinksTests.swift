@@ -87,6 +87,35 @@ final class ComposeLinksTests: XCTestCase {
             url: "javascript:alert(1)"))
     }
 
+    func testApplyLinkPercentEncodesParensInHref() {
+        // A raw ")" in the href would end the markdown link early when
+        // re-parsed, so parens must be percent-encoded.
+        let body = "see docs now"
+        let r = body.range(of: "docs")!
+        let out = ComposeLinks.applyLink(in: body, selection: r,
+                                         url: "https://foo.com/path(1)")
+        XCTAssertEqual(out, "see [docs](https://foo.com/path%281%29) now")
+        let links = ComposeLinks.markdownLinks(in: out!)
+        XCTAssertEqual(links.count, 1)
+        XCTAssertEqual(links.first?.url, "https://foo.com/path%281%29")
+    }
+
+    func testApplyLinkParenWrappedSelectionRoundTrips() {
+        // ⌘K on "(foo.com)": selfLink trims to the URL, applyLink keeps the
+        // parens in the label, and the result re-parses as one clean link.
+        let body = "(foo.com)"
+        let all = body.startIndex..<body.endIndex
+        guard let href = ComposeLinks.selfLink(forSelection: body) else {
+            return XCTFail("expected selfLink")
+        }
+        let out = ComposeLinks.applyLink(in: body, selection: all,
+                                         text: body, url: href)
+        XCTAssertEqual(out, "[(foo.com)](https://foo.com)")
+        let links = ComposeLinks.markdownLinks(in: out!)
+        XCTAssertEqual(links.first?.url, "https://foo.com")
+        XCTAssertEqual(links.first?.text, "(foo.com)")
+    }
+
     func testLinkAtFindsMarkdownLink() {
         let body = "see [docs](https://x.test) please"
         guard let r = body.range(of: "docs") else { return XCTFail("range") }
@@ -200,6 +229,31 @@ final class ComposeLinksTests: XCTestCase {
     func testSelfLinkAcceptsTrimmedWhitespace() {
         XCTAssertEqual(ComposeLinks.selfLink(forSelection: "  foo.com  "),
                        "https://foo.com")
+    }
+
+    func testSelfLinkTrimsTrailingDot() {
+        XCTAssertEqual(ComposeLinks.selfLink(forSelection: "foo.com."),
+                       "https://foo.com")
+    }
+
+    func testSelfLinkTrimsTrailingComma() {
+        XCTAssertEqual(ComposeLinks.selfLink(forSelection: "foo.com,"),
+                       "https://foo.com")
+    }
+
+    func testSelfLinkStripsWrappingParens() {
+        XCTAssertEqual(ComposeLinks.selfLink(forSelection: "(foo.com)"),
+                       "https://foo.com")
+    }
+
+    func testSelfLinkKeepsBalancedParensInPath() {
+        XCTAssertEqual(ComposeLinks.selfLink(forSelection: "https://foo.com/path(1)"),
+                       "https://foo.com/path(1)")
+    }
+
+    func testSelfLinkRejectsPunctuationOnlySelection() {
+        XCTAssertNil(ComposeLinks.selfLink(forSelection: "()"))
+        XCTAssertNil(ComposeLinks.selfLink(forSelection: "..."))
     }
 
     func testSelfLinkRejectsPlainWord() {

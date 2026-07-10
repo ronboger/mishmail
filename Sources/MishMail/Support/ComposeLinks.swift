@@ -88,14 +88,40 @@ enum ComposeLinks {
     /// The last check keeps plain words like "hello" from qualifying even
     /// though `normalizeURL` would happily turn them into `https://hello`.
     static func selfLink(forSelection selected: String) -> String? {
-        let trimmed = selected.trimmingCharacters(in: .whitespacesAndNewlines)
+        var trimmed = selected.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
         guard !trimmed.contains(where: { $0.isWhitespace || $0.isNewline }) else { return nil }
         // Selecting the raw markdown of an existing link (e.g. dragging over
         // `[foo.com](https://foo.com)`) is not a bare URL to self-link.
         guard markdownLinks(in: trimmed).isEmpty else { return nil }
+        trimmed = trimPunctuation(around: trimmed)
+        guard !trimmed.isEmpty else { return nil }
         guard looksLikeURLOrEmail(trimmed) else { return nil }
         return normalizeURL(trimmed)
+    }
+
+    /// Strips prose punctuation stuck to a selected URL: leading openers
+    /// (`(foo.com)` → `foo.com)`), then trailing `.,;:!?"'` and any closer
+    /// that has no matching opener left in the string — so `foo.com.` and
+    /// `foo.com)` are trimmed but `https://foo.com/path(1)` keeps its parens.
+    private static func trimPunctuation(around s: String) -> String {
+        var out = s
+        while let first = out.first, "([{\"'".contains(first) {
+            out.removeFirst()
+        }
+        let closers: [Character: Character] = [")": "(", "]": "[", "}": "{"]
+        while let last = out.last {
+            if ".,;:!?\"'".contains(last) {
+                out.removeLast()
+            } else if let opener = closers[last],
+                      out.filter({ $0 == last }).count
+                        > out.filter({ $0 == opener }).count {
+                out.removeLast()
+            } else {
+                break
+            }
+        }
+        return out
     }
 
     private static func looksLikeURLOrEmail(_ s: String) -> Bool {
@@ -115,7 +141,12 @@ enum ComposeLinks {
                           selection: Range<String.Index>,
                           text: String? = nil,
                           url: String) -> String? {
-        guard let href = normalizeURL(url) else { return nil }
+        guard let normalized = normalizeURL(url) else { return nil }
+        // A raw `)` in the href would end the `[label](url)` span early when
+        // markdownLinks re-parses the body; percent-encode both parens.
+        let href = normalized
+            .replacingOccurrences(of: "(", with: "%28")
+            .replacingOccurrences(of: ")", with: "%29")
         let selected = String(body[selection])
         let label: String = {
             if let text, !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
