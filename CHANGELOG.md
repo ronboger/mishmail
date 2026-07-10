@@ -43,6 +43,11 @@ minor versions may still change behavior.
   to reorder it; the order persists across restarts.
 
 ### Fixed
+- **⌘K self-link trims stuck punctuation** — linking a selection like
+  `(foo.com)`, `foo.com.`, or `foo.com,` now links the URL itself instead of
+  producing a broken `https://(foo.com)`-style href. Balanced parens inside a
+  path (`…/path(1)`) are kept, and parens in hrefs are percent-encoded so the
+  markdown link re-parses cleanly.
 - **Expired/revoked sign-ins now prompt reauthorization** — when Google
   rejects a stored refresh token (`invalid_grant`) or none is stored, the
   affected account shows a warning icon and a "Reauthorize…" button in
