@@ -38,6 +38,10 @@ minor versions may still change behavior.
   excluded from Forward all so they never leak to recipients.
 
 ### Fixed
+- **Expired/revoked sign-ins now prompt reauthorization** — when Google
+  rejects a stored refresh token (`invalid_grant`) or none is stored, the
+  affected account shows a warning icon and a "Reauthorize…" button in
+  Settings → Accounts instead of a raw token-exchange error.
 - **Promotions/Social no longer show spam or archived mail** — lists and
   sidebar badges now match gmail.com (inbox + category, excluding SPAM and
   trash). Added denormalized `inSpam` (schema v19); mark-as-spam updates

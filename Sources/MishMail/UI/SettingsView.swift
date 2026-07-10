@@ -282,13 +282,23 @@ struct AccountsSettings: View {
                     Section {
                         HStack {
                             VStack(alignment: .leading) {
-                                Text(account.id)
+                                HStack {
+                                    Text(account.id)
+                                    if store.accountsNeedingReauth.contains(account.id) {
+                                        Image(systemName: "exclamationmark.triangle.fill")
+                                            .foregroundStyle(.orange)
+                                            .help("Google no longer accepts this account's saved sign-in (expired or revoked). Reauthorize to resume syncing.")
+                                    }
+                                }
                                 if let last = account.lastSyncAt {
                                     Text("Last sync \(last, format: .relative(presentation: .named))")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }
                             }
                             Spacer()
+                            if store.accountsNeedingReauth.contains(account.id) {
+                                Button("Reauthorize…") { store.addAccount() }
+                            }
                             Button("Remove Account", role: .destructive) {
                                 store.removeAccount(account.id)
                             }

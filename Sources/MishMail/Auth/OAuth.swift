@@ -63,6 +63,7 @@ enum OAuthError: LocalizedError {
     case badRedirect
     case authorizationDenied(String)
     case tokenExchangeFailed(String)
+    case invalidGrant
     case cancelled
     case timedOut
     case randomGenerationFailed(OSStatus)
@@ -73,6 +74,8 @@ enum OAuthError: LocalizedError {
         case .badRedirect: return "The sign-in redirect was malformed."
         case .authorizationDenied(let reason): return "Google declined the sign-in: \(reason)."
         case .tokenExchangeFailed(let body): return "Token exchange failed: \(body)"
+        case .invalidGrant:
+            return "Google no longer accepts this account's saved sign-in (expired or revoked). Reauthorize the account in Settings → Accounts."
         case .cancelled: return "Sign-in was cancelled."
         case .timedOut: return "Sign-in timed out. Try again from MishMail."
         case .randomGenerationFailed(let status):
@@ -161,9 +164,19 @@ final class OAuthService {
             .data(using: .utf8)
         let (data, resp) = try await URLSession.shared.data(for: req)
         guard let http = resp as? HTTPURLResponse, http.statusCode == 200 else {
+            if oauthErrorCode(from: data) == "invalid_grant" {
+                throw OAuthError.invalidGrant
+            }
             throw OAuthError.tokenExchangeFailed(String(data: data, encoding: .utf8) ?? "unknown")
         }
         return try JSONDecoder().decode(T.self, from: data)
+    }
+
+    /// Parses the token endpoint's error body JSON and returns its `error`
+    /// field (e.g. `"invalid_grant"`), or nil for non-JSON / missing field.
+    static func oauthErrorCode(from data: Data) -> String? {
+        struct ErrorBody: Decodable { let error: String? }
+        return (try? JSONDecoder().decode(ErrorBody.self, from: data))?.error
     }
 
     // MARK: - Loopback listener

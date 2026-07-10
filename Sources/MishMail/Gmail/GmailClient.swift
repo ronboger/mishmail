@@ -101,11 +101,13 @@ struct GHistoryList: Decodable {
 enum GmailError: LocalizedError {
     case http(Int, String)
     case historyExpired
+    case noRefreshToken(String)
 
     var errorDescription: String? {
         switch self {
         case .http(let code, let body): return "Gmail API error \(code): \(body.prefix(300))"
         case .historyExpired: return "Sync history expired; a full resync is needed."
+        case .noRefreshToken(let email): return "No saved sign-in for \(email). Reauthorize the account in Settings → Accounts."
         }
     }
 }
@@ -128,7 +130,7 @@ actor GmailClient {
     private func validToken() async throws -> String {
         if let t = accessToken, tokenExpiry > Date().addingTimeInterval(60) { return t }
         guard let refresh = Keychain.get("refreshToken.\(accountEmail)") else {
-            throw GmailError.http(401, "No refresh token stored for \(accountEmail)")
+            throw GmailError.noRefreshToken(accountEmail)
         }
         let (token, expiresIn) = try await OAuthService.refreshAccessToken(refreshToken: refresh)
         accessToken = token
