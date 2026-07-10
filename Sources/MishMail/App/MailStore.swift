@@ -309,6 +309,10 @@ final class MailStore: ObservableObject {
     @Published var activeAccountId: String?   // nil = all accounts (unified)
     @Published var syncStatus: String = ""
     @Published var lastError: String?
+    /// Account ids whose saved sign-in Google has rejected (expired/revoked
+    /// refresh token); the Accounts settings pane offers a "Reauthorize"
+    /// button for these.
+    @Published var accountsNeedingReauth: Set<String> = []
     @Published var composeRequest: ComposeRequest?
     @Published var undoAction: UndoAction?
     @Published var editingView: SavedView?
@@ -1687,6 +1691,7 @@ final class MailStore: ObservableObject {
                         try account.insert(db)
                     }
                 }
+                accountsNeedingReauth.remove(info.email)
                 reloadAccounts()
                 await refreshSendIdentities(accountId: info.email)
                 await sync(accountId: info.email)
@@ -1701,11 +1706,22 @@ final class MailStore: ObservableObject {
         try? db.write { db in _ = try Account.deleteOne(db, key: id) }
         engines[id] = nil
         clients[id] = nil
+        accountsNeedingReauth.remove(id)
         reloadAccounts()
         sendIdentities.removeAll { $0.accountId == id }
         reloadThreads()
         // Own-address set changed — drop the weight map and re-mine.
         rebuildContacts(forceFull: true)
+    }
+
+    /// True when `error` means the account's saved sign-in was rejected by
+    /// Google and only reauthorizing (not a retry) can fix it.
+    private static func isReauthRequired(_ error: Error) -> Bool {
+        switch error {
+        case OAuthError.invalidGrant: return true
+        case GmailError.noRefreshToken: return true
+        default: return false
+        }
     }
 
     // MARK: - Sync
@@ -1765,7 +1781,12 @@ final class MailStore: ObservableObject {
             }
             for await (id, error) in group {
                 if let error {
-                    lastError = "\(id): \(error.localizedDescription)"
+                    if Self.isReauthRequired(error) {
+                        accountsNeedingReauth.insert(id)
+                        lastError = "\(id): needs to be reauthorized (Settings → Accounts)."
+                    } else {
+                        lastError = "\(id): \(error.localizedDescription)"
+                    }
                 } else {
                     await backfillSenderNameIfNeeded(accountId: id)
                     await refreshSendIdentities(accountId: id)
@@ -1796,7 +1817,12 @@ final class MailStore: ObservableObject {
             reloadThreads()
         } catch {
             syncStatus = ""
-            lastError = "\(accountId): \(error.localizedDescription)"
+            if Self.isReauthRequired(error) {
+                accountsNeedingReauth.insert(accountId)
+                lastError = "\(accountId): needs to be reauthorized (Settings → Accounts)."
+            } else {
+                lastError = "\(accountId): \(error.localizedDescription)"
+            }
         }
     }
 
