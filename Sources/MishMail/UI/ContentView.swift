@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject var store: MailStore
@@ -927,6 +928,9 @@ struct SearchResultsPanel: View {
 struct AccountSwitcher: View {
     @EnvironmentObject var store: MailStore
     @State private var showMenu = false
+    /// Id of the account row currently being dragged, for the fade feedback
+    /// and to resolve source/destination indices on drop.
+    @State private var draggingAccountId: String?
 
     var body: some View {
         Button {
@@ -964,6 +968,14 @@ struct AccountSwitcher: View {
                 accountRow(nil, shortcut: 1)
                 ForEach(Array(store.accounts.enumerated()), id: \.element.id) { index, account in
                     accountRow(account, shortcut: index + 2)
+                        .opacity(draggingAccountId == account.id ? 0.4 : 1)
+                        .animation(.easeInOut(duration: 0.08), value: draggingAccountId)
+                        .onDrag {
+                            draggingAccountId = account.id
+                            return NSItemProvider(object: account.id as NSString)
+                        }
+                        .onDrop(of: [.text], delegate: AccountDropDelegate(
+                            target: account, draggingId: $draggingAccountId, store: store))
                 }
                 Divider().padding(.vertical, 4)
                 FilterMenuRow(icon: "plus", title: "Add Google Account…") {
@@ -1082,6 +1094,31 @@ struct AccountSwitcher: View {
 
     private var subtitle: String {
         store.activeAccountId ?? "\(store.accounts.count) inboxes"
+    }
+}
+
+/// Live-reorders the account switcher as a dragged row crosses a neighbor —
+/// the standard SwiftUI reorderable-list pattern (List's `.onMove` isn't
+/// available here since the popover is a plain VStack, not a List).
+private struct AccountDropDelegate: DropDelegate {
+    let target: Account
+    @Binding var draggingId: String?
+    let store: MailStore
+
+    func dropEntered(info: DropInfo) {
+        guard let draggingId, draggingId != target.id,
+              let from = store.accounts.firstIndex(where: { $0.id == draggingId }),
+              let to = store.accounts.firstIndex(where: { $0.id == target.id }) else { return }
+        store.reorderAccounts(from: IndexSet(integer: from), to: to > from ? to + 1 : to)
+    }
+
+    func dropUpdated(info: DropInfo) -> DropProposal? {
+        DropProposal(operation: .move)
+    }
+
+    func performDrop(info: DropInfo) -> Bool {
+        draggingId = nil
+        return true
     }
 }
 

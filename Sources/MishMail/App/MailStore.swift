@@ -1032,8 +1032,23 @@ final class MailStore: ObservableObject {
 
     // MARK: - Loading
 
+    /// UserDefaults key for the account switcher's drag-reordered id list.
+    /// Local-only (like label order): reauth/reinsert paths never touch this,
+    /// so a token refresh or bundle-id migration can't scramble it.
+    private static let accountOrderDefaultsKey = "accountOrder"
+
     func reloadAccounts() {
-        accounts = (try? db.read { try Account.order(Column("id")).fetchAll($0) }) ?? []
+        let raw = (try? db.read { try Account.order(Column("id")).fetchAll($0) }) ?? []
+        let persisted = UserDefaults.standard.stringArray(forKey: Self.accountOrderDefaultsKey) ?? []
+        let order = AccountOrder.reconciled(persisted: persisted, live: raw.map(\.id))
+        if order != persisted {
+            // Reconciliation dropped a removed account or appended a newly
+            // added one — persist the settled order so it's stable even if
+            // the user never drags again.
+            UserDefaults.standard.set(order, forKey: Self.accountOrderDefaultsKey)
+        }
+        let byId = Dictionary(uniqueKeysWithValues: raw.map { ($0.id, $0) })
+        accounts = order.compactMap { byId[$0] }
         // User order first (organizer drag), alphabetical among the unordered.
         let rows = (try? db.read {
             try LabelRow.filter(Column("type") == "user")
@@ -2103,6 +2118,16 @@ final class MailStore: ObservableObject {
             try row.save(db)
         }
         reloadAccounts()
+    }
+
+    /// Persists a drag-reorder of the account switcher. The unified "all
+    /// inboxes" entry isn't part of `accounts` (it's a synthetic nil-account
+    /// row rendered separately in ContentView), so it's never touched here.
+    func reorderAccounts(from source: IndexSet, to destination: Int) {
+        let ids = AccountOrder.moved(accounts.map(\.id), from: source, to: destination)
+        UserDefaults.standard.set(ids, forKey: Self.accountOrderDefaultsKey)
+        let byId = Dictionary(uniqueKeysWithValues: accounts.map { ($0.id, $0) })
+        accounts = ids.compactMap { byId[$0] }
     }
 
     /// Persists a drag-reorder of one account's labels from the organizer.
