@@ -1,4 +1,4 @@
-// Signing configuration for PerfectMail.
+// Signing configuration for MishMail.
 //
 // The tracked default is ad-hoc "Sign to Run Locally": it builds and runs on
 // any Mac with no Apple Developer account (so `make build`, CI, and strangers
@@ -16,7 +16,7 @@
 // entitlements (library validation stays ON — the embedded GRDB framework is
 // re-signed with your team, so the ad-hoc-only disable is unnecessary):
 //
-//     CODE_SIGN_ENTITLEMENTS = Sources/PerfectMail/PerfectMail.Distribution.entitlements
+//     CODE_SIGN_ENTITLEMENTS = Sources/MishMail/MishMail.Distribution.entitlements
 //
 // The optional include below picks it up automatically when present.
 

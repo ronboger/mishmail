@@ -1,6 +1,6 @@
-# Contributing to PerfectMail
+# Contributing to MishMail
 
-Thanks for your interest! PerfectMail is a native macOS Gmail client built with
+Thanks for your interest! MishMail is a native macOS Gmail client built with
 SwiftUI, the Gmail REST API, and GRDB/SQLCipher.
 
 ## Getting set up
@@ -13,7 +13,7 @@ make build     # build the app
 ```
 
 The Xcode project is **generated** from [`project.yml`](project.yml) by
-xcodegen — it is git-ignored, so never commit `PerfectMail.xcodeproj`. Edit
+xcodegen — it is git-ignored, so never commit `MishMail.xcodeproj`. Edit
 `project.yml` (targets, settings, dependencies) and re-run `xcodegen generate`.
 
 Signing defaults to portable ad-hoc; see
@@ -23,7 +23,7 @@ Signing defaults to portable ad-hoc; see
 
 `make test` must pass before every commit (the pre-commit hook enforces this
 locally, and CI runs it on every push/PR). Tests live in
-`Tests/PerfectMailTests` and cover the non-UI core: message/MIME parsing, the
+`Tests/MishMailTests` and cover the non-UI core: message/MIME parsing, the
 DB schema and migrations, thread derivation, search-query parsing, and
 send-scheduling. The test target is **hostless** — it compiles the relevant
 `Sources/` files directly, so it needs no app host, Keychain, or network. When
@@ -32,7 +32,7 @@ you touch parser/DB/search/sync-derivation logic, add or update a test.
 ## Code layout
 
 ```
-Sources/PerfectMail/
+Sources/MishMail/
   App/        app entry + MailStore (the observable app state)
   Auth/       OAuth (PKCE, loopback listener)
   Gmail/      GmailClient, SyncEngine, MessageParsing/MIME

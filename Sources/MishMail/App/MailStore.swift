@@ -1845,7 +1845,7 @@ final class MailStore: ObservableObject {
                             id: "mail.\(thread.id)")
         }
         if newThreads.count > 3 {
-            Notifier.notify(title: "PerfectMail", body: "\(newThreads.count) new messages", id: "mail.batch")
+            Notifier.notify(title: "MishMail", body: "\(newThreads.count) new messages", id: "mail.batch")
         }
     }
 
@@ -2695,7 +2695,7 @@ final class MailStore: ObservableObject {
         // Keyed by attachment row too, so two same-named attachments on one
         // message can't serve each other's cached bytes.
         let dir = FileManager.default.temporaryDirectory
-            .appendingPathComponent("PerfectMailAttachments", isDirectory: true)
+            .appendingPathComponent("MishMailAttachments", isDirectory: true)
             .appendingPathComponent(MessageParser.safeFilename(message.accountId), isDirectory: true)
             .appendingPathComponent(MessageParser.safeFilename(message.gmailId), isDirectory: true)
             .appendingPathComponent(String(attachment.id ?? 0), isDirectory: true)
@@ -2781,7 +2781,7 @@ final class MailStore: ObservableObject {
     /// and any handling app's own web-content checks. Best-effort.
     static func markQuarantined(_ url: URL) {
         let stamp = String(format: "%08x", UInt32(truncatingIfNeeded: Int(Date().timeIntervalSince1970)))
-        let value = "0001;\(stamp);PerfectMail;\(UUID().uuidString)"
+        let value = "0001;\(stamp);MishMail;\(UUID().uuidString)"
         value.withCString { cstr in
             _ = setxattr(url.path, "com.apple.quarantine", cstr, strlen(cstr), 0, 0)
         }

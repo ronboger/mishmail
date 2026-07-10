@@ -1,10 +1,16 @@
 # Changelog
 
-All notable changes to PerfectMail are documented here. Format loosely follows
+All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
 ## [Unreleased]
+
+### Changed
+- **Renamed to MishMail** — the app, bundle identifiers, Xcode project, targets,
+  release artifacts, and GitHub repository references now use the MishMail name.
+  The new bundle identifiers intentionally create fresh app containers and
+  Keychain namespaces for this pre-1.0 rename.
 
 ### Added
 - **Compose markdown** — write `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``,
@@ -54,7 +60,7 @@ minor versions may still change behavior.
 - **Remote Ollama opt-in** — non-loopback endpoints need an explicit Settings
   toggle (and HTTPS) before mail content is sent.
 - **Distribution entitlements** — `make release` / `make install` switch to
-  `PerfectMail.Distribution.entitlements` (library validation on) when
+  `MishMail.Distribution.entitlements` (library validation on) when
   `Config/Local.xcconfig` sets `DEVELOPMENT_TEAM`.
 - **Risky attachment prompt** — Open warns before launching app/script/installer
   filenames (still quarantined for Gatekeeper).

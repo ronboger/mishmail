@@ -1,4 +1,4 @@
-# PerfectMail
+# MishMail
 
 A native, local-first Gmail client for macOS. SwiftUI, Gmail REST API, SQLite.
 No server, no telemetry — nothing leaves your Mac except calls to Google's own
@@ -8,7 +8,7 @@ API (and, optionally, a local Ollama model that also never leaves the machine).
 > keyboard-driven, Notion-Mail-style inbox that runs entirely on their own
 > hardware. Contributions welcome — see [CONTRIBUTING.md](CONTRIBUTING.md).
 
-![PerfectMail inbox](docs/screenshots/inbox.png)
+![MishMail inbox](docs/screenshots/inbox.png)
 
 ## Features
 
@@ -48,7 +48,7 @@ The app uses **your own** free Google OAuth client, so no third party ever sees
 your mail. (See [Why bring your own client?](#why-bring-your-own-oauth-client)
 for the reasoning.)
 
-1. Go to https://console.cloud.google.com/ and create a project (e.g. "PerfectMail").
+1. Go to https://console.cloud.google.com/ and create a project (e.g. "MishMail").
 2. **APIs & Services → Library** → search "Gmail API" → **Enable**.
 3. **APIs & Services → OAuth consent screen**:
    - User type: **External**, fill in app name + your email, save.
@@ -62,23 +62,23 @@ for the reasoning.)
    - Application type: **Desktop app**.
    - Copy the **Client ID** and **Client Secret** (or download the
      `client_secret_*.json`).
-5. Launch PerfectMail → **Settings (Cmd-,) → Google API** → paste both.
+5. Launch MishMail → **Settings (Cmd-,) → Google API** → paste both.
    (Debug and Release are separate apps with separate Keychains — paste into
    whichever build you're using. Never commit client secrets; each person brings
    their own free Desktop client.)
 6. Sidebar → **Add Google Account…** → your browser opens → sign in → the
    browser redirects to `http://127.0.0.1:<port>/oauth2/callback` → you should
-   see **“Signed in.”** → return to PerfectMail; the account appears. Repeat for
+   see **“Signed in.”** → return to MishMail; the account appears. Repeat for
    each account.
 
 > During sign-in Google shows a **"Google hasn't verified this app"** screen
 > because it's your own unverified test client. That's expected — click
 > **Advanced → Continue**. The requested scope is `gmail.modify` plus your basic
-> profile (email/name); PerfectMail never sees a password.
+> profile (email/name); MishMail never sees a password.
 
 ### Why bring your own OAuth client?
 
-Shipping a shared client ID would make PerfectMail a data broker for every
+Shipping a shared client ID would make MishMail a data broker for every
 user's mailbox and would drag the project through Google's restricted-scope
 verification (a CASA security assessment for `gmail.modify`). Bring-your-own
 client keeps your mail flowing only between your Mac and Google — nobody else,
@@ -89,7 +89,7 @@ including the author, is ever in the loop. It costs you five minutes once.
 ```sh
 brew install xcodegen        # once
 xcodegen generate
-xcodebuild -project PerfectMail.xcodeproj -scheme PerfectMail -configuration Release build
+xcodebuild -project MishMail.xcodeproj -scheme MishMail -configuration Release build
 ```
 
 Or, with the included Makefile:
@@ -100,7 +100,7 @@ make test     # generate + run the unit tests
 make hooks    # install a pre-commit hook that runs the tests
 ```
 
-Or open `PerfectMail.xcodeproj` in Xcode and hit Run.
+Or open `MishMail.xcodeproj` in Xcode and hit Run.
 
 ### Signing
 
@@ -124,10 +124,10 @@ CODE_SIGN_IDENTITY = Apple Development
 
 ### Releases & updates
 
-PerfectMail publishes binaries to GitHub Releases (`ronboger/perfectmail`). The
+MishMail publishes binaries to GitHub Releases (`ronboger/mishmail`). The
 app checks once a day; when a newer version exists, an **Update app** button
 appears at the bottom of the sidebar and in **Settings → Updates** — clicking it
-downloads the release zip, then drag the new PerfectMail into Applications to
+downloads the release zip, then drag the new MishMail into Applications to
 replace the old copy.
 
 To cut a release: bump `MARKETING_VERSION` in `project.yml`, then
@@ -198,16 +198,16 @@ Install [Ollama](https://ollama.com) and pull a small model:
 ollama pull llama3.2
 ```
 
-Then in **Settings → AI** point PerfectMail at your local Ollama (default
+Then in **Settings → AI** point MishMail at your local Ollama (default
 `http://127.0.0.1:11434`). You get "Draft with AI" in compose and thread
-summaries — all computed locally. PerfectMail refuses cleartext non-loopback
+summaries — all computed locally. MishMail refuses cleartext non-loopback
 endpoints, and requires an explicit “Allow remote Ollama” toggle before any
 mail content is sent to a remote HTTPS host.
 
 ## Where things live
 
-- Mail cache (SQLCipher-encrypted): `~/Library/Containers/dev.ronboger.PerfectMail/Data/Library/Application Support/PerfectMail/mail.sqlite`
-- OAuth refresh tokens, client secret, and the DB key: macOS Keychain (`dev.ronboger.PerfectMail`)
+- Mail cache (SQLCipher-encrypted): `~/Library/Containers/dev.ronboger.MishMail/Data/Library/Application Support/MishMail/mail.sqlite`
+- OAuth refresh tokens, client secret, and the DB key: macOS Keychain (`dev.ronboger.MishMail`)
 
 ## Security
 
@@ -234,7 +234,7 @@ mail content is sent to a remote HTTPS host.
   instead of handing you an unverified binary.
 - **App Sandbox** enabled with a minimal entitlement set (network client, the
   transient loopback listener for sign-in, and user-selected file access).
-  `make release` uses `PerfectMail.Distribution.entitlements` (library validation
+  `make release` uses `MishMail.Distribution.entitlements` (library validation
   on) whenever `Config/Local.xcconfig` sets a `DEVELOPMENT_TEAM` — see
   [docs/RELEASING.md](docs/RELEASING.md).
 - **No secret logging**, parameterized SQL throughout, CRLF-folded MIME headers,

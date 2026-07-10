@@ -1,4 +1,4 @@
-name: PerfectMail
+name: MishMail
 options:
   bundleIdPrefix: dev.ronboger
   deploymentTarget:
@@ -8,14 +8,14 @@ packages:
     url: https://github.com/duckduckgo/GRDB.swift
     exactVersion: 3.0.0
 targets:
-  PerfectMail:
+  MishMail:
     type: application
     platform: macOS
-    sources: [Sources/PerfectMail]
+    sources: [Sources/MishMail]
     dependencies:
       - package: GRDB
     entitlements:
-      path: Sources/PerfectMail/PerfectMail.entitlements
+      path: Sources/MishMail/MishMail.entitlements
       properties:
         com.apple.security.app-sandbox: true
         com.apple.security.network.client: true
@@ -29,7 +29,7 @@ targets:
         # validation lets the ad-hoc app load its embedded framework.
         #
         # For Developer ID / notarized shipping builds, use
-        # PerfectMail.Distribution.entitlements instead (no disable) — Xcode
+        # MishMail.Distribution.entitlements instead (no disable) — Xcode
         # re-signs GRDB with your team so validation passes, and the process
         # stays fully hardened. See Config/Signing.xcconfig.
         com.apple.security.cs.disable-library-validation: true
@@ -51,52 +51,52 @@ targets:
         ENABLE_HARDENED_RUNTIME: true
       # Debug and Release build two DISTINCT apps so a throwaway test build is
       # never confused with — or able to corrupt — the real one you use daily:
-      #   Release  → "PerfectMail",       dev.ronboger.PerfectMail        (make install → /Applications)
-      #   Debug    → "PerfectMail Debug", dev.ronboger.PerfectMail.debug  (make run, launched in place)
+      #   Release  → "MishMail",       dev.ronboger.MishMail        (make install → /Applications)
+      #   Debug    → "MishMail Debug", dev.ronboger.MishMail.debug  (make run, launched in place)
       # The different bundle id gives Debug its own sandbox container + keychain,
       # so it syncs into a separate local database (sign in once; tokens persist
       # across rebuilds) and can't touch the real app's data. They coexist.
       configs:
         Debug:
-          PRODUCT_NAME: PerfectMail Debug
-          PRODUCT_BUNDLE_IDENTIFIER: dev.ronboger.PerfectMail.debug
-          INFOPLIST_KEY_CFBundleDisplayName: PerfectMail Debug
+          PRODUCT_NAME: MishMail Debug
+          PRODUCT_BUNDLE_IDENTIFIER: dev.ronboger.MishMail.debug
+          INFOPLIST_KEY_CFBundleDisplayName: MishMail Debug
         Release:
-          PRODUCT_NAME: PerfectMail
-          PRODUCT_BUNDLE_IDENTIFIER: dev.ronboger.PerfectMail
+          PRODUCT_NAME: MishMail
+          PRODUCT_BUNDLE_IDENTIFIER: dev.ronboger.MishMail
   # Standalone unit tests over the non-UI core (parsers, MIME, DB schema,
   # sync derivation). Compiles those sources directly — no app host, so no
   # keychain prompts, no network, no real database.
-  PerfectMailTests:
+  MishMailTests:
     type: bundle.unit-test
     platform: macOS
     sources:
-      - Tests/PerfectMailTests
-      - Sources/PerfectMail/Gmail
-      - Sources/PerfectMail/Store/Database.swift
-      - Sources/PerfectMail/Support/ContactMiner.swift
-      - Sources/PerfectMail/Support/ComposeLinks.swift
-      - Sources/PerfectMail/Support/HTMLEntities.swift
-      - Sources/PerfectMail/Support/KeyBindings.swift
-      - Sources/PerfectMail/Support/LabelSearch.swift
-      - Sources/PerfectMail/Support/Keychain.swift
-      - Sources/PerfectMail/Support/SearchQuery.swift
-      - Sources/PerfectMail/Support/SelectionAdvance.swift
-      - Sources/PerfectMail/Support/SnoozeDateParser.swift
-      - Sources/PerfectMail/Support/PrioritySplit.swift
-      - Sources/PerfectMail/Support/SendSchedule.swift
-      - Sources/PerfectMail/Support/SendIdentity.swift
-      - Sources/PerfectMail/Support/Classifier.swift
-      - Sources/PerfectMail/Support/SnippetDefaults.swift
-      - Sources/PerfectMail/Support/SnippetExpander.swift
-      - Sources/PerfectMail/Support/SnippetImport.swift
-      - Sources/PerfectMail/Support/SnippetInsertion.swift
-      - Sources/PerfectMail/Support/UpdateChecker.swift
-      - Sources/PerfectMail/Support/HTMLBodyCSP.swift
-      - Sources/PerfectMail/Support/HTMLBodyDarkMode.swift
-      - Sources/PerfectMail/Support/Markdown.swift
-      - Sources/PerfectMail/Support/Ollama.swift
-      - Sources/PerfectMail/Auth/OAuth.swift
+      - Tests/MishMailTests
+      - Sources/MishMail/Gmail
+      - Sources/MishMail/Store/Database.swift
+      - Sources/MishMail/Support/ContactMiner.swift
+      - Sources/MishMail/Support/ComposeLinks.swift
+      - Sources/MishMail/Support/HTMLEntities.swift
+      - Sources/MishMail/Support/KeyBindings.swift
+      - Sources/MishMail/Support/LabelSearch.swift
+      - Sources/MishMail/Support/Keychain.swift
+      - Sources/MishMail/Support/SearchQuery.swift
+      - Sources/MishMail/Support/SelectionAdvance.swift
+      - Sources/MishMail/Support/SnoozeDateParser.swift
+      - Sources/MishMail/Support/PrioritySplit.swift
+      - Sources/MishMail/Support/SendSchedule.swift
+      - Sources/MishMail/Support/SendIdentity.swift
+      - Sources/MishMail/Support/Classifier.swift
+      - Sources/MishMail/Support/SnippetDefaults.swift
+      - Sources/MishMail/Support/SnippetExpander.swift
+      - Sources/MishMail/Support/SnippetImport.swift
+      - Sources/MishMail/Support/SnippetInsertion.swift
+      - Sources/MishMail/Support/UpdateChecker.swift
+      - Sources/MishMail/Support/HTMLBodyCSP.swift
+      - Sources/MishMail/Support/HTMLBodyDarkMode.swift
+      - Sources/MishMail/Support/Markdown.swift
+      - Sources/MishMail/Support/Ollama.swift
+      - Sources/MishMail/Auth/OAuth.swift
     dependencies:
       - package: GRDB
     configFiles:
@@ -107,19 +107,19 @@ targets:
         SWIFT_VERSION: 5.10
         GENERATE_INFOPLIST_FILE: true
 schemes:
-  PerfectMail:
+  MishMail:
     build:
       targets:
-        PerfectMail: all
+        MishMail: all
     run:
       config: Debug
     archive:
       config: Release
-  PerfectMailTests:
+  MishMailTests:
     build:
       targets:
-        PerfectMailTests: [test]
+        MishMailTests: [test]
     test:
       config: Debug
       targets:
-        - PerfectMailTests
+        - MishMailTests

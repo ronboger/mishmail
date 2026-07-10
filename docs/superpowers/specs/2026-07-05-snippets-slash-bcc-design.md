@@ -10,7 +10,7 @@ Ron uses Notion Mail snippets heavily for intro-handling emails:
 > "thanks {person_1} for the intro! moving to bcc. hi {person_2}, it'd be great
 > to chat. my availability attached but also happy to work around your schedule"
 
-PerfectMail already has snippets (DB table, `{{variable}}` expander, inline
+MishMail already has snippets (DB table, `{{variable}}` expander, inline
 panel, settings CRUD). This design closes the gaps with Notion Mail:
 
 1. **Slash trigger**: typing `/` in the compose body pops a filtered snippet

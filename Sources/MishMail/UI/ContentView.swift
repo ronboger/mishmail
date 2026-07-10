@@ -557,7 +557,7 @@ struct Sidebar: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 12).padding(.top, 8)
-                .help("Download PerfectMail \(release.version) from GitHub")
+                .help("Download MishMail \(release.version) from GitHub")
             }
             SettingsLink {
                 HStack(spacing: 7) {

@@ -37,7 +37,7 @@ struct ScheduledListView: View {
                 Text("Scheduled")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.primary.opacity(0.7))
-                Text("· sends while PerfectMail is open")
+                Text("· sends while MishMail is open")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
                 Spacer()

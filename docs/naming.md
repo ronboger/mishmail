@@ -1,20 +1,27 @@
-# Name candidates
+# App name
 
-Working list of possible names for the app. "PerfectMail" collides with an
-established commercial email-security product ([perfectmail.com](https://perfectmail.com/))
-and a squatted GitHub repo (`onlyketch/perfectmail`), both in email — so it
-hurts discoverability and flirts with trademark. We want a name that is:
+## Chosen: MishMail
+
+MishMail is a play on *mishmish*, the Hebrew word for apricot. It is short,
+memorable, and gives the app a distinctive visual identity: mail plus an
+apricot.
+
+The previous working title collided with an established commercial
+email-security product and a similarly named GitHub repository, hurting
+discoverability and creating avoidable trademark risk. The selection criteria
+were:
 
 - **free on GitHub** (no established repo of the same name), and
 - **not an existing email/mail product**, and
 - ideally short, evocative, and easy to search for.
 
-Collision status checked 2026-07-06. Re-check domain + App Store availability
-before committing to one.
+Collision status was checked 2026-07-06. Re-check domain, App Store, and
+trademark availability before a public launch.
 
 | Candidate | Origin / meaning | GitHub | Existing email product? | Verdict |
 |-----------|------------------|--------|-------------------------|---------|
-| **Michtav** | Hebrew *מכתב*, "a letter" | clear (only unrelated `Michtava`, 0★) | none | **Strong** — meaning is exactly right, clean, distinctive |
+| **MishMail** | *mishmish* (apricot) + mail | clear | none found | **Chosen** — memorable pun with a strong visual identity |
+| **Michtav** | Hebrew *מכתב*, "a letter" | clear (only unrelated `Michtava`, 0★) | none | Strong — meaning is exactly right, clean, distinctive |
 | **Tanager** | a small, vivid songbird | clear (no email repo) | none | **Strong** — short, memorable, brandable |
 | **Letterline** | English, descriptive | clear (only 0★ hobby repos) | none | Good — clear meaning, a touch generic |
 | **Quillmail** | quill + mail | clear (zero repos) | none (but "Quill" ≈ the rich-text editor; `emailquill.com` exists) | OK — mild dilution with Quill editor |
@@ -30,8 +37,6 @@ before committing to one.
 
 ### Notes
 
-- Top two right now: **Michtav** (meaning + cleanliness) and **Tanager**
-  (brandability). Both are clear on GitHub and have no email-product collision.
-- Whatever we pick: grab the GitHub org/repo, the `.app`/`.com` domain if
-  available, and sanity-check the App Store and a trademark search before the
-  repo URL becomes permanent.
+- Rename the GitHub repository to `ronboger/mishmail` as a separate manual step.
+- Before public launch, secure any desired domain and sanity-check the App Store
+  and trademark landscape.

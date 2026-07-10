@@ -5,7 +5,7 @@ final class OAuthConfigTests: XCTestCase {
     func testParsesDesktopInstalledJSON() {
         let json = """
         {"installed":{"client_id":"123-abc.apps.googleusercontent.com",
-        "project_id":"perfectmail","auth_uri":"https://accounts.google.com/o/oauth2/auth",
+        "project_id":"mishmail","auth_uri":"https://accounts.google.com/o/oauth2/auth",
         "token_uri":"https://oauth2.googleapis.com/token","client_secret":"GOCSPX-secret",
         "redirect_uris":["http://localhost"]}}
         """

@@ -1,6 +1,6 @@
 # Security Policy
 
-PerfectMail is a local-first mail client that handles OAuth tokens and renders
+MishMail is a local-first mail client that handles OAuth tokens and renders
 untrusted email. Security reports are taken seriously.
 
 ## Reporting a vulnerability

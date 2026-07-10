@@ -242,7 +242,7 @@ final class AppDatabase {
     init() throws {
         let dir = try FileManager.default.url(for: .applicationSupportDirectory,
                                               in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("PerfectMail", isDirectory: true)
+            .appendingPathComponent("MishMail", isDirectory: true)
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let path = dir.appendingPathComponent("mail.sqlite").path
 
@@ -259,7 +259,7 @@ final class AppDatabase {
             // rotated, e.g. a backup restore) or a corrupt file. Everything in
             // it resyncs from Gmail, so set it aside and start fresh instead
             // of crashing at launch.
-            NSLog("PerfectMail: mail cache unreadable (%@); resetting", "\(error)")
+            NSLog("MishMail: mail cache unreadable (%@); resetting", "\(error)")
             try Self.setAsideUnreadable(path: path)
             dbPool = try Self.openAndMigrate(path: path, passphrase: passphrase)
         }

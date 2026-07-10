@@ -6,7 +6,7 @@ import GRDB
 /// Gmail account. Everything here is fake — names, addresses, and bodies are
 /// invented — so nothing private can leak into a screenshot.
 ///
-/// Activated by launching with the `PERFECTMAIL_DEMO=1` environment variable
+/// Activated by launching with the `MISHMAIL_DEMO=1` environment variable
 /// (see `make demo`). It is compiled only into Debug builds and, even then,
 /// does nothing unless that variable is set — so it can never run in the
 /// Release app you install or ship.
@@ -15,7 +15,7 @@ enum DemoSeed {
         // Hard-disabled outside Debug so no environment variable can ever
         // wipe/replace a real mail cache in the installed Release app.
         #if DEBUG
-        ProcessInfo.processInfo.environment["PERFECTMAIL_DEMO"] == "1"
+        ProcessInfo.processInfo.environment["MISHMAIL_DEMO"] == "1"
         #else
         false
         #endif
@@ -32,7 +32,7 @@ enum DemoSeed {
         // (`make run DEMO=0` is the verb for a real-account Debug session.)
         let existing = (try? db.read { try Account.fetchAll($0) }) ?? []
         guard existing.allSatisfy({ $0.id == account }) else {
-            NSLog("PerfectMail: demo seed skipped — a real account is signed in")
+            NSLog("MishMail: demo seed skipped — a real account is signed in")
             return
         }
         try? db.write { database in
@@ -224,7 +224,7 @@ enum DemoSeed {
             hoursAgo: 3, unread: true, extraLabels: ["Label_research"])
 
         add("t3", from: "GitHub <notifications@github.com>",
-            subject: "[perfectmail] CI passed on main",
+            subject: "[mishmail] CI passed on main",
             snippet: "All checks have passed for the latest push to main. 142 tests, 0 failures.",
             body: "All checks have passed for the latest push to main.\n\n142 tests, 0 failures.\n\nView the run on GitHub.",
             hoursAgo: 5, unread: false)

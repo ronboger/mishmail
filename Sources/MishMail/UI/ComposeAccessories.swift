@@ -372,7 +372,7 @@ struct ScheduleSendSheet: View {
                     Text("Sends \(SendSchedule.describe(date))")
                         .font(.system(size: 11))
                         .foregroundStyle(.secondary)
-                    Text("while PerfectMail is open")
+                    Text("while MishMail is open")
                         .font(.system(size: 10))
                         .foregroundStyle(.tertiary)
                 }

@@ -1,7 +1,7 @@
-# Releasing PerfectMail
+# Releasing MishMail
 
-PerfectMail ships as a signed `.app` published to **GitHub Releases**
-(`ronboger/perfectmail`). Running copies check that repo about once a day and
+MishMail ships as a signed `.app` published to **GitHub Releases**
+(`ronboger/mishmail`). Running copies check that repo about once a day and
 surface an **Update app** button (sidebar + Settings → Updates) when a newer
 version exists. Cutting a release = building Release, zipping the app, and
 creating a GitHub release tagged `v<version>`.
@@ -10,8 +10,8 @@ There are three "apps" the Makefile can produce — don't confuse them:
 
 | Command | Config | What it is |
 |---|---|---|
-| `make run` | Debug | Throwaway **"PerfectMail Debug"** with isolated data. For eyeballing a change. Never shipped. |
-| `make install` | Release | Installs the real **PerfectMail.app** into `/Applications` (your daily driver). Local only — does **not** publish. |
+| `make run` | Debug | Throwaway **"MishMail Debug"** with isolated data. For eyeballing a change. Never shipped. |
+| `make install` | Release | Installs the real **MishMail.app** into `/Applications` (your daily driver). Local only — does **not** publish. |
 | `make release` | Release | Builds Release, zips it, and **publishes a GitHub release** everyone's updater sees. |
 
 `make install` is "ship it to my machine." `make release` is "ship it to
@@ -19,7 +19,7 @@ everyone." This doc is about `make release`.
 
 ## Prerequisites (one-time)
 
-- **`gh` CLI authenticated** with push access to `ronboger/perfectmail`:
+- **`gh` CLI authenticated** with push access to `ronboger/mishmail`:
   ```sh
   gh auth status        # expect: Logged in to github.com as ronboger
   ```
@@ -68,9 +68,9 @@ everyone." This doc is about `make release`.
    - `make test` (gate — must pass)
    - `xcodebuild ... -configuration Release` (with Distribution entitlements
      when `Config/Local.xcconfig` defines `DEVELOPMENT_TEAM`)
-   - `ditto -c -k --keepParent PerfectMail.app PerfectMail-<version>.zip`
+   - `ditto -c -k --keepParent MishMail.app MishMail-<version>.zip`
    - `shasum -a 256 … > SHA256SUMS`
-   - `gh release create v<version> PerfectMail-<version>.zip SHA256SUMS --generate-notes`
+   - `gh release create v<version> MishMail-<version>.zip SHA256SUMS --generate-notes`
 
 5. **Verify.**
    ```sh
@@ -105,16 +105,16 @@ in-app updater and Gatekeeper will warn other users. To ship a binary:
    ```
    Keep `ENABLE_HARDENED_RUNTIME` on (it already is in `project.yml`).
    **`make release` / `make install` automatically pass
-   `CODE_SIGN_ENTITLEMENTS=…/PerfectMail.Distribution.entitlements`** whenever
+   `CODE_SIGN_ENTITLEMENTS=…/MishMail.Distribution.entitlements`** whenever
    `DEVELOPMENT_TEAM` is set, so library validation stays ON for shipping
    builds. (Ad-hoc CI/Debug still use the looser entitlements so the
    separately-signed GRDB framework can load.)
 2. **Notarize** before (or right after) `make release` so the updater's
    notarization check passes for Developer ID builds:
    ```sh
-   xcrun notarytool submit build/dd.noindex/Build/Products/Release/PerfectMail-<version>.zip \
+   xcrun notarytool submit build/dd.noindex/Build/Products/Release/MishMail-<version>.zip \
      --apple-id <you@example.com> --team-id XXXXXXXXXX --wait
-   xcrun stapler staple build/dd.noindex/Build/Products/Release/PerfectMail.app
+   xcrun stapler staple build/dd.noindex/Build/Products/Release/MishMail.app
    ```
    Re-zip + regenerate `SHA256SUMS` after stapling if you staple the app rather
    than the zip, then attach both assets to the GitHub release.

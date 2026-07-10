@@ -399,7 +399,7 @@ struct GmailFiltersSettings: View {
                     results[id] = .loaded(filters)
                 case .failure(GmailError.http(403, _)):
                     results[id] = .failed(
-                        "PerfectMail doesn't have permission to read this account's filters yet. Remove and re-add the account (Accounts pane) to grant it.")
+                        "MishMail doesn't have permission to read this account's filters yet. Remove and re-add the account (Accounts pane) to grant it.")
                 case .failure(let error):
                     results[id] = .failed(error.localizedDescription)
                 }
@@ -1210,7 +1210,7 @@ struct AISettings: View {
                     Text("Local AI drafting (Ollama)")
                 } footer: {
                     Text(endpointIsRemote
-                         ? "This URL is not on this Mac. PerfectMail will only send message content there if you enable the toggle above, and only over HTTPS."
+                         ? "This URL is not on this Mac. MishMail will only send message content there if you enable the toggle above, and only over HTTPS."
                          : "AI drafting runs entirely on this Mac via Ollama. Install from ollama.com, then run: ollama pull \(model). The Draft with AI button appears when replying.")
                         .font(.caption).foregroundStyle(.secondary)
                 }

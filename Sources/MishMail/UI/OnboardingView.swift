@@ -80,9 +80,9 @@ struct OnboardingView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: PMSpacing.xs) {
-            Text("Welcome to PerfectMail")
+            Text("Welcome to MishMail")
                 .font(PMFont.title())
-            Text("A quick, one-time Google setup keeps your mail flowing only between this Mac and Google — no third party, including PerfectMail, ever sees it.")
+            Text("A quick, one-time Google setup keeps your mail flowing only between this Mac and Google — no third party, including MishMail, ever sees it.")
                 .font(PMFont.secondary()).foregroundStyle(.secondary)
         }
     }

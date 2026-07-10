@@ -11,7 +11,7 @@ import CryptoKit
 @MainActor
 final class UpdateChecker: ObservableObject {
     static let shared = UpdateChecker()
-    static let repo = "ronboger/perfectmail"
+    static let repo = "ronboger/mishmail"
 
     struct Release {
         let version: String       // tag with any leading "v" stripped
@@ -116,7 +116,7 @@ final class UpdateChecker: ObservableObject {
         return false
     }
 
-    /// Prefer `SHA256SUMS`, then `PerfectMail-*.zip.sha256`.
+    /// Prefer `SHA256SUMS`, then `MishMail-*.zip.sha256`.
     nonisolated static func pickChecksumAsset(from names: [String], urls: [URL],
                                               zipName: String?) -> URL? {
         precondition(names.count == urls.count)
@@ -148,7 +148,7 @@ final class UpdateChecker: ObservableObject {
             return
         }
         installing = true
-        status = "Downloading PerfectMail \(release.version)…"
+        status = "Downloading MishMail \(release.version)…"
         defer { installing = false }
         do {
             let result = try await Self.downloadAndVerifyApp(
@@ -156,7 +156,7 @@ final class UpdateChecker: ObservableObject {
                 checksumURL: release.checksumURL,
                 runningAppURL: Bundle.main.bundleURL
             )
-            var msg = "Verified PerfectMail \(release.version)"
+            var msg = "Verified MishMail \(release.version)"
             if result.checksumVerified { msg += " (SHA-256)" }
             if let team = result.teamID { msg += " · Team \(team)" }
             if result.notarized { msg += " · notarized" }
@@ -191,7 +191,7 @@ final class UpdateChecker: ObservableObject {
         var errorDescription: String? {
             switch self {
             case .badHTTP(let code): return "download failed (HTTP \(code))"
-            case .noAppInArchive: return "release archive contained no PerfectMail.app"
+            case .noAppInArchive: return "release archive contained no MishMail.app"
             case .invalidSignature(let s): return "code signature invalid (OSStatus \(s))"
             case .unzipFailed(let c): return "unzip failed (exit \(c))"
             case .checksumMismatch: return "SHA-256 did not match the published checksum"
@@ -218,7 +218,7 @@ final class UpdateChecker: ObservableObject {
 
         let fm = FileManager.default
         let work = fm.temporaryDirectory
-            .appendingPathComponent("PerfectMailUpdate-\(UUID().uuidString)", isDirectory: true)
+            .appendingPathComponent("MishMailUpdate-\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: work, withIntermediateDirectories: true)
         let zipPath = work.appendingPathComponent("release.zip")
         if fm.fileExists(atPath: zipPath.path) { try fm.removeItem(at: zipPath) }
@@ -309,7 +309,7 @@ final class UpdateChecker: ObservableObject {
         var fallback: URL?
         for case let url as URL in enumerator {
             guard url.pathExtension == "app" else { continue }
-            if url.lastPathComponent == "PerfectMail.app" { return url }
+            if url.lastPathComponent == "MishMail.app" { return url }
             if fallback == nil { fallback = url }
             enumerator.skipDescendants()
         }
@@ -421,7 +421,7 @@ final class UpdateChecker: ObservableObject {
     /// Same quarantine tagging the attachment path uses.
     nonisolated static func markQuarantined(_ url: URL) {
         let stamp = String(format: "%08x", UInt32(truncatingIfNeeded: Int(Date().timeIntervalSince1970)))
-        let value = "0001;\(stamp);PerfectMail;\(UUID().uuidString)"
+        let value = "0001;\(stamp);MishMail;\(UUID().uuidString)"
         value.withCString { cstr in
             _ = setxattr(url.path, "com.apple.quarantine", cstr, strlen(cstr), 0, 0)
         }

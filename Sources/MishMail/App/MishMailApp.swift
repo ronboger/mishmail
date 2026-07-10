@@ -17,7 +17,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 }
 
 @main
-struct PerfectMailApp: App {
+struct MishMailApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var store = MailStore()
     @AppStorage("fontScale") private var fontScale = 1.0

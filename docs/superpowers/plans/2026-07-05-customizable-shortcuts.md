@@ -12,8 +12,8 @@
 
 ## Global Constraints
 
-- Test target (`PerfectMailTests` in `project.yml`) compiles listed source files directly — no app host. Any file with unit tests MUST be added to its `sources:` list and must not import SwiftUI or reference MailStore.
-- Test gate: `make test` (runs xcodegen + xcodebuild test, scheme `PerfectMailTests`). Run from the repo/worktree root. Must pass before every commit (pre-commit hook runs it).
+- Test target (`MishMailTests` in `project.yml`) compiles listed source files directly — no app host. Any file with unit tests MUST be added to its `sources:` list and must not import SwiftUI or reference MailStore.
+- Test gate: `make test` (runs xcodegen + xcodebuild test, scheme `MishMailTests`). Run from the repo/worktree root. Must pass before every commit (pre-commit hook runs it).
 - Match existing test style: plain `import XCTest`, internal access (sources compiled into the test target — no `@testable`).
 - Reserved keys, never bindable: `g` (go-to prefix) and `?` (help).
 - Rebindable commands are exactly the 13 in the spec catalog. `g`-chords, arrows/Return/Esc, and ⌘-combos stay fixed.
@@ -25,9 +25,9 @@
 ### Task 1: KeyBindings registry (Support/, unit-tested)
 
 **Files:**
-- Create: `Sources/PerfectMail/Support/KeyBindings.swift`
-- Create: `Tests/PerfectMailTests/KeyBindingsTests.swift`
-- Modify: `project.yml` (add `Sources/PerfectMail/Support/KeyBindings.swift` to `PerfectMailTests` target's `sources:` list, alongside the other `Support/` entries)
+- Create: `Sources/MishMail/Support/KeyBindings.swift`
+- Create: `Tests/MishMailTests/KeyBindingsTests.swift`
+- Modify: `project.yml` (add `Sources/MishMail/Support/KeyBindings.swift` to `MishMailTests` target's `sources:` list, alongside the other `Support/` entries)
 
 **Interfaces:**
 - Produces (later tasks rely on these exact names):
@@ -48,7 +48,7 @@
 
 - [ ] **Step 1: Write the failing tests**
 
-`Tests/PerfectMailTests/KeyBindingsTests.swift`:
+`Tests/MishMailTests/KeyBindingsTests.swift`:
 
 ```swift
 import XCTest
@@ -131,7 +131,7 @@ Run: `make test` — Expected: compile FAILURE (`KeyBindings` not found). That c
 
 - [ ] **Step 3: Implement KeyBindings**
 
-`Sources/PerfectMail/Support/KeyBindings.swift`:
+`Sources/MishMail/Support/KeyBindings.swift`:
 
 ```swift
 import Foundation
@@ -250,10 +250,10 @@ final class KeyBindings: ObservableObject {
 
 - [ ] **Step 4: Add the file to the test target**
 
-In `project.yml`, under `PerfectMailTests:` → `sources:`, add (next to the other `Support/` entries):
+In `project.yml`, under `MishMailTests:` → `sources:`, add (next to the other `Support/` entries):
 
 ```yaml
-      - Sources/PerfectMail/Support/KeyBindings.swift
+      - Sources/MishMail/Support/KeyBindings.swift
 ```
 
 - [ ] **Step 5: Run tests to verify they pass**
@@ -263,7 +263,7 @@ Run: `make test` — Expected: all pass, including the 7 new KeyBindings tests.
 - [ ] **Step 6: Commit**
 
 ```bash
-git add Sources/PerfectMail/Support/KeyBindings.swift Tests/PerfectMailTests/KeyBindingsTests.swift project.yml
+git add Sources/MishMail/Support/KeyBindings.swift Tests/MishMailTests/KeyBindingsTests.swift project.yml
 git commit -m "Shortcuts: KeyBindings registry with persisted overrides"
 ```
 
@@ -272,10 +272,10 @@ git commit -m "Shortcuts: KeyBindings registry with persisted overrides"
 ### Task 2: Trash auto-advance (SelectionAdvance helper + MailStore.trash)
 
 **Files:**
-- Create: `Sources/PerfectMail/Support/SelectionAdvance.swift`
-- Create: `Tests/PerfectMailTests/SelectionAdvanceTests.swift`
-- Modify: `project.yml` (add `Sources/PerfectMail/Support/SelectionAdvance.swift` to `PerfectMailTests` sources)
-- Modify: `Sources/PerfectMail/App/MailStore.swift` — `trash(_:)` (~line 1137)
+- Create: `Sources/MishMail/Support/SelectionAdvance.swift`
+- Create: `Tests/MishMailTests/SelectionAdvanceTests.swift`
+- Modify: `project.yml` (add `Sources/MishMail/Support/SelectionAdvance.swift` to `MishMailTests` sources)
+- Modify: `Sources/MishMail/App/MailStore.swift` — `trash(_:)` (~line 1137)
 
 **Interfaces:**
 - Produces: `enum SelectionAdvance { static func neighborId(in ids: [String], removing id: String) -> String? }`
@@ -283,7 +283,7 @@ git commit -m "Shortcuts: KeyBindings registry with persisted overrides"
 
 - [ ] **Step 1: Write the failing tests**
 
-`Tests/PerfectMailTests/SelectionAdvanceTests.swift`:
+`Tests/MishMailTests/SelectionAdvanceTests.swift`:
 
 ```swift
 import XCTest
@@ -318,7 +318,7 @@ Run: `make test` — Expected: compile FAILURE (`SelectionAdvance` not found).
 
 - [ ] **Step 3: Implement the helper**
 
-`Sources/PerfectMail/Support/SelectionAdvance.swift`:
+`Sources/MishMail/Support/SelectionAdvance.swift`:
 
 ```swift
 import Foundation
@@ -335,10 +335,10 @@ enum SelectionAdvance {
 }
 ```
 
-Add to `project.yml` under `PerfectMailTests:` → `sources:`:
+Add to `project.yml` under `MishMailTests:` → `sources:`:
 
 ```yaml
-      - Sources/PerfectMail/Support/SelectionAdvance.swift
+      - Sources/MishMail/Support/SelectionAdvance.swift
 ```
 
 - [ ] **Step 4: Run tests to verify they pass**
@@ -347,7 +347,7 @@ Run: `make test` — Expected: all pass.
 
 - [ ] **Step 5: Wire auto-advance into MailStore.trash**
 
-In `Sources/PerfectMail/App/MailStore.swift`, replace the body of `trash(_:)` (currently ~line 1137, the version calling `mutateThread` + `offerUndo("Moved to Trash")`) with:
+In `Sources/MishMail/App/MailStore.swift`, replace the body of `trash(_:)` (currently ~line 1137, the version calling `mutateThread` + `offerUndo("Moved to Trash")`) with:
 
 ```swift
 func trash(_ thread: MailThread) {
@@ -383,7 +383,7 @@ Run: `make test && make build` — Expected: both succeed.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add Sources/PerfectMail/Support/SelectionAdvance.swift Tests/PerfectMailTests/SelectionAdvanceTests.swift project.yml Sources/PerfectMail/App/MailStore.swift
+git add Sources/MishMail/Support/SelectionAdvance.swift Tests/MishMailTests/SelectionAdvanceTests.swift project.yml Sources/MishMail/App/MailStore.swift
 git commit -m "Trash: auto-advance selection to the next conversation"
 ```
 
@@ -392,9 +392,9 @@ git commit -m "Trash: auto-advance selection to the next conversation"
 ### Task 3: handleKey dispatch through KeyBindings + `?` toggle + monitor guards
 
 **Files:**
-- Modify: `Sources/PerfectMail/App/MailStore.swift` — `handleKey(_:)` (~line 1000), published vars (~line 191)
-- Modify: `Sources/PerfectMail/UI/ContentView.swift` — `installKeyMonitor()` (~lines 204–288)
-- Modify: `Sources/PerfectMail/UI/ThreadDetailView.swift` — prev/next `.help` texts (~lines 117–124)
+- Modify: `Sources/MishMail/App/MailStore.swift` — `handleKey(_:)` (~line 1000), published vars (~line 191)
+- Modify: `Sources/MishMail/UI/ContentView.swift` — `installKeyMonitor()` (~lines 204–288)
+- Modify: `Sources/MishMail/UI/ThreadDetailView.swift` — prev/next `.help` texts (~lines 117–124)
 
 **Interfaces:**
 - Consumes: `KeyBindings`, `ShortcutCommand` (Task 1).
@@ -491,7 +491,7 @@ with:
 
 - [ ] **Step 4: Make ThreadDetailView nav hints live**
 
-In `Sources/PerfectMail/UI/ThreadDetailView.swift` (~lines 117–124) update the two `.help` strings:
+In `Sources/MishMail/UI/ThreadDetailView.swift` (~lines 117–124) update the two `.help` strings:
 
 ```swift
             .help("Previous thread (\(store.keyBindings.key(for: .prev)))")
@@ -507,7 +507,7 @@ and
 
 - [ ] **Step 5: Grep for other hardcoded key hints**
 
-Run: `grep -rn '"(e)"\|(j)\|(k)\|press e\|press #' Sources/PerfectMail/UI/` — update any hint strings found to read from `store.keyBindings.key(for:)` the same way. If none, move on.
+Run: `grep -rn '"(e)"\|(j)\|(k)\|press e\|press #' Sources/MishMail/UI/` — update any hint strings found to read from `store.keyBindings.key(for:)` the same way. If none, move on.
 
 - [ ] **Step 6: Test + build**
 
@@ -516,7 +516,7 @@ Run: `make test && make build` — Expected: both succeed.
 - [ ] **Step 7: Commit**
 
 ```bash
-git add -A Sources/PerfectMail
+git add -A Sources/MishMail
 git commit -m "Shortcuts: dispatch single-key commands through KeyBindings"
 ```
 
@@ -525,8 +525,8 @@ git commit -m "Shortcuts: dispatch single-key commands through KeyBindings"
 ### Task 4: Settings pane "Keyboard shortcuts"
 
 **Files:**
-- Create: `Sources/PerfectMail/UI/ShortcutsSettings.swift`
-- Modify: `Sources/PerfectMail/UI/SettingsView.swift` — `Pane` enum, sidebar sections, `detail` switch
+- Create: `Sources/MishMail/UI/ShortcutsSettings.swift`
+- Modify: `Sources/MishMail/UI/SettingsView.swift` — `Pane` enum, sidebar sections, `detail` switch
 
 **Interfaces:**
 - Consumes: `KeyBindings` (Task 1), `MailStore.keyBindings` (Task 3), existing `PaneScaffold`.
@@ -541,7 +541,7 @@ In `SettingsView.Pane`: add case `shortcuts` to the enum; `title` returns `"Keyb
 
 - [ ] **Step 2: Implement ShortcutsSettings**
 
-`Sources/PerfectMail/UI/ShortcutsSettings.swift`:
+`Sources/MishMail/UI/ShortcutsSettings.swift`:
 
 ```swift
 import SwiftUI
@@ -648,7 +648,7 @@ Run: `make test && make build` — Expected: both succeed.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add Sources/PerfectMail/UI/ShortcutsSettings.swift Sources/PerfectMail/UI/SettingsView.swift
+git add Sources/MishMail/UI/ShortcutsSettings.swift Sources/MishMail/UI/SettingsView.swift
 git commit -m "Settings: Keyboard shortcuts pane with rebinding"
 ```
 
@@ -657,15 +657,15 @@ git commit -m "Settings: Keyboard shortcuts pane with rebinding"
 ### Task 5: `?` cheat-sheet sheet
 
 **Files:**
-- Create: `Sources/PerfectMail/UI/ShortcutsHelpView.swift`
-- Modify: `Sources/PerfectMail/UI/ContentView.swift` — add a `.sheet` presenting the help view
+- Create: `Sources/MishMail/UI/ShortcutsHelpView.swift`
+- Modify: `Sources/MishMail/UI/ContentView.swift` — add a `.sheet` presenting the help view
 
 **Interfaces:**
 - Consumes: `MailStore.showShortcutsHelp`, `MailStore.keyBindings` (Task 3), `KeyBindings.catalog` / `key(for:)` (Task 1).
 
 - [ ] **Step 1: Implement ShortcutsHelpView**
 
-`Sources/PerfectMail/UI/ShortcutsHelpView.swift`:
+`Sources/MishMail/UI/ShortcutsHelpView.swift`:
 
 ```swift
 import SwiftUI
@@ -761,7 +761,7 @@ Run: `make test && make build` — Expected: both succeed.
 - [ ] **Step 4: Commit**
 
 ```bash
-git add Sources/PerfectMail/UI/ShortcutsHelpView.swift Sources/PerfectMail/UI/ContentView.swift
+git add Sources/MishMail/UI/ShortcutsHelpView.swift Sources/MishMail/UI/ContentView.swift
 git commit -m "Help: Gmail-style ? shortcut cheat sheet"
 ```
 

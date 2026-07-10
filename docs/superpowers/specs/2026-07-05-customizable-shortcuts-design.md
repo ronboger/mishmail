@@ -5,7 +5,7 @@ Status: Approved (pending spec review)
 
 ## Motivation
 
-Three related keyboard/selection improvements for PerfectMail:
+Three related keyboard/selection improvements for MishMail:
 
 1. **Trash auto-advance** — Moving a conversation to trash currently leaves nothing
    selected (the thread disappears from the list and SwiftUI clears the selection).
@@ -26,7 +26,7 @@ Three related keyboard/selection improvements for PerfectMail:
 
 ## Part 1 — Trash auto-advance
 
-**File:** `Sources/PerfectMail/App/MailStore.swift`, `trash(_:)` (~line 1137).
+**File:** `Sources/MishMail/App/MailStore.swift`, `trash(_:)` (~line 1137).
 
 Behavior: before mutating, compute the neighbor to advance to — the thread immediately
 **below** the trashed one; if it is the last row, fall back to the thread **above**.
@@ -109,7 +109,7 @@ New type `KeyBindings` (an `@MainActor ObservableObject`), owned by `MailStore` 
 
 ### `handleKey` refactor
 
-**File:** `Sources/PerfectMail/App/MailStore.swift`, `handleKey(_:)` (~line 1000).
+**File:** `Sources/MishMail/App/MailStore.swift`, `handleKey(_:)` (~line 1000).
 
 The `g`-prefix chained navigation block at the top is unchanged. The main `switch chars`
 over hardcoded letters is replaced by:
@@ -134,7 +134,7 @@ Edge cases preserved:
 
 ## Part 3 — Settings pane "Keyboard shortcuts"
 
-**File:** `Sources/PerfectMail/UI/SettingsView.swift`.
+**File:** `Sources/MishMail/UI/SettingsView.swift`.
 
 - Add `.shortcuts` to `SettingsView.Pane` (title "Keyboard shortcuts", icon
   `keyboard`), listed under the "App" section.

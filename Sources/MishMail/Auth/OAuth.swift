@@ -74,7 +74,7 @@ enum OAuthError: LocalizedError {
         case .authorizationDenied(let reason): return "Google declined the sign-in: \(reason)."
         case .tokenExchangeFailed(let body): return "Token exchange failed: \(body)"
         case .cancelled: return "Sign-in was cancelled."
-        case .timedOut: return "Sign-in timed out. Try again from PerfectMail."
+        case .timedOut: return "Sign-in timed out. Try again from MishMail."
         case .randomGenerationFailed(let status):
             return "Secure random generation failed (OSStatus \(status)). Sign-in was cancelled."
         }
@@ -226,8 +226,8 @@ final class OAuthService {
                     // a legitimate in-flight sign-in.
                     let ok = stateOK && code != nil
                     let html = ok
-                        ? "<html><body style='font-family:-apple-system'><h2>Signed in.</h2>You can close this tab and return to PerfectMail.</body></html>"
-                        : "<html><body style='font-family:-apple-system'><h2>Sign-in failed.</h2>You can close this tab and try again from PerfectMail.</body></html>"
+                        ? "<html><body style='font-family:-apple-system'><h2>Signed in.</h2>You can close this tab and return to MishMail.</body></html>"
+                        : "<html><body style='font-family:-apple-system'><h2>Sign-in failed.</h2>You can close this tab and try again from MishMail.</body></html>"
                     let response = "HTTP/1.1 200 OK\r\nContent-Type: text/html\r\nContent-Length: \(html.utf8.count)\r\nConnection: close\r\n\r\n\(html)"
                     conn.send(content: Data(response.utf8), completion: .contentProcessed { _ in
                         conn.cancel()
