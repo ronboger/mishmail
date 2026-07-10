@@ -43,14 +43,14 @@ minor versions may still change behavior.
   to reorder it; the order persists across restarts.
 
 ### Fixed
-- **Dark-mode light-on-white HTML mail** — transactional mail that paints a
-  white/cream canvas only via `<style>` or CSS classes (e.g. Notion Calendar
-  meeting updates) was force-colored light gray over that canvas. A
-  `WKUserScript` at document-end (plus a didFinish re-run) tags elements with
-  a light *computed* `background-color`; CSS forces dark text (and dark-blue
-  links) inside those islands, while plain mail over dark chrome stays light.
-  Attribute selectors remain as a no-JS fast path. (Solid fills only —
-  light `background-image` over transparent color is still a known gap.)
+- **Dark-mode HTML contrast from effective background** — force-light text
+  over dark chrome, dark text only where the nearest opaque fill is light
+  (Notion Calendar white canvas, cream panels, sig cards). Nested dark
+  sections inside a white wrapper (Google welcome mail, blue CTAs) get light
+  text again instead of dark-on-black. A `WKUserScript` at document-end stamps
+  per-element fg classes from computed `background-color`; attribute selectors
+  remain a self-only first-paint fast path. (Solid fills only — light
+  `background-image` over transparent color is still a known gap.)
 - **⌘K self-link trims stuck punctuation** — linking a selection like
   `(foo.com)`, `foo.com.`, or `foo.com,` now links the URL itself instead of
   producing a broken `https://(foo.com)`-style href. Balanced parens inside a

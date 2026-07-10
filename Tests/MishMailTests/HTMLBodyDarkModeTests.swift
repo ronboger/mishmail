@@ -74,57 +74,52 @@ final class HTMLBodyDarkModeTests: XCTestCase {
     func testLinksStayBlueOutsideLightSurfaces() {
         let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
         XCTAssertTrue(css.contains("#6cb2ff"))
-        XCTAssertTrue(css.contains("#0b57d0"), "links inside light surfaces use darker blue")
+        XCTAssertTrue(css.contains("#0b57d0"), "links on light surfaces use darker blue")
     }
 
-    /// Regression: multi-selector list must be wrapped in :is() so that
-    /// `A, B, C :not(a)` is not parsed as only C's descendants. Urban Adamah
-    /// cream tables matched early bgcolor selectors but children stayed #e6e6e6.
-    func testLightSurfaceDescendantsAllGetDarkText() {
+    /// Attribute light-surface rules must be self-only. Descendant combinators
+    /// forced #222 onto nested dark sections inside white wrappers (Google
+    /// welcome mail: dark-on-black body + dark text on blue CTAs).
+    func testAttributeLightSurfaceIsSelfOnly() {
         let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
         XCTAssertTrue(css.contains(":is("),
-                      "light-surface list must be wrapped in :is() for descendant rules")
-        XCTAssertTrue(css.contains(") :not(a):not(a *)"),
-                      "descendant selector must target :is(...) children")
-        // Both the element and its descendants share the dark-text rule.
-        XCTAssertTrue(css.contains("color: #222 !important"))
-        // Ensure we didn't leave a bare "last selector only" pattern as the
-        // primary light-surface rule (the old bug had no :is at all).
-        let isWrappedDescendant = css.range(of: #":is\([^)]+\) :not\(a\):not\(a \*\)"#,
-                                            options: .regularExpression) != nil
-            || css.contains(") :not(a):not(a *)")
-        XCTAssertTrue(isWrappedDescendant)
+                      "attribute light surfaces still wrapped in :is()")
+        // Must NOT have the old descendant force that painted dark text on
+        // nested dark sections: `:is(...) :not(a):not(a *)`.
+        let badDescendant = css.range(
+            of: #":is\([^)]*\)\s+:not\(a\):not\(a \*\)"#,
+            options: .regularExpression)
+        XCTAssertNil(badDescendant,
+                     "light-surface CSS must not force dark text on all descendants")
     }
 
-    /// Notion Calendar / style-block mail: attribute selectors miss backgrounds
-    /// declared only in `<style>`. CSS must style the computed-tag class, and
-    /// the tagger JS must stamp that class from getComputedStyle.
-    func testComputedLightSurfaceClassInCSS() {
-        let cls = HTMLBodyDarkMode.lightSurfaceClass
+    /// Effective-bg JS stamps per-node fg classes; CSS styles those classes
+    /// (including light text on dark fills for nested sections).
+    func testEffectiveBgForegroundClassesInCSS() {
+        let onLight = HTMLBodyDarkMode.fgOnLightClass
+        let onDark = HTMLBodyDarkMode.fgOnDarkClass
         let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
-        XCTAssertTrue(css.contains(".\(cls)"),
-                      "CSS must target .\(cls) stamped by post-load JS")
-        XCTAssertTrue(css.contains(".\(cls) :not(a):not(a *)"),
-                      "descendants of computed light surfaces get dark text")
-        XCTAssertTrue(css.contains(".\(cls) a"),
-                      "links inside computed light surfaces use dark blue")
+        XCTAssertTrue(css.contains(".\(onLight)"), "dark text on light effective bg")
+        XCTAssertTrue(css.contains(".\(onDark)"), "light text on dark effective bg")
+        XCTAssertTrue(css.contains("a.\(onLight)") || css.contains(".\(onLight):is(a)"),
+                      "links on light effective bg use dark blue")
+        XCTAssertTrue(css.contains("a.\(onDark)") || css.contains(".\(onDark):is(a)"),
+                      "links on dark effective bg use light blue")
     }
 
-    func testTagLightSurfacesJSStampsClass() {
-        let cls = HTMLBodyDarkMode.lightSurfaceClass
-        let js = HTMLBodyDarkMode.tagLightSurfacesJS
-        XCTAssertTrue(js.contains(cls), "tagger must stamp \(cls)")
-        XCTAssertTrue(js.contains("getComputedStyle"),
-                      "tagger must use computed styles, not attributes")
-        XCTAssertTrue(js.contains("classList.add"),
-                      "tagger must add the light-surface class")
-        XCTAssertTrue(js.contains("backgroundColor"),
-                      "tagger reads backgroundColor")
-        // JS thresholds must match the Swift constants (no drift).
-        XCTAssertTrue(js.contains(String(HTMLBodyDarkMode.luminanceThreshold)),
-                      "JS embeds luminanceThreshold")
-        XCTAssertTrue(js.contains(String(HTMLBodyDarkMode.alphaFloor)),
-                      "JS embeds alphaFloor")
+    func testApplyContrastJSStampsBothClasses() {
+        let js = HTMLBodyDarkMode.applyContrastJS
+        XCTAssertTrue(js.contains(HTMLBodyDarkMode.fgOnLightClass))
+        XCTAssertTrue(js.contains(HTMLBodyDarkMode.fgOnDarkClass))
+        XCTAssertTrue(js.contains("getComputedStyle"))
+        XCTAssertTrue(js.contains("backgroundColor"))
+        // Walks with inherited effective bg (not only own fill).
+        XCTAssertTrue(js.contains("inherited") || js.contains("walk"),
+                      "tagger must pass effective bg down the tree")
+        XCTAssertTrue(js.contains(String(HTMLBodyDarkMode.luminanceThreshold)))
+        XCTAssertTrue(js.contains(String(HTMLBodyDarkMode.alphaFloor)))
+        // Alias kept for call sites.
+        XCTAssertEqual(HTMLBodyDarkMode.tagLightSurfacesJS, HTMLBodyDarkMode.applyContrastJS)
     }
 
     // MARK: - isLightBackground thresholds
@@ -159,6 +154,12 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 0x1a, g: 0x1a, b: 0x2e))
         XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 0x22, g: 0x22, b: 0x22))
         XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 0, g: 0, b: 0))
+    }
+
+    func testBlueCTAButtonNotLight() {
+        // Google blue #1a73e8 — nested CTA on dark section must get light text,
+        // not #222 / dark link blue from a white ancestor.
+        XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 0x1a, g: 0x73, b: 0xe8))
     }
 
 }

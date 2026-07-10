@@ -4,32 +4,32 @@ import Foundation
 ///
 /// One stylesheet for all mail (not a plain-vs-designed branch):
 /// 1. Force light text over our dark chrome — beats Outlook/Word inline black.
-/// 2. Force dark text *inside* light surfaces (white sig cards, cream panels,
-///    full-bleed white transactional mail) so those islands stay readable
-///    without flipping the whole message.
+/// 2. Force dark text only where the *effective* background is light (white
+///    sig cards, cream panels, full-bleed white transactional mail).
+/// 3. Force light text again where a nested section paints a dark fill
+///    (Google welcome mail: white wrapper + black body sections + blue CTAs).
 ///
-/// Light surfaces are found two ways:
-/// - **Attribute fast path:** `bgcolor` / inline `style` selectors (no JS).
-/// - **Computed path:** a `WKUserScript` at document-end (plus a didFinish
-///   re-run) tags elements whose *computed* `background-color` is light with
-///   `.mm-light-bg`. That catches backgrounds declared only in `<style>`
-///   blocks or CSS classes — Notion Calendar, many marketing templates —
-///   which the attribute selectors miss (light-on-white regression).
+/// Light-vs-dark is resolved by app-injected JS: walk the DOM, track the
+/// nearest opaque `background-color` ancestor, and stamp a per-element
+/// foreground class. CSS must **not** use descendant combinators from light
+/// wrappers — that forced `#222` onto dark nested sections (dark-on-dark).
 ///
-/// Binary classification failed on mixed mail (Ashley @ Gelt): a white
-/// signature in the authored head selected the "designed" path, leaving
-/// unstyled body text at `#222` on transparent dark chrome.
+/// Attribute selectors remain a first-paint fast path for the element that
+/// owns a light bgcolor/style only (inheritance covers transparent kids
+/// until JS retags every node).
 enum HTMLBodyDarkMode {
-    /// Class stamped by `tagLightSurfacesJS` on elements with a light
-    /// computed background. Mirrored in CSS so descendants get dark text.
-    static let lightSurfaceClass = "mm-light-bg"
+    /// Dark text (`#222`) — effective background is light.
+    static let fgOnLightClass = "mm-fg-on-light"
+    /// Light text (`#e6e6e6`) — effective background is dark, or transparent
+    /// over the reading-pane chrome.
+    static let fgOnDarkClass = "mm-fg-on-dark"
 
     /// Relative luminance above this (sRGB 0–1) counts as a light surface.
     /// ~0.72 is mid-cream; pure white is 1.0, `#faf8f5` is ~0.97.
     static let luminanceThreshold = 0.72
 
     /// Alpha below this is treated as transparent (plain mail over dark chrome
-    /// must not be tagged).
+    /// must not be treated as a light fill).
     static let alphaFloor = 0.5
 
     /// Injected stylesheet contents (no outer `<style>` tags) for the message pane.
@@ -38,19 +38,12 @@ enum HTMLBodyDarkMode {
         _ = html
         let font = Int(14.5 * fontScale)
         let quote = collapseQuote ? QuotedReply.hideQuoteCSS : ""
-        // Light-surface selectors: white + first-nibble d–f hex + common names.
-        // Applied to the element and its descendants so sig cards / cream
-        // wrappers keep dark text while the surrounding body stays light.
-        // Wrap the multi-selector list in :is() so descendant combinators
-        // apply to EVERY light surface, not just the last one. Without this,
-        // `A, B, C :not(a)` only styles C's children — cream/white wrappers
-        // matched A/B but their text still got the body #e6e6e6 force (Urban
-        // Adamah light-on-cream regression after 8aac8ea).
-        //
-        // `.mm-light-bg` is the computed-style twin of those attribute
-        // selectors (see `tagLightSurfacesJS`).
+        // Attribute light surfaces: style the element only (no descendant
+        // combinator). Nested dark sections must not inherit force-dark text
+        // from a white outer table — JS stamps per-node fg classes for that.
         let light = lightSurfaceSelector
-        let cls = lightSurfaceClass
+        let onLight = fgOnLightClass
+        let onDark = fgOnDarkClass
         return """
         :root { color-scheme: light dark; }
         html, body { height: auto !important; min-height: 0 !important; }
@@ -59,27 +52,24 @@ enum HTMLBodyDarkMode {
         @media (prefers-color-scheme: dark) {
           body, body :not(a):not(a *) { color: #e6e6e6 !important; }
           a, a * { color: #6cb2ff !important; }
-          :is(\(light)),
-          :is(\(light)) :not(a):not(a *),
-          .\(cls),
-          .\(cls) :not(a):not(a *) {
-            color: #222 !important;
-          }
-          :is(\(light)) a,
-          :is(\(light)) a *,
-          .\(cls) a,
-          .\(cls) a * {
-            color: #0b57d0 !important;
-          }
+          /* First-paint fast path: light bgcolor/style on the node itself only
+             (no descendant force — nested dark sections must not go dark-on-dark). */
+          :is(\(light)) { color: #222 !important; }
+          /* JS effective-bg classes: every node stamped from nearest opaque fill. */
+          .\(onLight) { color: #222 !important; }
+          .\(onDark) { color: #e6e6e6 !important; }
+          /* Links last so nested spans inside CTAs keep link blue, not body fg. */
+          a.\(onLight), a.\(onLight) * { color: #0b57d0 !important; }
+          a.\(onDark), a.\(onDark) * { color: #6cb2ff !important; }
         }
         \(quote)
         """
     }
 
-    /// Whether a solid fill with the given sRGB channels should force dark text.
+    /// Whether a solid fill with the given sRGB channels should use dark text.
     ///
     /// Shared by unit tests and the JS tagger (constants are interpolated into
-    /// `tagLightSurfacesJS` so thresholds cannot drift). Channels are 0–255;
+    /// `applyContrastJS` so thresholds cannot drift). Channels are 0–255;
     /// alpha is 0–1.
     ///
     /// Note: only solid `background-color` is considered. A light PNG/gradient
@@ -95,45 +85,56 @@ enum HTMLBodyDarkMode {
         isLightBackground(r: Double(r), g: Double(g), b: Double(b), a: a)
     }
 
-    /// App-injected JS (page scripts stay disabled). Walks the DOM and adds
-    /// `lightSurfaceClass` to every element whose *computed* background-color
-    /// is light and opaque enough to paint over the reading-pane chrome.
+    /// App-injected JS (page scripts stay disabled). For every element, finds
+    /// the nearest opaque computed `background-color` (self or ancestor) and
+    /// stamps `fgOnLightClass` or `fgOnDarkClass` so text contrasts with that
+    /// fill — not with a distant white wrapper.
     ///
-    /// Installed as a `WKUserScript` at `.atDocumentEnd` so it runs during
-    /// initial parse (before first paint), and re-run from `didFinish` as a
-    /// belt-and-suspenders pass. Safe to re-run; re-tags without removing
-    /// prior classes.
-    static var tagLightSurfacesJS: String {
-        let cls = lightSurfaceClass
+    /// Installed as a `WKUserScript` at `.atDocumentEnd` (before first paint)
+    /// and re-run from `didFinish`. Safe to re-run; replaces prior fg classes.
+    static var applyContrastJS: String {
+        let onLight = fgOnLightClass
+        let onDark = fgOnDarkClass
         let lum = luminanceThreshold
         let alpha = alphaFloor
         return """
         (function(){
-          var CLS='\(cls)';
+          var ON_LIGHT='\(onLight)';
+          var ON_DARK='\(onDark)';
           var LUM=\(lum);
           var AMIN=\(alpha);
-          function light(bg){
-            if(!bg||bg==='transparent') return false;
+          function parseBg(bg){
+            if(!bg||bg==='transparent') return null;
             var m=bg.match(/rgba?\\((\\d+),\\s*(\\d+),\\s*(\\d+)(?:,\\s*([\\d.]+))?\\)/i);
-            if(!m) return false;
+            if(!m) return null;
             var a=m[4]===undefined?1:parseFloat(m[4]);
-            if(a<AMIN) return false;
-            var r=+m[1],g=+m[2],b=+m[3];
-            return (0.2126*r+0.7152*g+0.0722*b)/255>LUM;
+            if(a<AMIN) return null;
+            return {r:+m[1],g:+m[2],b:+m[3],a:a};
           }
-          function walk(el){
+          function isLight(c){
+            if(!c) return false;
+            return (0.2126*c.r+0.7152*c.g+0.0722*c.b)/255>LUM;
+          }
+          function walk(el, inherited){
+            var own=null;
+            try{ own=parseBg(getComputedStyle(el).backgroundColor); }catch(e){}
+            var effective=own||inherited;
             try{
-              // background-color only — background-image (light PNG/gradient)
-              // with transparent fill is intentionally not tagged.
-              if(light(getComputedStyle(el).backgroundColor)) el.classList.add(CLS);
+              el.classList.remove(ON_LIGHT, ON_DARK);
+              if(isLight(effective)) el.classList.add(ON_LIGHT);
+              else el.classList.add(ON_DARK);
             }catch(e){}
+            var next=own||inherited;
             var kids=el.children;
-            for(var i=0;i<kids.length;i++) walk(kids[i]);
+            for(var i=0;i<kids.length;i++) walk(kids[i], next);
           }
-          if(document.documentElement) walk(document.documentElement);
+          if(document.documentElement) walk(document.documentElement, null);
         })();
         """
     }
+
+    /// Back-compat alias used by older call sites / tests.
+    static var tagLightSurfacesJS: String { applyContrastJS }
 
     /// True when the authored head declares a light background. Kept for tests
     /// and diagnostics; styling no longer branches on this.

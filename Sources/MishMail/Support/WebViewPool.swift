@@ -28,15 +28,14 @@ enum HTMLWebViewPool {
         // Fresh non-persistent store per new view: cookies/cache do not
         // persist to disk and do not share with other message views.
         config.websiteDataStore = .nonPersistent()
-        // Tag light computed backgrounds before first paint so dark-mode
-        // force-light text never flashes light-on-white. App-injected user
-        // scripts run even with allowsContentJavaScript off; email content
-        // scripts stay disabled.
-        let tag = WKUserScript(
-            source: HTMLBodyDarkMode.tagLightSurfacesJS,
+        // Per-element contrast from effective background (before first paint).
+        // App-injected user scripts run even with allowsContentJavaScript off;
+        // email content scripts stay disabled.
+        let contrast = WKUserScript(
+            source: HTMLBodyDarkMode.applyContrastJS,
             injectionTime: .atDocumentEnd,
             forMainFrameOnly: true)
-        config.userContentController.addUserScript(tag)
+        config.userContentController.addUserScript(contrast)
         return config
     }
 

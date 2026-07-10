@@ -851,8 +851,8 @@ struct HTMLBodyView: NSViewRepresentable {
         context.coordinator.loadedKey = key
         context.coordinator.setHeight = { self.height = $0 }
         let csp = HTMLBodyCSP.metaTag(allowRemoteImages: allowRemoteImages)
-        // Force light text over dark chrome; dark text inside light surfaces
-        // (attribute selectors + post-load computed-style tagging).
+        // Force light text over dark chrome; per-element contrast from
+        // effective background (attribute fast path + applyContrastJS).
         let css = HTMLBodyDarkMode.injectedCSS(
             fontScale: fontScale, collapseQuote: collapseQuote, html: html)
         let style = "<style>\n\(css)\n</style>"
@@ -872,10 +872,10 @@ struct HTMLBodyView: NSViewRepresentable {
         var setHeight: ((CGFloat) -> Void)?
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
-            // Primary tag runs as WKUserScript at document-end (WebViewPool)
-            // before first paint. Re-run here so recycled views / late style
-            // application still pick up light surfaces, then measure.
-            webView.evaluateJavaScript(HTMLBodyDarkMode.tagLightSurfacesJS) { [weak self] _, _ in
+            // Primary contrast pass runs as WKUserScript at document-end
+            // (WebViewPool) before first paint. Re-run here for recycled views
+            // / late styles, then measure.
+            webView.evaluateJavaScript(HTMLBodyDarkMode.applyContrastJS) { [weak self] _, _ in
                 self?.measure(webView, attempt: 0)
             }
         }
@@ -884,7 +884,7 @@ struct HTMLBodyView: NSViewRepresentable {
         /// few times and keep the tallest stable value.
         private func measure(_ webView: WKWebView, attempt: Int) {
             // JS is disabled for page content; WebKit still allows evaluateJavaScript
-            // from the app process for measurement / light-surface tagging.
+            // from the app process for measurement / contrast tagging.
             webView.evaluateJavaScript("Math.ceil(Math.max(document.body.scrollHeight, document.body.getBoundingClientRect().height))") { [weak self] result, _ in
                 if let h = result as? CGFloat, h > 0 {
                     DispatchQueue.main.async { self?.setHeight?(max(h, 40)) }
