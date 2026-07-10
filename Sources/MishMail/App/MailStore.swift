@@ -681,18 +681,16 @@ final class MailStore: ObservableObject {
         let blocked = Array(blockedEmails)
         let hits = PerfMetrics.measure(.syncBlocklist, meta: "blocked=\(blocked.count)") {
             (try? db.read { db -> [MailThread] in
-                // Token match on space-separated allFromEmails + exact fromEmail.
+                // Exact token match — no LIKE (underscore is common in emails
+                // and is a single-char wildcard under LIKE).
                 var parts: [String] = []
                 var args: [String] = []
                 for e in blocked {
                     parts.append("""
                         (fromEmail = ?
-                         OR allFromEmails = ?
-                         OR allFromEmails LIKE ?
-                         OR allFromEmails LIKE ?
-                         OR allFromEmails LIKE ?)
+                         OR instr(' ' || allFromEmails || ' ', ' ' || ? || ' ') > 0)
                         """)
-                    args.append(contentsOf: [e, e, "\(e) %", "% \(e)", "% \(e) %"])
+                    args.append(contentsOf: [e, e])
                 }
                 return try MailThread.fetchAll(
                     db,
@@ -1286,6 +1284,8 @@ final class MailStore: ObservableObject {
     /// Cursor after the last loaded thread (for `loadMoreThreads`).
     private var listCursor: ThreadListCursor?
     private var loadMoreTask: Task<Void, Never>?
+    /// Identifies the in-flight load-more so a cancelled task cannot nil a newer one.
+    private var loadMoreToken = UUID()
     /// How many rows to re-fetch on reload so load-older survives star/sync.
     private var listWindowLimit = ThreadListPaging.pageSize
 
@@ -1296,6 +1296,7 @@ final class MailStore: ObservableObject {
         hasMoreThreads = false
         loadMoreTask?.cancel()
         loadMoreTask = nil
+        loadMoreToken = UUID()
     }
 
     /// Append the next page of threads older than the current window.
@@ -1304,6 +1305,8 @@ final class MailStore: ObservableObject {
         let search = committedSearch.trimmingCharacters(in: .whitespaces)
         guard search.isEmpty, hasMoreThreads, let cursor = listCursor, loadMoreTask == nil else { return }
         let generation = threadReloadGeneration
+        let token = UUID()
+        loadMoreToken = token
         let view = selectedView
         let chips = chips
         let activeAccount = activeAccountId
@@ -1312,7 +1315,12 @@ final class MailStore: ObservableObject {
         let activeVIP = activeVIPEmails
         let pool = db
         loadMoreTask = Task { [weak self] in
-            defer { Task { @MainActor in self?.loadMoreTask = nil } }
+            defer {
+                Task { @MainActor in
+                    guard let self, self.loadMoreToken == token else { return }
+                    self.loadMoreTask = nil
+                }
+            }
             let page: [MailThread]? = try? await pool.read { db in
                 var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
                 if chips.showArchived || chips.showSent {

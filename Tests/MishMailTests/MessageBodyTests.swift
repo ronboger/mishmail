@@ -39,6 +39,52 @@ final class MessageBodyTests: XCTestCase {
         }
     }
 
+    /// Metadata-format history refresh must not wipe already-cached bodies
+    /// (Fable re-review: headersOnly upsert).
+    func testHeadersOnlyUpsertPreservesBodyAndAttachments() throws {
+        let q = try makeDB()
+        let full = Message(
+            id: "\(account):m1", accountId: account, gmailId: "m1",
+            threadId: "\(account):t1", fromHeader: "A <a@x.com>", toHeader: "me",
+            ccHeader: "", subject: "Hello", date: Date(), snippet: "hi",
+            bodyText: "keep me", bodyHTML: "<p>keep</p>",
+            messageIdHeader: "<1>", referencesHeader: "",
+            labelIds: "INBOX UNREAD", isUnread: true, hasAttachment: true)
+        let att = AttachmentRow(
+            id: nil, messageId: "\(account):m1", gmailAttachmentId: "att1",
+            filename: "f.pdf", mimeType: "application/pdf", size: 9)
+        try q.write { db in
+            _ = try SyncEngine.upsertPending(db, items: [
+                .init(message: full, attachments: [att], headersOnly: false)
+            ])
+        }
+        // Simulate metadata re-fetch: empty body, no attachments, new labels.
+        var meta = full
+        meta.bodyText = ""
+        meta.bodyHTML = nil
+        meta.labelIds = "INBOX"
+        meta.isUnread = false
+        meta.hasAttachment = false
+        meta.snippet = "updated snip"
+        try q.write { db in
+            _ = try SyncEngine.upsertPending(db, items: [
+                .init(message: meta, attachments: [], headersOnly: true)
+            ])
+        }
+        try q.read { db in
+            let body = try MessageBody.fetchOne(db, key: "\(account):m1")
+            XCTAssertEqual(body?.bodyText, "keep me")
+            XCTAssertEqual(body?.bodyHTML, "<p>keep</p>")
+            let atts = try AttachmentRow.filter(Column("messageId") == "\(account):m1").fetchAll(db)
+            XCTAssertEqual(atts.count, 1)
+            let row = try Message.fetchOne(db, key: "\(account):m1")
+            XCTAssertEqual(row?.labelIds, "INBOX")
+            XCTAssertEqual(row?.isUnread, false)
+            XCTAssertEqual(row?.hasAttachment, true, "preserve attachment flag when metadata has none")
+            XCTAssertEqual(row?.snippet, "updated snip")
+        }
+    }
+
     func testDeleteMessageCascadesBody() throws {
         let q = try makeDB()
         try q.write { db in

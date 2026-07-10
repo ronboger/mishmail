@@ -90,6 +90,30 @@ final class ThreadLabelTests: XCTestCase {
             blocked: ["bad@x.com"]))
     }
 
+    /// Shipping SQL uses instr() token match — underscore must not be LIKE wild.
+    func testBlocklistSQLDoesNotWildcardUnderscore() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try self.seedMessage(db, gmailId: "t1", labels: "INBOX",
+                                 from: "John <john_doe@x.com>")
+            try self.seedMessage(db, gmailId: "t2", labels: "INBOX",
+                                 from: "Jane <johnadoe@x.com>")
+            try SyncEngine.deriveThreads(
+                db, for: ["\(account):t1", "\(account):t2"], accountId: account)
+        }
+        let hits = try q.read { db in
+            try String.fetchAll(db, sql: """
+                SELECT id FROM thread
+                WHERE inInbox = 1 AND inTrash = 0
+                  AND (fromEmail = ?
+                       OR instr(' ' || allFromEmails || ' ', ' ' || ? || ' ') > 0)
+                ORDER BY id
+                """, arguments: ["john_doe@x.com", "john_doe@x.com"])
+        }
+        XCTAssertEqual(hits, ["\(account):t1"],
+                       "john_doe must not match johnadoe via LIKE _")
+    }
+
     func testMigrationCreatesThreadLabel() throws {
         let q = try DatabaseQueue()
         try AppDatabase.migrator.migrate(q)

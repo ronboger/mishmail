@@ -335,15 +335,23 @@ actor SyncEngine {
         let fullIds = Array(fullFetch)
         if !fullIds.isEmpty {
             let account = accountId
+            // One read for local existence (same shape as filterMissingGmailIds).
+            let existingLocal = try await db.read { db -> Set<String> in
+                guard !fullIds.isEmpty else { return [] }
+                let localIds = fullIds.map { "\(account):\($0)" }
+                let placeholders = localIds.map { _ in "?" }.joined(separator: ",")
+                return Set(try String.fetchAll(
+                    db,
+                    sql: "SELECT id FROM message WHERE id IN (\(placeholders))",
+                    arguments: StatementArguments(localIds)))
+            }
             var needFull: [String] = []
             var needMeta: [String] = []
             needFull.reserveCapacity(fullIds.count)
             for gmailId in fullIds {
-                let localExists = try await db.read { db in
-                    try Message.fetchOne(db, key: "\(account):\(gmailId)") != nil
-                }
-                // messagesAdded always land in fullFetch without a prior local row;
-                // HistoryFetchFormat maps that to .full(.localMissing / .messagesAdded).
+                let localExists = existingLocal.contains("\(account):\(gmailId)")
+                // messagesAdded / never-cached → full; already-cached edge cases →
+                // metadata only (must not wipe body — see upsertPending.headersOnly).
                 switch HistoryFetchFormat.decide(
                     isMessagesAdded: !localExists,
                     localExists: localExists,
@@ -358,18 +366,28 @@ actor SyncEngine {
                     break
                 }
             }
-            var fetchedMsgs: [GMessage] = []
             if !needFull.isEmpty {
-                fetchedMsgs += (try? await client.getMessages(ids: needFull, format: "full")) ?? []
+                let msgs = (try? await client.getMessages(ids: needFull, format: "full")) ?? []
+                for msg in msgs {
+                    let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
+                    writeBuffer.append(PendingUpsert(
+                        message: message, attachments: attachments, headersOnly: false))
+                    if writeBuffer.count >= Self.writeChunkSize {
+                        try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                    }
+                }
             }
             if !needMeta.isEmpty {
-                fetchedMsgs += (try? await client.getMessages(ids: needMeta, format: "metadata")) ?? []
-            }
-            for msg in fetchedMsgs {
-                let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
-                writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
-                if writeBuffer.count >= Self.writeChunkSize {
-                    try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                let msgs = (try? await client.getMessages(ids: needMeta, format: "metadata")) ?? []
+                for msg in msgs {
+                    let (message, _) = MessageParser.parse(msg, accountId: accountId)
+                    // headersOnly: patch labels/headers only — never touch message_body
+                    // or attachments (metadata has empty payload).
+                    writeBuffer.append(PendingUpsert(
+                        message: message, attachments: [], headersOnly: true))
+                    if writeBuffer.count >= Self.writeChunkSize {
+                        try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                    }
                 }
             }
         }
@@ -445,6 +463,10 @@ actor SyncEngine {
     struct PendingUpsert {
         let message: Message
         let attachments: [AttachmentRow]
+        /// When true (metadata-format history refresh), update the message row
+        /// only — leave `message_body` and attachment rows untouched so a
+        /// payload-less get cannot wipe already-cached bodies.
+        var headersOnly: Bool = false
     }
 
     /// Writes a batch of messages (and attachments) in the caller's open
@@ -460,9 +482,21 @@ actor SyncEngine {
     static func upsertPending(_ db: Database, items: [PendingUpsert]) throws -> Set<String> {
         var keys = Set<String>()
         for item in items {
+            var msg = item.message
+            if item.headersOnly {
+                // Preserve body + attachments; keep hasAttachment if metadata
+                // reported none (empty payload always looks attachment-free).
+                if let existing = try Message.fetchOne(db, key: msg.id) {
+                    if !msg.hasAttachment { msg.hasAttachment = existing.hasAttachment }
+                }
+                msg.bodyText = ""
+                msg.bodyHTML = nil
+                try msg.save(db)
+                keys.insert(msg.threadId)
+                continue
+            }
             // Split body into message_body (v24); keep on-row columns empty so
             // header projections stay cheap under SQLCipher.
-            var msg = item.message
             let bodyText = msg.bodyText
             let bodyHTML = msg.bodyHTML
             msg.bodyText = ""
