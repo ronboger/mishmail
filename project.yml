@@ -82,6 +82,7 @@ targets:
       - Sources/MishMail/Support/Keychain.swift
       - Sources/MishMail/Support/SearchQuery.swift
       - Sources/MishMail/Support/SelectionAdvance.swift
+      - Sources/MishMail/Support/GoToMailbox.swift
       - Sources/MishMail/Support/AccountOrder.swift
       - Sources/MishMail/Support/SnoozeDateParser.swift
       - Sources/MishMail/Support/PrioritySplit.swift

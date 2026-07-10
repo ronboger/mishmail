@@ -56,6 +56,13 @@ struct ContentView: View {
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
             store.resetChips()
+            // Sidebar click (or any selectedView write) should land on the
+            // real mailbox, not keep a committed `/` search overlay. goTo
+            // clears search first; this covers the List selection binding.
+            if !store.searchText.isEmpty || !store.committedSearch.isEmpty {
+                store.searchText = ""
+                store.committedSearch = ""
+            }
             store.reloadThreads()
         }
         .onChange(of: store.chips) { store.reloadThreadsDebounced() }

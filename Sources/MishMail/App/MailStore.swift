@@ -261,6 +261,28 @@ final class MailStore: ObservableObject {
         committedSearch = ""
         reloadThreads()
     }
+
+    /// Switch mailbox (g-then-i, command palette "Go to…", etc.) and leave any
+    /// active `/` search. Without clearing search, the list stays on the FTS
+    /// path and ignores `selectedView` — so `gi` after a search looked like a
+    /// no-op when already on Inbox, and left a filtered overlay otherwise.
+    /// View changes rely on ContentView's `selectedView` onChange to reload;
+    /// same-view go-to reloads here after clearing search.
+    func goTo(_ view: MailboxView) {
+        let plan = GoToMailbox.plan(
+            destinationIsCurrent: selectedView == view,
+            searchText: searchText,
+            committedSearch: committedSearch)
+        if plan.clearSearch {
+            searchText = ""
+            committedSearch = ""
+        }
+        if plan.changeView {
+            selectedView = view
+        } else if plan.reloadImmediately {
+            reloadThreads()
+        }
+    }
     /// Recent search queries, newest first, shown under the search field while
     /// it has focus. Persisted so history survives relaunch.
     @Published var recentSearches: [String] =
@@ -1980,12 +2002,12 @@ final class MailStore: ObservableObject {
         if let started = pendingGoKey, Date().timeIntervalSince(started) < 1.5 {
             pendingGoKey = nil
             switch chars {
-            case "i": selectedView = .inbox; return true
-            case "s": selectedView = .starred; return true
-            case "t": selectedView = .sent; return true
-            case "d": selectedView = .drafts; return true
-            case "a": selectedView = .allMail; return true
-            case "p": selectedView = .promotions; return true
+            case "i": goTo(.inbox); return true
+            case "s": goTo(.starred); return true
+            case "t": goTo(.sent); return true
+            case "d": goTo(.drafts); return true
+            case "a": goTo(.allMail); return true
+            case "p": goTo(.promotions); return true
             default: break   // fall through to normal handling
             }
         }
