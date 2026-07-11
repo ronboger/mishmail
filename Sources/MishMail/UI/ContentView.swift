@@ -467,7 +467,17 @@ struct ContentView: View {
             if let cmd = store.keyBindings.command(for: chars), cmd == .next || cmd == .prev {
                 store.selectionViaKeyboard = true
             }
-            return store.handleKey(chars) ? nil : event
+            if store.handleKey(chars) { return nil }
+            // Unhandled printable keys must not fall through: SwiftUI List
+            // type-selects to the first row starting with that letter, which
+            // fights Gmail-style single-key bindings on random taps.
+            if !chars.isEmpty,
+               !chars.unicodeScalars.contains(where: {
+                   CharacterSet.controlCharacters.contains($0)
+               }) {
+                return nil
+            }
+            return event
         }
     }
 }
