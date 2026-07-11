@@ -18,6 +18,38 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 }
 
+/// The standard macOS About panel, with a clickable "Support MishMail" line
+/// added to the credits. MishMail is free; this is the only in-app nudge.
+enum AboutPanel {
+    /// GitHub Sponsors is the primary link; the README lists Ko-fi / ETH too.
+    static let sponsorURL = URL(string: "https://github.com/sponsors/ronboger")!
+
+    @MainActor
+    static func show() {
+        let credits = NSMutableAttributedString(
+            string: "A native, local-first Gmail client for macOS.\n\n",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11),
+                .foregroundColor: NSColor.secondaryLabelColor,
+            ])
+        let link = NSAttributedString(
+            string: "Support MishMail",
+            attributes: [
+                .font: NSFont.systemFont(ofSize: 11, weight: .semibold),
+                .link: sponsorURL,
+            ])
+        credits.append(link)
+
+        let paragraph = NSMutableParagraphStyle()
+        paragraph.alignment = .center
+        credits.addAttribute(.paragraphStyle, value: paragraph,
+                             range: NSRange(location: 0, length: credits.length))
+
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        NSApplication.shared.orderFrontStandardAboutPanel(options: [.credits: credits])
+    }
+}
+
 @main
 struct MishMailApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
@@ -36,6 +68,9 @@ struct MishMailApp: App {
                 }
         }
         .commands {
+            CommandGroup(replacing: .appInfo) {
+                Button("About MishMail") { AboutPanel.show() }
+            }
             CommandGroup(after: .newItem) {
                 Button("Sync All") { Task { await store.syncAll() } }
                     .keyboardShortcut("r", modifiers: [.command, .shift])

@@ -248,6 +248,19 @@ mail content is sent to a remote HTTPS host.
 
 See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
 
+## Support
+
+MishMail is free and always will be — no accounts, no upsells, no telemetry. If
+it's earned a place in your day and you'd like to help keep it maintained, a tip
+is genuinely appreciated (but never expected):
+
+- **[GitHub Sponsors](https://github.com/sponsors/ronboger)** — one-time or
+  monthly, 0% platform fee.
+- **Ethereum** — `0x34fC989CF3eF410F7fa1D3B236DA42d88005e99B`
+
+Prefer to contribute code or a bug report instead? That's worth more than money —
+see [CONTRIBUTING.md](CONTRIBUTING.md).
+
 ## License
 
 [MIT](LICENSE) © 2026 Ron Boger. Depends on
