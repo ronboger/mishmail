@@ -15,6 +15,80 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         XCTAssertTrue(css.contains("color: #222 !important"))
         // Light hex first-nibble coverage for cream newsletters.
         XCTAssertTrue(css.contains("[bgcolor^=\"#f\" i]"))
+        // Zero-specificity exclusion via :where so JS fg classes stay (0,1,0)
+        // and win by source order (Google-welcome dark-on-dark protection).
+        XCTAssertTrue(css.contains(":not(:where("),
+                      "inline-tag exclusion must use :where (zero specificity)")
+        // Shared list — every highlighter tag excluded, not a partial hand chain.
+        let tags = HTMLBodyDarkMode.inlineHighlighterTags
+        XCTAssertTrue(css.contains(":not(:where(\(tags)))"),
+                      "exclusion must cover full inlineHighlighterTags list")
+        for tag in tags.split(separator: ",").map({ $0.trimmingCharacters(in: .whitespaces) }) {
+            XCTAssertTrue(tags.contains(tag), "sanity: \(tag) in shared list")
+            XCTAssertTrue(css.contains(tag),
+                          "exclusion CSS must mention tag \(tag)")
+        }
+    }
+
+    /// Word / Google Docs paste wraps text in `<span style="background:white">`.
+    /// Inline light fills paint per-line fragment boxes (highlighter strips);
+    /// strip the paint instead of forcing dark text on the white strips.
+    func testInlineLightBackgroundsAreStripped() {
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        let strip = HTMLBodyDarkMode.stripInlineBgClass
+        XCTAssertTrue(css.contains(".\(strip)") || css.contains(strip),
+                      "strip-inline-bg class must be styled")
+        XCTAssertTrue(css.contains("background-color: transparent !important"),
+                      "inline highlighters clear the light fill")
+        // Tag-based first-paint path includes span (the common Word/Docs case).
+        XCTAssertTrue(css.contains(":is(span, font, mark"),
+                      "first-paint strip targets common inline highlighter tags")
+        // White pill CTAs: style="display:inline-block;background:#fff" must
+        // not be stripped by attribute CSS (JS cannot restore !important clear).
+        XCTAssertTrue(css.contains("inline-block") && css.contains("inline-flex"),
+                      "first-paint strip must spare self-declared inline-block/flex CTAs")
+        let js = HTMLBodyDarkMode.applyContrastJS
+        XCTAssertTrue(js.contains(strip), "JS stamps strip class on inline light fills")
+        XCTAssertTrue(js.contains("display") && js.contains("'inline'"),
+                      "JS only strips pure display:inline (keeps inline-block CTAs)")
+    }
+
+    /// JS fg classes must remain able to beat the attribute #222 rule by source
+    /// order. A high-specificity :not(span):not(font)… chain would re-break
+    /// Google welcome mail (light bgcolor attr + dark computed fill).
+    func testAttributeLightRuleDoesNotOutrankJSFgClasses() {
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        // Forbidden: stacked :not(tag) that inflates specificity above (0,1,0).
+        let stackedNots = css.range(
+            of: #":not\(span\):not\(font\)"#,
+            options: .regularExpression)
+        XCTAssertNil(stackedNots,
+                     "do not stack :not(tag) — use :not(:where(tags)) for zero specificity")
+        XCTAssertTrue(css.contains(":not(:where("))
+        // Match rule selectors only (comments also mention the class names).
+        let onDark = HTMLBodyDarkMode.fgOnDarkClass
+        let onLight = HTMLBodyDarkMode.fgOnLightClass
+        guard let whereRange = css.range(of: ":not(:where("),
+              let onDarkRule = css.range(of: ".\(onDark) {"),
+              let onLightRule = css.range(of: ".\(onLight) {")
+        else {
+            XCTFail("missing :where exclusion or fg class rules")
+            return
+        }
+        XCTAssertTrue(whereRange.lowerBound < onDarkRule.lowerBound,
+                      ".\(onDark) rule must follow attribute rule (source-order win)")
+        XCTAssertTrue(whereRange.lowerBound < onLightRule.lowerBound,
+                      ".\(onLight) rule must follow attribute rule")
+    }
+
+    func testBlockLightSurfacesStillForceDarkText() {
+        // Tables/divs with white bg remain designed cards — dark text, keep fill.
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        XCTAssertTrue(css.contains("[bgcolor=\"#ffffff\" i]"))
+        XCTAssertTrue(css.contains("color: #222 !important"))
+        // Must not nuke every background in the message — only inline + strip class.
+        XCTAssertFalse(css.contains("*, *::before"),
+                       "must not nuke every background in the message")
     }
 
     func testAshleyStyleMixedMailHasBothRules() {
@@ -111,6 +185,7 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         let js = HTMLBodyDarkMode.applyContrastJS
         XCTAssertTrue(js.contains(HTMLBodyDarkMode.fgOnLightClass))
         XCTAssertTrue(js.contains(HTMLBodyDarkMode.fgOnDarkClass))
+        XCTAssertTrue(js.contains(HTMLBodyDarkMode.stripInlineBgClass))
         XCTAssertTrue(js.contains("getComputedStyle"))
         XCTAssertTrue(js.contains("backgroundColor"))
         // Walks with inherited effective bg (not only own fill).
@@ -118,6 +193,9 @@ final class HTMLBodyDarkModeTests: XCTestCase {
                       "tagger must pass effective bg down the tree")
         XCTAssertTrue(js.contains(String(HTMLBodyDarkMode.luminanceThreshold)))
         XCTAssertTrue(js.contains(String(HTMLBodyDarkMode.alphaFloor)))
+        // Removes strip class before re-reading computed bg (safe re-run).
+        XCTAssertTrue(js.contains("classList.remove") && js.contains("STRIP"),
+                      "re-run must clear prior strip before measuring fill")
         // Alias kept for call sites.
         XCTAssertEqual(HTMLBodyDarkMode.tagLightSurfacesJS, HTMLBodyDarkMode.applyContrastJS)
     }
