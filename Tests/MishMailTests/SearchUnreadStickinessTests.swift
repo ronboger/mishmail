@@ -213,4 +213,45 @@ final class SearchUnreadStickinessTests: XCTestCase {
                 [])
         }
     }
+
+    func testKeepIdsOnlyBypassUnreadNotOtherOperators() throws {
+        // Stickiness must not defeat from:/text/etc. — only the read-state
+        // clause. Mirrors: keepIds OR is applied solely on isUnread.
+        let q = try makeDB()
+        var sticky = makeThread(id: "t1", subject: "Invoice Acme", isUnread: true)
+        let other = makeThread(id: "t2", subject: "Invoice Other", isUnread: true)
+        try q.write { db in
+            try self.seed(db, sticky)
+            try self.seed(db, other)
+        }
+
+        sticky.isUnread = false
+        try q.write { db in try sticky.update(db) }
+
+        try q.read { db in
+            // Pure is:unread keeps sticky via keepIds.
+            XCTAssertEqual(
+                try self.searchReload(db, "is:unread", keepIds: [sticky.id])
+                    .map(\.id).sorted(),
+                ["a:t1", "a:t2"])
+            // Combined free-text: sticky no longer matches "Other", keepIds
+            // must not pull it back.
+            XCTAssertEqual(
+                try self.searchReload(db, "is:unread Other", keepIds: [sticky.id])
+                    .map(\.id),
+                ["a:t2"])
+        }
+    }
+
+    func testLeavingReadStateFilterDropsStickiness() {
+        // Production: reloadThreads clears keepIds when
+        // !readStateFilterActive. Search half of that gate must flip off
+        // when the operator is gone (clear / re-query without is:unread).
+        XCTAssertTrue(searchReadStateFilterActive("is:unread"))
+        XCTAssertFalse(searchReadStateFilterActive(""))
+        XCTAssertFalse(searchReadStateFilterActive("invoice"))
+        // Still-active operator (chip parity): keepIds may persist across
+        // re-queries that remain is:unread.
+        XCTAssertTrue(searchReadStateFilterActive("is:unread from:alice"))
+    }
 }
