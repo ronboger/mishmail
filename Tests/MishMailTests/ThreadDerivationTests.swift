@@ -124,6 +124,52 @@ final class ThreadDerivationTests: XCTestCase {
         XCTAssertTrue(t.inTrash)
         XCTAssertFalse(t.inInbox)
     }
+
+    // MARK: - listSortDate (own reply does not bump inbox position)
+
+    func testOwnSentReplyDoesNotAdvanceLastDate() throws {
+        // Newest is your SENT reply; sort key stays on their last inbound message
+        // so the thread doesn't jump to the top of the inbox after you reply.
+        let myReply = msg(id: "m2", from: account, daysAgo: 0, labels: "SENT")
+        let theirs = msg(id: "m1", from: "Jane Doe <jane@y.com>", daysAgo: 2, labels: "INBOX")
+        let t = try XCTUnwrap(derive([myReply, theirs]))
+        XCTAssertEqual(t.lastDate, theirs.date)
+        // Snippet/from still reflect the newest (your reply).
+        XCTAssertEqual(t.snippet, "snippet-m2")
+        XCTAssertEqual(t.fromDisplay, MessageParser.displayName(fromHeader: account))
+    }
+
+    func testInboundReplyAdvancesLastDate() throws {
+        let theirs = msg(id: "m2", from: "Jane Doe <jane@y.com>", daysAgo: 0, labels: "INBOX")
+        let mine = msg(id: "m1", from: account, daysAgo: 1, labels: "SENT")
+        let t = try XCTUnwrap(derive([theirs, mine]))
+        XCTAssertEqual(t.lastDate, theirs.date)
+    }
+
+    func testDraftDoesNotAdvanceLastDate() throws {
+        let draft = msg(id: "m2", from: account, daysAgo: 0, labels: "DRAFT")
+        let theirs = msg(id: "m1", from: "Jane <jane@y.com>", daysAgo: 3, labels: "INBOX")
+        let t = try XCTUnwrap(derive([draft, theirs]))
+        XCTAssertEqual(t.lastDate, theirs.date)
+    }
+
+    func testPureOutboundThreadUsesNewestDate() throws {
+        // New compose / sent-only: nothing inbound → fall back to newest.
+        let newer = msg(id: "m2", from: account, daysAgo: 0, labels: "SENT")
+        let older = msg(id: "m1", from: account, daysAgo: 1, labels: "SENT")
+        let t = try XCTUnwrap(derive([newer, older]))
+        XCTAssertEqual(t.lastDate, newer.date)
+    }
+
+    func testListSortDateHelperSkipsOwnOutbound() {
+        let myReply = msg(id: "m2", from: account, daysAgo: 0, labels: "SENT")
+        let theirs = msg(id: "m1", from: "Jane <jane@y.com>", daysAgo: 2, labels: "INBOX")
+        XCTAssertEqual(
+            SyncEngine.listSortDate(messages: [myReply, theirs], accountId: account),
+            theirs.date)
+        XCTAssertTrue(SyncEngine.isOwnOutbound(myReply, accountEmail: account.lowercased()))
+        XCTAssertFalse(SyncEngine.isOwnOutbound(theirs, accountEmail: account.lowercased()))
+    }
 }
 
 /// SyncEngine.applyLabelDelta — pure label-string merge used by metadata-only

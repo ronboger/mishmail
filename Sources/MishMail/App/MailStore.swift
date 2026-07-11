@@ -2932,7 +2932,9 @@ final class MailStore: ObservableObject {
             replyAccountId: threadParent?.accountId,
             draftAccountId: draft?.accountId)
         let identityEmail = fromEmail.isEmpty ? apiAccountId : fromEmail
-        let bodyHTML = htmlAlternative(body: body, forwardOf: forward ? message : nil,
+        let bodyHTML = htmlAlternative(body: body,
+                                       forwardOf: forward ? message : nil,
+                                       replyTo: forward ? nil : message,
                                        draft: draft)
         let raw = MIMEBuilder.build(
             from: fromHeader(accountId: apiAccountId, fromEmail: identityEmail),
@@ -2952,14 +2954,17 @@ final class MailStore: ObservableObject {
 
     /// HTML alternative for an outgoing message:
     /// 1. Untouched forward quote → original HTML under user text
-    /// 2. Unedited draft body → preserved draft HTML
-    /// 3. Markdown body → rendered HTML (bold, headers, math, lists, …)
-    /// 4. Otherwise → ComposeLinks linkification (markdown links + bare URLs)
+    /// 2. Untouched reply quote → Gmail-style gmail_quote + original HTML
+    /// 3. Unedited draft body → preserved draft HTML
+    /// 4. Markdown body → rendered HTML (bold, headers, math, lists, …)
+    /// 5. Otherwise → ComposeLinks linkification (markdown links + bare URLs)
     ///
     /// Forward single vs Forward-all is resolved by
     /// `ForwardComposer.matchHTMLUpgrade` (all-package first — see that
-    /// method; drafts are excluded from Forward-all).
+    /// method; drafts are excluded from Forward-all). Replies use
+    /// `ReplyComposer` so nested history isn't re-markdown'd as `>` lines.
     private func htmlAlternative(body: String, forwardOf original: Message?,
+                                 replyTo replyParent: Message? = nil,
                                  draft: Message?) -> String? {
         if let orig = original {
             let threadMsgs = messages(inThread: orig.threadId)
@@ -2970,10 +2975,15 @@ final class MailStore: ObservableObject {
             // Content drift (new mail in thread since compose) or an edited
             // quote: neither package matches → fall through to plain/markdown.
         }
+        if let parent = replyParent,
+           let match = ReplyComposer.matchHTMLUpgrade(body: body, original: parent) {
+            return ReplyComposer.htmlBody(userText: match.userText, original: match.original)
+        }
         if let draft, let html = draft.bodyHTML, !html.isEmpty, body == draft.bodyText {
             return html
         }
-        // Markdown-authored body (replies with quotes count — `>` lines).
+        // Markdown-authored body. Reply quotes that failed the upgrade above
+        // still match `^>\s` here — best-effort, not Gmail-shaped.
         if Markdown.looksLikeMarkdown(body) {
             return Markdown.toHTML(body)
         }
@@ -3000,7 +3010,10 @@ final class MailStore: ObservableObject {
         let raw = MIMEBuilder.build(
             from: fromHeader(accountId: apiAccountId, fromEmail: identityEmail),
             to: to, cc: cc, bcc: bcc, subject: subject, bodyText: body,
-            bodyHTML: htmlAlternative(body: body, forwardOf: forward ? message : nil, draft: draft),
+            bodyHTML: htmlAlternative(body: body,
+                                      forwardOf: forward ? message : nil,
+                                      replyTo: forward ? nil : message,
+                                      draft: draft),
             inReplyTo: threadParent?.messageIdHeader,
             references: threadParent?.referencesHeader ?? draft?.referencesHeader,
             attachments: attachments

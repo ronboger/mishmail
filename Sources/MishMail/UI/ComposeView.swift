@@ -860,15 +860,9 @@ struct ComposeView: View {
 
         // Quote the previous message so the context travels with the draft —
         // collapsed behind the "…" button so the editor starts empty and the
-        // cursor lands at the top.
-        let when = original.date.formatted(date: .abbreviated, time: .shortened)
-        let who = "\(MessageParser.displayName(fromHeader: original.fromHeader)) <\(sender)>"
-        let quoted = MessageParser
-            .replyQuotableText(text: original.bodyText, html: original.bodyHTML)
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.isEmpty ? ">" : "> \($0)" }
-            .joined(separator: "\n")
-        quotedTail = "\nOn \(when), \(who) wrote:\n\(quoted)"
+        // cursor lands at the top. Shape must match ReplyComposer.plainQuote
+        // exactly so send can upgrade to Gmail-style HTML when untouched.
+        quotedTail = ReplyComposer.plainQuote(of: original)
         focusBody()
     }
 

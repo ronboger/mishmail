@@ -601,9 +601,13 @@ actor SyncEngine {
             accountId: accountId,
             gmailThreadId: gmailThreadId,
             subject: messages.last?.subject.isEmpty == false ? messages.last!.subject : newest.subject,
+            // Snippet/from still reflect the newest message (including your
+            // own reply) so the row shows what just happened.
             snippet: newest.snippet,
             fromDisplay: MessageParser.displayName(fromHeader: newest.fromHeader),
-            lastDate: newest.date,
+            // Sort key deliberately ignores pure outbound (your reply/draft)
+            // so sending does not jump the thread to the top of the inbox.
+            lastDate: listSortDate(messages: messages, accountId: accountId),
             isUnread: messages.contains { $0.isUnread },
             isStarred: allLabels.contains("STARRED"),
             inInbox: allLabels.contains("INBOX"),
@@ -623,6 +627,38 @@ actor SyncEngine {
             fromEmail: MessageParser.emailAddress(newest.fromHeader).lowercased(),
             allFromEmails: ThreadLabels.allFromEmails(from: messages)
         )
+    }
+
+    /// List sort key for a thread (messages newest-first).
+    ///
+    /// Own outbound rows — DRAFT, SENT-without-INBOX, or From matching the
+    /// mailbox with no INBOX — do not advance the date when there is still
+    /// inbound mail. Replying therefore leaves an inbox thread in place;
+    /// only a real reply from someone else (or new inbound) moves it up.
+    /// Pure-outbound threads (new compose, sent-only) fall back to newest.
+    ///
+    /// Also makes "remind if no reply" cancel on their reply, not on your
+    /// own follow-up (`reminderSetAt` is compared to `lastDate`).
+    static func listSortDate(messages: [Message], accountId: String) -> Date {
+        guard let newest = messages.first else { return Date() }
+        let account = accountId.lowercased()
+        for m in messages {
+            if isOwnOutbound(m, accountEmail: account) { continue }
+            return m.date
+        }
+        return newest.date
+    }
+
+    /// True when this message should not move the thread's list position.
+    static func isOwnOutbound(_ m: Message, accountEmail: String) -> Bool {
+        let labs = Set(m.labelIds.split(whereSeparator: \.isWhitespace).map(String.init))
+        if labs.contains("DRAFT") { return true }
+        // Gmail marks your sends SENT and usually omits INBOX on the sent row.
+        if labs.contains("SENT") && !labs.contains("INBOX") { return true }
+        // From the mailbox primary without INBOX (some clients omit SENT).
+        let from = MessageParser.emailAddress(m.fromHeader).lowercased()
+        if from == accountEmail && !labs.contains("INBOX") { return true }
+        return false
     }
 
     /// Recomputes every thread row for this account from scratch (used by

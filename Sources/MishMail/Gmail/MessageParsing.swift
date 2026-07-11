@@ -412,6 +412,106 @@ enum ForwardComposer {
     }
 }
 
+/// Builds the quoted trail for replies — plain `> ` lines in the compose
+/// editor (collapsed behind "…"), and a Gmail-compatible HTML alternative
+/// at send time when the quote is untouched.
+///
+/// Without the HTML upgrade, replies went out as multipart with
+/// `Markdown.toHTML` turning every `> ` line into a flat
+/// `<blockquote type="cite">`. Nested history from the original (already
+/// containing `>` prefixes and "On … wrote:" lines) leaked as visible
+/// text, original markup/links were stripped, and Gmail had no
+/// `gmail_quote` container to style or collapse. Recipients saw a messy
+/// trail unlike gmail.com / Apple Mail.
+///
+/// Parallel to `ForwardComposer`: recompute the plain quote at send; if
+/// it still suffixes the body byte-for-byte, wrap user text + original
+/// HTML in a standard Gmail quote block. If the user edited the quote,
+/// fall back to plain/markdown on the full body.
+enum ReplyComposer {
+    /// Attribution line, e.g. `On Jul 6, 2026 at 11:55 PM, Jane <j@x.com> wrote:`.
+    static func attribution(for message: Message) -> String {
+        let when = formatDate(message.date)
+        let sender = MessageParser.emailAddress(message.fromHeader)
+        let who = "\(MessageParser.displayName(fromHeader: message.fromHeader)) <\(sender)>"
+        return "On \(when), \(who) wrote:"
+    }
+
+    /// Collapsed quote tail stored outside the editor (`quotedTail`).
+    /// Leading `\n` matches the historical prefill so `fullBody` joins as
+    /// `head + "\n\n" + plainQuote` → the same shape the expand/collapse
+    /// regex and send-time matcher expect.
+    static func plainQuote(of message: Message) -> String {
+        let quoted = MessageParser
+            .replyQuotableText(text: message.bodyText, html: message.bodyHTML)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+            .map { $0.isEmpty ? ">" : "> \($0)" }
+            .joined(separator: "\n")
+        return "\n\(attribution(for: message))\n\(quoted)"
+    }
+
+    /// User-authored text above an untouched reply quote, or nil when the
+    /// quote was edited/removed (caller regenerates HTML from the full body).
+    static func userText(inBody body: String, expectedQuote quote: String) -> String? {
+        guard body.hasSuffix(quote) else { return nil }
+        return String(body.dropLast(quote.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Send-path match: body still ends with the recomputed plain quote.
+    static func matchHTMLUpgrade(body: String, original: Message)
+        -> (userText: String, original: Message)? {
+        let quote = plainQuote(of: original)
+        guard let userText = userText(inBody: body, expectedQuote: quote) else {
+            return nil
+        }
+        return (userText, original)
+    }
+
+    /// Gmail-style HTML alternative: authored head (markdown or linkified
+    /// plain), then `gmail_quote` / `gmail_attr` / nested `blockquote`
+    /// carrying the original message's HTML when present.
+    static func htmlBody(userText: String, original: Message) -> String {
+        var out = ""
+        if !userText.isEmpty {
+            if Markdown.looksLikeMarkdown(userText) {
+                out += Markdown.toHTML(userText)
+            } else {
+                // Always wrap so multi-line replies keep structure; fragment
+                // already escapes and turns newlines into <br>.
+                out += "<div>\(ComposeLinks.htmlFragment(from: userText))</div>"
+            }
+        }
+        let attr = ComposeLinks.escapeText(attribution(for: original))
+        let content: String
+        if let html = original.bodyHTML, !html.isEmpty {
+            content = html
+        } else {
+            let plain = MessageParser.replyQuotableText(
+                text: original.bodyText, html: nil)
+            let escaped = ComposeLinks.escapeText(plain)
+                .replacingOccurrences(of: "\n", with: "<br>")
+            content = "<div>\(escaped)</div>"
+        }
+        // Style matches gmail.com so the trail collapses and indents correctly
+        // in Gmail and other clients that key off these class names.
+        out += "<br><div class=\"gmail_quote\">"
+            + "<div dir=\"ltr\" class=\"gmail_attr\">\(attr)<br></div>"
+            + "<blockquote class=\"gmail_quote\" style=\"margin:0px 0px 0px 0.8ex;"
+            + "border-left:1px solid rgb(204,204,204);padding-left:1ex\">"
+            + content
+            + "</blockquote></div>"
+        return out
+    }
+
+    /// Locale-aware date matching the historical compose prefill
+    /// (`formatted(date: .abbreviated, time: .shortened)`). Send-time
+    /// recompute must use the same function or the quote suffix won't match.
+    static func formatDate(_ date: Date) -> String {
+        date.formatted(date: .abbreviated, time: .shortened)
+    }
+}
+
 /// Detects the quoted reply trail inside a message body so the thread view
 /// can collapse it behind a "…" pill, Gmail-style. Every message in a thread
 /// carries the full history below its new text; showing it all makes long
