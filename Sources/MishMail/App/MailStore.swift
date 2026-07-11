@@ -907,6 +907,10 @@ final class MailStore: ObservableObject {
         if chips.unreadOnly || chips.readOnly { return true }
         if case .saved(let id, _) = selectedView,
            savedViews.first(where: { $0.id == id })?.unreadOnly == true { return true }
+        // Cmd-K / search operators share the same stickiness so opening an
+        // is:unread result and auto-marking it read doesn't yank the row.
+        let search = committedSearch.trimmingCharacters(in: .whitespaces)
+        if !search.isEmpty, SearchQuery.parse(search).unread != nil { return true }
         return false
     }
 
@@ -1374,7 +1378,10 @@ final class MailStore: ObservableObject {
                             q = q.filter(sql: "subject LIKE ?", arguments: ["%\(subject)%"])
                         }
                         if let unread = parsed.unread {
-                            q = q.filter(Column("isUnread") == unread)
+                            // keepIds: threads just marked read/unread stay in the
+                            // list under is:unread / is:read (same as filter chips).
+                            q = q.filter(Column("isUnread") == unread
+                                         || keepIds.contains(Column("id")))
                         }
                         if parsed.starred {
                             q = q.filter(Column("isStarred") == true)
