@@ -58,6 +58,14 @@ enum PerfMetrics {
         case syncFlush = "sync.flush"
         case syncFetchAll = "sync.fetchAll"
         case syncBlocklist = "sync.blocklist"
+        /// Per-id getMessage retry / exhaustion (history catch-up).
+        case syncGetRetry = "sync.getRetry"
+        /// History sync refused to advance historyId (retry-exhausted ids).
+        case syncHistoryPartial = "sync.historyPartial"
+        /// ThreadListView regroup / displayOrder rebuild.
+        case listGroup = "list.group"
+        /// Load-older page fetch.
+        case pageLoadMore = "page.loadMore"
     }
 
     /// One finished sample (ring buffer for dump / tests).
@@ -155,6 +163,10 @@ enum PerfMetrics {
         case .syncFlush: return signposter.beginInterval("sync.flush")
         case .syncFetchAll: return signposter.beginInterval("sync.fetchAll")
         case .syncBlocklist: return signposter.beginInterval("sync.blocklist")
+        case .syncGetRetry: return signposter.beginInterval("sync.getRetry")
+        case .syncHistoryPartial: return signposter.beginInterval("sync.historyPartial")
+        case .listGroup: return signposter.beginInterval("list.group")
+        case .pageLoadMore: return signposter.beginInterval("page.loadMore")
         }
     }
 
@@ -171,6 +183,10 @@ enum PerfMetrics {
         case .syncFlush: signposter.endInterval("sync.flush", state)
         case .syncFetchAll: signposter.endInterval("sync.fetchAll", state)
         case .syncBlocklist: signposter.endInterval("sync.blocklist", state)
+        case .syncGetRetry: signposter.endInterval("sync.getRetry", state)
+        case .syncHistoryPartial: signposter.endInterval("sync.historyPartial", state)
+        case .listGroup: signposter.endInterval("list.group", state)
+        case .pageLoadMore: signposter.endInterval("page.loadMore", state)
         }
     }
 

@@ -37,22 +37,9 @@ struct ThreadListView: View {
 
     private var groupBy: GroupBy { GroupBy(rawValue: groupByRaw) ?? .date }
 
-    private var grouped: [(String, [MailThread])] {
-        // Superhuman-style split inbox: qualifying threads pin to a Priority
-        // section on top (what qualifies is the Settings → Appearance mode);
-        // the chosen grouping applies to the rest. Inbox only — dedicated
-        // views (Starred, Sent…) stay flat.
-        let mode = PrioritySplit.Mode(rawValue: priorityModeRaw) ?? .starred
-        let (priority, rest) = PrioritySplit.partition(
-            store.threads,
-            mode: store.selectedView == .inbox ? mode : .off,
-            vipThreadIds: store.vipThreadIds,
-            vipAlwaysPins: vipAlwaysPins)
-        var out: [(String, [MailThread])] = []
-        if !priority.isEmpty { out.append((Self.prioritySection, priority)) }
-        out += groups(rest)
-        return out
-    }
+    /// Cached grouping — rebuilt only when inputs change, not every body pass.
+    @State private var grouped: [(String, [MailThread])] = []
+    @State private var flatDisplayOrder: [String] = []
 
     private static let prioritySection = "Priority"
 
@@ -63,8 +50,22 @@ struct ThreadListView: View {
         store.selectedView == .labels && collapsedLabels.contains(title)
     }
 
-    private var flatDisplayOrder: [String] {
-        grouped.flatMap { isCollapsed($0.0) ? [] : $0.1.map(\.id) }
+    /// Rebuild Priority + group sections and keyboard `displayOrder`.
+    private func recomputeLayout() {
+        PerfMetrics.measure(.listGroup, meta: "n=\(store.threads.count)") {
+            let mode = PrioritySplit.Mode(rawValue: priorityModeRaw) ?? .starred
+            let (priority, rest) = PrioritySplit.partition(
+                store.threads,
+                mode: store.selectedView == .inbox ? mode : .off,
+                vipThreadIds: store.vipThreadIds,
+                vipAlwaysPins: vipAlwaysPins)
+            var out: [(String, [MailThread])] = []
+            if !priority.isEmpty { out.append((Self.prioritySection, priority)) }
+            out += groups(rest)
+            grouped = out
+            flatDisplayOrder = out.flatMap { isCollapsed($0.0) ? [] : $0.1.map(\.id) }
+            store.displayOrder = flatDisplayOrder
+        }
     }
 
     private func groups(_ threads: [MailThread]) -> [(String, [MailThread])] {
@@ -262,21 +263,31 @@ struct ThreadListView: View {
                         Color.clear.frame(height: 40 * fontScale)
                     }
                 }
-                if store.hasMoreThreads {
+                if store.hasMoreThreads || store.isLoadingMore {
                     Section {
                         Button {
                             store.loadMoreThreads()
                         } label: {
                             HStack {
                                 Spacer()
-                                Text("Load older conversations")
-                                    .font(.system(size: 12 * fontScale))
-                                    .foregroundStyle(.secondary)
+                                if store.isLoadingMore {
+                                    ProgressView().controlSize(.small)
+                                    Text("Loading older…")
+                                        .font(.system(size: 12 * fontScale))
+                                        .foregroundStyle(.secondary)
+                                } else {
+                                    Text("Load older conversations")
+                                        .font(.system(size: 12 * fontScale))
+                                        .foregroundStyle(.secondary)
+                                }
                                 Spacer()
                             }
                             .padding(.vertical, 8)
                         }
                         .buttonStyle(.plain)
+                        .disabled(store.isLoadingMore)
+                        // Near-end auto-load so deep scroll feels continuous.
+                        .onAppear { store.loadMoreThreads() }
                     }
                 }
             }
@@ -286,10 +297,14 @@ struct ThreadListView: View {
             .contentMargins(.top, 40 * fontScale, for: .scrollContent)
             // Archived/trashed rows slide out instead of blinking away.
             .animation(.easeOut(duration: 0.2), value: store.threads)
-            // Keep keyboard navigation aligned with the displayed order
-            // (priority section first, then groups).
-            .onAppear { store.displayOrder = flatDisplayOrder }
-            .onChange(of: flatDisplayOrder) { store.displayOrder = flatDisplayOrder }
+            .onAppear { recomputeLayout() }
+            .onChange(of: store.threads) { recomputeLayout() }
+            .onChange(of: store.vipThreadIds) { recomputeLayout() }
+            .onChange(of: store.selectedView) { recomputeLayout() }
+            .onChange(of: groupByRaw) { recomputeLayout() }
+            .onChange(of: priorityModeRaw) { recomputeLayout() }
+            .onChange(of: vipAlwaysPins) { recomputeLayout() }
+            .onChange(of: collapsedLabels) { recomputeLayout() }
         }
         .background(Color.notionContent)
         .navigationTitle(store.selectedView.title)

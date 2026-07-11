@@ -58,6 +58,23 @@ final class ThreadLabelTests: XCTestCase {
         XCTAssertEqual(labs, ["Label_2"])
     }
 
+    func testRewriteNoOpWhenUnchanged() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try self.seedMessage(db, gmailId: "t1", labels: "INBOX Label_1 Label_2")
+            try SyncEngine.deriveThreads(db, for: ["\(account):t1"], accountId: account)
+            // Same set, different order in string — should not thrash.
+            try ThreadLabels.rewrite(db, threadId: "\(account):t1",
+                                     labelIds: "Label_2 INBOX Label_1")
+        }
+        let labs = try q.read {
+            try String.fetchAll($0, sql:
+                "SELECT labelId FROM thread_label WHERE threadId = ? ORDER BY labelId",
+                arguments: ["\(account):t1"])
+        }
+        XCTAssertEqual(labs, ["Label_1", "Label_2"])
+    }
+
     func testJunctionQueryNoPartialTokenMatch() throws {
         let q = try makeDB()
         try q.write { db in

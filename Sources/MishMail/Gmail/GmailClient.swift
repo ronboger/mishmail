@@ -102,14 +102,57 @@ enum GmailError: LocalizedError {
     case http(Int, String)
     case historyExpired
     case noRefreshToken(String)
+    /// Some message gets failed after retries (429/5xx/network). Caller must
+    /// **not** advance historyId past this sync — replaying history is safe.
+    case partialFetch(failedCount: Int)
 
     var errorDescription: String? {
         switch self {
         case .http(let code, let body): return "Gmail API error \(code): \(body.prefix(300))"
         case .historyExpired: return "Sync history expired; a full resync is needed."
         case .noRefreshToken(let email): return "No saved sign-in for \(email). Reauthorize the account in Settings → Accounts."
+        case .partialFetch(let n):
+            return "Sync incomplete (\(n) messages still pending); will retry next pass."
         }
     }
+
+    /// 404 = gone forever. 429/5xx = retry. Other HTTP = fail the operation.
+    static func failureKind(for error: Error) -> MessageFetchFailureKind {
+        MessageFetchFailureKind.classify(error)
+    }
+}
+
+/// Outcome of classifying a getMessage error (pure — unit-tested).
+enum MessageFetchFailureKind: Equatable {
+    case notFound
+    case retryable
+    case fatal
+
+    static func classify(_ error: Error) -> MessageFetchFailureKind {
+        if let g = error as? GmailError {
+            switch g {
+            case .http(let code, _):
+                if code == 404 { return .notFound }
+                if code == 429 || (500...599).contains(code) { return .retryable }
+                return .fatal
+            case .historyExpired, .noRefreshToken, .partialFetch:
+                return .fatal
+            }
+        }
+        // URLSession / decoding / cancellation-as-error → retry next sync.
+        return .retryable
+    }
+}
+
+/// Result of multi-get with permanent vs retryable misses separated.
+struct MessageFetchReport: Sendable {
+    var messages: [GMessage]
+    /// 404 — do not retry; treat as deleted for this cycle.
+    var notFoundIds: [String]
+    /// Still failing after retries — do not advance historyId.
+    var retryExhaustedIds: [String]
+
+    var hasRetryExhausted: Bool { !retryExhaustedIds.isEmpty }
 }
 
 // MARK: - Client
@@ -251,62 +294,120 @@ actor GmailClient {
     /// Max messages per `batch/gmail/v1` request (Gmail allows up to 100).
     nonisolated static let batchGetChunkSize = 50
 
-    /// Fetch many messages. When batch is enabled, uses multipart batch HTTP
-    /// (fewer RTTs); otherwise bounded concurrent `getMessage` (8).
-    /// Partial batch failures surface as `GmailError.http` only if **all**
-    /// parts fail; successful parts still return.
-    func getMessages(ids: [String], format: String = "full") async throws -> [GMessage] {
-        guard !ids.isEmpty else { return [] }
+    /// Max attempts for a single get on retryable errors (429/5xx/network).
+    nonisolated static let getRetryAttempts = 3
+
+    /// Fetch many messages. Batch when enabled; gaps filled with concurrent
+    /// singles. Returns successes plus notFound vs retry-exhausted ids so
+    /// history sync can refuse to advance past transient failures.
+    func getMessages(ids: [String], format: String = "full") async throws -> MessageFetchReport {
+        guard !ids.isEmpty else {
+            return MessageFetchReport(messages: [], notFoundIds: [], retryExhaustedIds: [])
+        }
         if !Self.batchGetEnabled || ids.count == 1 {
             return try await getMessagesConcurrent(ids: ids, format: format)
         }
-        var out: [GMessage] = []
-        out.reserveCapacity(ids.count)
+        var report = MessageFetchReport(messages: [], notFoundIds: [], retryExhaustedIds: [])
+        report.messages.reserveCapacity(ids.count)
         var i = ids.startIndex
         while i < ids.endIndex {
             let end = ids.index(i, offsetBy: Self.batchGetChunkSize, limitedBy: ids.endIndex) ?? ids.endIndex
             let chunk = Array(ids[i..<end])
-            let part = try await getMessagesBatch(ids: chunk, format: format)
-            if part.count < chunk.count {
-                // Partial success or batch unsupported — fill gaps concurrently.
-                let got = Set(part.map(\.id))
-                let missing = chunk.filter { !got.contains($0) }
-                out += part
-                if !missing.isEmpty {
-                    out += try await getMessagesConcurrent(ids: missing, format: format)
-                }
-            } else {
-                out += part
+            let part: [GMessage]
+            do {
+                part = try await getMessagesBatch(ids: chunk, format: format)
+            } catch {
+                // Whole batch transport failed — fall back to concurrent for chunk.
+                let sub = try await getMessagesConcurrent(ids: chunk, format: format)
+                report.messages += sub.messages
+                report.notFoundIds += sub.notFoundIds
+                report.retryExhaustedIds += sub.retryExhaustedIds
+                i = end
+                continue
+            }
+            let got = Set(part.map(\.id))
+            report.messages += part
+            let missing = chunk.filter { !got.contains($0) }
+            if !missing.isEmpty {
+                let sub = try await getMessagesConcurrent(ids: missing, format: format)
+                report.messages += sub.messages
+                report.notFoundIds += sub.notFoundIds
+                report.retryExhaustedIds += sub.retryExhaustedIds
             }
             i = end
         }
-        return out
+        return report
     }
 
-    /// Bounded concurrent singles. **Per-id failures are skipped** (404 when a
-    /// message is deleted between list and get is routine) so one miss cannot
-    /// drop the whole batch — history still advances and other messages land.
-    private func getMessagesConcurrent(ids: [String], format: String) async throws -> [GMessage] {
-        try await withThrowingTaskGroup(of: GMessage?.self) { group in
+    /// Convenience when caller only needs messages (backfill). Does **not**
+    /// throw on partial retry exhaustion — drops exhausted ids.
+    func getMessagesIgnoringRetryExhaustion(ids: [String], format: String = "full") async throws -> [GMessage] {
+        try await getMessages(ids: ids, format: format).messages
+    }
+
+    private enum ConcurrentItem: Sendable {
+        case ok(GMessage)
+        case notFound(String)
+        case exhausted(String)
+    }
+
+    /// Bounded concurrent singles with per-id retry. 404 → notFound (skip).
+    /// Retryable failures retry up to `getRetryAttempts`; still failing →
+    /// exhausted. Fatal errors (403, etc.) throw and abort the group.
+    private func getMessagesConcurrent(ids: [String], format: String) async throws -> MessageFetchReport {
+        try await withThrowingTaskGroup(of: ConcurrentItem.self) { group in
             var iterator = ids.makeIterator()
             var pending = 0
-            var results: [GMessage] = []
-            results.reserveCapacity(ids.count)
+            var report = MessageFetchReport(messages: [], notFoundIds: [], retryExhaustedIds: [])
+            report.messages.reserveCapacity(ids.count)
             func addNext() {
                 if let id = iterator.next() {
-                    group.addTask { try? await self.getMessage(id: id, format: format) }
+                    group.addTask { try await self.fetchOneClassified(id: id, format: format) }
                     pending += 1
                 }
             }
             for _ in 0..<min(8, ids.count) { addNext() }
             while pending > 0 {
-                let msg = try await group.next()!
+                let item = try await group.next()!
                 pending -= 1
-                if let msg { results.append(msg) }
+                switch item {
+                case .ok(let msg): report.messages.append(msg)
+                case .notFound(let id): report.notFoundIds.append(id)
+                case .exhausted(let id): report.retryExhaustedIds.append(id)
+                }
                 addNext()
             }
-            return results
+            return report
         }
+    }
+
+    private func fetchOneClassified(id: String, format: String) async throws -> ConcurrentItem {
+        var lastRetryable: Error?
+        for attempt in 0..<Self.getRetryAttempts {
+            do {
+                let msg = try await getMessage(id: id, format: format)
+                if attempt > 0 {
+                    PerfMetrics.measure(.syncGetRetry, meta: "id=\(id) attempt=\(attempt + 1)") { () }
+                }
+                return .ok(msg)
+            } catch {
+                switch MessageFetchFailureKind.classify(error) {
+                case .notFound:
+                    return .notFound(id)
+                case .fatal:
+                    throw error
+                case .retryable:
+                    lastRetryable = error
+                    if attempt + 1 < Self.getRetryAttempts {
+                        let ns: UInt64 = 200_000_000 * UInt64(1 << attempt) // 0.2s, 0.4s, …
+                        try? await Task.sleep(nanoseconds: ns)
+                    }
+                }
+            }
+        }
+        _ = lastRetryable
+        PerfMetrics.measure(.syncGetRetry, meta: "exhausted id=\(id)") { () }
+        return .exhausted(id)
     }
 
     /// One multipart batch request. Pure parse of the response body is in

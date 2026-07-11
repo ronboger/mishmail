@@ -1122,9 +1122,11 @@ final class MailStore: ObservableObject {
         let savedViewsSnapshot = savedViews
         let activeVIP = activeVIPEmails
         // Search is single-window; mailbox views keep expanded load-more depth.
+        // Probe limit = window + 1 so hasMore is exact (no phantom Load older).
         let windowLimit = search.isEmpty
             ? max(ThreadListPaging.pageSize, listWindowLimit)
             : ThreadListPaging.pageSize
+        let fetchLimit = ThreadListPaging.probeLimit(pageSize: windowLimit)
         let badgeAccount: String? = {
             switch Self.badgeScope {
             case .all: return nil
@@ -1141,6 +1143,7 @@ final class MailStore: ObservableObject {
                 var vipHits: Set<String>
                 var counts: [String: Int]
                 var badge: Int
+                var hasMore: Bool
             }
             let reloadKind = search.isEmpty ? "view" : "search"
             let totalInterval = PerfMetrics.begin(.reloadTotal, meta: reloadKind)
@@ -1224,7 +1227,7 @@ final class MailStore: ObservableObject {
                         }
                         if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
                         return try q.order(Column("lastDate").desc, Column("id").desc)
-                            .limit(windowLimit).fetchAll(db)
+                            .limit(fetchLimit).fetchAll(db)
                     } else {
                         var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
                         if chips.showArchived || chips.showSent {
@@ -1234,19 +1237,20 @@ final class MailStore: ObservableObject {
                         q = MailStore.applyChips(q, chips, keepIds: keepIds)
                         if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
                         return try q.order(Column("lastDate").desc, Column("id").desc)
-                            .limit(windowLimit).fetchAll(db)
+                            .limit(fetchLimit).fetchAll(db)
                     }
                 }
-                let vipHits = try PerfMetrics.measure(.reloadVIP, meta: "n=\(result.count)") {
+                let (page, hasMore) = ThreadListPaging.splitPage(result, pageSize: windowLimit)
+                let vipHits = try PerfMetrics.measure(.reloadVIP, meta: "n=\(page.count)") {
                     try MailStore.computeVIPThreadIds(
-                        threads: result, activeVIP: activeVIP, db: db)
+                        threads: page, activeVIP: activeVIP, db: db)
                 }
                 let (counts, badge) = try PerfMetrics.measure(.reloadCounts) {
                     try MailStore.fetchSidebarCounts(
                         db: db, activeAccount: activeAccount, badgeAccount: badgeAccount)
                 }
-                return ReloadPayload(threads: result, vipHits: vipHits,
-                                     counts: counts, badge: badge)
+                return ReloadPayload(threads: page, vipHits: vipHits,
+                                     counts: counts, badge: badge, hasMore: hasMore)
             }
             if let payload {
                 totalInterval.end(extraMeta: "n=\(payload.threads.count)")
@@ -1261,8 +1265,7 @@ final class MailStore: ObservableObject {
                 // Keep expanded window across sync/star reloads; search never pages.
                 if search.isEmpty {
                     self.listWindowLimit = max(self.listWindowLimit, payload.threads.count)
-                    self.hasMoreThreads = ThreadListPaging.hasMore(
-                        fetchedCount: payload.threads.count, pageSize: windowLimit)
+                    self.hasMoreThreads = payload.hasMore
                 } else {
                     self.hasMoreThreads = false
                 }
@@ -1281,6 +1284,7 @@ final class MailStore: ObservableObject {
 
     /// Whether the current list window may have older rows past the loaded depth.
     @Published private(set) var hasMoreThreads = false
+    @Published private(set) var isLoadingMore = false
     /// Cursor after the last loaded thread (for `loadMoreThreads`).
     private var listCursor: ThreadListCursor?
     private var loadMoreTask: Task<Void, Never>?
@@ -1314,32 +1318,40 @@ final class MailStore: ObservableObject {
         let savedViewsSnapshot = savedViews
         let activeVIP = activeVIPEmails
         let pool = db
+        isLoadingMore = true
         loadMoreTask = Task { [weak self] in
             defer {
                 Task { @MainActor in
                     guard let self, self.loadMoreToken == token else { return }
                     self.loadMoreTask = nil
+                    self.isLoadingMore = false
                 }
             }
-            let page: [MailThread]? = try? await pool.read { db in
-                var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
-                if chips.showArchived || chips.showSent {
-                    q = MailStore.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
+            let split: (page: [MailThread], hasMore: Bool)? = try? await PerfMetrics.measureAsync(
+                .pageLoadMore, meta: "probe"
+            ) {
+                try await pool.read { db -> (page: [MailThread], hasMore: Bool) in
+                    var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
+                    if chips.showArchived || chips.showSent {
+                        q = MailStore.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
+                    }
+                    q = MailStore.applyChips(q, chips, keepIds: keepIds)
+                    if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
+                    q = q.filter(sql: ThreadListPaging.olderThanSQL(),
+                                 arguments: [cursor.lastDate, cursor.lastDate, cursor.id])
+                    let rows = try q.order(Column("lastDate").desc, Column("id").desc)
+                        .limit(ThreadListPaging.probeLimit()).fetchAll(db)
+                    return ThreadListPaging.splitPage(rows)
                 }
-                q = MailStore.applyChips(q, chips, keepIds: keepIds)
-                if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                q = q.filter(sql: ThreadListPaging.olderThanSQL(),
-                             arguments: [cursor.lastDate, cursor.lastDate, cursor.id])
-                return try q.order(Column("lastDate").desc, Column("id").desc)
-                    .limit(ThreadListPaging.pageSize).fetchAll(db)
             }
-            guard let page, !page.isEmpty else {
+            guard let split, !split.page.isEmpty else {
                 await MainActor.run {
                     guard let self, generation == self.threadReloadGeneration else { return }
                     self.hasMoreThreads = false
                 }
                 return
             }
+            let page = split.page
             let vipHits = (try? await pool.read { db in
                 try MailStore.computeVIPThreadIds(threads: page, activeVIP: activeVIP, db: db)
             }) ?? []
@@ -1353,7 +1365,7 @@ final class MailStore: ObservableObject {
                 self.threads.append(contentsOf: fresh)
                 self.vipThreadIds.formUnion(vipHits)
                 self.listWindowLimit = max(self.listWindowLimit, self.threads.count)
-                self.hasMoreThreads = ThreadListPaging.hasMore(fetchedCount: page.count)
+                self.hasMoreThreads = split.hasMore
                 self.listCursor = ThreadListPaging.nextCursor(after: page)
             }
         }
@@ -1989,6 +2001,12 @@ final class MailStore: ObservableObject {
                     if Self.isReauthRequired(error) {
                         accountsNeedingReauth.insert(id)
                         lastError = "\(id): needs to be reauthorized (Settings → Accounts)."
+                    } else if case GmailError.partialFetch = error {
+                        // Soft: historyId not advanced; next sync retries.
+                        // Still run post-sync so successful upserts appear.
+                        accountsNeedingReauth.remove(id)
+                        await backfillSenderNameIfNeeded(accountId: id)
+                        await refreshSendIdentities(accountId: id)
                     } else {
                         lastError = "\(id): \(error.localizedDescription)"
                     }
@@ -2027,6 +2045,13 @@ final class MailStore: ObservableObject {
             if Self.isReauthRequired(error) {
                 accountsNeedingReauth.insert(accountId)
                 lastError = "\(accountId): needs to be reauthorized (Settings → Accounts)."
+            } else if case GmailError.partialFetch = error {
+                // Soft: apply what we got; historyId stays put for retry.
+                accountsNeedingReauth.remove(accountId)
+                await backfillSenderNameIfNeeded(accountId: accountId)
+                await refreshSendIdentities(accountId: accountId)
+                reloadAccounts()
+                reloadThreads()
             } else {
                 lastError = "\(accountId): \(error.localizedDescription)"
             }

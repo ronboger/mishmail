@@ -202,16 +202,16 @@ actor SyncEngine {
                 }
                 let missingSet = Set(missingIds)
                 let missingGmailIds = (page.messages ?? []).map(\.id).filter { missingSet.contains($0) }
-                // Batch HTTP when enabled (flag/env); else concurrent singles.
-                let fetchedMsgs = try await client.getMessages(ids: missingGmailIds)
-                for msg in fetchedMsgs {
+                // Batch HTTP when enabled; retry-exhausted ids retry next window pass.
+                let report = try await client.getMessages(ids: missingGmailIds)
+                for msg in report.messages {
                     let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
                     writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
                     if writeBuffer.count >= Self.writeChunkSize {
                         try await flushUpserts(&writeBuffer, into: &touchedKeys)
                     }
                 }
-                fetched += missingGmailIds.count
+                fetched += report.messages.count
                 // "Fetched" not "Downloaded": up to writeChunkSize-1 may still be
                 // buffered uncommitted; a failed final flush rolls those back.
                 if fetched > 0 { progress?("Fetched \(fetched) messages…") }
@@ -366,9 +366,11 @@ actor SyncEngine {
                     break
                 }
             }
+            var retryExhausted = 0
             if !needFull.isEmpty {
-                let msgs = (try? await client.getMessages(ids: needFull, format: "full")) ?? []
-                for msg in msgs {
+                let report = try await client.getMessages(ids: needFull, format: "full")
+                retryExhausted += report.retryExhaustedIds.count
+                for msg in report.messages {
                     let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
                     writeBuffer.append(PendingUpsert(
                         message: message, attachments: attachments, headersOnly: false))
@@ -378,8 +380,9 @@ actor SyncEngine {
                 }
             }
             if !needMeta.isEmpty {
-                let msgs = (try? await client.getMessages(ids: needMeta, format: "metadata")) ?? []
-                for msg in msgs {
+                let report = try await client.getMessages(ids: needMeta, format: "metadata")
+                retryExhausted += report.retryExhaustedIds.count
+                for msg in report.messages {
                     let (message, _) = MessageParser.parse(msg, accountId: accountId)
                     // headersOnly: patch labels/headers only — never touch message_body
                     // or attachments (metadata has empty payload).
@@ -390,6 +393,22 @@ actor SyncEngine {
                     }
                 }
             }
+            // Apply what we have, then refuse to advance history past misses
+            // so the next sync re-reads the same history range.
+            try await flushUpserts(&writeBuffer, into: &touchedKeys)
+            if !touchedKeys.isEmpty {
+                try await deriveThreads(for: touchedKeys)
+                progress?("Updated \(fullFetch.count + labelOnlyCount) messages")
+            }
+            if !deleted.isEmpty {
+                try await removeOrphanedThreads()
+            }
+            if retryExhausted > 0 {
+                PerfMetrics.measure(.syncHistoryPartial, meta: "failed=\(retryExhausted)") { () }
+                progress?("Sync incomplete (\(retryExhausted) messages pending retry)…")
+                throw GmailError.partialFetch(failedCount: retryExhausted)
+            }
+            return latest
         }
         try await flushUpserts(&writeBuffer, into: &touchedKeys)
 

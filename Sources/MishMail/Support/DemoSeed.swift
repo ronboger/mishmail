@@ -53,17 +53,13 @@ enum DemoSeed {
             }
 
             var touched = Set<String>()
+            var pending: [SyncEngine.PendingUpsert] = []
             for msg in messages() {
-                var m = msg
-                let bodyText = m.bodyText
-                let bodyHTML = m.bodyHTML
-                m.bodyText = ""
-                m.bodyHTML = nil
-                try m.insert(database)
-                try MessageBody(messageId: m.id, bodyText: bodyText, bodyHTML: bodyHTML)
-                    .insert(database)
-                touched.insert(m.threadId)
+                pending.append(.init(message: msg, attachments: []))
+                touched.insert(msg.threadId)
             }
+            // Same body-split path as live sync (v24 message_body).
+            _ = try SyncEngine.upsertPending(database, items: pending)
             try SyncEngine.deriveThreads(database, for: touched, accountId: account)
 
             for (threadId, category) in aiCategories {

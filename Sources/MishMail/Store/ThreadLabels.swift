@@ -6,11 +6,18 @@ import GRDB
 /// stay on denorm flags.
 enum ThreadLabels {
     /// Replace junction rows for `threadId` with the user labels in `labelIds`.
+    /// No-op when the set is already exact (avoids DELETE+reinsert churn).
     static func rewrite(_ db: Database, threadId: String, labelIds: String) throws {
-        try db.execute(sql: "DELETE FROM thread_label WHERE threadId = ?",
-                       arguments: [threadId])
         let user = labelIds.split(separator: " ").map(String.init)
             .filter { $0.hasPrefix("Label_") }
+            .sorted()
+        let existing = try String.fetchAll(
+            db,
+            sql: "SELECT labelId FROM thread_label WHERE threadId = ? ORDER BY labelId",
+            arguments: [threadId])
+        guard existing != user else { return }
+        try db.execute(sql: "DELETE FROM thread_label WHERE threadId = ?",
+                       arguments: [threadId])
         for lab in user {
             try ThreadLabel(threadId: threadId, labelId: lab).insert(db)
         }
