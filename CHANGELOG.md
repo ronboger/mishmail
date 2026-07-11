@@ -6,6 +6,21 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Added
+- **Reading-pane ⋯ menu** — always multi-item: mark read/unread, snooze, mark
+  as spam / not spam, block/unblock sender, open in Gmail (plus forward-all when
+  multi-message). Spam shortcut `!` (rebindable in Settings → Keyboard shortcuts;
+  toggles not-spam when already in Spam).
+- **Matching Gmail filters under each message** — collapsible disclosure when a
+  filter's criteria match; shared cache with Settings → Gmail filters. Best-effort
+  local match (`OR`, unary `-term`, structured criteria).
+- **Gmail web deep links** — `authuser=` with correct encoding (including `+` in
+  addresses) for thread and filters-settings URLs.
+
+### Notes
+- **Report phishing** deliberately not shipped — no public Gmail API path; see
+  `docs/plans/2026-07-11-report-phishing-deferred.md`.
+
 ### Fixed
 - **Reply HTML matches Gmail** — untouched replies now send a multipart HTML
   alternative with a real `gmail_quote` / `gmail_attr` / nested `blockquote`

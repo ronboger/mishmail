@@ -651,6 +651,117 @@ final class MailStore: ObservableObject {
         return hits
     }
 
+    // MARK: - Gmail filters (read-only cache)
+
+    /// Per-account Gmail filters, loaded lazily for Settings and for the
+    /// "matching filters" disclosure under each message card. Nil entry means
+    /// not yet attempted; empty array means loaded and the account has none.
+    @Published private(set) var filtersByAccount: [String: [GFilter]] = [:]
+    /// Human-readable load failure per account (scope missing, network, …).
+    /// Cleared on success. On transient failure we keep any previous cache so
+    /// matching-filter sections don't vanish because of a blip.
+    @Published private(set) var filtersLoadError: [String: String] = [:]
+    /// Accounts currently mid-fetch — UI can show a spinner. Backed by a
+    /// refcount so overlapping force+lazy loads don't drop the spinner early.
+    @Published private(set) var filtersLoading: Set<String> = []
+    private var filterLoadRefCounts: [String: Int] = [:]
+    /// In-flight filter fetches; concurrent callers await the same task.
+    /// Token lets a finishing load clear its slot without clobbering a newer one.
+    private var filterLoadTasks: [String: (token: UUID, task: Task<Void, Never>)] = [:]
+
+    /// Fetch filters for one account. Non-force short-circuits only on a
+    /// successful cache hit (errors are retried). Concurrent loads coalesce;
+    /// a `force` caller that joins an in-flight load then starts a fresh
+    /// fetch so Settings still gets a refresh.
+    func ensureFiltersLoaded(for accountId: String, force: Bool = false) async {
+        if !force, filtersByAccount[accountId] != nil { return }
+
+        if let inflight = filterLoadTasks[accountId] {
+            await inflight.task.value
+            if !force { return }
+            // Force after waiting: only join if a *different* load started
+            // while we slept. The finished load's continuation may not have
+            // cleared its slot yet (same-token stale entry) — fall through
+            // and refresh in that case, or the Settings force is dropped.
+            if let again = filterLoadTasks[accountId], again.token != inflight.token {
+                await again.task.value
+                return
+            }
+            // else fall through and refresh
+        }
+
+        let token = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.fetchFilters(accountId: accountId)
+        }
+        filterLoadTasks[accountId] = (token, task)
+        beginFilterLoad(accountId)
+        await task.value
+        if filterLoadTasks[accountId]?.token == token {
+            filterLoadTasks[accountId] = nil
+        }
+        endFilterLoad(accountId)
+    }
+
+    private func beginFilterLoad(_ accountId: String) {
+        filterLoadRefCounts[accountId, default: 0] += 1
+        filtersLoading.insert(accountId)
+    }
+
+    private func endFilterLoad(_ accountId: String) {
+        let n = (filterLoadRefCounts[accountId] ?? 1) - 1
+        if n <= 0 {
+            filterLoadRefCounts[accountId] = nil
+            filtersLoading.remove(accountId)
+        } else {
+            filterLoadRefCounts[accountId] = n
+        }
+    }
+
+    private func fetchFilters(accountId: String) async {
+        let previous = filtersByAccount[accountId]
+        let client = client(for: accountId)
+        do {
+            let filters = try await client.listFilters()
+            filtersByAccount[accountId] = filters
+            filtersLoadError[accountId] = nil
+        } catch GmailError.http(403, _) {
+            filtersLoadError[accountId] =
+                "MishMail doesn't have permission to read this account's filters yet. Remove and re-add the account (Accounts pane) to grant it."
+            // Keep any previous good cache; only leave the slot empty when we
+            // never had one (so UI can show the scope error).
+            if previous == nil { filtersByAccount[accountId] = nil }
+        } catch {
+            filtersLoadError[accountId] = error.localizedDescription
+            if previous == nil { filtersByAccount[accountId] = nil }
+        }
+    }
+
+    /// Best-effort filters whose criteria match this message. Empty when the
+    /// account's filters aren't loaded yet or none match.
+    func matchingFilters(for message: Message) -> [GFilter] {
+        guard let filters = filtersByAccount[message.accountId] else { return [] }
+        return GmailFilterMatch.matching(filters, message: .init(message))
+    }
+
+    /// Open the thread in gmail.com (useful for filter edits / full Gmail UI).
+    func openInGmail(_ thread: MailThread) {
+        guard let url = GmailWebLinks.threadURL(
+            accountEmail: thread.accountId, gmailThreadId: thread.gmailThreadId)
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Block the thread's newest-from address (denorm `fromEmail`). No-op for
+    /// empty / own addresses. Used by the reading-pane ⋯ menu.
+    func blockThreadSender(_ thread: MailThread) {
+        let email = thread.fromEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard email.contains("@") else { return }
+        guard !accounts.contains(where: { $0.id.lowercased() == email }) else { return }
+        blockSender(email)
+    }
+
     // MARK: - Blocked senders
 
     /// Lowercased blocked addresses. Their threads move to Spam immediately
@@ -2304,6 +2415,10 @@ final class MailStore: ObservableObject {
         case .toggleStar: selectedThread.map(toggleStar)
         case .toggleRead: if let t = selectedThread { setRead(t, read: t.isUnread) }
         case .snooze: if let t = selectedThread { snoozingThread = t }
+        case .markSpam:
+            if let t = selectedThread {
+                if t.inSpam { markNotSpam(t) } else { markSpam(t) }
+            }
         case .next: moveSelection(1)
         case .prev: moveSelection(-1)
         case .reply: if let t = selectedThread {
@@ -2670,6 +2785,28 @@ final class MailStore: ObservableObject {
                 t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
             } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
+            }
+            self.undoAction = nil
+        }
+    }
+
+    /// Inverse of `markSpam`: remove SPAM, restore INBOX. Used from the
+    /// overflow menu when the thread is already in Spam (and as spam-undo).
+    func markNotSpam(_ thread: MailThread) {
+        let wasSelected = selectedThreadId == thread.id
+        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
+        mutateThread(thread) { t in
+            t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
+        } remote: { client, id in
+            try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
+        }
+        advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
+        offerUndo("Marked as not spam") { [weak self] in
+            guard let self else { return }
+            self.mutateThread(thread) { t in
+                t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
+            } remote: { client, id in
+                try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
             }
             self.undoAction = nil
         }

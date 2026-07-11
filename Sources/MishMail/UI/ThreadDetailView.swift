@@ -133,6 +133,9 @@ struct ThreadDetailView: View {
                     }
                     .help("Forward newest message (\(store.keyBindings.key(for: .forward))) · starts a new conversation")
                 }
+                // Overflow holds secondary actions that already exist via
+                // keyboard (read, snooze) plus spam / open-in-Gmail. Always
+                // multi-item so the chevron never looks like a one-action menu.
                 Menu {
                     // Hide when only one non-draft message (drafts are excluded
                     // from the package — counting them would falsely enable this).
@@ -146,9 +149,62 @@ struct ThreadDetailView: View {
                         }
                     }
                     Button {
-                        store.markSpam(thread)
+                        store.setRead(thread, read: thread.isUnread)
                     } label: {
-                        Label("Mark as spam", systemImage: "exclamationmark.octagon")
+                        Label(thread.isUnread ? "Mark as read" : "Mark as unread",
+                              systemImage: thread.isUnread
+                                ? "envelope.open" : "envelope.badge")
+                    }
+                    Button {
+                        store.snoozingThread = thread
+                    } label: {
+                        Label("Snooze", systemImage: "clock")
+                    }
+                    Divider()
+                    if thread.inSpam {
+                        Button {
+                            store.markNotSpam(thread)
+                        } label: {
+                            Label("Not spam", systemImage: "tray")
+                        }
+                        .help("Not spam (\(store.keyBindings.key(for: .markSpam)))")
+                    } else {
+                        Button {
+                            store.markSpam(thread)
+                        } label: {
+                            Label("Mark as spam", systemImage: "exclamationmark.octagon")
+                        }
+                        .help("Mark as spam (\(store.keyBindings.key(for: .markSpam)))")
+                    }
+                    // Report phishing deferred — public Gmail API has no
+                    // phishing endpoint (Notion may soft-map to spam). See
+                    // docs/plans/2026-07-11-report-phishing-deferred.md.
+                    // Block is the local equivalent (From → Spam on sight).
+                    let blockEmail = thread.fromEmail
+                    if !blockEmail.isEmpty,
+                       !store.accounts.contains(where: {
+                           $0.id.lowercased() == blockEmail.lowercased()
+                       }) {
+                        if store.isBlocked(blockEmail) {
+                            Button {
+                                store.unblockSender(blockEmail)
+                            } label: {
+                                Label("Unblock \(blockEmail)",
+                                      systemImage: "person.crop.circle.badge.checkmark")
+                            }
+                        } else {
+                            Button(role: .destructive) {
+                                store.blockThreadSender(thread)
+                            } label: {
+                                Label("Block sender",
+                                      systemImage: "person.crop.circle.badge.xmark")
+                            }
+                        }
+                    }
+                    Button {
+                        store.openInGmail(thread)
+                    } label: {
+                        Label("Open in Gmail", systemImage: "safari")
                     }
                 } label: {
                     Label("More", systemImage: "ellipsis")
@@ -645,6 +701,11 @@ struct MessageCard: View {
                     .help("Forward this message · starts a new conversation")
                 }
                 .padding(.top, 4)
+
+                // Which of your Gmail filters match this message — collapsed
+                // by default; toggle the header to expand. Hidden until the
+                // account's filters have loaded and at least one hits.
+                MatchingFiltersSection(message: message, fontScale: fontScale)
             } else {
                 Text(message.snippet.decodingHTMLEntities())
                     .font(.system(size: 12.5 * fontScale)).foregroundStyle(.secondary).lineLimit(1)
@@ -820,6 +881,93 @@ struct MessageCard: View {
         if mime.hasPrefix("video/") { return "film" }
         if mime.hasPrefix("audio/") { return "waveform" }
         return "doc"
+    }
+}
+
+// MARK: - Matching Gmail filters (per message)
+
+/// Collapsible disclosure under an expanded message listing the account's
+/// Gmail filters whose criteria match this message. Loads filters lazily
+/// via `MailStore.ensureFiltersLoaded`; hidden when none match or filters
+/// aren't readable yet (scope / empty account).
+private struct MatchingFiltersSection: View {
+    @EnvironmentObject var store: MailStore
+    let message: Message
+    var fontScale: Double = 1.0
+    @State private var expanded = false
+
+    private var matches: [GFilter] {
+        store.matchingFilters(for: message)
+    }
+
+    private var isLoading: Bool {
+        store.filtersLoading.contains(message.accountId)
+            && store.filtersByAccount[message.accountId] == nil
+    }
+
+    var body: some View {
+        Group {
+            if !matches.isEmpty {
+                VStack(alignment: .leading, spacing: 6) {
+                    Button {
+                        withAnimation(.easeOut(duration: 0.1)) { expanded.toggle() }
+                    } label: {
+                        HStack(spacing: 6) {
+                            Image(systemName: "line.3.horizontal.decrease")
+                                .font(.system(size: 11 * fontScale))
+                            Text(matches.count == 1
+                                 ? "1 matching filter"
+                                 : "\(matches.count) matching filters")
+                                .font(.system(size: 12 * fontScale, weight: .medium))
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 9 * fontScale, weight: .semibold))
+                                .rotationEffect(.degrees(expanded ? 90 : 0))
+                            Spacer(minLength: 0)
+                        }
+                        .foregroundStyle(.secondary)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help(expanded
+                          ? "Hide matching Gmail filters"
+                          : "Show Gmail filters that match this message")
+
+                    if expanded {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(matches) { filter in
+                                GmailFilterSentenceRow(
+                                    filter: filter,
+                                    accountId: message.accountId,
+                                    compact: true)
+                            }
+                            Button("Edit filters in Gmail…") {
+                                if let url = GmailWebLinks.filtersSettingsURL(
+                                    accountEmail: message.accountId) {
+                                    NSWorkspace.shared.open(url)
+                                }
+                            }
+                            .font(.system(size: 11 * fontScale))
+                            .buttonStyle(.plain)
+                            .foregroundStyle(.secondary)
+                        }
+                        .padding(.leading, 2)
+                        .transition(.opacity)
+                    }
+                }
+                .padding(.top, 6)
+            } else if isLoading {
+                HStack(spacing: 6) {
+                    ProgressView().controlSize(.mini)
+                    Text("Checking filters…")
+                        .font(.system(size: 11 * fontScale))
+                        .foregroundStyle(.tertiary)
+                }
+                .padding(.top, 4)
+            }
+        }
+        .task(id: message.accountId) {
+            await store.ensureFiltersLoaded(for: message.accountId)
+        }
     }
 }
 

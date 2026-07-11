@@ -89,6 +89,8 @@ targets:
       - Sources/MishMail/Support/SelectionAdvance.swift
       - Sources/MishMail/Support/GoToMailbox.swift
       - Sources/MishMail/Support/AccountOrder.swift
+      - Sources/MishMail/Support/GmailFilterMatch.swift
+      - Sources/MishMail/Support/GmailWebLinks.swift
       - Sources/MishMail/Support/SnoozeDateParser.swift
       - Sources/MishMail/Support/PrioritySplit.swift
       - Sources/MishMail/Support/SendSchedule.swift

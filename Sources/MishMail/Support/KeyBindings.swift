@@ -4,6 +4,7 @@ import Combine
 /// A user-rebindable single-key command (Gmail-style, no modifiers).
 enum ShortcutCommand: String, CaseIterable, Codable {
     case archive, trash, toggleStar, toggleRead, snooze
+    case markSpam
     case reply, replyAll, forward, label, undo, compose
     case next, prev
 }
@@ -37,6 +38,9 @@ final class KeyBindings: ObservableObject {
         .init(command: .toggleStar, title: "Star / Unstar", category: .actions, defaultKey: "s"),
         .init(command: .toggleRead, title: "Mark read / unread", category: .actions, defaultKey: "u"),
         .init(command: .snooze, title: "Snooze", category: .actions, defaultKey: "b"),
+        // Gmail's Report spam key. When the thread is already in Spam the
+        // same binding runs Not spam (toggle) — see MailStore.perform.
+        .init(command: .markSpam, title: "Mark as spam / Not spam", category: .actions, defaultKey: "!"),
         .init(command: .reply, title: "Reply", category: .actions, defaultKey: "r"),
         .init(command: .replyAll, title: "Reply all", category: .actions, defaultKey: "a"),
         .init(command: .forward, title: "Forward", category: .actions, defaultKey: "f"),
