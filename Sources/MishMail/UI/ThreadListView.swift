@@ -145,24 +145,14 @@ struct ThreadListView: View {
     }
 
     private func groupedByDate(_ threads: [MailThread]) -> [(String, [MailThread])] {
-        let cal = Calendar.current
-        let now = Date()
-        var groups: [(String, [MailThread])] = []
-        var buckets: [String: [MailThread]] = [:]
-        let order = ["Today", "Yesterday", "Last 7 days", "Last 30 days", "Older"]
-        for thread in threads {
-            let key: String
-            if cal.isDateInToday(thread.lastDate) { key = "Today" }
-            else if cal.isDateInYesterday(thread.lastDate) { key = "Yesterday" }
-            else if thread.lastDate > now.addingTimeInterval(-7 * 86400) { key = "Last 7 days" }
-            else if thread.lastDate > now.addingTimeInterval(-30 * 86400) { key = "Last 30 days" }
-            else { key = "Older" }
-            buckets[key, default: []].append(thread)
+        // Bucket by the same activity date the list is ordered on. Inbox-style
+        // views use lastInboundDate so replying does not re-hoist a thread
+        // into the "Today" section (SQL inbound sort alone only orders
+        // *within* buckets).
+        let inbound = MailStore.usesInboundSort(for: store.selectedView)
+        return ThreadDateSections.group(threads) {
+            ThreadListPaging.activityDate(of: $0, inboundSort: inbound)
         }
-        for key in order where buckets[key] != nil {
-            groups.append((key, buckets[key]!))
-        }
-        return groups
     }
 
     private func partition(_ threads: [MailThread], _ yes: String, _ no: String,

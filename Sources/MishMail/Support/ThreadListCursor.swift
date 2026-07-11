@@ -64,4 +64,41 @@ enum ThreadListPaging {
         let key = sortDateSQL(inboundSort: inboundSort)
         return "(\(key) < ? OR (\(key) = ? AND id < ?))"
     }
+
+    /// Date used for list *activity* (SQL order + date-section buckets).
+    /// When `inboundSort` is true, own outbound does not advance the key.
+    static func activityDate(of thread: MailThread, inboundSort: Bool) -> Date {
+        inboundSort ? thread.inboxSortDate : thread.lastDate
+    }
+}
+
+/// Pure "Today / Yesterday / …" bucketing for the thread list date group.
+/// Kept free of SwiftUI so the "own reply must not re-hoist into Today"
+/// contract is unit-testable.
+enum ThreadDateSections {
+    static let order = ["Today", "Yesterday", "Last 7 days", "Last 30 days", "Older"]
+
+    static func sectionKey(for date: Date, now: Date = Date(),
+                           calendar: Calendar = .current) -> String {
+        if calendar.isDateInToday(date) { return "Today" }
+        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        if date > now.addingTimeInterval(-7 * 86_400) { return "Last 7 days" }
+        if date > now.addingTimeInterval(-30 * 86_400) { return "Last 30 days" }
+        return "Older"
+    }
+
+    /// Group threads by `dateKey`, preserving `order` section sequence.
+    /// Within each bucket, original relative order of `threads` is kept
+    /// (caller usually already sorted by the same activity date DESC).
+    static func group(_ threads: [MailThread],
+                      dateKey: (MailThread) -> Date,
+                      now: Date = Date(),
+                      calendar: Calendar = .current) -> [(String, [MailThread])] {
+        var buckets: [String: [MailThread]] = [:]
+        for thread in threads {
+            let key = sectionKey(for: dateKey(thread), now: now, calendar: calendar)
+            buckets[key, default: []].append(thread)
+        }
+        return order.compactMap { key in buckets[key].map { (key, $0) } }
+    }
 }

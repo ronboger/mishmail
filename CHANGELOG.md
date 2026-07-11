@@ -20,9 +20,12 @@ minor versions may still change behavior.
 - **Own reply no longer bumps inbox position** — schema v25 adds
   `lastInboundDate` (nullable). Inbox / promotions / social / per-account
   inbox order by `COALESCE(lastInboundDate, lastDate)`; Sent, Drafts, search,
-  row timestamps, and date buckets keep `lastDate` = newest message. "Remind
-  if no reply" cancels only when `lastInboundDate` advances (own follow-ups
-  on pure-outbound threads no longer clear the reminder).
+  and row timestamps keep `lastDate` = newest message. Date-section grouping
+  ("Today" / "Yesterday" / …) uses the same activity key as the list sort, so
+  a reply does not re-hoist a thread into "Today" under the default Group by
+  Date view. "Remind if no reply" cancels only when `lastInboundDate`
+  advances (own follow-ups on pure-outbound threads no longer clear the
+  reminder).
 
 ### Changed
 - **Renamed to MishMail** — the app, bundle identifiers, Xcode project, targets,
