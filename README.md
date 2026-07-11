@@ -220,7 +220,8 @@ mail content is sent to a remote HTTPS host.
   256-bit key held only in the Keychain.
 - **HTML email is sandboxed** — rendered with JavaScript disabled, a strict CSP
   (`default-src 'none'`, `base-uri 'none'`, no forms/frames/objects), remote
-  images blocked until you opt in per message (HTTPS only — no cleartext
+  images blocked until you opt in (per message, per conversation, or via the
+  Settings image policy: Ask / VIP senders / Always; HTTPS only — no cleartext
   tracking pixels), an ephemeral web data store, and a default-deny navigation
   policy so crafted mail can't redirect, auto-submit forms, or reach the
   network. Links open in your default browser.
@@ -247,6 +248,19 @@ mail content is sent to a remote HTTPS host.
   immediately.
 
 See [SECURITY.md](SECURITY.md) for how to report a vulnerability.
+
+## Support
+
+MishMail is free and always will be — no accounts, no upsells, no telemetry. If
+it's earned a place in your day and you'd like to help keep it maintained, a tip
+is genuinely appreciated (but never expected):
+
+- **[GitHub Sponsors](https://github.com/sponsors/ronboger)** — one-time or
+  monthly, 0% platform fee.
+- **Ethereum** — `0x34fC989CF3eF410F7fa1D3B236DA42d88005e99B`
+
+Prefer to contribute code or a bug report instead? That's worth more than money —
+see [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 

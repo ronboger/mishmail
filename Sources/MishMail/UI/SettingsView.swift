@@ -322,14 +322,10 @@ struct AccountsSettings: View {
 
 struct GmailFiltersSettings: View {
     @EnvironmentObject var store: MailStore
-    // One value per account with exactly two cases, so filters and errors
-    // can't drift out of sync.
-    private enum LoadState {
-        case loaded([GFilter])
-        case failed(String)
+
+    private var anyLoading: Bool {
+        store.accounts.contains { store.filtersLoading.contains($0.id) }
     }
-    @State private var results: [String: LoadState] = [:]
-    @State private var loading = false
 
     var body: some View {
         PaneScaffold(title: "Gmail filters",
@@ -352,11 +348,16 @@ struct GmailFiltersSettings: View {
                         accountSection(account.id)
                     }
                     HStack {
-                        if loading { ProgressView().controlSize(.small) }
+                        if anyLoading { ProgressView().controlSize(.small) }
                         Spacer()
                         Button("Edit filters in Gmail…") {
-                            NSWorkspace.shared.open(
-                                URL(string: "https://mail.google.com/mail/u/0/#settings/filters")!)
+                            // Prefer the first account's authuser so multi-
+                            // account users land on a real mailbox; Gmail's
+                            // #settings/filters is per signed-in session.
+                            let email = store.accounts.first?.id ?? ""
+                            if let url = GmailWebLinks.filtersSettingsURL(accountEmail: email) {
+                                NSWorkspace.shared.open(url)
+                            }
                         }
                         .font(.system(size: 12))
                     }
@@ -369,167 +370,45 @@ struct GmailFiltersSettings: View {
 
     @ViewBuilder
     private func accountSection(_ accountId: String) -> some View {
-        switch results[accountId] {
-        case .failed(let error):
+        if let error = store.filtersLoadError[accountId],
+           store.filtersByAccount[accountId] == nil {
             Label(error, systemImage: "exclamationmark.triangle")
                 .font(.system(size: 12)).foregroundStyle(.secondary)
                 .padding(.horizontal, 20).padding(.vertical, 10)
-        case .loaded(let filters):
+        } else if let filters = store.filtersByAccount[accountId] {
             if filters.isEmpty {
                 Text("No filters set up in Gmail for this account.")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
                     .padding(.horizontal, 20).padding(.vertical, 10)
             }
             ForEach(filters) { filter in
-                FilterRowView(filter: filter, accountId: accountId)
+                GmailFilterSentenceRow(filter: filter, accountId: accountId)
+                    .padding(.horizontal, 20).padding(.vertical, 12)
                 Divider().padding(.leading, 20)
             }
-        case nil:
+        } else if store.filtersLoading.contains(accountId) {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.small)
+                Text("Loading filters…")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            }
+            .padding(.horizontal, 20).padding(.vertical, 10)
+        } else {
             EmptyView()
         }
     }
 
     private func load() async {
-        guard !loading else { return }
-        loading = true
-        defer { loading = false }
-        // Accounts fetch concurrently; results land as each one finishes.
-        await withTaskGroup(of: (String, Result<[GFilter], Error>).self) { group in
+        // Shared cache with the per-message matching-filters disclosure.
+        // Force refresh when opening Settings so edits made in Gmail show up.
+        await withTaskGroup(of: Void.self) { group in
             for account in store.accounts {
                 let id = account.id
-                let client = store.client(for: id)
-                group.addTask {
-                    do { return (id, .success(try await client.listFilters())) }
-                    catch { return (id, .failure(error)) }
-                }
-            }
-            for await (id, result) in group {
-                switch result {
-                case .success(let filters):
-                    results[id] = .loaded(filters)
-                case .failure(GmailError.http(403, _)):
-                    results[id] = .failed(
-                        "MishMail doesn't have permission to read this account's filters yet. Remove and re-add the account (Accounts pane) to grant it.")
-                case .failure(let error):
-                    results[id] = .failed(error.localizedDescription)
+                group.addTask { @MainActor in
+                    await store.ensureFiltersLoaded(for: id, force: true)
                 }
             }
         }
-    }
-}
-
-/// One filter rendered as a Notion Mail-style sentence:
-/// "If mail is from x@y.com, then Add label ian and Skip inbox".
-private struct FilterRowView: View {
-    @EnvironmentObject var store: MailStore
-    let filter: GFilter
-    let accountId: String
-
-    var body: some View {
-        HStack(alignment: .firstTextBaseline, spacing: 12) {
-            Image(systemName: iconName)
-                .font(.system(size: 13))
-                .foregroundStyle(.secondary)
-                .frame(width: 26, height: 26)
-                .background(Color.primary.opacity(0.06), in: Circle())
-            sentence
-                .font(.system(size: 13))
-                .lineSpacing(3)
-                .frame(maxWidth: .infinity, alignment: .leading)
-        }
-        .padding(.horizontal, 20).padding(.vertical, 12)
-    }
-
-    private var iconName: String {
-        let adds = filter.action?.addLabelIds ?? []
-        if filter.action?.forward != nil { return "arrowshape.turn.up.right" }
-        if adds.contains(where: { !["TRASH", "SPAM", "STARRED", "IMPORTANT"].contains($0)
-                                  && !$0.hasPrefix("CATEGORY_") }) { return "tag" }
-        if adds.contains("TRASH") { return "trash" }
-        if adds.contains("SPAM") || (filter.action?.removeLabelIds ?? []).contains("SPAM") {
-            return "nosign"
-        }
-        return "line.3.horizontal.decrease"
-    }
-
-    private var sentence: Text {
-        let conditions = conditionPhrases
-        let actions = actionPhrases
-        var t = Text("If mail ").foregroundColor(.secondary)
-        for (i, c) in conditions.enumerated() {
-            if i > 0 { t = t + Text(" and ").foregroundColor(.secondary) }
-            t = t + c.styled
-        }
-        t = t + Text(", then ").foregroundColor(.secondary)
-        for (i, a) in actions.enumerated() {
-            if i > 0 { t = t + Text(" and ").foregroundColor(.secondary) }
-            t = t + a.styled
-        }
-        return t
-    }
-
-    /// A phrase with plain lead-in text and an emphasized (accent) value.
-    private struct Phrase {
-        var plain: String
-        var value: String = ""
-
-        var styled: Text {
-            let lead = Text(plain).foregroundColor(.primary)
-            guard !value.isEmpty else { return lead }
-            return lead + Text(value).foregroundColor(.accentColor)
-        }
-    }
-
-    private var conditionPhrases: [Phrase] {
-        var out: [Phrase] = []
-        if let from = filter.criteria?.from { out.append(.init(plain: "is from ", value: from)) }
-        if let to = filter.criteria?.to { out.append(.init(plain: "is to ", value: to)) }
-        if let subject = filter.criteria?.subject { out.append(.init(plain: "has subject ", value: subject)) }
-        if let query = filter.criteria?.query { out.append(.init(plain: "matches ", value: query)) }
-        if let negated = filter.criteria?.negatedQuery { out.append(.init(plain: "does not match ", value: negated)) }
-        if filter.criteria?.hasAttachment == true { out.append(.init(plain: "has an attachment")) }
-        if let size = filter.criteria?.size {
-            let formatted = ByteCountFormatter.string(fromByteCount: Int64(size),
-                                                      countStyle: .binary)
-            let comparison = filter.criteria?.sizeComparison == "smaller" ? "smaller" : "larger"
-            out.append(.init(plain: "is \(comparison) than ", value: formatted))
-        }
-        if out.isEmpty { out.append(.init(plain: "arrives")) }
-        return out
-    }
-
-    private var actionPhrases: [Phrase] {
-        var out: [Phrase] = []
-        for id in filter.action?.addLabelIds ?? [] {
-            switch id {
-            case "TRASH": out.append(.init(plain: "Delete it"))
-            case "STARRED": out.append(.init(plain: "Star it"))
-            case "IMPORTANT": out.append(.init(plain: "Always mark it as important"))
-            case "SPAM": out.append(.init(plain: "Send it to Spam"))
-            case let cat where cat.hasPrefix("CATEGORY_"):
-                let name = cat.dropFirst("CATEGORY_".count).capitalized
-                out.append(.init(plain: "Categorize as ", value: name))
-            default:
-                let name = store.labelName(id, account: accountId) ?? id
-                out.append(.init(plain: "Add label ", value: name))
-            }
-        }
-        for id in filter.action?.removeLabelIds ?? [] {
-            switch id {
-            case "INBOX": out.append(.init(plain: "Skip inbox"))
-            case "UNREAD": out.append(.init(plain: "Mark it as read"))
-            case "SPAM": out.append(.init(plain: "Never send it to Spam"))
-            case "IMPORTANT": out.append(.init(plain: "Never mark it as important"))
-            default:
-                let name = store.labelName(id, account: accountId) ?? id
-                out.append(.init(plain: "Remove label ", value: name))
-            }
-        }
-        if let forward = filter.action?.forward {
-            out.append(.init(plain: "Forward to ", value: forward))
-        }
-        if out.isEmpty { out.append(.init(plain: "do nothing")) }
-        return out
     }
 }
 
@@ -629,34 +508,47 @@ private struct SnippetTableRow: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Text("/\(snippet.name)")
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                if snippet.movesToBcc { MovesToBccBadge() }
+        HStack(spacing: 8) {
+            // Click the row to edit — not a toggle or menu.
+            Button(action: edit) {
+                HStack(spacing: 0) {
+                    HStack(spacing: 6) {
+                        Text("/\(snippet.name)")
+                            .font(.system(size: 13, weight: .medium))
+                            .lineLimit(1)
+                        if snippet.movesToBcc { MovesToBccBadge() }
+                    }
+                    .frame(width: 170, alignment: .leading)
+                    Text(snippet.previewLine)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                }
+                .contentShape(Rectangle())
             }
-            .frame(width: 170, alignment: .leading)
-            Text(snippet.previewLine)
-                .font(.system(size: 12.5))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 8)
-            Menu {
-                Button("Edit…") { edit() }
-                Button("Delete", role: .destructive) { delete() }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            .buttonStyle(.plain)
+            .help("Edit “\(snippet.name)”")
+
+            if hovering {
+                Button(action: delete) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Delete “\(snippet.name)”")
+                .accessibilityLabel("Delete \(snippet.name)")
+            } else {
+                // Keep row width stable when the × appears on hover.
+                Color.clear.frame(width: 22, height: 22)
             }
-            .menuStyle(.borderlessButton).fixedSize()
-            .opacity(hovering ? 1 : 0.35)
         }
         .padding(.horizontal, 20).padding(.vertical, 10)
-        .contentShape(Rectangle())
         .background(hovering ? Color.primary.opacity(0.04) : .clear)
         .onHover { hovering = $0 }
-        .onTapGesture(count: 2) { edit() }
     }
 }
 
@@ -727,6 +619,9 @@ struct AppearanceSettings: View {
     @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
     @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
     @AppStorage("vipAlwaysPins") private var vipAlwaysPins = true
+    /// Default `.ask` preserves privacy (no open-tracking until opt-in).
+    @AppStorage(RemoteImagePolicy.defaultsKey) private var remoteImagePolicyRaw =
+        RemoteImagePolicy.ask.rawValue
     @State private var showVIPManager = false
 
     private var priorityMode: PrioritySplit.Mode {
@@ -782,6 +677,20 @@ struct AppearanceSettings: View {
                     .pickerStyle(.segmented)
                 } footer: {
                     Text("Also adjustable anywhere with Cmd + and Cmd −.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Picker("Load remote images", selection: $remoteImagePolicyRaw) {
+                        ForEach(RemoteImagePolicy.allCases) { policy in
+                            Text(policy.title).tag(policy.rawValue)
+                        }
+                    }
+                } header: {
+                    Text("Remote images")
+                } footer: {
+                    Text((RemoteImagePolicy(rawValue: remoteImagePolicyRaw) ?? .ask).footer
+                         + " Cleartext image URLs stay blocked either way.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -1074,8 +983,9 @@ private struct VIPManager: View {
 /// Shared group menu: pick an existing group (checkmark on the current one),
 /// create a suggested group in one click, or name a new one in a popover.
 private struct GroupMenuButton: View {
-    /// Groups worth offering before any exist; hidden once created.
-    static let suggested = ["founders", "investors", "researchers", "family", "friends"]
+    /// Neutral starter group names — no personal taxonomy committed in-repo.
+    /// Hidden once the user has created them (or an equivalent).
+    static let suggested = ["work", "family", "friends"]
 
     let current: String?          // nil = no group
     let allGroups: [String]

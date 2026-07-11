@@ -1,0 +1,7 @@
+# GitHub renders these as funding links in the repo sidebar / "Sponsor" button.
+
+github: [ronboger]                 # GitHub Sponsors (enables the "Sponsor" button)
+
+# Crypto has no native field; publish the ETH address via a custom link.
+custom:
+  - "https://etherscan.io/address/0x34fC989CF3eF410F7fa1D3B236DA42d88005e99B"

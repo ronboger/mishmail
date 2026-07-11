@@ -15,8 +15,10 @@ final class KeyBindingsTests: XCTestCase {
         let kb = KeyBindings(defaults: defaults)
         XCTAssertEqual(kb.key(for: .archive), "e")
         XCTAssertEqual(kb.key(for: .trash), "#")
+        XCTAssertEqual(kb.key(for: .markSpam), "!")
         XCTAssertEqual(kb.command(for: "j"), .next)
         XCTAssertEqual(kb.command(for: "k"), .prev)
+        XCTAssertEqual(kb.command(for: "!"), .markSpam)
         XCTAssertNil(kb.command(for: "x"))
         XCTAssertNil(kb.command(for: "g"))  // reserved, never a command
     }

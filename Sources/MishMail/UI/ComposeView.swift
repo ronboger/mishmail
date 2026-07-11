@@ -48,6 +48,8 @@ struct ComposeView: View {
     /// Esc-dismissed the current token (cleared when the token goes away).
     @State private var slashSelection = 0
     @State private var slashDismissed = false
+    /// UTF-16 caret in the body editor — drives caret-aware `/` detection.
+    @State private var bodyCaretUTF16 = 0
     /// Local keyDown monitor that steals ↑/↓/Return/Tab/Esc while the `/`
     /// picker is up — the NSTextView behind TextEditor consumes those keys
     /// before SwiftUI's onKeyPress ever sees them.
@@ -116,7 +118,8 @@ struct ComposeView: View {
     /// Inlines the collapsed quote into the editor, making it editable.
     private func expandQuote() {
         guard !quotedTail.isEmpty else { return }
-        body_ = fullBody
+        // Caret stays where it was in the head (still a valid offset).
+        setBody(fullBody, caretUTF16: bodyCaretUTF16)
         // The quote is still prefill, not authored content.
         initialBody = "\n\n" + quotedTail
         quotedTail = ""
@@ -142,9 +145,20 @@ struct ComposeView: View {
         quotedTail = tail
         var head = String(body_[..<start])
         while head.last == "\n" { head.removeLast() }
-        body_ = head
+        // If the caret was inside the quote, park it at end of authored head.
+        let headLen = (head as NSString).length
+        setBody(head, caretUTF16: min(bodyCaretUTF16, headLen))
         // A never-edited body collapses back to pure prefill.
         if untouched { initialBody = "" }
+    }
+
+    /// Rewrite the body and park the caret. Every programmatic `body_` write
+    /// goes through here so ComposeBodyEditor's rewrite path never teleports
+    /// the caret to a stale `caretUTF16` left over from a prior edit.
+    private func setBody(_ newBody: String, caretUTF16: Int) {
+        body_ = newBody
+        let maxLen = (newBody as NSString).length
+        bodyCaretUTF16 = max(0, min(caretUTF16, maxLen))
     }
 
     /// Content the user actually authored (quoted/reply prefill doesn't count).
@@ -345,6 +359,7 @@ struct ComposeView: View {
 
             // Markdown source editor: live highlight + ⌘B/⌘I/… shortcuts.
             ComposeBodyEditor(text: $body_, isFocused: $bodyFocused,
+                              caretUTF16: $bodyCaretUTF16,
                               formatTarget: formatTarget, fontSize: 14)
                 .padding(.top, 10)
                 .padding(.bottom, 6)
@@ -353,6 +368,10 @@ struct ComposeView: View {
                 // bodyEditorMaxHeight.
                 .frame(minHeight: 120, maxHeight: bodyEditorMaxHeight)
                 .onChange(of: body_) {
+                    slashSelection = 0
+                    if slashToken == nil { slashDismissed = false }
+                }
+                .onChange(of: bodyCaretUTF16) {
                     slashSelection = 0
                     if slashToken == nil { slashDismissed = false }
                 }
@@ -726,7 +745,7 @@ struct ComposeView: View {
             bccTokens = MessageParser.splitAddresses(r.bcc).filter { $0.contains("@") }
             if !bccTokens.isEmpty { showBcc = true }
             subject = r.subject
-            body_ = r.body
+            setBody(r.body, caretUTF16: 0)
             restoredAttachments = r.attachments
             initialBody = ""   // an undone send always counts as content
             focusBody()
@@ -758,7 +777,7 @@ struct ComposeView: View {
                 .map { MessageParser.emailAddress($0) }.filter { $0.contains("@") }
             if !bccTokens.isEmpty { showBcc = true }
             subject = draft.subject
-            body_ = draft.bodyText
+            setBody(draft.bodyText, caretUTF16: 0)
             initialBody = ""   // a draft always counts as content
             // The draft's files come back as chips — re-saving keeps them.
             prefillAttachments(of: draft)
@@ -841,15 +860,9 @@ struct ComposeView: View {
 
         // Quote the previous message so the context travels with the draft —
         // collapsed behind the "…" button so the editor starts empty and the
-        // cursor lands at the top.
-        let when = original.date.formatted(date: .abbreviated, time: .shortened)
-        let who = "\(MessageParser.displayName(fromHeader: original.fromHeader)) <\(sender)>"
-        let quoted = MessageParser
-            .replyQuotableText(text: original.bodyText, html: original.bodyHTML)
-            .split(separator: "\n", omittingEmptySubsequences: false)
-            .map { $0.isEmpty ? ">" : "> \($0)" }
-            .joined(separator: "\n")
-        quotedTail = "\nOn \(when), \(who) wrote:\n\(quoted)"
+        // cursor lands at the top. Shape must match ReplyComposer.plainQuote
+        // exactly so send can upgrade to Gmail-style HTML when untouched.
+        quotedTail = ReplyComposer.plainQuote(of: original)
         focusBody()
     }
 
@@ -930,7 +943,11 @@ struct ComposeView: View {
                 for try await piece in Ollama.generateStream(prompt: prompt) {
                     accumulated += piece
                     let snapshot = accumulated
-                    await MainActor.run { body_ = snapshot + quoteTail }
+                    await MainActor.run {
+                        // Caret follows the growing draft (end of authored head).
+                        setBody(snapshot + quoteTail,
+                                caretUTF16: (snapshot as NSString).length)
+                    }
                 }
             } catch {
                 await MainActor.run { self.error = error.localizedDescription }
@@ -947,9 +964,16 @@ struct ComposeView: View {
             .lowerBound ?? body_.endIndex
     }
 
-    /// The active `/query` the user is typing at the end of their text, if any.
+    /// The active `/query` ending at the caret inside the authored head.
+    /// Caret-based so a second `/` mid-message (or after a prior insert) works
+    /// and so inserting never swallows text that sits after the caret.
+    /// Returns nil when the caret sits past the head (e.g. inside an expanded
+    /// quote) — clamping would falsely keep a head token live.
     private var slashToken: SnippetInsertion.SlashToken? {
-        SnippetInsertion.slashToken(in: String(body_[..<authoredHeadEnd]))
+        let head = String(body_[..<authoredHeadEnd])
+        let headUTF16 = (head as NSString).length
+        guard bodyCaretUTF16 >= 0, bodyCaretUTF16 <= headUTF16 else { return nil }
+        return SnippetInsertion.slashToken(in: head, caretUTF16: bodyCaretUTF16)
     }
 
     /// Whether the `/` picker should be showing: body focused, a live slash
@@ -1053,7 +1077,9 @@ struct ComposeView: View {
             if let href = ComposeLinks.selfLink(forSelection: selected),
                let next = ComposeLinks.applyLink(in: body_, selection: range,
                                                  text: selected, url: href) {
-                body_ = next
+                // Park after the inserted markdown link.
+                let delta = (next as NSString).length - nsBody.length
+                setBody(next, caretUTF16: location + length + delta)
                 bodyFocused = true
                 return
             }
@@ -1082,7 +1108,9 @@ struct ComposeView: View {
               let next = ComposeLinks.applyLink(in: body_, selection: range,
                                                 text: text.isEmpty ? nil : text,
                                                 url: url) else { return }
-        body_ = next
+        let oldLen = (body_ as NSString).length
+        let delta = (next as NSString).length - oldLen
+        setBody(next, caretUTF16: linkSelLocation + linkSelLength + delta)
         bodyFocused = true
     }
 
@@ -1090,20 +1118,32 @@ struct ComposeView: View {
         let sel = NSRange(location: linkSelLocation, length: linkSelLength)
         guard let range = ComposeLinks.stringRange(nsRange: sel, in: body_),
               let existing = ComposeLinks.link(at: range.lowerBound, in: body_) else { return }
-        body_ = ComposeLinks.removeLink(existing, in: body_)
+        let next = ComposeLinks.removeLink(existing, in: body_)
+        // Park at the start of where the link was.
+        setBody(next, caretUTF16: NSRange(existing.range, in: body_).location)
         bodyFocused = true
     }
 
     /// Replaces the typed `/query` with the chosen snippet, expanded.
     private func insertSlashSnippet(_ snippet: Snippet) {
         let head = String(body_[..<authoredHeadEnd])
-        guard let token = SnippetInsertion.slashToken(in: head) else { return }
-        let start = head.distance(from: head.startIndex, to: token.range.lowerBound)
-        let end = head.distance(from: head.startIndex, to: token.range.upperBound)
-        let lo = body_.index(body_.startIndex, offsetBy: start)
-        let hi = body_.index(body_.startIndex, offsetBy: end)
-        body_.replaceSubrange(lo..<hi, with: expandSnippet(snippet))
+        let headUTF16 = (head as NSString).length
+        // Same rule as slashToken: caret past the head → no insert.
+        guard bodyCaretUTF16 >= 0, bodyCaretUTF16 <= headUTF16 else { return }
+        guard let token = SnippetInsertion.slashToken(in: head, caretUTF16: bodyCaretUTF16) else { return }
+        let expanded = expandSnippet(snippet)
+        // Token range is inside `head`; map to UTF-16 offsets in the full body
+        // (authored head is always a prefix, so offsets match).
+        let nsRange = NSRange(token.range, in: head)
+        let nsBody = body_ as NSString
+        let before = nsBody.substring(to: nsRange.location)
+        let after = nsBody.substring(from: nsRange.location + nsRange.length)
+        let next = before + expanded + after
+        // Park the caret just after the inserted text so a second `/` can
+        // fire immediately without the picker latching onto mid-snippet text.
+        setBody(next, caretUTF16: (before as NSString).length + (expanded as NSString).length)
         slashSelection = 0
+        slashDismissed = false
     }
 
     /// Inserts a snippet where the user writes: above the quoted original on
@@ -1116,11 +1156,14 @@ struct ComposeView: View {
             var head = String(body_[..<quote.lowerBound])
             while head.hasSuffix("\n") { head.removeLast() }
             let written = head.isEmpty ? text : head + "\n" + text
-            body_ = written + "\n" + String(body_[quote.lowerBound...])
+            let next = written + "\n" + String(body_[quote.lowerBound...])
+            setBody(next, caretUTF16: (written as NSString).length)
         } else if body_.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-            body_ = text
+            setBody(text, caretUTF16: (text as NSString).length)
         } else {
-            body_ += (body_.hasSuffix("\n") ? "" : "\n") + text
+            let sep = body_.hasSuffix("\n") ? "" : "\n"
+            let next = body_ + sep + text
+            setBody(next, caretUTF16: (next as NSString).length)
         }
     }
 

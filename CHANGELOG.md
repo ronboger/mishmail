@@ -6,6 +6,42 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Added
+- **Reading-pane ⋯ menu** — always multi-item: mark read/unread, snooze, mark
+  as spam / not spam, block/unblock sender, open in Gmail (plus forward-all when
+  multi-message). Spam shortcut `!` (rebindable in Settings → Keyboard shortcuts;
+  toggles not-spam when already in Spam).
+- **Matching Gmail filters under each message** — collapsible disclosure when a
+  filter's criteria match; shared cache with Settings → Gmail filters. Best-effort
+  local match (`OR`, unary `-term`, structured criteria).
+- **Gmail web deep links** — `authuser=` with correct encoding (including `+` in
+  addresses) for thread and filters-settings URLs.
+
+### Notes
+- **Report phishing** deliberately not shipped — no public Gmail API path; see
+  `docs/plans/2026-07-11-report-phishing-deferred.md`.
+
+### Fixed
+- **Reply HTML matches Gmail** — untouched replies now send a multipart HTML
+  alternative with a real `gmail_quote` / `gmail_attr` / nested `blockquote`
+  and the original message's HTML inside (same pattern as forwards). Previously
+  the plain `> ` quote trail was run through markdown, which flattened nested
+  history, leaked literal `>` prefixes, and looked broken in Gmail and other
+  clients. Quote matching uses a pinned date formatter; quoted HTML strips
+  `cid:` images and document chrome (`style`/`html`/`head`) so the trail
+  doesn't ship broken inline images or restyle the authored head. Scheduled
+  sends hydrate the reply parent body (post-v24 off-row storage); reopened
+  reply drafts recover the parent for In-Reply-To + HTML upgrade.
+- **Own reply no longer bumps inbox position** — schema v25 adds
+  `lastInboundDate` (nullable). Inbox / promotions / social / per-account
+  inbox order by `COALESCE(lastInboundDate, lastDate)`; Sent, Drafts, search,
+  and row timestamps keep `lastDate` = newest message. Date-section grouping
+  ("Today" / "Yesterday" / …) uses the same activity key as the list sort, so
+  a reply does not re-hoist a thread into "Today" under the default Group by
+  Date view. "Remind if no reply" cancels only when `lastInboundDate`
+  advances (own follow-ups on pure-outbound threads no longer clear the
+  reminder).
+
 ### Changed
 - **Renamed to MishMail** — the app, bundle identifiers, Xcode project, targets,
   release artifacts, and GitHub repository references now use the MishMail name.
@@ -13,6 +49,13 @@ minor versions may still change behavior.
   Keychain namespaces for this pre-1.0 rename.
 
 ### Added
+- **Remote image policy** — Settings → Appearance: Ask each time (default),
+  VIP senders, or Always. Load images click loads this message; the menu
+  offers this conversation. Cleartext image URLs stay blocked either way.
+- **Copy / Save thread as Markdown** — thread ⋯ menu: copy the conversation
+  to the clipboard or save a `.md` file (bodies, Markdown links from HTML
+  anchors, attachment filenames). Save failures alert and fall back to the
+  clipboard.
 - **Compose markdown** — write `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``,
   `#`/`##`/`###` headings, lists, `>` quotes, and `$math$` / `$$display$$` in the
   compose body. Live syntax highlighting, footer format buttons, and shortcuts

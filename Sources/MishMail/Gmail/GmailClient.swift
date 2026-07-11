@@ -13,10 +13,12 @@ struct GMessageList: Decodable {
     let nextPageToken: String?
 }
 
-struct GMessage: Decodable {
-    struct Header: Decodable { let name: String; let value: String }
-    struct Body: Decodable { let data: String?; let attachmentId: String?; let size: Int? }
-    final class Part: Decodable {
+struct GMessage: Decodable, Sendable {
+    struct Header: Decodable, Sendable { let name: String; let value: String }
+    struct Body: Decodable, Sendable { let data: String?; let attachmentId: String?; let size: Int? }
+    /// Recursive MIME tree — class (not struct) so Decodable can handle self-reference.
+    /// All stored properties are immutable `let`s of Sendable types, so Sendable is safe.
+    final class Part: Decodable, Sendable {
         let mimeType: String?
         let filename: String?
         let headers: [Header]?

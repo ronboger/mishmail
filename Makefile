@@ -27,6 +27,9 @@ PROJECT = MishMail.xcodeproj
 VERSION = $(shell awk '/MARKETING_VERSION:/ {print $$2}' project.yml)
 # Derived data path — the .noindex suffix keeps every product out of Spotlight.
 DD = build/dd.noindex
+# Pin arch so xcodebuild doesn't warn about multiple matching destinations
+# (arm64 + x86_64 "My Mac" on Apple Silicon).
+DESTINATION = platform=macOS,arch=$(shell uname -m)
 DEBUG_APP = $(DD)/Build/Products/Debug/MishMail Debug.app
 RELEASE_APP = $(DD)/Build/Products/Release/MishMail.app
 RELEASE_DIR = $(DD)/Build/Products/Release
@@ -48,12 +51,12 @@ gen:
 test: gen
 	# No -quiet: show "Executed N tests" (silent pass looked like a no-op).
 	xcodebuild test -project $(PROJECT) -scheme MishMailTests \
-		-destination 'platform=macOS' -derivedDataPath $(DD)
+		-destination '$(DESTINATION)' -derivedDataPath $(DD)
 
 # The throwaway test app (Debug identity, isolated data).
 build: gen
 	xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Debug \
-		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet
+		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet
 
 # Build the test app and launch it in place — the "let me look at my change"
 # verb. Launches with the fictional demo inbox by default (see DemoSeed.swift)
@@ -76,7 +79,7 @@ demo: build
 # my machine" verb. Replaces whatever MishMail.app is there.
 install: gen
 	xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
-		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet $(RELEASE_SIGN_FLAGS)
+		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet $(RELEASE_SIGN_FLAGS)
 	rm -rf /Applications/MishMail.app
 	ditto "$(RELEASE_APP)" /Applications/MishMail.app
 	@echo "Installed MishMail.app → /Applications (your daily driver)."
@@ -95,7 +98,7 @@ release: test
 		exit 1; \
 	fi
 	xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
-		-destination 'platform=macOS' -derivedDataPath $(DD) -quiet $(RELEASE_SIGN_FLAGS)
+		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet $(RELEASE_SIGN_FLAGS)
 	cd $(RELEASE_DIR) && \
 		ditto -c -k --keepParent MishMail.app $(ZIP_NAME) && \
 		shasum -a 256 $(ZIP_NAME) > SHA256SUMS && \

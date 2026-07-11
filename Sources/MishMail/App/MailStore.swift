@@ -651,6 +651,117 @@ final class MailStore: ObservableObject {
         return hits
     }
 
+    // MARK: - Gmail filters (read-only cache)
+
+    /// Per-account Gmail filters, loaded lazily for Settings and for the
+    /// "matching filters" disclosure under each message card. Nil entry means
+    /// not yet attempted; empty array means loaded and the account has none.
+    @Published private(set) var filtersByAccount: [String: [GFilter]] = [:]
+    /// Human-readable load failure per account (scope missing, network, …).
+    /// Cleared on success. On transient failure we keep any previous cache so
+    /// matching-filter sections don't vanish because of a blip.
+    @Published private(set) var filtersLoadError: [String: String] = [:]
+    /// Accounts currently mid-fetch — UI can show a spinner. Backed by a
+    /// refcount so overlapping force+lazy loads don't drop the spinner early.
+    @Published private(set) var filtersLoading: Set<String> = []
+    private var filterLoadRefCounts: [String: Int] = [:]
+    /// In-flight filter fetches; concurrent callers await the same task.
+    /// Token lets a finishing load clear its slot without clobbering a newer one.
+    private var filterLoadTasks: [String: (token: UUID, task: Task<Void, Never>)] = [:]
+
+    /// Fetch filters for one account. Non-force short-circuits only on a
+    /// successful cache hit (errors are retried). Concurrent loads coalesce;
+    /// a `force` caller that joins an in-flight load then starts a fresh
+    /// fetch so Settings still gets a refresh.
+    func ensureFiltersLoaded(for accountId: String, force: Bool = false) async {
+        if !force, filtersByAccount[accountId] != nil { return }
+
+        if let inflight = filterLoadTasks[accountId] {
+            await inflight.task.value
+            if !force { return }
+            // Force after waiting: only join if a *different* load started
+            // while we slept. The finished load's continuation may not have
+            // cleared its slot yet (same-token stale entry) — fall through
+            // and refresh in that case, or the Settings force is dropped.
+            if let again = filterLoadTasks[accountId], again.token != inflight.token {
+                await again.task.value
+                return
+            }
+            // else fall through and refresh
+        }
+
+        let token = UUID()
+        let task = Task { @MainActor [weak self] in
+            guard let self else { return }
+            await self.fetchFilters(accountId: accountId)
+        }
+        filterLoadTasks[accountId] = (token, task)
+        beginFilterLoad(accountId)
+        await task.value
+        if filterLoadTasks[accountId]?.token == token {
+            filterLoadTasks[accountId] = nil
+        }
+        endFilterLoad(accountId)
+    }
+
+    private func beginFilterLoad(_ accountId: String) {
+        filterLoadRefCounts[accountId, default: 0] += 1
+        filtersLoading.insert(accountId)
+    }
+
+    private func endFilterLoad(_ accountId: String) {
+        let n = (filterLoadRefCounts[accountId] ?? 1) - 1
+        if n <= 0 {
+            filterLoadRefCounts[accountId] = nil
+            filtersLoading.remove(accountId)
+        } else {
+            filterLoadRefCounts[accountId] = n
+        }
+    }
+
+    private func fetchFilters(accountId: String) async {
+        let previous = filtersByAccount[accountId]
+        let client = client(for: accountId)
+        do {
+            let filters = try await client.listFilters()
+            filtersByAccount[accountId] = filters
+            filtersLoadError[accountId] = nil
+        } catch GmailError.http(403, _) {
+            filtersLoadError[accountId] =
+                "MishMail doesn't have permission to read this account's filters yet. Remove and re-add the account (Accounts pane) to grant it."
+            // Keep any previous good cache; only leave the slot empty when we
+            // never had one (so UI can show the scope error).
+            if previous == nil { filtersByAccount[accountId] = nil }
+        } catch {
+            filtersLoadError[accountId] = error.localizedDescription
+            if previous == nil { filtersByAccount[accountId] = nil }
+        }
+    }
+
+    /// Best-effort filters whose criteria match this message. Empty when the
+    /// account's filters aren't loaded yet or none match.
+    func matchingFilters(for message: Message) -> [GFilter] {
+        guard let filters = filtersByAccount[message.accountId] else { return [] }
+        return GmailFilterMatch.matching(filters, message: .init(message))
+    }
+
+    /// Open the thread in gmail.com (useful for filter edits / full Gmail UI).
+    func openInGmail(_ thread: MailThread) {
+        guard let url = GmailWebLinks.threadURL(
+            accountEmail: thread.accountId, gmailThreadId: thread.gmailThreadId)
+        else { return }
+        NSWorkspace.shared.open(url)
+    }
+
+    /// Block the thread's newest-from address (denorm `fromEmail`). No-op for
+    /// empty / own addresses. Used by the reading-pane ⋯ menu.
+    func blockThreadSender(_ thread: MailThread) {
+        let email = thread.fromEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard email.contains("@") else { return }
+        guard !accounts.contains(where: { $0.id.lowercased() == email }) else { return }
+        blockSender(email)
+    }
+
     // MARK: - Blocked senders
 
     /// Lowercased blocked addresses. Their threads move to Spam immediately
@@ -1299,6 +1410,7 @@ final class MailStore: ObservableObject {
                             break
                         }
                         if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
+                        // Search always ranks by newest message (lastDate).
                         return try q.order(Column("lastDate").desc, Column("id").desc)
                             .limit(fetchLimit).fetchAll(db)
                     } else {
@@ -1309,7 +1421,9 @@ final class MailStore: ObservableObject {
                         }
                         q = MailStore.applyChips(q, chips, keepIds: keepIds)
                         if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                        return try q.order(Column("lastDate").desc, Column("id").desc)
+                        let inbound = MailStore.usesInboundSort(for: view)
+                        let key = ThreadListPaging.sortDateSQL(inboundSort: inbound)
+                        return try q.order(sql: "\(key) DESC, id DESC")
                             .limit(fetchLimit).fetchAll(db)
                     }
                 }
@@ -1342,7 +1456,9 @@ final class MailStore: ObservableObject {
                 } else {
                     self.hasMoreThreads = false
                 }
-                self.listCursor = ThreadListPaging.nextCursor(after: payload.threads)
+                let inbound = MailStore.usesInboundSort(for: self.selectedView)
+                self.listCursor = ThreadListPaging.nextCursor(
+                    after: payload.threads, inboundSort: inbound)
                 self.vipThreadIds = payload.vipHits
                 // Local sidebar counts only: they use the same denorm filters as
                 // the visible lists (inbox/promotions/social exclude spam, and
@@ -1413,9 +1529,11 @@ final class MailStore: ObservableObject {
                     }
                     q = MailStore.applyChips(q, chips, keepIds: keepIds)
                     if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                    q = q.filter(sql: ThreadListPaging.olderThanSQL(),
-                                 arguments: [cursor.lastDate, cursor.lastDate, cursor.id])
-                    let rows = try q.order(Column("lastDate").desc, Column("id").desc)
+                    let inbound = MailStore.usesInboundSort(for: view)
+                    let key = ThreadListPaging.sortDateSQL(inboundSort: inbound)
+                    q = q.filter(sql: ThreadListPaging.olderThanSQL(inboundSort: inbound),
+                                 arguments: [cursor.sortDate, cursor.sortDate, cursor.id])
+                    let rows = try q.order(sql: "\(key) DESC, id DESC")
                         .limit(ThreadListPaging.probeLimit()).fetchAll(db)
                     return ThreadListPaging.splitPage(rows)
                 }
@@ -1442,8 +1560,18 @@ final class MailStore: ObservableObject {
                 self.vipThreadIds.formUnion(vipHits)
                 self.listWindowLimit = max(self.listWindowLimit, self.threads.count)
                 self.hasMoreThreads = split.hasMore
-                self.listCursor = ThreadListPaging.nextCursor(after: page)
+                let inbound = MailStore.usesInboundSort(for: self.selectedView)
+                self.listCursor = ThreadListPaging.nextCursor(
+                    after: self.threads, inboundSort: inbound)
             }
+        }
+    }
+
+    /// Inbox-style views sort by last *inbound* so own replies don't reshuffle.
+    nonisolated static func usesInboundSort(for view: MailboxView) -> Bool {
+        switch view {
+        case .inbox, .promotions, .social, .account: return true
+        default: return false
         }
     }
 
@@ -2232,10 +2360,12 @@ final class MailStore: ObservableObject {
             var copy = thread
             copy.reminderAt = nil
             copy.reminderSetAt = nil
-            // "Remind if no reply": if the thread advanced after the reminder
-            // was set (a reply or any new message), the nudge is moot — clear
-            // it silently instead of firing.
-            let replied = thread.reminderSetAt.map { thread.lastDate > $0 } ?? false
+            // "Remind if no reply": only *inbound* activity cancels the nudge.
+            // Own follow-ups update lastDate but leave lastInboundDate alone
+            // (or nil for pure-outbound threads), so they don't look like a reply.
+            let replied = thread.reminderSetAt.flatMap { setAt in
+                thread.lastInboundDate.map { $0 > setAt }
+            } ?? false
             if !replied {
                 Notifier.notify(title: "Follow up: \(thread.fromDisplay)",
                                 body: thread.subject.isEmpty ? thread.snippet : thread.subject,
@@ -2285,6 +2415,10 @@ final class MailStore: ObservableObject {
         case .toggleStar: selectedThread.map(toggleStar)
         case .toggleRead: if let t = selectedThread { setRead(t, read: t.isUnread) }
         case .snooze: if let t = selectedThread { snoozingThread = t }
+        case .markSpam:
+            if let t = selectedThread {
+                if t.inSpam { markNotSpam(t) } else { markSpam(t) }
+            }
         case .next: moveSelection(1)
         case .prev: moveSelection(-1)
         case .reply: if let t = selectedThread {
@@ -2656,6 +2790,28 @@ final class MailStore: ObservableObject {
         }
     }
 
+    /// Inverse of `markSpam`: remove SPAM, restore INBOX. Used from the
+    /// overflow menu when the thread is already in Spam (and as spam-undo).
+    func markNotSpam(_ thread: MailThread) {
+        let wasSelected = selectedThreadId == thread.id
+        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
+        mutateThread(thread) { t in
+            t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
+        } remote: { client, id in
+            try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
+        }
+        advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
+        offerUndo("Marked as not spam") { [weak self] in
+            guard let self else { return }
+            self.mutateThread(thread) { t in
+                t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
+            } remote: { client, id in
+                try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
+            }
+            self.undoAction = nil
+        }
+    }
+
     func trash(_ thread: MailThread) {
         // Gmail-style auto-advance: when the selected thread is trashed, land
         // on the next conversation down (or the one above if it was last)
@@ -2879,13 +3035,11 @@ final class MailStore: ObservableObject {
 
     private func pendingSend(from s: ScheduledSend) -> PendingSend {
         // The referenced messages may have been pruned since; threading
-        // headers then simply fall away.
-        let replyTo = s.replyToMessageId.flatMap { id in
-            (try? db.read { try Message.fetchOne($0, key: id) }) ?? nil
-        }
-        let draft = s.replacingDraftId.flatMap { id in
-            (try? db.read { try Message.fetchOne($0, key: id) }) ?? nil
-        }
+        // headers then simply fall away. Bodies live off-row (v24) — use
+        // messageBody so ReplyComposer/ForwardComposer can still match the
+        // quote and emit Gmail-style HTML.
+        let replyTo = s.replyToMessageId.flatMap { messageBody(id: $0) }
+        let draft = s.replacingDraftId.flatMap { messageBody(id: $0) }
         return PendingSend(accountId: s.accountId, fromEmail: s.effectiveFromEmail,
                            to: s.toHeader, cc: s.ccHeader,
                            bcc: s.bccHeader, subject: s.subject, body: s.body,
@@ -2932,7 +3086,9 @@ final class MailStore: ObservableObject {
             replyAccountId: threadParent?.accountId,
             draftAccountId: draft?.accountId)
         let identityEmail = fromEmail.isEmpty ? apiAccountId : fromEmail
-        let bodyHTML = htmlAlternative(body: body, forwardOf: forward ? message : nil,
+        let bodyHTML = htmlAlternative(body: body,
+                                       forwardOf: forward ? message : nil,
+                                       replyTo: forward ? nil : message,
                                        draft: draft)
         let raw = MIMEBuilder.build(
             from: fromHeader(accountId: apiAccountId, fromEmail: identityEmail),
@@ -2952,14 +3108,17 @@ final class MailStore: ObservableObject {
 
     /// HTML alternative for an outgoing message:
     /// 1. Untouched forward quote → original HTML under user text
-    /// 2. Unedited draft body → preserved draft HTML
-    /// 3. Markdown body → rendered HTML (bold, headers, math, lists, …)
-    /// 4. Otherwise → ComposeLinks linkification (markdown links + bare URLs)
+    /// 2. Untouched reply quote → Gmail-style gmail_quote + original HTML
+    /// 3. Unedited draft body → preserved draft HTML
+    /// 4. Markdown body → rendered HTML (bold, headers, math, lists, …)
+    /// 5. Otherwise → ComposeLinks linkification (markdown links + bare URLs)
     ///
     /// Forward single vs Forward-all is resolved by
     /// `ForwardComposer.matchHTMLUpgrade` (all-package first — see that
-    /// method; drafts are excluded from Forward-all).
+    /// method; drafts are excluded from Forward-all). Replies use
+    /// `ReplyComposer` so nested history isn't re-markdown'd as `>` lines.
     private func htmlAlternative(body: String, forwardOf original: Message?,
+                                 replyTo replyParent: Message? = nil,
                                  draft: Message?) -> String? {
         if let orig = original {
             let threadMsgs = messages(inThread: orig.threadId)
@@ -2970,10 +3129,15 @@ final class MailStore: ObservableObject {
             // Content drift (new mail in thread since compose) or an edited
             // quote: neither package matches → fall through to plain/markdown.
         }
+        if let parent = replyParent,
+           let match = ReplyComposer.matchHTMLUpgrade(body: body, original: parent) {
+            return ReplyComposer.htmlBody(userText: match.userText, original: match.original)
+        }
         if let draft, let html = draft.bodyHTML, !html.isEmpty, body == draft.bodyText {
             return html
         }
-        // Markdown-authored body (replies with quotes count — `>` lines).
+        // Markdown-authored body. Reply quotes that failed the upgrade above
+        // still match `^>\s` here — best-effort, not Gmail-shaped.
         if Markdown.looksLikeMarkdown(body) {
             return Markdown.toHTML(body)
         }
@@ -3000,7 +3164,10 @@ final class MailStore: ObservableObject {
         let raw = MIMEBuilder.build(
             from: fromHeader(accountId: apiAccountId, fromEmail: identityEmail),
             to: to, cc: cc, bcc: bcc, subject: subject, bodyText: body,
-            bodyHTML: htmlAlternative(body: body, forwardOf: forward ? message : nil, draft: draft),
+            bodyHTML: htmlAlternative(body: body,
+                                      forwardOf: forward ? message : nil,
+                                      replyTo: forward ? nil : message,
+                                      draft: draft),
             inReplyTo: threadParent?.messageIdHeader,
             references: threadParent?.referencesHeader ?? draft?.referencesHeader,
             attachments: attachments
@@ -3027,11 +3194,43 @@ final class MailStore: ObservableObject {
         return !msgs.isEmpty && msgs.allSatisfy { $0.labelIds.contains("DRAFT") }
     }
 
-    /// Opens an existing draft back into compose.
+    /// Opens an existing draft back into compose. Reply drafts recover the
+    /// parent message so send still attaches In-Reply-To and the Gmail-style
+    /// HTML upgrade; forward / brand-new-compose drafts leave replyTo nil.
     func editDraft(inThread thread: MailThread) {
-        if let draft = messages(inThread: thread.id).last(where: { $0.labelIds.contains("DRAFT") }) {
-            composeRequest = ComposeRequest(replyTo: nil, editDraft: draft)
+        let msgs = messages(inThread: thread.id)
+        guard let draft = msgs.last(where: { ForwardComposer.hasDraftLabel($0.labelIds) })
+        else { return }
+        let parent = Self.replyParent(forDraft: draft, inThread: msgs)
+        composeRequest = ComposeRequest(replyTo: parent, editDraft: draft)
+    }
+
+    /// Latest non-draft message to thread a reopened reply draft against.
+    /// Nil for forward drafts (body carries the forward marker / Fwd: subject)
+    /// and for draft-only threads (new compose never left the box).
+    static func replyParent(forDraft draft: Message, inThread msgs: [Message]) -> Message? {
+        if draft.bodyText.contains(ForwardComposer.marker) { return nil }
+        if draft.subject.lowercased().hasPrefix("fwd:") { return nil }
+        let nonDrafts = msgs.filter { !ForwardComposer.hasDraftLabel($0.labelIds) }
+        guard !nonDrafts.isEmpty else { return nil }
+        // Prefer matching References' last Message-ID (immediate parent) when
+        // Gmail echoed it onto the draft row after save.
+        if !draft.referencesHeader.isEmpty {
+            let tokens = draft.referencesHeader
+                .split(whereSeparator: \.isWhitespace).map(String.init)
+            if let last = tokens.last {
+                let bare = last.trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+                if let match = nonDrafts.last(where: {
+                    let mid = $0.messageIdHeader
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+                    return !mid.isEmpty && mid == bare
+                }) {
+                    return match
+                }
+            }
         }
+        // Chronological last non-draft (msgs is oldest-first from messages(inThread:)).
+        return nonDrafts.last
     }
 
     /// Deletes the Gmail draft behind a local draft message.
