@@ -89,12 +89,18 @@ struct ComposeBodyEditor: NSViewRepresentable {
         context.coordinator.textView = textView
 
         if textView.string != text {
+            // Suppress publishCaret while rewriting: assigning string and
+            // setSelectedRange both fire textViewDidChangeSelection
+            // synchronously, and writing the binding mid-updateNSView is
+            // "modifying state during view update". Callers that rewrite
+            // body_ also set caretUTF16 to the intended park position.
+            let coord = context.coordinator
+            coord.isProgrammaticUpdate = true
             textView.string = text
-            // Prefer the bound caret (set after slash-insert, etc.) over the
-            // pre-replace selection, which is usually stale after a rewrite.
             let maxLen = (text as NSString).length
             let loc = min(max(caretUTF16, 0), maxLen)
             textView.setSelectedRange(NSRange(location: loc, length: 0))
+            coord.isProgrammaticUpdate = false
             Coordinator.highlight(textView, fontSize: fontSize)
         }
 
@@ -122,6 +128,10 @@ struct ComposeBodyEditor: NSViewRepresentable {
         var formatTarget: ComposeBodyFormatTarget?
         weak var textView: ComposeBodyTextView?
         var fontSize: CGFloat = 14
+        /// True while updateNSView (or another external rewrite) is driving
+        /// the text view — selection-change callbacks must not write the
+        /// caret binding (SwiftUI forbids state mutation during view update).
+        var isProgrammaticUpdate = false
 
         init(text: Binding<String>, isFocused: Binding<Bool>,
              caretUTF16: Binding<Int>,
@@ -139,6 +149,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
         }
 
         private func publishCaret(_ textView: NSTextView) {
+            guard !isProgrammaticUpdate else { return }
             let loc = textView.selectedRange().location
             if caretUTF16.wrappedValue != loc {
                 caretUTF16.wrappedValue = loc
@@ -147,7 +158,12 @@ struct ComposeBodyEditor: NSViewRepresentable {
 
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
-            text.wrappedValue = textView.string
+            // textDidChange also fires for some programmatic edits; skip the
+            // binding write when we're mid-rewrite so SwiftUI doesn't see a
+            // state mutation inside updateNSView.
+            if !isProgrammaticUpdate {
+                text.wrappedValue = textView.string
+            }
             publishCaret(textView)
             Self.highlight(textView, fontSize: fontSize)
         }
