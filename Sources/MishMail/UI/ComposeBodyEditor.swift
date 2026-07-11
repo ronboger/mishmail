@@ -100,8 +100,10 @@ struct ComposeBodyEditor: NSViewRepresentable {
             let maxLen = (text as NSString).length
             let loc = min(max(caretUTF16, 0), maxLen)
             textView.setSelectedRange(NSRange(location: loc, length: 0))
-            coord.isProgrammaticUpdate = false
+            // Keep the guard up through highlight so a future attribute/text
+            // mutation inside it can't leak a binding write mid-update.
             Coordinator.highlight(textView, fontSize: fontSize)
+            coord.isProgrammaticUpdate = false
         }
 
         // Only programmatically *take* focus (e.g. focusBody after prefill).
