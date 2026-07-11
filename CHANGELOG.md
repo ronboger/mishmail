@@ -45,6 +45,13 @@ minor versions may still change behavior.
   discoverable.
 
 ### Fixed
+- **Dark-mode inline highlighter strips** — Word / Google Docs / some campus
+  mail wrap body copy in `<span style="background:#fff">` (or similar). Those
+  pure-inline light fills paint per-line white fragment boxes over the dark
+  reading pane (black-on-white “highlighter” bars). Strip the fill on
+  `display:inline` light surfaces (and attribute-matched `span`/`font`/… on
+  first paint) so force-light text sits on the chrome; keep block cards and
+  `inline-block` CTAs as real light surfaces with dark text.
 - **Dark-mode HTML contrast from effective background** — force-light text
   over dark chrome, dark text only where the nearest opaque fill is light
   (Notion Calendar white canvas, cream panels, sig cards). Nested dark

@@ -8,6 +8,10 @@ import Foundation
 ///    sig cards, cream panels, full-bleed white transactional mail).
 /// 3. Force light text again where a nested section paints a dark fill
 ///    (Google welcome mail: white wrapper + black body sections + blue CTAs).
+/// 4. Strip light fills on pure `display:inline` nodes (Word / Google Docs
+///    highlighter spans). Inline light backgrounds paint per-line fragment
+///    boxes — black text on white strips over dark chrome — instead of real
+///    designed cards. Transparentize them so body force-light text wins.
 ///
 /// Light-vs-dark is resolved by app-injected JS: walk the DOM, track the
 /// nearest opaque `background-color` ancestor, and stamp a per-element
@@ -16,13 +20,22 @@ import Foundation
 ///
 /// Attribute selectors remain a first-paint fast path for the element that
 /// owns a light bgcolor/style only (inheritance covers transparent kids
-/// until JS retags every node).
+/// until JS retags every node). Inline light attributes are stripped rather
+/// than force-darkened.
 enum HTMLBodyDarkMode {
     /// Dark text (`#222`) — effective background is light.
     static let fgOnLightClass = "mm-fg-on-light"
     /// Light text (`#e6e6e6`) — effective background is dark, or transparent
     /// over the reading-pane chrome.
     static let fgOnDarkClass = "mm-fg-on-dark"
+    /// Light fill cleared on an inline highlighter; treat as transparent for
+    /// contrast inheritance.
+    static let stripInlineBgClass = "mm-strip-inline-bg"
+
+    /// Tags whose attribute light-bg is almost never a designed card — Word /
+    /// Google Docs / Gmail paste highlighters. First-paint CSS strips these;
+    /// JS also strips any `display:inline` light fill (including from classes).
+    static let inlineHighlighterTags = "span, font, mark, b, i, u, em, strong, a"
 
     /// Relative luminance above this (sRGB 0–1) counts as a light surface.
     /// ~0.72 is mid-cream; pure white is 1.0, `#faf8f5` is ~0.97.
@@ -44,6 +57,8 @@ enum HTMLBodyDarkMode {
         let light = lightSurfaceSelector
         let onLight = fgOnLightClass
         let onDark = fgOnDarkClass
+        let strip = stripInlineBgClass
+        let inlineTags = inlineHighlighterTags
         return """
         :root { color-scheme: light dark; }
         html, body { height: auto !important; min-height: 0 !important; }
@@ -52,9 +67,18 @@ enum HTMLBodyDarkMode {
         @media (prefers-color-scheme: dark) {
           body, body :not(a):not(a *) { color: #e6e6e6 !important; }
           a, a * { color: #6cb2ff !important; }
-          /* First-paint fast path: light bgcolor/style on the node itself only
-             (no descendant force — nested dark sections must not go dark-on-dark). */
-          :is(\(light)) { color: #222 !important; }
+          /* Inline light fills (Word/Docs highlighters): clear the paint so we
+             do not get per-line white strips. Body force-light text applies. */
+          :is(\(inlineTags)):is(\(light)),
+          .\(strip) {
+            background-color: transparent !important;
+            background-image: none !important;
+          }
+          /* Block-ish light surfaces only — exclude inline highlighter tags so
+             we never force #222 onto stripped spans. Self-only (no descendants). */
+          :is(\(light)):not(span):not(font):not(mark):not(b):not(i):not(u):not(em):not(strong):not(a) {
+            color: #222 !important;
+          }
           /* JS effective-bg classes: every node stamped from nearest opaque fill. */
           .\(onLight) { color: #222 !important; }
           .\(onDark) { color: #e6e6e6 !important; }
@@ -90,17 +114,25 @@ enum HTMLBodyDarkMode {
     /// stamps `fgOnLightClass` or `fgOnDarkClass` so text contrasts with that
     /// fill — not with a distant white wrapper.
     ///
+    /// Light fills on pure `display:inline` nodes are stripped (class
+    /// `stripInlineBgClass`) and treated as transparent: they paint as
+    /// per-line highlighter fragments, not designed cards. `inline-block`
+    /// CTAs/pills keep their fill.
+    ///
     /// Installed as a `WKUserScript` at `.atDocumentEnd` (before first paint)
-    /// and re-run from `didFinish`. Safe to re-run; replaces prior fg classes.
+    /// and re-run from `didFinish`. Safe to re-run; replaces prior fg/strip
+    /// classes.
     static var applyContrastJS: String {
         let onLight = fgOnLightClass
         let onDark = fgOnDarkClass
+        let strip = stripInlineBgClass
         let lum = luminanceThreshold
         let alpha = alphaFloor
         return """
         (function(){
           var ON_LIGHT='\(onLight)';
           var ON_DARK='\(onDark)';
+          var STRIP='\(strip)';
           var LUM=\(lum);
           var AMIN=\(alpha);
           function parseBg(bg){
@@ -115,12 +147,30 @@ enum HTMLBodyDarkMode {
             if(!c) return false;
             return (0.2126*c.r+0.7152*c.g+0.0722*c.b)/255>LUM;
           }
+          /* Only pure inline paints per-line fragment boxes. inline-block
+             (CTA pills) and block cards keep their light fill. */
+          function isInlinePaint(el, cs){
+            try{
+              var d=(cs||getComputedStyle(el)).display;
+              return d==='inline';
+            }catch(e){ return false; }
+          }
           function walk(el, inherited){
             var own=null;
-            try{ own=parseBg(getComputedStyle(el).backgroundColor); }catch(e){}
+            var cs=null;
+            try{
+              /* Drop prior strip so getComputedStyle sees the authored fill
+                 before we decide whether to strip again. */
+              el.classList.remove(ON_LIGHT, ON_DARK, STRIP);
+              cs=getComputedStyle(el);
+              own=parseBg(cs.backgroundColor);
+            }catch(e){}
+            if(own && isLight(own) && isInlinePaint(el, cs)){
+              try{ el.classList.add(STRIP); }catch(e){}
+              own=null;
+            }
             var effective=own||inherited;
             try{
-              el.classList.remove(ON_LIGHT, ON_DARK);
               if(isLight(effective)) el.classList.add(ON_LIGHT);
               else el.classList.add(ON_DARK);
             }catch(e){}
