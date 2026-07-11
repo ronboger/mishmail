@@ -61,7 +61,10 @@ struct SlashSnippetPicker: View {
                         }
                         .padding(4)
                     }
-                    .frame(maxHeight: 132)
+                    // Tall enough that the default starter set (~2) and a
+                    // handful of user snippets are all visible without scroll;
+                    // longer lists still scroll with the selection.
+                    .frame(maxHeight: 200)
                     .onChange(of: selection) {
                         withAnimation(.easeOut(duration: 0.1)) {
                             proxy.scrollTo(selection)

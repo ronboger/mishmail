@@ -39,10 +39,15 @@ final class SnippetImportTests: XCTestCase {
 
     func testDefaultsAreSeedableAndSelfConsistent() {
         let items = SnippetDefaults.items
-        XCTAssertFalse(items.isEmpty)
+        // Minimal public set: intro (Bcc demo) + cal — no personal URLs/names.
+        XCTAssertEqual(items.map(\.name), ["intro find time", "cal"])
         for item in items {
             XCTAssertFalse(item.name.trimmingCharacters(in: .whitespaces).isEmpty)
             XCTAssertFalse(item.body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            XCTAssertFalse(item.body.contains("notion.so"),
+                           "defaults must not ship personal calendar links")
+            XCTAssertFalse(item.body.lowercased().contains("rboger"),
+                           "defaults must not ship identifying names")
         }
         XCTAssertEqual(items.filter { $0.movesToBcc == true }.map(\.name), ["intro find time"])
         XCTAssertEqual(SnippetImport.plan(items, existingNames: []).count, items.count)

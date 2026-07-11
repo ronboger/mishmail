@@ -48,6 +48,8 @@ struct ComposeView: View {
     /// Esc-dismissed the current token (cleared when the token goes away).
     @State private var slashSelection = 0
     @State private var slashDismissed = false
+    /// UTF-16 caret in the body editor — drives caret-aware `/` detection.
+    @State private var bodyCaretUTF16 = 0
     /// Local keyDown monitor that steals ↑/↓/Return/Tab/Esc while the `/`
     /// picker is up — the NSTextView behind TextEditor consumes those keys
     /// before SwiftUI's onKeyPress ever sees them.
@@ -345,6 +347,7 @@ struct ComposeView: View {
 
             // Markdown source editor: live highlight + ⌘B/⌘I/… shortcuts.
             ComposeBodyEditor(text: $body_, isFocused: $bodyFocused,
+                              caretUTF16: $bodyCaretUTF16,
                               formatTarget: formatTarget, fontSize: 14)
                 .padding(.top, 10)
                 .padding(.bottom, 6)
@@ -353,6 +356,10 @@ struct ComposeView: View {
                 // bodyEditorMaxHeight.
                 .frame(minHeight: 120, maxHeight: bodyEditorMaxHeight)
                 .onChange(of: body_) {
+                    slashSelection = 0
+                    if slashToken == nil { slashDismissed = false }
+                }
+                .onChange(of: bodyCaretUTF16) {
                     slashSelection = 0
                     if slashToken == nil { slashDismissed = false }
                 }
@@ -947,9 +954,16 @@ struct ComposeView: View {
             .lowerBound ?? body_.endIndex
     }
 
-    /// The active `/query` the user is typing at the end of their text, if any.
+    /// The active `/query` ending at the caret inside the authored head.
+    /// Caret-based so a second `/` mid-message (or after a prior insert) works
+    /// and so inserting never swallows text that sits after the caret.
     private var slashToken: SnippetInsertion.SlashToken? {
-        SnippetInsertion.slashToken(in: String(body_[..<authoredHeadEnd]))
+        let head = String(body_[..<authoredHeadEnd])
+        let headUTF16 = (head as NSString).length
+        // Caret is measured on the full body; clamp into the authored head so
+        // a selection inside the collapsed quote never yields a false trigger.
+        let caretInHead = min(max(bodyCaretUTF16, 0), headUTF16)
+        return SnippetInsertion.slashToken(in: head, caretUTF16: caretInHead)
     }
 
     /// Whether the `/` picker should be showing: body focused, a live slash
@@ -1097,13 +1111,22 @@ struct ComposeView: View {
     /// Replaces the typed `/query` with the chosen snippet, expanded.
     private func insertSlashSnippet(_ snippet: Snippet) {
         let head = String(body_[..<authoredHeadEnd])
-        guard let token = SnippetInsertion.slashToken(in: head) else { return }
-        let start = head.distance(from: head.startIndex, to: token.range.lowerBound)
-        let end = head.distance(from: head.startIndex, to: token.range.upperBound)
-        let lo = body_.index(body_.startIndex, offsetBy: start)
-        let hi = body_.index(body_.startIndex, offsetBy: end)
-        body_.replaceSubrange(lo..<hi, with: expandSnippet(snippet))
+        let headUTF16 = (head as NSString).length
+        let caretInHead = min(max(bodyCaretUTF16, 0), headUTF16)
+        guard let token = SnippetInsertion.slashToken(in: head, caretUTF16: caretInHead) else { return }
+        let expanded = expandSnippet(snippet)
+        // Token range is inside `head`; map to UTF-16 offsets in the full body
+        // (authored head is always a prefix, so offsets match).
+        let nsRange = NSRange(token.range, in: head)
+        let nsBody = body_ as NSString
+        let before = nsBody.substring(to: nsRange.location)
+        let after = nsBody.substring(from: nsRange.location + nsRange.length)
+        body_ = before + expanded + after
+        // Park the caret just after the inserted text so a second `/` can
+        // fire immediately without the picker latching onto mid-snippet text.
+        bodyCaretUTF16 = (before as NSString).length + (expanded as NSString).length
         slashSelection = 0
+        slashDismissed = false
     }
 
     /// Inserts a snippet where the user writes: above the quoted original on

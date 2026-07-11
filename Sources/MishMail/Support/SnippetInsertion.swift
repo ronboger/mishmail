@@ -29,24 +29,42 @@ enum SnippetInsertion {
     }
 
     struct SlashToken: Equatable {
-        /// Range of the whole token (`/` through end of text) — replace this
-        /// with the expanded snippet.
+        /// Range of the whole token (`/` through the caret) — replace this
+        /// with the expanded snippet, leaving any text after the caret alone.
         var range: Range<String.Index>
         /// What the user typed after the `/`, used to filter snippets.
         var query: String
     }
 
-    /// An active slash trigger: a `/` at the start of the text or right after
-    /// whitespace, with everything after it (no newline yet) as the query.
+    /// An active slash trigger ending at `caret` (or at the end of `text` when
+    /// caret is nil): a `/` at the start of the text or right after whitespace,
+    /// with everything from after it up to the caret (no newline) as the query.
+    ///
+    /// Caret-based so `/` works mid-message and more than once per compose —
+    /// the old end-of-text rule silently failed whenever anything followed the
+    /// query (or a prior snippet left a trailing newline below the caret).
     /// Slashes inside words or URLs don't trigger.
-    static func slashToken(in text: String) -> SlashToken? {
-        guard let slash = text.lastIndex(of: "/") else { return nil }
+    static func slashToken(in text: String, atCaret caret: String.Index? = nil) -> SlashToken? {
+        let end = caret ?? text.endIndex
+        guard end >= text.startIndex, end <= text.endIndex else { return nil }
+        let prefix = text[..<end]
+        guard let slash = prefix.lastIndex(of: "/") else { return nil }
         if slash > text.startIndex {
             let prev = text[text.index(before: slash)]
             guard prev == " " || prev == "\n" || prev == "\t" else { return nil }
         }
-        let query = text[text.index(after: slash)...]
+        let query = text[text.index(after: slash)..<end]
         guard !query.contains("\n") else { return nil }
-        return SlashToken(range: slash..<text.endIndex, query: String(query))
+        return SlashToken(range: slash..<end, query: String(query))
+    }
+
+    /// UTF-16 convenience for NSTextView caret locations.
+    static func slashToken(in text: String, caretUTF16: Int) -> SlashToken? {
+        let ns = text as NSString
+        let clamped = max(0, min(caretUTF16, ns.length))
+        guard let end = Range(NSRange(location: 0, length: clamped), in: text)?.upperBound else {
+            return slashToken(in: text, atCaret: text.endIndex)
+        }
+        return slashToken(in: text, atCaret: end)
     }
 }

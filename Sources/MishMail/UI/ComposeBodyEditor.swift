@@ -20,11 +20,16 @@ final class ComposeBodyFormatTarget {
 struct ComposeBodyEditor: NSViewRepresentable {
     @Binding var text: String
     @Binding var isFocused: Bool
+    /// UTF-16 caret location (NSTextView selectedRange.location). Used by
+    /// compose's `/` snippet trigger so the token ends at the caret, not the
+    /// end of the body — multi-snippet and mid-message `/` depend on this.
+    @Binding var caretUTF16: Int
     var formatTarget: ComposeBodyFormatTarget?
     var fontSize: CGFloat = 14
 
     func makeCoordinator() -> Coordinator {
-        Coordinator(text: $text, isFocused: $isFocused, formatTarget: formatTarget)
+        Coordinator(text: $text, isFocused: $isFocused, caretUTF16: $caretUTF16,
+                    formatTarget: formatTarget)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -84,12 +89,12 @@ struct ComposeBodyEditor: NSViewRepresentable {
         context.coordinator.textView = textView
 
         if textView.string != text {
-            let selected = textView.selectedRange()
             textView.string = text
+            // Prefer the bound caret (set after slash-insert, etc.) over the
+            // pre-replace selection, which is usually stale after a rewrite.
             let maxLen = (text as NSString).length
-            let loc = min(selected.location, maxLen)
-            let len = min(selected.length, max(0, maxLen - loc))
-            textView.setSelectedRange(NSRange(location: loc, length: len))
+            let loc = min(max(caretUTF16, 0), maxLen)
+            textView.setSelectedRange(NSRange(location: loc, length: 0))
             Coordinator.highlight(textView, fontSize: fontSize)
         }
 
@@ -113,14 +118,17 @@ struct ComposeBodyEditor: NSViewRepresentable {
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
         var isFocused: Binding<Bool>
+        var caretUTF16: Binding<Int>
         var formatTarget: ComposeBodyFormatTarget?
         weak var textView: ComposeBodyTextView?
         var fontSize: CGFloat = 14
 
         init(text: Binding<String>, isFocused: Binding<Bool>,
+             caretUTF16: Binding<Int>,
              formatTarget: ComposeBodyFormatTarget?) {
             self.text = text
             self.isFocused = isFocused
+            self.caretUTF16 = caretUTF16
             self.formatTarget = formatTarget
         }
 
@@ -130,10 +138,23 @@ struct ComposeBodyEditor: NSViewRepresentable {
             }
         }
 
+        private func publishCaret(_ textView: NSTextView) {
+            let loc = textView.selectedRange().location
+            if caretUTF16.wrappedValue != loc {
+                caretUTF16.wrappedValue = loc
+            }
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             text.wrappedValue = textView.string
+            publishCaret(textView)
             Self.highlight(textView, fontSize: fontSize)
+        }
+
+        func textViewDidChangeSelection(_ notification: Notification) {
+            guard let textView = notification.object as? NSTextView else { return }
+            publishCaret(textView)
         }
 
         func apply(_ action: FormatAction) {
