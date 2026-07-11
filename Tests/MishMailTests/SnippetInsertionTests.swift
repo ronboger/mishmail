@@ -83,4 +83,55 @@ final class SnippetInsertionTests: XCTestCase {
         replaced.replaceSubrange(t.range, with: "EXPANDED")
         XCTAssertEqual(replaced, "Hi Bob,\nEXPANDED")
     }
+
+    // MARK: - Caret-aware mid-message / multi-snippet
+
+    func testSlashMidMessageAtCaret() {
+        let text = "Hi Bob,\n/cal\nSee you soon."
+        let afterCal = text.range(of: "/cal")!.upperBound
+        let t = SnippetInsertion.slashToken(in: text, atCaret: afterCal)
+        XCTAssertEqual(t?.query, "cal")
+        // Replacement must leave the trailing paragraph alone.
+        var replaced = text
+        replaced.replaceSubrange(t!.range, with: "Let's find a time.")
+        XCTAssertEqual(replaced, "Hi Bob,\nLet's find a time.\nSee you soon.")
+    }
+
+    func testSlashAfterPriorSnippetAtCaret() {
+        let text = "Thanks for the intro!\n\n/intro"
+        let t = SnippetInsertion.slashToken(in: text, atCaret: text.endIndex)
+        XCTAssertEqual(t?.query, "intro")
+    }
+
+    func testCaretBeforeTrailingTextDoesNotSwallowIt() {
+        let text = "prefix /zoom trailing"
+        let afterZoom = text.range(of: "/zoom")!.upperBound
+        let t = SnippetInsertion.slashToken(in: text, atCaret: afterZoom)
+        XCTAssertEqual(t?.query, "zoom")
+        var replaced = text
+        replaced.replaceSubrange(t!.range, with: "LINK")
+        XCTAssertEqual(replaced, "prefix LINK trailing")
+    }
+
+    func testCaretNotOnSlashTokenYieldsNilWhenPastNewline() {
+        let text = "/intro\nmore"
+        // Caret at end of body: query would include a newline → nil.
+        XCTAssertNil(SnippetInsertion.slashToken(in: text, atCaret: text.endIndex))
+        // Caret still on the query: active.
+        let afterIntro = text.range(of: "/intro")!.upperBound
+        XCTAssertEqual(SnippetInsertion.slashToken(in: text, atCaret: afterIntro)?.query, "intro")
+    }
+
+    func testCaretUTF16MatchesStringIndex() {
+        let text = "Hi\n/cal"
+        let utf16 = (text as NSString).length
+        let t = SnippetInsertion.slashToken(in: text, caretUTF16: utf16)
+        XCTAssertEqual(t?.query, "cal")
+    }
+
+    func testEmptyQueryAtCaretShowsBrowseMode() {
+        let text = "Hello\n/"
+        let t = SnippetInsertion.slashToken(in: text, atCaret: text.endIndex)
+        XCTAssertEqual(t?.query, "")
+    }
 }

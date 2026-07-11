@@ -629,34 +629,47 @@ private struct SnippetTableRow: View {
     @State private var hovering = false
 
     var body: some View {
-        HStack(spacing: 0) {
-            HStack(spacing: 6) {
-                Text("/\(snippet.name)")
-                    .font(.system(size: 13, weight: .medium))
-                    .lineLimit(1)
-                if snippet.movesToBcc { MovesToBccBadge() }
+        HStack(spacing: 8) {
+            // Click the row to edit — not a toggle or menu.
+            Button(action: edit) {
+                HStack(spacing: 0) {
+                    HStack(spacing: 6) {
+                        Text("/\(snippet.name)")
+                            .font(.system(size: 13, weight: .medium))
+                            .lineLimit(1)
+                        if snippet.movesToBcc { MovesToBccBadge() }
+                    }
+                    .frame(width: 170, alignment: .leading)
+                    Text(snippet.previewLine)
+                        .font(.system(size: 12.5))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                    Spacer(minLength: 8)
+                }
+                .contentShape(Rectangle())
             }
-            .frame(width: 170, alignment: .leading)
-            Text(snippet.previewLine)
-                .font(.system(size: 12.5))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-            Spacer(minLength: 8)
-            Menu {
-                Button("Edit…") { edit() }
-                Button("Delete", role: .destructive) { delete() }
-            } label: {
-                Image(systemName: "ellipsis")
-                    .font(.system(size: 12)).foregroundStyle(.secondary)
+            .buttonStyle(.plain)
+            .help("Edit “\(snippet.name)”")
+
+            if hovering {
+                Button(action: delete) {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 22, height: 22)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Delete “\(snippet.name)”")
+                .accessibilityLabel("Delete \(snippet.name)")
+            } else {
+                // Keep row width stable when the × appears on hover.
+                Color.clear.frame(width: 22, height: 22)
             }
-            .menuStyle(.borderlessButton).fixedSize()
-            .opacity(hovering ? 1 : 0.35)
         }
         .padding(.horizontal, 20).padding(.vertical, 10)
-        .contentShape(Rectangle())
         .background(hovering ? Color.primary.opacity(0.04) : .clear)
         .onHover { hovering = $0 }
-        .onTapGesture(count: 2) { edit() }
     }
 }
 
@@ -1074,8 +1087,9 @@ private struct VIPManager: View {
 /// Shared group menu: pick an existing group (checkmark on the current one),
 /// create a suggested group in one click, or name a new one in a popover.
 private struct GroupMenuButton: View {
-    /// Groups worth offering before any exist; hidden once created.
-    static let suggested = ["founders", "investors", "researchers", "family", "friends"]
+    /// Neutral starter group names — no personal taxonomy committed in-repo.
+    /// Hidden once the user has created them (or an equivalent).
+    static let suggested = ["work", "family", "friends"]
 
     let current: String?          // nil = no group
     let allGroups: [String]
