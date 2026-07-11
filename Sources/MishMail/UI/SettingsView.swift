@@ -619,6 +619,9 @@ struct AppearanceSettings: View {
     @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
     @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
     @AppStorage("vipAlwaysPins") private var vipAlwaysPins = true
+    /// Default `.ask` preserves privacy (no open-tracking until opt-in).
+    @AppStorage(RemoteImagePolicy.defaultsKey) private var remoteImagePolicyRaw =
+        RemoteImagePolicy.ask.rawValue
     @State private var showVIPManager = false
 
     private var priorityMode: PrioritySplit.Mode {
@@ -674,6 +677,20 @@ struct AppearanceSettings: View {
                     .pickerStyle(.segmented)
                 } footer: {
                     Text("Also adjustable anywhere with Cmd + and Cmd −.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Picker("Load remote images", selection: $remoteImagePolicyRaw) {
+                        ForEach(RemoteImagePolicy.allCases) { policy in
+                            Text(policy.title).tag(policy.rawValue)
+                        }
+                    }
+                } header: {
+                    Text("Remote images")
+                } footer: {
+                    Text((RemoteImagePolicy(rawValue: remoteImagePolicyRaw) ?? .ask).footer
+                         + " Cleartext image URLs stay blocked either way.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

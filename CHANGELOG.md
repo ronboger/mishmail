@@ -49,6 +49,13 @@ minor versions may still change behavior.
   Keychain namespaces for this pre-1.0 rename.
 
 ### Added
+- **Remote image policy** — Settings → Appearance: Ask each time (default),
+  VIP senders, or Always. Load images click loads this message; the menu
+  offers this conversation. Cleartext image URLs stay blocked either way.
+- **Copy / Save thread as Markdown** — thread ⋯ menu: copy the conversation
+  to the clipboard or save a `.md` file (bodies, Markdown links from HTML
+  anchors, attachment filenames). Save failures alert and fall back to the
+  clipboard.
 - **Compose markdown** — write `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``,
   `#`/`##`/`###` headings, lists, `>` quotes, and `$math$` / `$$display$$` in the
   compose body. Live syntax highlighting, footer format buttons, and shortcuts

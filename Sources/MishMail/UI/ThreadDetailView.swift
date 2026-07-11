@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import WebKit
 
 struct ThreadDetailView: View {
@@ -14,6 +15,8 @@ struct ThreadDetailView: View {
     @State private var aiSummary: String?
     @State private var summarizing = false
     @State private var summaryError: String?
+    /// Session opt-in: Load images for every card in this thread.
+    @State private var loadRemoteImagesForThread = false
     /// Message ids we already tried to hydrate — avoids re-querying forever
     /// for genuinely empty bodies (`needsBodyLoad` stays true).
     @State private var bodyLoadAttempted: Set<String> = []
@@ -49,6 +52,7 @@ struct ThreadDetailView: View {
                 ForEach(messages) { message in
                     MessageCard(message: message,
                                 isLast: message.id == messages.last?.id,
+                                loadImagesForThread: $loadRemoteImagesForThread,
                                 onReply: { onReply(message) },
                                 onNeedBody: { loadBodyIfNeeded(id: message.id) })
                         .padding(.horizontal)
@@ -148,6 +152,18 @@ struct ThreadDetailView: View {
                             Label("Forward all", systemImage: "arrowshape.turn.up.forward")
                         }
                     }
+                    Divider()
+                    Button {
+                        copyThreadAsMarkdown()
+                    } label: {
+                        Label("Copy as Markdown", systemImage: "doc.on.clipboard")
+                    }
+                    Button {
+                        saveThreadAsMarkdown()
+                    } label: {
+                        Label("Save as Markdown…", systemImage: "square.and.arrow.down")
+                    }
+                    Divider()
                     Button {
                         store.setRead(thread, read: thread.isUnread)
                     } label: {
@@ -220,6 +236,7 @@ struct ThreadDetailView: View {
             // Headers only first — skip pulling every body on open. The last
             // message is always expanded, so hydrate its body immediately.
             bodyLoadAttempted = []
+            loadRemoteImagesForThread = false
             var loaded = store.messageHeaders(inThread: thread.id)
             if let lastId = loaded.last?.id, let full = store.messageBody(id: lastId) {
                 loaded[loaded.count - 1] = full
@@ -419,13 +436,77 @@ struct ThreadDetailView: View {
                 < (store.labelName($1, account: thread.accountId) ?? $1)
         }
     }
+
+    // MARK: - Share (Markdown)
+
+    /// Hydrate every body so export is complete even for collapsed cards.
+    private func messagesForExport() -> [Message] {
+        let ids = messages.map(\.id)
+        let fullById = Dictionary(uniqueKeysWithValues:
+            store.messagesWithBodies(ids: ids).map { ($0.id, $0) })
+        return messages.map { fullById[$0.id] ?? $0 }
+    }
+
+    private func exportMarkdown() -> String {
+        let full = messagesForExport()
+        let refs = threadAttachments.map {
+            ThreadExporter.AttachmentRef(
+                messageId: $0.message.id, filename: $0.attachment.filename)
+        }
+        return ThreadExporter.markdown(
+            subject: thread.subject, messages: full, attachments: refs)
+    }
+
+    private func copyThreadAsMarkdown() {
+        let md = exportMarkdown()
+        NSPasteboard.general.clearContents()
+        NSPasteboard.general.setString(md, forType: .string)
+    }
+
+    private func saveThreadAsMarkdown() {
+        let md = exportMarkdown()
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [.plainText, .utf8PlainText]
+        // UTType for markdown if available — fall back stays .md via nameField.
+        if let mdType = UTType(filenameExtension: "md") {
+            panel.allowedContentTypes = [mdType, .plainText]
+        }
+        panel.nameFieldStringValue = ThreadExporter.suggestedFilename(
+            subject: thread.subject, date: thread.lastDate)
+        panel.canCreateDirectories = true
+        panel.isExtensionHidden = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            do {
+                try md.write(to: url, atomically: true, encoding: .utf8)
+            } catch {
+                // Keep the export: clipboard fallback + tell the user what happened.
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(md, forType: .string)
+                DispatchQueue.main.async {
+                    let alert = NSAlert()
+                    alert.messageText = "Couldn't save the file"
+                    alert.informativeText =
+                        "\(error.localizedDescription)\n\nThe Markdown was copied to the clipboard instead."
+                    alert.alertStyle = .warning
+                    alert.addButton(withTitle: "OK")
+                    alert.runModal()
+                }
+            }
+        }
+    }
 }
 
 struct MessageCard: View {
     @EnvironmentObject var store: MailStore
     @AppStorage("fontScale") private var fontScale = 1.0
+    /// Settings → Appearance. Default `.ask` so tracking pixels stay blocked.
+    @AppStorage(RemoteImagePolicy.defaultsKey) private var remoteImagePolicyRaw =
+        RemoteImagePolicy.ask.rawValue
     let message: Message
     let isLast: Bool
+    /// Session-wide opt-in shared by every card in the open thread.
+    @Binding var loadImagesForThread: Bool
     let onReply: () -> Void
     /// Parent loads the body when a collapsed header-only card expands.
     let onNeedBody: () -> Void
@@ -433,6 +514,7 @@ struct MessageCard: View {
     // Full FROM/TO/CC rows (Notion Mail's "Show more"); compact by default.
     @State private var recipientsExpanded = false
     @State private var htmlHeight: CGFloat = 120
+    /// Per-message opt-in when policy is ask/vip and the sender isn't allowed.
     @State private var loadRemoteImages = false
     @State private var cardCursorPushed = false
     // The quoted reply trail below the new text stays collapsed behind a "…"
@@ -453,10 +535,13 @@ struct MessageCard: View {
     /// headers don't poison the entry with an empty-body result.
     private static var trailCache: [String: (head: String?, hasTrail: Bool)] = [:]
 
-    init(message: Message, isLast: Bool, onReply: @escaping () -> Void,
+    init(message: Message, isLast: Bool,
+         loadImagesForThread: Binding<Bool> = .constant(false),
+         onReply: @escaping () -> Void,
          onNeedBody: @escaping () -> Void = {}) {
         self.message = message
         self.isLast = isLast
+        self._loadImagesForThread = loadImagesForThread
         self.onReply = onReply
         self.onNeedBody = onNeedBody
         _expanded = State(initialValue: isLast)
@@ -490,6 +575,20 @@ struct MessageCard: View {
             withAnimation { expanded = true }
             onNeedBody()
         }
+    }
+
+    private var remoteImagePolicy: RemoteImagePolicy {
+        RemoteImagePolicy(rawValue: remoteImagePolicyRaw) ?? .ask
+    }
+
+    /// Policy + VIP list + per-message / per-thread opt-in.
+    private var allowRemoteImages: Bool {
+        RemoteImagePolicy.allows(
+            policy: remoteImagePolicy,
+            senderEmail: MessageParser.emailAddress(message.fromHeader),
+            vipEmails: store.vipEmails,
+            messageOptIn: loadRemoteImages,
+            threadOptIn: loadImagesForThread)
     }
 
     var body: some View {
@@ -527,10 +626,19 @@ struct MessageCard: View {
                     }
                 }
                 Spacer()
-                if expanded, message.bodyHTML != nil, !loadRemoteImages {
-                    Button("Load images") { loadRemoteImages = true }
-                        .buttonStyle(.link).font(.caption)
-                        .help("Remote images are blocked by default (they can track opens)")
+                if expanded, message.bodyHTML != nil, !allowRemoteImages {
+                    // Click loads this message; chevron / long-press offers the thread.
+                    Menu {
+                        Button("This conversation") { loadImagesForThread = true }
+                    } label: {
+                        Text("Load images")
+                            .font(.caption)
+                    } primaryAction: {
+                        loadRemoteImages = true
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    .help("Remote images can track opens. Click for this message; menu for the whole conversation. VIP auto-load and Always are in Settings → Appearance.")
                 }
                 if expanded {
                     Button {
@@ -572,7 +680,7 @@ struct MessageCard: View {
                 // Collapsed cards never mount HTMLBodyView (gated on expanded).
                 // Header-only rows show nothing until the parent hydrates the body.
                 if let html = message.bodyHTML, !html.isEmpty {
-                    HTMLBodyView(html: html, allowRemoteImages: loadRemoteImages,
+                    HTMLBodyView(html: html, allowRemoteImages: allowRemoteImages,
                                  fontScale: fontScale,
                                  collapseQuote: hasQuotedTrail && !showQuoted,
                                  height: $htmlHeight)
@@ -972,8 +1080,8 @@ private struct MatchingFiltersSection: View {
 }
 
 /// Sandboxed HTML rendering: page JavaScript disabled; remote content blocked
-/// by CSP unless the user opts in per message. Sizes itself to its content.
-/// External links open in the default browser.
+/// by CSP unless the user opts in (per message or Settings → Appearance default).
+/// Sizes itself to its content. External links open in the default browser.
 ///
 /// Web views are drawn from `HTMLWebViewPool` (recycle + per-view ephemeral
 /// store) so expanding/collapsing cards does not thrash WKWebView creation.

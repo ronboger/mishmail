@@ -103,6 +103,8 @@ targets:
       - Sources/MishMail/Support/UpdateChecker.swift
       - Sources/MishMail/Support/HTMLBodyCSP.swift
       - Sources/MishMail/Support/HTMLBodyDarkMode.swift
+      - Sources/MishMail/Support/RemoteImagePolicy.swift
+      - Sources/MishMail/Support/ThreadExporter.swift
       - Sources/MishMail/Support/Markdown.swift
       - Sources/MishMail/Support/Ollama.swift
       - Sources/MishMail/Support/PerfMetrics.swift

@@ -64,6 +64,7 @@ struct MishMailApp: App {
                 .frame(minWidth: 900, minHeight: 560)
                 .onAppear {
                     AppDelegate.store = store
+                    RemoteImagePolicy.migrateIfNeeded()
                     UpdateChecker.shared.startPeriodicChecks()
                 }
         }
