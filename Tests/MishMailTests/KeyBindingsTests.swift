@@ -19,7 +19,7 @@ final class KeyBindingsTests: XCTestCase {
         XCTAssertEqual(kb.command(for: "j"), .next)
         XCTAssertEqual(kb.command(for: "k"), .prev)
         XCTAssertEqual(kb.command(for: "!"), .markSpam)
-        XCTAssertNil(kb.command(for: "x"))
+        XCTAssertEqual(kb.command(for: "x"), .toggleCheck)
         XCTAssertNil(kb.command(for: "g"))  // reserved, never a command
     }
 
@@ -32,13 +32,14 @@ final class KeyBindingsTests: XCTestCase {
 
     func testRebindUpdatesBothDirectionsAndPersists() {
         let kb = KeyBindings(defaults: defaults)
-        XCTAssertEqual(kb.rebind(.archive, to: "x"), .ok)
-        XCTAssertEqual(kb.key(for: .archive), "x")
-        XCTAssertEqual(kb.command(for: "x"), .archive)
+        // "q" is free (x is the default multi-select toggle).
+        XCTAssertEqual(kb.rebind(.archive, to: "q"), .ok)
+        XCTAssertEqual(kb.key(for: .archive), "q")
+        XCTAssertEqual(kb.command(for: "q"), .archive)
         XCTAssertNil(kb.command(for: "e"))  // old key freed
         // A fresh instance over the same defaults sees the override.
         let kb2 = KeyBindings(defaults: defaults)
-        XCTAssertEqual(kb2.key(for: .archive), "x")
+        XCTAssertEqual(kb2.key(for: .archive), "q")
     }
 
     func testConflictRefusedAndUnchanged() {
@@ -74,10 +75,40 @@ final class KeyBindingsTests: XCTestCase {
 
     func testResetToDefaults() {
         let kb = KeyBindings(defaults: defaults)
-        _ = kb.rebind(.archive, to: "x")
+        _ = kb.rebind(.archive, to: "q")
         kb.resetToDefaults()
         XCTAssertEqual(kb.key(for: .archive), "e")
         let kb2 = KeyBindings(defaults: defaults)
         XCTAssertEqual(kb2.key(for: .archive), "e")
+    }
+
+    /// Ship-blocker: a pre-existing archive→x rebind must not be stolen by the
+    /// new toggleCheck default of x. Overrides win at lookup; migration parks
+    /// the shadowed default-only command on a free key so Settings stays honest.
+    func testExistingOverrideToXWinsOverNewToggleCheckDefault() {
+        // Simulate prefs written before toggleCheck existed.
+        let raw = ["archive": "x"]
+        let data = try! JSONEncoder().encode(raw)
+        defaults.set(data, forKey: "keyBindings")
+
+        let kb = KeyBindings(defaults: defaults)
+        XCTAssertEqual(kb.command(for: "x"), .archive)
+        XCTAssertEqual(kb.key(for: .archive), "x")
+        // toggleCheck was parked off x so it remains reachable and doesn't
+        // dual-display as x in Settings.
+        XCTAssertNotEqual(kb.key(for: .toggleCheck), "x")
+        XCTAssertEqual(kb.command(for: kb.key(for: .toggleCheck)), .toggleCheck)
+        // Persist migration for the next launch.
+        let kb2 = KeyBindings(defaults: defaults)
+        XCTAssertEqual(kb2.command(for: "x"), .archive)
+        XCTAssertEqual(kb2.key(for: .toggleCheck), kb.key(for: .toggleCheck))
+    }
+
+    func testOverrideWinsOverDefaultAtLookupWithoutMigrationNeed() {
+        let kb = KeyBindings(defaults: defaults)
+        XCTAssertEqual(kb.rebind(.trash, to: "q"), .ok)
+        // Default snooze is still b; q is only trash.
+        XCTAssertEqual(kb.command(for: "q"), .trash)
+        XCTAssertEqual(kb.command(for: "b"), .snooze)
     }
 }

@@ -7,6 +7,8 @@ enum ShortcutCommand: String, CaseIterable, Codable {
     case markSpam
     case reply, replyAll, forward, label, undo, compose
     case next, prev
+    /// Toggle multi-select checkbox on the focused conversation (Gmail `x`).
+    case toggleCheck
 }
 
 struct ShortcutSpec: Identifiable {
@@ -33,6 +35,7 @@ final class KeyBindings: ObservableObject {
     static let catalog: [ShortcutSpec] = [
         .init(command: .next, title: "Next conversation", category: .navigation, defaultKey: "j"),
         .init(command: .prev, title: "Previous conversation", category: .navigation, defaultKey: "k"),
+        .init(command: .toggleCheck, title: "Select / deselect conversation", category: .navigation, defaultKey: "x"),
         .init(command: .archive, title: "Archive", category: .actions, defaultKey: "e"),
         .init(command: .trash, title: "Delete (Trash)", category: .actions, defaultKey: "#"),
         .init(command: .toggleStar, title: "Star / Unstar", category: .actions, defaultKey: "s"),
@@ -67,6 +70,10 @@ final class KeyBindings: ObservableObject {
 
     private let store: UserDefaults
     private static let defaultsKey = "keyBindings"
+    /// Candidate keys when a new catalog default collides with a stored
+    /// override (home-row leftovers not already in the catalog).
+    private static let freeKeyCandidates = Array("qwertyuiopasdfghjklzxcvbnm0123456789!@#$%^&*-=_+;:'\",.<>/?\\|`~")
+        .map(String.init)
 
     init(defaults: UserDefaults = .standard) {
         store = defaults
@@ -77,6 +84,13 @@ final class KeyBindings: ObservableObject {
             }
         } else {
             overrides = [:]
+        }
+        // New catalog defaults (e.g. toggleCheck → x) must not shadow an
+        // existing user rebind of that key. Prefer the override at lookup,
+        // and park the un-overridden command on a free key so Settings and
+        // command(for:) agree.
+        if migrateCollidingDefaults() {
+            persist()
         }
     }
 
@@ -92,8 +106,16 @@ final class KeyBindings: ObservableObject {
         primaryCommand(for: key) ?? Self.aliases[key]
     }
 
+    /// Explicit user overrides always win over catalog defaults so a
+    /// previously rebound key (archive → x) is not stolen by a new default
+    /// (toggleCheck → x).
     private func primaryCommand(for key: String) -> ShortcutCommand? {
-        Self.catalog.map(\.command).first { self.key(for: $0) == key }
+        if let overridden = overrides.first(where: { $0.value == key })?.key {
+            return overridden
+        }
+        return Self.catalog.first {
+            overrides[$0.command] == nil && $0.defaultKey == key
+        }?.command
     }
 
     func rebind(_ command: ShortcutCommand, to key: String) -> RebindResult {
@@ -113,6 +135,37 @@ final class KeyBindings: ObservableObject {
     func resetToDefaults() {
         overrides = [:]
         store.removeObject(forKey: Self.defaultsKey)
+    }
+
+    /// When a catalog default is already claimed by a stored override of a
+    /// different command, park the default-only command on a free key.
+    /// Returns true if `overrides` changed.
+    @discardableResult
+    private func migrateCollidingDefaults() -> Bool {
+        var claimed = Set(overrides.values)
+        // Defaults already held by un-overridden commands also claim slots.
+        for spec in Self.catalog where overrides[spec.command] == nil {
+            claimed.insert(spec.defaultKey)
+        }
+        var changed = false
+        for spec in Self.catalog {
+            guard overrides[spec.command] == nil else { continue }
+            // Recompute: is this default only "ours", or also an override?
+            let takenByOverride = overrides.contains { $0.key != spec.command && $0.value == spec.defaultKey }
+            guard takenByOverride else { continue }
+            // Park us elsewhere. Leave `spec.defaultKey` in `claimed` so it
+            // stays reserved for the override (must not re-park onto it).
+            guard let free = Self.firstFreeKey(excluding: claimed.union(Self.reservedKeys)) else { continue }
+            overrides[spec.command] = free
+            claimed.insert(free)
+            changed = true
+        }
+        return changed
+    }
+
+    /// First single-character candidate not in `excluding` and not reserved.
+    static func firstFreeKey(excluding: Set<String>) -> String? {
+        freeKeyCandidates.first { !excluding.contains($0) && !reservedKeys.contains($0) }
     }
 
     private func persist() {

@@ -55,6 +55,7 @@ struct ContentView: View {
         }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
+            store.clearCheckedThreads()
             store.resetChips()
             // Sidebar click (or any selectedView write) should land on the
             // real mailbox, not keep a committed `/` search overlay. goTo
@@ -413,6 +414,11 @@ struct ContentView: View {
                 if event.window?.firstResponder is NSTextView
                     || event.window?.firstResponder is NSTextField {
                     event.window?.makeFirstResponder(nil)
+                    return nil
+                }
+                // Clear multi-select checks first (Gmail-style Esc ladder).
+                if !store.checkedThreadIds.isEmpty {
+                    store.clearCheckedThreads()
                     return nil
                 }
                 // Next Esc drops an active search back to the plain inbox

@@ -229,6 +229,12 @@ final class MailStore: ObservableObject {
             }
         }
     }
+    /// Multi-select checkboxes (Gmail `x` / Notion-style toggle). Bulk
+    /// archive/trash/star/read act on this set when non-empty; the focused
+    /// `selectedThreadId` still drives the reading pane.
+    @Published var checkedThreadIds: Set<String> = []
+    /// Anchor for shift-click range select on checkboxes.
+    private var lastCheckedThreadId: String?
     /// Cancels in-flight neighbor header/body warm when selection moves.
     private var neighborPrefetchTask: Task<Void, Never>?
     /// In-flight contacts rebuild (full-table `message` scan); must be
@@ -271,6 +277,7 @@ final class MailStore: ObservableObject {
         searchText = q
         committedSearch = q
         recordSearch(q)
+        clearCheckedThreads()
         resetListWindow()
         reloadThreads()
     }
@@ -281,6 +288,7 @@ final class MailStore: ObservableObject {
         guard !searchText.isEmpty || !committedSearch.isEmpty else { return }
         searchText = ""
         committedSearch = ""
+        clearCheckedThreads()
         resetListWindow()
         reloadThreads()
     }
@@ -887,8 +895,43 @@ final class MailStore: ObservableObject {
     func setActiveAccount(_ id: String?) {
         activeAccountId = id
         selectedThreadId = nil
+        clearCheckedThreads()
         readStateKeepIds.removeAll()
         reloadThreads()
+    }
+
+    func clearCheckedThreads() {
+        checkedThreadIds.removeAll()
+        lastCheckedThreadId = nil
+    }
+
+    /// Toggle multi-select on one thread. With `extendRange` (shift-click),
+    /// checks every row between the last toggle and this id in display order.
+    func toggleChecked(_ id: String, extendRange: Bool = false) {
+        let order = selectionOrder
+        if extendRange, let anchor = lastCheckedThreadId,
+           let range = SelectionAdvance.rangeIds(in: order, from: anchor, to: id) {
+            let allOn = range.allSatisfy { checkedThreadIds.contains($0) }
+            if allOn {
+                for rid in range { checkedThreadIds.remove(rid) }
+            } else {
+                for rid in range { checkedThreadIds.insert(rid) }
+            }
+            lastCheckedThreadId = id
+            return
+        }
+        if checkedThreadIds.contains(id) {
+            checkedThreadIds.remove(id)
+        } else {
+            checkedThreadIds.insert(id)
+        }
+        lastCheckedThreadId = id
+    }
+
+    /// Gmail `x`: toggle check on the focused conversation.
+    func toggleCheckSelected() {
+        guard let id = selectedThreadId else { return }
+        toggleChecked(id)
     }
 
     private let db = AppDatabase.shared.dbPool
@@ -1456,6 +1499,14 @@ final class MailStore: ObservableObject {
             await MainActor.run {
                 guard let self, generation == self.threadReloadGeneration else { return }
                 self.threads = payload.threads
+                // Drop multi-select checks for rows that left the list.
+                if !self.checkedThreadIds.isEmpty {
+                    let visible = Set(payload.threads.map(\.id))
+                    self.checkedThreadIds = self.checkedThreadIds.intersection(visible)
+                    if let last = self.lastCheckedThreadId, !visible.contains(last) {
+                        self.lastCheckedThreadId = nil
+                    }
+                }
                 // Keep expanded window across sync/star reloads; search never pages.
                 if search.isEmpty {
                     self.listWindowLimit = max(self.listWindowLimit, payload.threads.count)
@@ -2417,17 +2468,27 @@ final class MailStore: ObservableObject {
     /// the key→command mapping is the only thing the registry owns.
     func perform(_ command: ShortcutCommand) {
         switch command {
-        case .archive: selectedThread.map(archive)
-        case .trash: selectedThread.map(trash)
-        case .toggleStar: selectedThread.map(toggleStar)
-        case .toggleRead: if let t = selectedThread { setRead(t, read: t.isUnread) }
+        case .archive:
+            if !checkedThreadIds.isEmpty { archiveChecked() }
+            else { selectedThread.map(archive) }
+        case .trash:
+            if !checkedThreadIds.isEmpty { trashChecked() }
+            else { selectedThread.map(trash) }
+        case .toggleStar:
+            if !checkedThreadIds.isEmpty { toggleStarChecked() }
+            else { selectedThread.map(toggleStar) }
+        case .toggleRead:
+            if !checkedThreadIds.isEmpty { toggleReadChecked() }
+            else if let t = selectedThread { setRead(t, read: t.isUnread) }
         case .snooze: if let t = selectedThread { snoozingThread = t }
         case .markSpam:
-            if let t = selectedThread {
+            if !checkedThreadIds.isEmpty { markSpamChecked() }
+            else if let t = selectedThread {
                 if t.inSpam { markNotSpam(t) } else { markSpam(t) }
             }
         case .next: moveSelection(1)
         case .prev: moveSelection(-1)
+        case .toggleCheck: toggleCheckSelected()
         case .reply: if let t = selectedThread {
                          composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last)
                      }
@@ -2652,6 +2713,10 @@ final class MailStore: ObservableObject {
 
     // MARK: - Actions (optimistic local write, then remote, then resync on failure)
 
+    /// When true, `mutateThread` skips `reloadThreads` so bulk loops can
+    /// apply many optimistic updates and reload once at the end.
+    private var suppressThreadReload = false
+
     private func mutateThread(_ thread: MailThread,
                               local: (inout MailThread) -> Void,
                               remote: @escaping (GmailClient, String) async throws -> Void) {
@@ -2665,7 +2730,9 @@ final class MailStore: ObservableObject {
         // Optimistic list update so archive/trash auto-advance still sees the
         // row leave immediately; async reload reconciles with DB filters next.
         applyOptimisticThreadUpdate(updated)
-        reloadThreads()
+        if !suppressThreadReload {
+            reloadThreads()
+        }
         let client = client(for: thread.accountId)
         let gmailThreadId = thread.gmailThreadId
         Task {
@@ -2677,18 +2744,55 @@ final class MailStore: ObservableObject {
         }
     }
 
+    /// Apply `local`/`remote` to many threads with a single list reload.
+    /// Remote calls still fan out (one Task each) but the thread-list query
+    /// runs once after all optimistic writes.
+    private func mutateThreads(_ targets: [MailThread],
+                               local: (inout MailThread) -> Void,
+                               remote: @escaping (GmailClient, String) async throws -> Void) {
+        guard !targets.isEmpty else { return }
+        suppressThreadReload = true
+        for thread in targets {
+            mutateThread(thread, local: local, remote: remote)
+        }
+        suppressThreadReload = false
+        reloadThreads()
+    }
+
+    /// Re-pin threads under an active unread/read filter so a previously
+    /// opened (now-read) conversation reappears in `is:unread`.
+    ///
+    /// Must run **before** `mutateThread(s)` on undo: `reloadThreads` snapshots
+    /// `readStateKeepIds` synchronously at call time, so a pin after the
+    /// mutation never reaches the reload query.
+    private func pinReadStateKeep(_ ids: [String]) {
+        guard readStateFilterActive else { return }
+        for id in ids { readStateKeepIds.insert(id) }
+    }
+
+    private func restoreSelectionFocus(_ id: String?) {
+        guard let id else { return }
+        selectionViaKeyboard = true
+        selectedThreadId = id
+    }
+
     /// Apply a local mutation to the in-memory list without waiting for the
     /// async DB reload. Drops the row when it no longer belongs in the current
     /// view (archive from inbox, trash, etc.) so selection advance works.
+    ///
+    /// Leave-list always wins over `readStateKeepIds`: stickiness only keeps
+    /// mark-read rows under is:unread, and must not block trash/archive
+    /// auto-advance (otherwise the row sticks until async reload, advance
+    /// sees it still present, and selection ends up empty).
     private func applyOptimisticThreadUpdate(_ updated: MailThread) {
         guard let idx = threads.firstIndex(where: { $0.id == updated.id }) else { return }
-        if readStateKeepIds.contains(updated.id) {
-            threads[idx] = updated
-            return
-        }
-        if threadLeavesCurrentList(updated) {
+        let plan = ThreadListOptimistic.plan(leavesCurrentList: threadLeavesCurrentList(updated))
+        switch plan.effect {
+        case .remove:
             threads.remove(at: idx)
-        } else {
+            if plan.sideEffects.dropKeepId { readStateKeepIds.remove(updated.id) }
+            if plan.sideEffects.dropChecked { checkedThreadIds.remove(updated.id) }
+        case .updateInPlace:
             threads[idx] = updated
         }
     }
@@ -2757,18 +2861,79 @@ final class MailStore: ObservableObject {
         selectedThreadId = neighbor
     }
 
+    /// Display order used for neighbor / multi-select range (list layout when
+    /// known, otherwise current `threads` order).
+    private var selectionOrder: [String] {
+        displayOrder.isEmpty ? threads.map(\.id) : displayOrder
+    }
+
+    /// Threads currently multi-selected, in list order.
+    private var checkedThreadsInOrder: [MailThread] {
+        let byId = Dictionary(uniqueKeysWithValues: threads.map { ($0.id, $0) })
+        let checked = checkedThreadIds
+        return selectionOrder.compactMap { id in
+            guard checked.contains(id) else { return nil }
+            return byId[id]
+        }
+    }
+
+    /// After bulk remove: land on the first survivor past `focus` using the
+    /// pre-mutation order. No-op when focus was not among the removed ids, or
+    /// when the focused row is still listed (e.g. archive under a search that
+    /// includes archived mail).
+    private func advanceAfterRemoving(_ removed: Set<String>, fromOrder order: [String],
+                                      focus: String?) {
+        guard let focus, removed.contains(focus) else { return }
+        guard !threads.contains(where: { $0.id == focus }) else { return }
+        selectionViaKeyboard = true
+        if let neighbor = SelectionAdvance.neighborId(in: order, removing: removed, focus: focus),
+           threads.contains(where: { $0.id == neighbor }) {
+            selectedThreadId = neighbor
+        } else {
+            selectedThreadId = threads.first?.id
+        }
+    }
+
     func archive(_ thread: MailThread) {
         let wasSelected = selectedThreadId == thread.id
-        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
+        let neighbor = SelectionAdvance.neighborId(in: selectionOrder, removing: thread.id)
         mutateThread(thread) { $0.inInbox = false } remote: { client, id in
             try await client.modifyThread(id: id, remove: ["INBOX"])
         }
         advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
+        let priorFocus = wasSelected ? thread.id : selectedThreadId
         offerUndo("Archived") { [weak self] in
             guard let self else { return }
+            self.pinReadStateKeep([thread.id])
             self.mutateThread(thread) { $0.inInbox = true } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"])
             }
+            self.restoreSelectionFocus(priorFocus)
+            self.undoAction = nil
+        }
+    }
+
+    /// Bulk archive for multi-select. Advances focus once past the removed block.
+    func archiveChecked() {
+        let targets = checkedThreadsInOrder
+        guard !targets.isEmpty else { return }
+        let order = selectionOrder
+        let removed = Set(targets.map(\.id))
+        let focus = selectedThreadId
+        mutateThreads(targets, local: { $0.inInbox = false }, remote: { client, id in
+            try await client.modifyThread(id: id, remove: ["INBOX"])
+        })
+        clearCheckedThreads()
+        advanceAfterRemoving(removed, fromOrder: order, focus: focus)
+        let n = targets.count
+        let ids = targets.map(\.id)
+        offerUndo(n == 1 ? "Archived" : "Archived \(n) conversations") { [weak self] in
+            guard let self else { return }
+            self.pinReadStateKeep(ids)
+            self.mutateThreads(targets, local: { $0.inInbox = true }, remote: { client, id in
+                try await client.modifyThread(id: id, add: ["INBOX"])
+            })
+            self.restoreSelectionFocus(focus)
             self.undoAction = nil
         }
     }
@@ -2779,20 +2944,23 @@ final class MailStore: ObservableObject {
     /// UI and the next sync agree.
     func markSpam(_ thread: MailThread) {
         let wasSelected = selectedThreadId == thread.id
-        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
+        let neighbor = SelectionAdvance.neighborId(in: selectionOrder, removing: thread.id)
         mutateThread(thread) { t in
             t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
         } remote: { client, id in
             try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
         }
         advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
+        let priorFocus = wasSelected ? thread.id : selectedThreadId
         offerUndo("Marked as spam") { [weak self] in
             guard let self else { return }
+            self.pinReadStateKeep([thread.id])
             self.mutateThread(thread) { t in
                 t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
             } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
             }
+            self.restoreSelectionFocus(priorFocus)
             self.undoAction = nil
         }
     }
@@ -2801,20 +2969,74 @@ final class MailStore: ObservableObject {
     /// overflow menu when the thread is already in Spam (and as spam-undo).
     func markNotSpam(_ thread: MailThread) {
         let wasSelected = selectedThreadId == thread.id
-        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
+        let neighbor = SelectionAdvance.neighborId(in: selectionOrder, removing: thread.id)
         mutateThread(thread) { t in
             t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
         } remote: { client, id in
             try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
         }
         advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
+        let priorFocus = wasSelected ? thread.id : selectedThreadId
         offerUndo("Marked as not spam") { [weak self] in
             guard let self else { return }
+            self.pinReadStateKeep([thread.id])
             self.mutateThread(thread) { t in
                 t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
             } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
             }
+            self.restoreSelectionFocus(priorFocus)
+            self.undoAction = nil
+        }
+    }
+
+    /// Bulk spam: if any checked row is not spam, mark all spam; else not-spam
+    /// all (mirrors star/read bulk majority and the single-thread `!` toggle).
+    func markSpamChecked() {
+        let targets = checkedThreadsInOrder
+        guard !targets.isEmpty else { return }
+        let order = selectionOrder
+        let focus = selectedThreadId
+        let markAsSpam = targets.contains { !$0.inSpam }
+        if markAsSpam {
+            mutateThreads(targets, local: { t in
+                t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
+            }, remote: { client, id in
+                try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
+            })
+        } else {
+            mutateThreads(targets, local: { t in
+                t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
+            }, remote: { client, id in
+                try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
+            })
+        }
+        let removed = Set(targets.map(\.id))
+        clearCheckedThreads()
+        // Not-spam usually keeps/restores rows; advance only when focus left.
+        advanceAfterRemoving(removed, fromOrder: order, focus: focus)
+        let n = targets.count
+        let ids = targets.map(\.id)
+        let undoLabel = markAsSpam
+            ? (n == 1 ? "Marked as spam" : "Marked \(n) as spam")
+            : (n == 1 ? "Marked as not spam" : "Marked \(n) as not spam")
+        offerUndo(undoLabel) { [weak self] in
+            guard let self else { return }
+            self.pinReadStateKeep(ids)
+            if markAsSpam {
+                self.mutateThreads(targets, local: { t in
+                    t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
+                }, remote: { client, id in
+                    try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
+                })
+            } else {
+                self.mutateThreads(targets, local: { t in
+                    t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
+                }, remote: { client, id in
+                    try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
+                })
+            }
+            self.restoreSelectionFocus(focus)
             self.undoAction = nil
         }
     }
@@ -2825,7 +3047,7 @@ final class MailStore: ObservableObject {
         // instead of leaving nothing selected. Computed before the mutation
         // removes the row from `threads`.
         let wasSelected = selectedThreadId == thread.id
-        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
+        let neighbor = SelectionAdvance.neighborId(in: selectionOrder, removing: thread.id)
         // Keep labelIds + denorm flags coherent (same pattern as markSpam) so
         // search filters on inTrash and any labelIds-based UI agree.
         mutateThread(thread) { t in
@@ -2834,13 +3056,48 @@ final class MailStore: ObservableObject {
             try await client.trashThread(id: id)
         }
         advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
+        let priorFocus = wasSelected ? thread.id : selectedThreadId
         offerUndo("Moved to Trash") { [weak self] in
             guard let self else { return }
+            // Pin before mutate so reloadThreads snapshots keepIds (opened-
+            // under-is:unread rows were auto-marked read and dropped keepIds
+            // on trash).
+            self.pinReadStateKeep([thread.id])
             self.mutateThread(thread) { t in
                 t.applyLabelMutation(add: ["INBOX"], remove: ["TRASH"])
             } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"], remove: ["TRASH"])
             }
+            self.restoreSelectionFocus(priorFocus)
+            self.undoAction = nil
+        }
+    }
+
+    /// Bulk trash for multi-select.
+    func trashChecked() {
+        let targets = checkedThreadsInOrder
+        guard !targets.isEmpty else { return }
+        let order = selectionOrder
+        let removed = Set(targets.map(\.id))
+        let focus = selectedThreadId
+        mutateThreads(targets, local: { t in
+            t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
+        }, remote: { client, id in
+            try await client.trashThread(id: id)
+        })
+        clearCheckedThreads()
+        advanceAfterRemoving(removed, fromOrder: order, focus: focus)
+        let n = targets.count
+        let ids = targets.map(\.id)
+        offerUndo(n == 1 ? "Moved to Trash" : "Moved \(n) to Trash") { [weak self] in
+            guard let self else { return }
+            self.pinReadStateKeep(ids)
+            self.mutateThreads(targets, local: { t in
+                t.applyLabelMutation(add: ["INBOX"], remove: ["TRASH"])
+            }, remote: { client, id in
+                try await client.modifyThread(id: id, add: ["INBOX"], remove: ["TRASH"])
+            })
+            self.restoreSelectionFocus(focus)
             self.undoAction = nil
         }
     }
@@ -2853,11 +3110,32 @@ final class MailStore: ObservableObject {
         }
     }
 
+    /// Bulk star: if any checked thread is unstarred, star all; else unstar all.
+    func toggleStarChecked() {
+        let targets = checkedThreadsInOrder
+        guard !targets.isEmpty else { return }
+        let starring = targets.contains { !$0.isStarred }
+        mutateThreads(targets, local: { $0.isStarred = starring }, remote: { client, id in
+            try await client.modifyThread(id: id, add: starring ? ["STARRED"] : [],
+                                          remove: starring ? [] : ["STARRED"])
+        })
+    }
+
     func setRead(_ thread: MailThread, read: Bool) {
         if readStateFilterActive { readStateKeepIds.insert(thread.id) }
         mutateThread(thread) { $0.isUnread = !read } remote: { client, id in
             try await client.modifyThread(id: id, add: read ? [] : ["UNREAD"],
                                           remove: read ? ["UNREAD"] : [])
+        }
+    }
+
+    /// Bulk read toggle: if any checked is unread, mark all read; else unread.
+    func toggleReadChecked() {
+        let targets = checkedThreadsInOrder
+        guard !targets.isEmpty else { return }
+        let markRead = targets.contains { $0.isUnread }
+        for thread in targets {
+            setRead(thread, read: markRead)
         }
     }
 

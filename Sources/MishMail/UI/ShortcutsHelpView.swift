@@ -15,8 +15,10 @@ struct ShortcutsHelpView: View {
         ("Other", [
             ("↑ / ↓", "Browse conversations"),
             ("Return", "Open conversation"),
+            ("x", "Select / deselect (multi-select)"),
+            ("Shift-click checkbox", "Select a range"),
             ("/", "Search"),
-            ("Esc", "Close reading pane / drop focus"),
+            ("Esc", "Clear selection / close reading pane / drop focus"),
             ("⌘K", "Command palette (Insert link while composing)"),
             ("/ (in compose)", "Snippet picker (typed in body)"),
             ("⌘/", "Snippets panel (in compose)"),

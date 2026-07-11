@@ -6,6 +6,23 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Fixed
+- **Delete under `is:unread` advances to the next thread** — opening an unread
+  conversation pins it via read-state stickiness so the reading pane doesn't
+  blank; trash/archive/spam now still remove the row optimistically so
+  Gmail-style auto-advance lands on the next conversation instead of clearing
+  selection. Undo under an unread filter re-pins the row so it reappears.
+- **Keybinding overrides beat new defaults** — a stored rebind (e.g. archive →
+  `x`) is not stolen by a newly added catalog default on the same key;
+  colliding defaults are migrated onto a free key.
+
+### Added
+- **Multi-select** — `x` toggles a checkbox on the focused conversation
+  (rebindable); row checkboxes (Notion-style, visible on hover or when any are
+  selected); Shift-click a checkbox to select a range; bulk Archive / Trash /
+  Star / Read-Unread / Spam via shortcut or the selection bar; Esc clears
+  checks. Bulk mutations reload the list once.
+
 ## [0.3.0] - 2026-07-11
 
 ### Added

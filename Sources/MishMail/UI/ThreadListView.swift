@@ -206,6 +206,10 @@ struct ThreadListView: View {
             }
             FilterBar()
             Divider()
+            if !store.checkedThreadIds.isEmpty {
+                multiSelectBar
+                Divider()
+            }
             List(selection: $store.selectedThreadId) {
                 ForEach(grouped, id: \.0) { title, threads in
                     Section {
@@ -216,8 +220,11 @@ struct ThreadListView: View {
                                 // Notion Mail-style: READ rows recede on a
                                 // grey wash (adapts to dark mode); unread rows
                                 // sit on the plain background and pop.
-                                .listRowBackground(thread.isUnread
-                                    ? Color.clear : Color.primary.opacity(0.05))
+                                .listRowBackground(
+                                    store.checkedThreadIds.contains(thread.id)
+                                        ? Color.notionAccent.opacity(0.10)
+                                        : (thread.isUnread
+                                            ? Color.clear : Color.primary.opacity(0.05)))
                                 .swipeActions(edge: .trailing) {
                                     Button { store.archive(thread) } label: {
                                         Label("Archive", systemImage: "archivebox")
@@ -351,6 +358,37 @@ struct ThreadListView: View {
             }
         }
         // Undo/notice toast lives in ContentView, centered over the whole window.
+    }
+
+    /// Compact bulk-action strip when one or more checkboxes are on.
+    private var multiSelectBar: some View {
+        HStack(spacing: 10) {
+            Text("\(store.checkedThreadIds.count) selected")
+                .font(.system(size: 12 * fontScale, weight: .semibold))
+                .monospacedDigit()
+            Spacer(minLength: 8)
+            Button("Archive") { store.archiveChecked() }
+                .buttonStyle(.borderless)
+                .help("Archive selected (\(store.keyBindings.key(for: .archive)))")
+            Button("Trash", role: .destructive) { store.trashChecked() }
+                .buttonStyle(.borderless)
+                .help("Trash selected (\(store.keyBindings.key(for: .trash)))")
+            Button("Star") { store.toggleStarChecked() }
+                .buttonStyle(.borderless)
+            Button("Read/Unread") { store.toggleReadChecked() }
+                .buttonStyle(.borderless)
+            Button {
+                store.clearCheckedThreads()
+            } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Clear selection (Esc)")
+        }
+        .font(.system(size: 12 * fontScale))
+        .padding(.horizontal, 12).padding(.vertical, 6)
+        .background(Color.notionAccent.opacity(0.08))
     }
 
     @ViewBuilder
@@ -1134,15 +1172,36 @@ struct FaviconView: View {
 }
 
 /// Dense Notion Mail-style single-line row:
-/// [dot] participants   subject  snippet…………  [ai] [icons] time
+/// [check] [dot] participants   subject  snippet…………  [ai] [icons] time
 struct ThreadRow: View {
     @EnvironmentObject var store: MailStore
     @AppStorage("fontScale") private var fontScale = 1.0
     let thread: MailThread
     @State private var hovering = false
 
+    private var isChecked: Bool { store.checkedThreadIds.contains(thread.id) }
+    /// Show checkboxes when hovering, checked, or any multi-select is active.
+    private var showCheckbox: Bool {
+        hovering || isChecked || !store.checkedThreadIds.isEmpty
+    }
+
     var body: some View {
         HStack(alignment: .center, spacing: 8) {
+            // Notion Mail-style select toggle; shift-click selects a range.
+            Button {
+                let shift = NSEvent.modifierFlags.contains(.shift)
+                store.toggleChecked(thread.id, extendRange: shift)
+            } label: {
+                Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 14 * fontScale))
+                    .foregroundStyle(isChecked ? Color.notionAccent : Color.secondary.opacity(0.55))
+                    .frame(width: 16 * fontScale, height: 16 * fontScale)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .opacity(showCheckbox ? 1 : 0)
+            .help(isChecked ? "Deselect (x)" : "Select (x). Shift-click for a range.")
+
             Circle()
                 .fill(thread.isUnread ? Color.notionAccent : .clear)
                 .frame(width: 7, height: 7)
