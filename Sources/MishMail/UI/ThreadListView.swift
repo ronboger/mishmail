@@ -305,6 +305,10 @@ struct ThreadListView: View {
             .onChange(of: priorityModeRaw) { recomputeLayout() }
             .onChange(of: vipAlwaysPins) { recomputeLayout() }
             .onChange(of: collapsedLabels) { recomputeLayout() }
+            // groups() also reads these — without them the cached sections
+            // go stale (aiCategory grouping, Labels view after rename/reorder).
+            .onChange(of: store.aiCategories) { recomputeLayout() }
+            .onChange(of: store.labelsByAccount) { recomputeLayout() }
         }
         .background(Color.notionContent)
         .navigationTitle(store.selectedView.title)

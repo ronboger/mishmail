@@ -16,6 +16,10 @@ enum ThreadListPaging {
     /// 300 so top-of-inbox reloads stay cheap; Load older expands the window.
     static let pageSize = 100
 
+    /// Search is single-window (no Load older), so it keeps the historical
+    /// 300-row depth rather than shrinking with `pageSize`.
+    static let searchWindowLimit = 300
+
     /// True when a full page was returned — there may be older rows.
     /// Prefer `splitPage` (limit+1 probe) over this alone so exact multiples
     /// don't show a dead "Load older".

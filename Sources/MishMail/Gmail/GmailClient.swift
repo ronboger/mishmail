@@ -339,12 +339,6 @@ actor GmailClient {
         return report
     }
 
-    /// Convenience when caller only needs messages (backfill). Does **not**
-    /// throw on partial retry exhaustion — drops exhausted ids.
-    func getMessagesIgnoringRetryExhaustion(ids: [String], format: String = "full") async throws -> [GMessage] {
-        try await getMessages(ids: ids, format: format).messages
-    }
-
     private enum ConcurrentItem: Sendable {
         case ok(GMessage)
         case notFound(String)

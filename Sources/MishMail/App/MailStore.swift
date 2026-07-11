@@ -1125,7 +1125,7 @@ final class MailStore: ObservableObject {
         // Probe limit = window + 1 so hasMore is exact (no phantom Load older).
         let windowLimit = search.isEmpty
             ? max(ThreadListPaging.pageSize, listWindowLimit)
-            : ThreadListPaging.pageSize
+            : ThreadListPaging.searchWindowLimit
         let fetchLimit = ThreadListPaging.probeLimit(pageSize: windowLimit)
         let badgeAccount: String? = {
             switch Self.badgeScope {
@@ -1301,6 +1301,8 @@ final class MailStore: ObservableObject {
         loadMoreTask?.cancel()
         loadMoreTask = nil
         loadMoreToken = UUID()
+        // The cancelled task's defer is token-guarded and won't clear this.
+        isLoadingMore = false
     }
 
     /// Append the next page of threads older than the current window.
