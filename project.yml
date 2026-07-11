@@ -49,6 +49,9 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         ENABLE_HARDENED_RUNTIME: true
+        # GRDB ships sqlite3.h next to its umbrella without listing it there;
+        # clang emits -Wincomplete-umbrella for that. Harmless third-party noise.
+        OTHER_CFLAGS: "$(inherited) -Wno-incomplete-umbrella"
       # Debug and Release build two DISTINCT apps so a throwaway test build is
       # never confused with — or able to corrupt — the real one you use daily:
       #   Release  → "MishMail",       dev.ronboger.MishMail        (make install → /Applications)
@@ -115,6 +118,8 @@ targets:
       base:
         SWIFT_VERSION: 5.10
         GENERATE_INFOPLIST_FILE: true
+        # Same GRDB incomplete-umbrella noise as the app target.
+        OTHER_CFLAGS: "$(inherited) -Wno-incomplete-umbrella"
 schemes:
   MishMail:
     build:
