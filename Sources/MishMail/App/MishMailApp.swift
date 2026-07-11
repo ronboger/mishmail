@@ -1,15 +1,17 @@
 import SwiftUI
 
-/// Flushes a pending undo-send before the app quits, so a queued message
-/// can't be silently lost by quitting inside the 10-second window.
+/// On quit: flush a pending undo-send (so mail isn't lost inside the 10s
+/// window) and shut down database work before process teardown. Background
+/// GRDB readers must finish before SQLCipher's atexit shutdown or we crash
+/// in sqlcipher_page_hmac (use-after-free on a live reader connection).
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var store: MailStore?
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
-        guard let store = Self.store, store.pendingSend != nil else { return .terminateNow }
+        guard let store = Self.store else { return .terminateNow }
         Task { @MainActor in
-            await store.flushPendingSend()
+            await store.prepareForTermination()
             sender.reply(toApplicationShouldTerminate: true)
         }
         return .terminateLater

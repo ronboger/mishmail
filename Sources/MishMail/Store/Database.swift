@@ -280,6 +280,9 @@ final class AppDatabase {
     // search dropdown's per-keystroke FTS lookup) run on their own snapshot
     // connections instead of queuing behind a sync-engine write transaction.
     let dbPool: DatabasePool
+    /// True after `close()` — no further access is valid (process is quitting).
+    private(set) var isClosed = false
+    private let closeLock = NSLock()
 
     init() throws {
         let dir = try FileManager.default.url(for: .applicationSupportDirectory,
@@ -304,6 +307,39 @@ final class AppDatabase {
             NSLog("MishMail: mail cache unreadable (%@); resetting", "\(error)")
             try Self.setAsideUnreadable(path: path)
             dbPool = try Self.openAndMigrate(path: path, passphrase: passphrase)
+        }
+    }
+
+    /// Abort in-flight statements so cancelled tasks can finish promptly
+    /// during termination (long full-table scans like contacts rebuild).
+    /// No-ops after a successful `close()` (interrupt on a closed pool can
+    /// crash). Still runs after a *failed* close so we can unblock live
+    /// statements and retry.
+    func interrupt() {
+        closeLock.lock()
+        let closed = isClosed
+        closeLock.unlock()
+        guard !closed else { return }
+        dbPool.interrupt()
+    }
+
+    /// Close the pool once, after background readers have been cancelled and
+    /// awaited. Must run before process exit so SQLCipher's atexit teardown
+    /// (`sqlcipher_extra_shutdown`) does not race live reader connections.
+    ///
+    /// Only flips `isClosed` after a successful `close()`. GRDB can throw
+    /// `SQLITE_BUSY` when live statements block close (zombie-ish state);
+    /// swallowing that while marking closed would block interrupt/retry and
+    /// hide the residual atexit race.
+    func close() {
+        closeLock.lock()
+        defer { closeLock.unlock() }
+        guard !isClosed else { return }
+        do {
+            try dbPool.close()
+            isClosed = true
+        } catch {
+            NSLog("MishMail: dbPool.close failed: %@", "\(error)")
         }
     }
 
@@ -828,5 +864,57 @@ final class AppDatabase {
                 """)
         }
         return m
+    }
+}
+
+// MARK: - Shutdown ordering
+
+/// Coordinates cancel → interrupt → await → close so GRDB/SQLCipher is not
+/// torn down under active readers (EXC_BAD_ACCESS in sqlcipher_page_hmac).
+enum DatabaseLifecycle {
+    /// - Parameters:
+    ///   - tasks: Unstructured database Tasks still holding the pool.
+    ///   - interrupt: Abort long-running SQL (e.g. `DatabasePool.interrupt`).
+    ///   - close: Release the pool after tasks have finished.
+    static func shutDown(
+        tasks: [Task<Void, Never>],
+        interrupt: () -> Void,
+        close: () -> Void
+    ) async {
+        for task in tasks { task.cancel() }
+        interrupt()
+        for task in tasks { await task.value }
+        close()
+    }
+
+    /// Holds the in-flight termination task for `singleFlight`.
+    /// MainActor-isolated so check/set of `task` is never concurrent.
+    @MainActor
+    final class FlightSlot {
+        var task: Task<Void, Never>?
+    }
+
+    /// Single-flight wrapper matching `MailStore.prepareForTermination`:
+    /// concurrent callers share one in-flight task and all await it, so a
+    /// second quit cannot finish before the first close completes.
+    ///
+    /// `@MainActor` is load-bearing (SE-0338): a nonisolated async helper
+    /// would hop to the concurrent executor, so two MainActor callers could
+    /// both observe `slot.task == nil` and double-run `work`.
+    @MainActor
+    static func singleFlight(
+        slot: FlightSlot,
+        work: @escaping @MainActor () async -> Void
+    ) async {
+        if let existing = slot.task {
+            await existing.value
+            return
+        }
+        // No suspension between check and set — still on MainActor.
+        let task = Task { @MainActor in
+            await work()
+        }
+        slot.task = task
+        await task.value
     }
 }

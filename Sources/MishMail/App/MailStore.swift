@@ -231,6 +231,16 @@ final class MailStore: ObservableObject {
     }
     /// Cancels in-flight neighbor header/body warm when selection moves.
     private var neighborPrefetchTask: Task<Void, Never>?
+    /// In-flight contacts rebuild (full-table `message` scan); must be
+    /// cancelled and awaited before the DatabasePool is closed on quit.
+    private var contactsRebuildTask: Task<Void, Never>?
+    /// Once true, no new background database work is started. Set by
+    /// `prepareForTermination()` on app quit.
+    private(set) var isShuttingDown = false
+    /// Single-flight quit work so a second Cmd-Q / re-entrant
+    /// `applicationShouldTerminate` awaits the same shutdown instead of
+    /// replying `true` while the first close is still in flight.
+    private let terminationSlot = DatabaseLifecycle.FlightSlot()
     /// Gmail-style "?" cheat sheet.
     @Published var showShortcutsHelp = false
     /// User-rebindable single-key shortcuts (Settings → Keyboard shortcuts).
@@ -918,6 +928,7 @@ final class MailStore: ObservableObject {
     /// with rowid above the high-water mark); full when forced, on first run,
     /// when the in-memory map is empty, or when the account set changes.
     func rebuildContacts(forceFull: Bool = false) {
+        guard !isShuttingDown else { return }
         let ownAddresses = ownEmailAddresses
         let accountsChanged = ownAddresses != contactsOwnAddresses
         let full = forceFull || accountsChanged
@@ -933,8 +944,11 @@ final class MailStore: ObservableObject {
         contactsRebuildGeneration += 1
         let generation = contactsRebuildGeneration
         let pool = db
-        // Capture for the background read; merge happens back on MainActor.
-        Task { [weak self] in
+        // Tracked Task (not fire-and-forget): termination must cancel + await
+        // this full-table scan before closing the DatabasePool / process exit.
+        contactsRebuildTask?.cancel()
+        contactsRebuildTask = Task { [weak self] in
+            guard !Task.isCancelled else { return }
             let rows: [ContactMiner.MessageHeaders] = (try? await pool.read { db in
                 let sql: String
                 let args: StatementArguments
@@ -960,8 +974,10 @@ final class MailStore: ObservableObject {
                         labelIds: row["labelIds"])
                 }
             }) ?? []
+            guard !Task.isCancelled else { return }
             await MainActor.run {
-                guard let self, generation == self.contactsRebuildGeneration else { return }
+                guard let self, !self.isShuttingDown,
+                      generation == self.contactsRebuildGeneration else { return }
                 // Accounts changed mid-flight — restart with the current set
                 // (we may have already cleared weights for a full pass).
                 let currentOwn = Set(self.accounts.map { $0.id.lowercased() })
@@ -983,6 +999,61 @@ final class MailStore: ObservableObject {
                 self.contacts = ContactMiner.ranked(from: self.contactWeights)
             }
         }
+    }
+
+    /// Stop timers, cancel and await active database Tasks, flush a pending
+    /// undo-send, then close the shared DatabasePool. Called from
+    /// `applicationShouldTerminate` so process teardown cannot race SQLCipher
+    /// while a GRDB reader is still in `sqlcipher_page_hmac`.
+    ///
+    /// Re-entrant: a second call (double Cmd-Q, logout re-sending quit) awaits
+    /// the same in-flight task instead of returning immediately and letting
+    /// the delegate `reply(true)` while the pool is still open.
+    func prepareForTermination() async {
+        // Gate new DB work before the first suspension point so a MainActor
+        // hop cannot start rebuildContacts between here and executeTermination.
+        isShuttingDown = true
+        await DatabaseLifecycle.singleFlight(slot: terminationSlot) { [self] in
+            await self.executeTermination()
+        }
+    }
+
+    private func executeTermination() async {
+        syncTimer?.invalidate()
+        syncTimer = nil
+        undoTimer?.invalidate()
+        undoTimer = nil
+        noticeTimer?.invalidate()
+        noticeTimer = nil
+        pendingSendTimer?.invalidate()
+        pendingSendTimer = nil
+        scheduledSendTimer?.invalidate()
+        scheduledSendTimer = nil
+
+        // Snapshot then clear so a late completion cannot re-schedule work.
+        let tasks = [
+            contactsRebuildTask,
+            threadReloadTask,
+            loadMoreTask,
+            chipReloadTask,
+            neighborPrefetchTask,
+        ].compactMap { $0 }
+        contactsRebuildTask = nil
+        threadReloadTask = nil
+        loadMoreTask = nil
+        chipReloadTask = nil
+        neighborPrefetchTask = nil
+
+        // Flush while the pool is still open (may write / send).
+        if pendingSend != nil {
+            await flushPendingSend()
+        }
+
+        await DatabaseLifecycle.shutDown(
+            tasks: tasks,
+            interrupt: { AppDatabase.shared.interrupt() },
+            close: { AppDatabase.shared.close() }
+        )
     }
 
     /// Top matches for an address-field token.
@@ -1087,6 +1158,7 @@ final class MailStore: ObservableObject {
     private var threadReloadGeneration = 0
 
     func reloadThreadsDebounced() {
+        guard !isShuttingDown else { return }
         chipReloadTask?.cancel()
         chipReloadTask = Task { [weak self] in
             try? await Task.sleep(nanoseconds: 180_000_000)
@@ -1105,6 +1177,7 @@ final class MailStore: ObservableObject {
     /// Reuses `listWindowLimit` so load-older pages survive sync/star reloads
     /// (view/search changes call `resetListWindow()` first).
     func reloadThreads() {
+        guard !isShuttingDown else { return }
         chipReloadTask?.cancel()   // a direct reload supersedes a pending debounced one
         loadMoreTask?.cancel()
         loadMoreTask = nil
@@ -1308,6 +1381,7 @@ final class MailStore: ObservableObject {
     /// Append the next page of threads older than the current window.
     /// No-op when `hasMoreThreads` is false, search is active, or a load is in flight.
     func loadMoreThreads() {
+        guard !isShuttingDown else { return }
         let search = committedSearch.trimmingCharacters(in: .whitespaces)
         guard search.isEmpty, hasMoreThreads, let cursor = listCursor, loadMoreTask == nil else { return }
         let generation = threadReloadGeneration
@@ -1949,15 +2023,17 @@ final class MailStore: ObservableObject {
         // Demo mode has no real account and no token; polling would only spin
         // up failed syncs and error banners over the screenshot fixtures.
         if DemoSeed.isActive { return }
+        guard !isShuttingDown else { return }
         fireDueSnoozes()  // catch snoozes that came due while the app was closed
         syncTimer?.invalidate()
         syncTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
             Task { @MainActor in
-                await self?.syncAll()
-                self?.fireDueReminders()
-                self?.fireDueSnoozes()
+                guard let self, !self.isShuttingDown else { return }
+                await self.syncAll()
+                self.fireDueReminders()
+                self.fireDueSnoozes()
                 // Backstop for the one-shot timer (sleep/wake can eat it).
-                await self?.fireDueScheduledSends()
+                await self.fireDueScheduledSends()
             }
         }
     }
@@ -1966,6 +2042,7 @@ final class MailStore: ObservableObject {
     /// (each engine is an independent actor). MainActor work — reload,
     /// blocklist, contacts — runs once at the end.
     func syncAll() async {
+        guard !isShuttingDown else { return }
         let ids = accounts.map(\.id)
         guard !ids.isEmpty else {
             applyBlocklist()
@@ -2391,8 +2468,11 @@ final class MailStore: ObservableObject {
 
     /// Warm headers + last message body for prev/next in `displayOrder`
     /// (Phase 2). Cap concurrency at 1; cancel when selection changes.
-    /// Uses a detached pool read so SQLCipher work stays off the main actor.
+    /// Detached so arrow-key selection does not hop the MainActor between
+    /// reads; still stored on `neighborPrefetchTask` so termination can
+    /// cancel and await it like any other tracked DB task.
     private func prefetchNeighborThreads() {
+        guard !isShuttingDown else { return }
         neighborPrefetchTask?.cancel()
         let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
         let (prev, next) = NeighborPrefetch.neighbors(selected: selectedThreadId, in: order)
