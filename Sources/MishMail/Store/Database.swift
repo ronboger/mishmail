@@ -46,8 +46,18 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     /// Space-separated unique lowercased From emails across all messages in
     /// the thread (for blocklist any-message match without scanning messages).
     var allFromEmails: String = ""
+    /// Newest *inbound* message date (excludes pure outbound: SENT-without-INBOX,
+    /// DRAFT, From=mailbox without INBOX). Nil when the thread has only own
+    /// outbound. Inbox-style lists order by `COALESCE(lastInboundDate, lastDate)`
+    /// so your reply doesn't jump a conversation to the top; Sent/Drafts/search
+    /// and the row timestamp keep using `lastDate` (newest any message).
+    /// "Remind if no reply" cancels only when this advances past `reminderSetAt`.
+    var lastInboundDate: Date? = nil
 
     var labels: [String] { labelIds.split(separator: " ").map(String.init) }
+
+    /// Sort key for inbox-style lists (inbox / promotions / social / per-account inbox).
+    var inboxSortDate: Date { lastInboundDate ?? lastDate }
 
     /// User-label Gmail ids (`Label_*`) from the space-separated `labelIds`.
     var userLabelIds: [String] {
@@ -862,6 +872,45 @@ final class AppDatabase {
                 UPDATE message SET bodyText = '', bodyHTML = NULL
                 WHERE bodyText != '' OR bodyHTML IS NOT NULL
                 """)
+        }
+        // v25: lastInboundDate for inbox sort / "remind if no reply" without
+        // overloading lastDate (which Sent, Drafts, search, and row timestamps
+        // need as newest-message date).
+        m.registerMigration("v25") { db in
+            try db.alter(table: "thread") { t in
+                t.add(column: "lastInboundDate", .datetime)
+            }
+            // Helps inbox ORDER BY COALESCE(lastInboundDate, lastDate) at scale
+            // when lastInboundDate is populated (partial-null still falls back).
+            try db.create(
+                index: "thread_on_inInbox_inTrash_lastInboundDate",
+                on: "thread",
+                columns: ["inInbox", "inTrash", "lastInboundDate"])
+            // Date columns only — a full deriveThread would recompute label
+            // denorm from message rows and wipe category flags that only
+            // lived on the thread's labelIds (v16 backfill / Gmail gaps).
+            let rows = try Row.fetchAll(db, sql: """
+                SELECT id, accountId FROM thread
+                """)
+            for row in rows {
+                let threadKey: String = row["id"]
+                let accountId: String = row["accountId"]
+                let messages = try Message
+                    .filter(Column("threadId") == threadKey)
+                    .order(Column("date").desc)
+                    .fetchAll(db)
+                guard let newest = messages.first else {
+                    try db.execute(sql: """
+                        UPDATE thread SET lastInboundDate = NULL WHERE id = ?
+                        """, arguments: [threadKey])
+                    continue
+                }
+                let inbound = SyncEngine.lastInboundDate(
+                    messages: messages, accountId: accountId)
+                try db.execute(sql: """
+                    UPDATE thread SET lastDate = ?, lastInboundDate = ? WHERE id = ?
+                    """, arguments: [newest.date, inbound, threadKey])
+            }
         }
         return m
     }

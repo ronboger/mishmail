@@ -124,6 +124,60 @@ final class ThreadDerivationTests: XCTestCase {
         XCTAssertTrue(t.inTrash)
         XCTAssertFalse(t.inInbox)
     }
+
+    // MARK: - lastInboundDate (own reply does not bump inbox position)
+
+    func testOwnSentReplyLeavesLastDateNewestButHoldsInbound() throws {
+        // lastDate = your send (Sent/row timestamp); lastInboundDate stays on
+        // their mail so inbox COALESCE sort doesn't jump the thread.
+        let myReply = msg(id: "m2", from: account, daysAgo: 0, labels: "SENT")
+        let theirs = msg(id: "m1", from: "Jane Doe <jane@y.com>", daysAgo: 2, labels: "INBOX")
+        let t = try XCTUnwrap(derive([myReply, theirs]))
+        XCTAssertEqual(t.lastDate, myReply.date)
+        XCTAssertEqual(t.lastInboundDate, theirs.date)
+        XCTAssertEqual(t.inboxSortDate, theirs.date)
+        XCTAssertEqual(t.snippet, "snippet-m2")
+        XCTAssertEqual(t.fromDisplay, MessageParser.displayName(fromHeader: account))
+    }
+
+    func testInboundReplyAdvancesBothDates() throws {
+        let theirs = msg(id: "m2", from: "Jane Doe <jane@y.com>", daysAgo: 0, labels: "INBOX")
+        let mine = msg(id: "m1", from: account, daysAgo: 1, labels: "SENT")
+        let t = try XCTUnwrap(derive([theirs, mine]))
+        XCTAssertEqual(t.lastDate, theirs.date)
+        XCTAssertEqual(t.lastInboundDate, theirs.date)
+    }
+
+    func testDraftDoesNotAdvanceLastInboundDate() throws {
+        let draft = msg(id: "m2", from: account, daysAgo: 0, labels: "DRAFT")
+        let theirs = msg(id: "m1", from: "Jane <jane@y.com>", daysAgo: 3, labels: "INBOX")
+        let t = try XCTUnwrap(derive([draft, theirs]))
+        XCTAssertEqual(t.lastDate, draft.date, "draft is still newest message")
+        XCTAssertEqual(t.lastInboundDate, theirs.date)
+    }
+
+    func testPureOutboundThreadHasNilLastInboundDate() throws {
+        // New compose / sent-only: lastDate advances; lastInboundDate stays nil
+        // so "remind if no reply" does not cancel on your own nudge.
+        let newer = msg(id: "m2", from: account, daysAgo: 0, labels: "SENT")
+        let older = msg(id: "m1", from: account, daysAgo: 1, labels: "SENT")
+        let t = try XCTUnwrap(derive([newer, older]))
+        XCTAssertEqual(t.lastDate, newer.date)
+        XCTAssertNil(t.lastInboundDate)
+        XCTAssertEqual(t.inboxSortDate, newer.date, "COALESCE falls back to lastDate")
+    }
+
+    func testLastInboundDateHelperSkipsOwnOutbound() {
+        let myReply = msg(id: "m2", from: account, daysAgo: 0, labels: "SENT")
+        let theirs = msg(id: "m1", from: "Jane <jane@y.com>", daysAgo: 2, labels: "INBOX")
+        XCTAssertEqual(
+            SyncEngine.lastInboundDate(messages: [myReply, theirs], accountId: account),
+            theirs.date)
+        XCTAssertNil(
+            SyncEngine.lastInboundDate(messages: [myReply], accountId: account))
+        XCTAssertTrue(SyncEngine.isOwnOutbound(myReply, accountEmail: account.lowercased()))
+        XCTAssertFalse(SyncEngine.isOwnOutbound(theirs, accountEmail: account.lowercased()))
+    }
 }
 
 /// SyncEngine.applyLabelDelta — pure label-string merge used by metadata-only

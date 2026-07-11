@@ -6,6 +6,27 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Fixed
+- **Reply HTML matches Gmail** — untouched replies now send a multipart HTML
+  alternative with a real `gmail_quote` / `gmail_attr` / nested `blockquote`
+  and the original message's HTML inside (same pattern as forwards). Previously
+  the plain `> ` quote trail was run through markdown, which flattened nested
+  history, leaked literal `>` prefixes, and looked broken in Gmail and other
+  clients. Quote matching uses a pinned date formatter; quoted HTML strips
+  `cid:` images and document chrome (`style`/`html`/`head`) so the trail
+  doesn't ship broken inline images or restyle the authored head. Scheduled
+  sends hydrate the reply parent body (post-v24 off-row storage); reopened
+  reply drafts recover the parent for In-Reply-To + HTML upgrade.
+- **Own reply no longer bumps inbox position** — schema v25 adds
+  `lastInboundDate` (nullable). Inbox / promotions / social / per-account
+  inbox order by `COALESCE(lastInboundDate, lastDate)`; Sent, Drafts, search,
+  and row timestamps keep `lastDate` = newest message. Date-section grouping
+  ("Today" / "Yesterday" / …) uses the same activity key as the list sort, so
+  a reply does not re-hoist a thread into "Today" under the default Group by
+  Date view. "Remind if no reply" cancels only when `lastInboundDate`
+  advances (own follow-ups on pure-outbound threads no longer clear the
+  reminder).
+
 ### Changed
 - **Renamed to MishMail** — the app, bundle identifiers, Xcode project, targets,
   release artifacts, and GitHub repository references now use the MishMail name.

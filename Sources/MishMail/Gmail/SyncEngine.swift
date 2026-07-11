@@ -603,6 +603,7 @@ actor SyncEngine {
             subject: messages.last?.subject.isEmpty == false ? messages.last!.subject : newest.subject,
             snippet: newest.snippet,
             fromDisplay: MessageParser.displayName(fromHeader: newest.fromHeader),
+            // Newest any message — Sent/Drafts/search/row timestamps need this.
             lastDate: newest.date,
             isUnread: messages.contains { $0.isUnread },
             isStarred: allLabels.contains("STARRED"),
@@ -621,8 +622,38 @@ actor SyncEngine {
             inSocial: allLabels.contains("CATEGORY_SOCIAL"),
             inSpam: allLabels.contains("SPAM"),
             fromEmail: MessageParser.emailAddress(newest.fromHeader).lowercased(),
-            allFromEmails: ThreadLabels.allFromEmails(from: messages)
+            allFromEmails: ThreadLabels.allFromEmails(from: messages),
+            // Inbox-only sort / remind-if-no-reply. Nil when pure outbound so
+            // own follow-ups never look like "they replied."
+            lastInboundDate: lastInboundDate(messages: messages, accountId: accountId)
         )
+    }
+
+    /// Newest non-outbound message date, or nil when the thread is pure
+    /// outbound (new compose / sent-only). Messages newest-first.
+    static func lastInboundDate(messages: [Message], accountId: String) -> Date? {
+        let account = accountId.lowercased()
+        for m in messages {
+            if isOwnOutbound(m, accountEmail: account) { continue }
+            return m.date
+        }
+        return nil
+    }
+
+    /// True when this message should not move inbox position or cancel a
+    /// "remind if no reply" timer. Pure outbound only — SENT+INBOX (self
+    /// echo / reply-all including you) still counts as activity.
+    static func isOwnOutbound(_ m: Message, accountEmail: String) -> Bool {
+        let labs = Set(m.labelIds.split(whereSeparator: \.isWhitespace).map(String.init))
+        if labs.contains("DRAFT") { return true }
+        // Gmail marks your sends SENT and usually omits INBOX on the sent row.
+        if labs.contains("SENT") && !labs.contains("INBOX") { return true }
+        // From the mailbox primary without INBOX (some clients omit SENT).
+        // Send-as aliases rely on the SENT label above — MailStore's identity
+        // list is not available inside pure derive.
+        let from = MessageParser.emailAddress(m.fromHeader).lowercased()
+        if from == accountEmail && !labs.contains("INBOX") { return true }
+        return false
     }
 
     /// Recomputes every thread row for this account from scratch (used by
