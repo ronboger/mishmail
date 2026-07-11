@@ -68,15 +68,20 @@ enum HTMLBodyDarkMode {
           body, body :not(a):not(a *) { color: #e6e6e6 !important; }
           a, a * { color: #6cb2ff !important; }
           /* Inline light fills (Word/Docs highlighters): clear the paint so we
-             do not get per-line white strips. Body force-light text applies. */
-          :is(\(inlineTags)):is(\(light)),
+             do not get per-line white strips. Body force-light text applies.
+             Skip self-declared inline-block/flex CTAs (white pill buttons) —
+             attribute CSS cannot see computed display, and !important strip
+             would permanently hide the fill from JS rescue. */
+          :is(\(inlineTags)):is(\(light)):not([style*="inline-block" i]):not([style*="inline-flex" i]),
           .\(strip) {
             background-color: transparent !important;
             background-image: none !important;
           }
-          /* Block-ish light surfaces only — exclude inline highlighter tags so
-             we never force #222 onto stripped spans. Self-only (no descendants). */
-          :is(\(light)):not(span):not(font):not(mark):not(b):not(i):not(u):not(em):not(strong):not(a) {
+          /* Block-ish light surfaces only. :where() adds zero specificity so
+             this stays (0,1,0) and JS .mm-fg-on-dark / .mm-fg-on-light win by
+             source order — load-bearing for Google-welcome dark-on-dark when a
+             light bgcolor attr is overridden by a dark computed fill. */
+          :is(\(light)):not(:where(\(inlineTags))) {
             color: #222 !important;
           }
           /* JS effective-bg classes: every node stamped from nearest opaque fill. */
