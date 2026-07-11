@@ -6,6 +6,8 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-07-11
+
 ### Added
 - **Reading-pane ⋯ menu** — always multi-item: mark read/unread, snooze, mark
   as spam / not spam, block/unblock sender, open in Gmail (plus forward-all when
@@ -16,6 +18,15 @@ minor versions may still change behavior.
   local match (`OR`, unary `-term`, structured criteria).
 - **Gmail web deep links** — `authuser=` with correct encoding (including `+` in
   addresses) for thread and filters-settings URLs.
+- **Remote image policy** — Settings → Appearance: Ask each time (default),
+  VIP senders, or Always. Load images click loads this message; the menu
+  offers this conversation. Cleartext image URLs stay blocked either way.
+- **Copy / Save thread as Markdown** — thread ⋯ menu: copy the conversation
+  to the clipboard or save a `.md` file (bodies, Markdown links from HTML
+  anchors, attachment filenames). Save failures alert and fall back to the
+  clipboard.
+- **Sponsorship** — README Support section, `.github/FUNDING.yml` (GitHub
+  Sponsors + ETH), and a clickable "Support MishMail" line in the About panel.
 
 ### Notes
 - **Report phishing** deliberately not shipped — no public Gmail API path; see
@@ -41,6 +52,9 @@ minor versions may still change behavior.
   Date view. "Remind if no reply" cancels only when `lastInboundDate`
   advances (own follow-ups on pure-outbound threads no longer clear the
   reminder).
+- **Slash snippets mid-message** — caret-based detection so `/` works more
+  than once and not only at the end of the body; settings rows open on click;
+  safer programmatic body rewrites keep the caret in sync.
 
 ### Changed
 - **Renamed to MishMail** — the app, bundle identifiers, Xcode project, targets,
@@ -48,14 +62,7 @@ minor versions may still change behavior.
   The new bundle identifiers intentionally create fresh app containers and
   Keychain namespaces for this pre-1.0 rename.
 
-### Added
-- **Remote image policy** — Settings → Appearance: Ask each time (default),
-  VIP senders, or Always. Load images click loads this message; the menu
-  offers this conversation. Cleartext image URLs stay blocked either way.
-- **Copy / Save thread as Markdown** — thread ⋯ menu: copy the conversation
-  to the clipboard or save a `.md` file (bodies, Markdown links from HTML
-  anchors, attachment filenames). Save failures alert and fall back to the
-  clipboard.
+### Also since 0.2.0
 - **Compose markdown** — write `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``,
   `#`/`##`/`###` headings, lists, `>` quotes, and `$math$` / `$$display$$` in the
   compose body. Live syntax highlighting, footer format buttons, and shortcuts
