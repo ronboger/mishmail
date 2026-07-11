@@ -107,24 +107,46 @@ final class ReplyComposerTests: XCTestCase {
     func testHTMLBodyRendersUserMarkdown() {
         let m = message()
         let html = ReplyComposer.htmlBody(userText: "Hello **world**", original: m)
-        XCTAssertTrue(html.contains("<strong>world</strong>") || html.contains("<b>world</b>")
-                      || html.contains("**world**") == false)
-        XCTAssertTrue(html.contains("gmail_quote"))
+        XCTAssertTrue(html.contains("<strong>world</strong>"), html)
+        XCTAssertTrue(html.contains("class=\"gmail_quote\""))
     }
 
     func testHTMLBodyFallsBackToPlainWhenNoOriginalHTML() {
         let m = message(bodyText: "Plain only\nSecond line", bodyHTML: nil)
         let html = ReplyComposer.htmlBody(userText: "ack", original: m)
         XCTAssertTrue(html.contains("Plain only<br>Second line"))
-        XCTAssertTrue(html.contains("gmail_quote"))
+        XCTAssertTrue(html.contains("class=\"gmail_quote\""))
     }
 
     func testHTMLBodyWorksWithEmptyUserText() {
         // Send with only a quote (rare) still produces a valid gmail trail.
         let m = message()
         let html = ReplyComposer.htmlBody(userText: "", original: m)
-        XCTAssertTrue(html.hasPrefix("<br><div class=\"gmail_quote\">")
-                      || html.contains("gmail_quote"))
+        XCTAssertTrue(html.hasPrefix("<br><div class=\"gmail_quote\">"), html)
         XCTAssertTrue(html.contains("Thanks a lot"))
+    }
+
+    func testHTMLBodyStripsCidImagesAndStyle() {
+        let dirty = """
+        <html><head><style>div{color:red}</style></head><body>
+        <div>Hi</div>
+        <img src="cid:logo@x" alt="logo">
+        <img src="https://ok.example/a.png">
+        </body></html>
+        """
+        let m = message(bodyHTML: dirty)
+        let html = ReplyComposer.htmlBody(userText: "ack", original: m)
+        XCTAssertFalse(html.contains("<style"), html)
+        XCTAssertFalse(html.contains("cid:logo"), html)
+        XCTAssertFalse(html.contains("<html"), html)
+        XCTAssertTrue(html.contains("https://ok.example/a.png"), html)
+        XCTAssertTrue(html.contains("<div>Hi</div>"), html)
+    }
+
+    func testFormatDateIsStableAcrossCalls() {
+        let d = Date(timeIntervalSince1970: 1_783_372_500)
+        XCTAssertEqual(ReplyComposer.formatDate(d), ReplyComposer.formatDate(d))
+        // Pinned en_US_POSIX shape — not locale-sensitive abbreviated style.
+        XCTAssertTrue(ReplyComposer.formatDate(d).contains("at"))
     }
 }

@@ -1,12 +1,22 @@
 import Foundation
 
-/// Cursor for thread-list pages ordered by `lastDate DESC, id DESC`.
+/// Cursor for thread-list pages ordered by sort-date DESC, id DESC.
+/// `sortDate` is the value of the active sort key for that view
+/// (`lastDate` for most mailboxes; `inboxSortDate` for inbox-style views).
 struct ThreadListCursor: Equatable, Hashable {
-    var lastDate: Date
+    var sortDate: Date
     var id: String
 
-    static func from(_ thread: MailThread) -> ThreadListCursor {
-        ThreadListCursor(lastDate: thread.lastDate, id: thread.id)
+    /// Backward-compat alias used by older tests/callers.
+    var lastDate: Date {
+        get { sortDate }
+        set { sortDate = newValue }
+    }
+
+    static func from(_ thread: MailThread, inboundSort: Bool = false) -> ThreadListCursor {
+        ThreadListCursor(
+            sortDate: inboundSort ? thread.inboxSortDate : thread.lastDate,
+            id: thread.id)
     }
 }
 
@@ -38,13 +48,20 @@ enum ThreadListPaging {
     static func probeLimit(pageSize: Int = pageSize) -> Int { pageSize + 1 }
 
     /// Cursor after the last row of the current window (nil if empty).
-    static func nextCursor(after threads: [MailThread]) -> ThreadListCursor? {
-        threads.last.map(ThreadListCursor.from)
+    static func nextCursor(after threads: [MailThread], inboundSort: Bool = false)
+        -> ThreadListCursor? {
+        threads.last.map { ThreadListCursor.from($0, inboundSort: inboundSort) }
+    }
+
+    /// SQL expression for the active sort key (usable in ORDER BY / WHERE).
+    static func sortDateSQL(inboundSort: Bool) -> String {
+        inboundSort ? "COALESCE(lastInboundDate, lastDate)" : "lastDate"
     }
 
     /// SQL predicate for rows strictly older than `cursor` under
-    /// `ORDER BY lastDate DESC, id DESC`.
-    static func olderThanSQL() -> String {
-        "(lastDate < ? OR (lastDate = ? AND id < ?))"
+    /// `ORDER BY <sortDate> DESC, id DESC`.
+    static func olderThanSQL(inboundSort: Bool = false) -> String {
+        let key = sortDateSQL(inboundSort: inboundSort)
+        return "(\(key) < ? OR (\(key) = ? AND id < ?))"
     }
 }

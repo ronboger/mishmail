@@ -38,11 +38,21 @@ final class ThreadListPagingTests: XCTestCase {
             lastDate: Date(timeIntervalSince1970: 1000),
             isUnread: false, isStarred: false, inInbox: true, inTrash: false,
             labelIds: "INBOX", snoozeUntil: nil, participants: "F",
-            messageCount: 1, hasAttachment: false, reminderAt: nil)
+            messageCount: 1, hasAttachment: false, reminderAt: nil,
+            lastInboundDate: Date(timeIntervalSince1970: 500))
         let c = ThreadListPaging.nextCursor(after: [t])
         XCTAssertEqual(c?.id, "a:t1")
-        XCTAssertEqual(c?.lastDate, t.lastDate)
+        XCTAssertEqual(c?.sortDate, t.lastDate)
+        let inbound = ThreadListPaging.nextCursor(after: [t], inboundSort: true)
+        XCTAssertEqual(inbound?.sortDate, t.lastInboundDate)
         XCTAssertNil(ThreadListPaging.nextCursor(after: []))
+    }
+
+    func testOlderThanSQLSwitchesKey() {
+        XCTAssertTrue(ThreadListPaging.olderThanSQL().contains("lastDate"))
+        XCTAssertFalse(ThreadListPaging.olderThanSQL().contains("COALESCE"))
+        XCTAssertTrue(ThreadListPaging.olderThanSQL(inboundSort: true)
+            .contains("COALESCE(lastInboundDate, lastDate)"))
     }
 
     func testNeighborPrefetch() {

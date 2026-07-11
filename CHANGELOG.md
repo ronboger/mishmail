@@ -12,13 +12,17 @@ minor versions may still change behavior.
   and the original message's HTML inside (same pattern as forwards). Previously
   the plain `> ` quote trail was run through markdown, which flattened nested
   history, leaked literal `>` prefixes, and looked broken in Gmail and other
-  clients.
-- **Own reply no longer bumps inbox position** — thread list sort date ignores
-  pure outbound rows (SENT without INBOX, DRAFT, or From matching the mailbox
-  without INBOX). Replying leaves the conversation in place; only new inbound
-  mail moves it up. Snippet/from still reflect your latest send. Pure-outbound
-  threads (new compose) still sort by newest. Also makes "remind if no reply"
-  cancel on their reply, not on your own follow-up.
+  clients. Quote matching uses a pinned date formatter; quoted HTML strips
+  `cid:` images and document chrome (`style`/`html`/`head`) so the trail
+  doesn't ship broken inline images or restyle the authored head. Scheduled
+  sends hydrate the reply parent body (post-v24 off-row storage); reopened
+  reply drafts recover the parent for In-Reply-To + HTML upgrade.
+- **Own reply no longer bumps inbox position** — schema v25 adds
+  `lastInboundDate` (nullable). Inbox / promotions / social / per-account
+  inbox order by `COALESCE(lastInboundDate, lastDate)`; Sent, Drafts, search,
+  row timestamps, and date buckets keep `lastDate` = newest message. "Remind
+  if no reply" cancels only when `lastInboundDate` advances (own follow-ups
+  on pure-outbound threads no longer clear the reminder).
 
 ### Changed
 - **Renamed to MishMail** — the app, bundle identifiers, Xcode project, targets,

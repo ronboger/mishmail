@@ -1299,6 +1299,7 @@ final class MailStore: ObservableObject {
                             break
                         }
                         if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
+                        // Search always ranks by newest message (lastDate).
                         return try q.order(Column("lastDate").desc, Column("id").desc)
                             .limit(fetchLimit).fetchAll(db)
                     } else {
@@ -1309,7 +1310,9 @@ final class MailStore: ObservableObject {
                         }
                         q = MailStore.applyChips(q, chips, keepIds: keepIds)
                         if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                        return try q.order(Column("lastDate").desc, Column("id").desc)
+                        let inbound = MailStore.usesInboundSort(for: view)
+                        let key = ThreadListPaging.sortDateSQL(inboundSort: inbound)
+                        return try q.order(sql: "\(key) DESC, id DESC")
                             .limit(fetchLimit).fetchAll(db)
                     }
                 }
@@ -1342,7 +1345,9 @@ final class MailStore: ObservableObject {
                 } else {
                     self.hasMoreThreads = false
                 }
-                self.listCursor = ThreadListPaging.nextCursor(after: payload.threads)
+                let inbound = MailStore.usesInboundSort(for: self.selectedView)
+                self.listCursor = ThreadListPaging.nextCursor(
+                    after: payload.threads, inboundSort: inbound)
                 self.vipThreadIds = payload.vipHits
                 // Local sidebar counts only: they use the same denorm filters as
                 // the visible lists (inbox/promotions/social exclude spam, and
@@ -1413,9 +1418,11 @@ final class MailStore: ObservableObject {
                     }
                     q = MailStore.applyChips(q, chips, keepIds: keepIds)
                     if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                    q = q.filter(sql: ThreadListPaging.olderThanSQL(),
-                                 arguments: [cursor.lastDate, cursor.lastDate, cursor.id])
-                    let rows = try q.order(Column("lastDate").desc, Column("id").desc)
+                    let inbound = MailStore.usesInboundSort(for: view)
+                    let key = ThreadListPaging.sortDateSQL(inboundSort: inbound)
+                    q = q.filter(sql: ThreadListPaging.olderThanSQL(inboundSort: inbound),
+                                 arguments: [cursor.sortDate, cursor.sortDate, cursor.id])
+                    let rows = try q.order(sql: "\(key) DESC, id DESC")
                         .limit(ThreadListPaging.probeLimit()).fetchAll(db)
                     return ThreadListPaging.splitPage(rows)
                 }
@@ -1442,8 +1449,18 @@ final class MailStore: ObservableObject {
                 self.vipThreadIds.formUnion(vipHits)
                 self.listWindowLimit = max(self.listWindowLimit, self.threads.count)
                 self.hasMoreThreads = split.hasMore
-                self.listCursor = ThreadListPaging.nextCursor(after: page)
+                let inbound = MailStore.usesInboundSort(for: self.selectedView)
+                self.listCursor = ThreadListPaging.nextCursor(
+                    after: self.threads, inboundSort: inbound)
             }
+        }
+    }
+
+    /// Inbox-style views sort by last *inbound* so own replies don't reshuffle.
+    nonisolated static func usesInboundSort(for view: MailboxView) -> Bool {
+        switch view {
+        case .inbox, .promotions, .social, .account: return true
+        default: return false
         }
     }
 
@@ -2232,10 +2249,12 @@ final class MailStore: ObservableObject {
             var copy = thread
             copy.reminderAt = nil
             copy.reminderSetAt = nil
-            // "Remind if no reply": if the thread advanced after the reminder
-            // was set (a reply or any new message), the nudge is moot — clear
-            // it silently instead of firing.
-            let replied = thread.reminderSetAt.map { thread.lastDate > $0 } ?? false
+            // "Remind if no reply": only *inbound* activity cancels the nudge.
+            // Own follow-ups update lastDate but leave lastInboundDate alone
+            // (or nil for pure-outbound threads), so they don't look like a reply.
+            let replied = thread.reminderSetAt.flatMap { setAt in
+                thread.lastInboundDate.map { $0 > setAt }
+            } ?? false
             if !replied {
                 Notifier.notify(title: "Follow up: \(thread.fromDisplay)",
                                 body: thread.subject.isEmpty ? thread.snippet : thread.subject,
@@ -2879,13 +2898,11 @@ final class MailStore: ObservableObject {
 
     private func pendingSend(from s: ScheduledSend) -> PendingSend {
         // The referenced messages may have been pruned since; threading
-        // headers then simply fall away.
-        let replyTo = s.replyToMessageId.flatMap { id in
-            (try? db.read { try Message.fetchOne($0, key: id) }) ?? nil
-        }
-        let draft = s.replacingDraftId.flatMap { id in
-            (try? db.read { try Message.fetchOne($0, key: id) }) ?? nil
-        }
+        // headers then simply fall away. Bodies live off-row (v24) — use
+        // messageBody so ReplyComposer/ForwardComposer can still match the
+        // quote and emit Gmail-style HTML.
+        let replyTo = s.replyToMessageId.flatMap { messageBody(id: $0) }
+        let draft = s.replacingDraftId.flatMap { messageBody(id: $0) }
         return PendingSend(accountId: s.accountId, fromEmail: s.effectiveFromEmail,
                            to: s.toHeader, cc: s.ccHeader,
                            bcc: s.bccHeader, subject: s.subject, body: s.body,
@@ -3040,11 +3057,43 @@ final class MailStore: ObservableObject {
         return !msgs.isEmpty && msgs.allSatisfy { $0.labelIds.contains("DRAFT") }
     }
 
-    /// Opens an existing draft back into compose.
+    /// Opens an existing draft back into compose. Reply drafts recover the
+    /// parent message so send still attaches In-Reply-To and the Gmail-style
+    /// HTML upgrade; forward / brand-new-compose drafts leave replyTo nil.
     func editDraft(inThread thread: MailThread) {
-        if let draft = messages(inThread: thread.id).last(where: { $0.labelIds.contains("DRAFT") }) {
-            composeRequest = ComposeRequest(replyTo: nil, editDraft: draft)
+        let msgs = messages(inThread: thread.id)
+        guard let draft = msgs.last(where: { ForwardComposer.hasDraftLabel($0.labelIds) })
+        else { return }
+        let parent = Self.replyParent(forDraft: draft, inThread: msgs)
+        composeRequest = ComposeRequest(replyTo: parent, editDraft: draft)
+    }
+
+    /// Latest non-draft message to thread a reopened reply draft against.
+    /// Nil for forward drafts (body carries the forward marker / Fwd: subject)
+    /// and for draft-only threads (new compose never left the box).
+    static func replyParent(forDraft draft: Message, inThread msgs: [Message]) -> Message? {
+        if draft.bodyText.contains(ForwardComposer.marker) { return nil }
+        if draft.subject.lowercased().hasPrefix("fwd:") { return nil }
+        let nonDrafts = msgs.filter { !ForwardComposer.hasDraftLabel($0.labelIds) }
+        guard !nonDrafts.isEmpty else { return nil }
+        // Prefer matching References' last Message-ID (immediate parent) when
+        // Gmail echoed it onto the draft row after save.
+        if !draft.referencesHeader.isEmpty {
+            let tokens = draft.referencesHeader
+                .split(whereSeparator: \.isWhitespace).map(String.init)
+            if let last = tokens.last {
+                let bare = last.trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+                if let match = nonDrafts.last(where: {
+                    let mid = $0.messageIdHeader
+                        .trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+                    return !mid.isEmpty && mid == bare
+                }) {
+                    return match
+                }
+            }
         }
+        // Chronological last non-draft (msgs is oldest-first from messages(inThread:)).
+        return nonDrafts.last
     }
 
     /// Deletes the Gmail draft behind a local draft message.

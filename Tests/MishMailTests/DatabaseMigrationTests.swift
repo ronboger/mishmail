@@ -70,6 +70,11 @@ final class DatabaseMigrationTests: XCTestCase {
             XCTAssertTrue(try db.tableExists("message_body"), "v24")
             let threadColsV23 = try db.columns(in: "thread").map(\.name)
             XCTAssertTrue(threadColsV23.contains("allFromEmails"), "v23")
+            XCTAssertTrue(threadColsV23.contains("lastInboundDate"), "v25")
+            let inboundIdx = try Bool.fetchOne(db, sql:
+                "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
+                arguments: ["thread_on_inInbox_inTrash_lastInboundDate"]) ?? false
+            XCTAssertTrue(inboundIdx, "v25 must create lastInboundDate list index")
         }
     }
 

@@ -284,6 +284,9 @@ enum ForwardComposer {
 
     private static let dateFormatter: DateFormatter = {
         let f = DateFormatter()
+        // en_US_POSIX keeps the prefill/send recompute byte-stable across
+        // locale / 12-24h toggles (same contract as ReplyComposer).
+        f.locale = Locale(identifier: "en_US_POSIX")
         f.dateFormat = "EEE, MMM d, yyyy 'at' h:mm a"
         return f
     }()
@@ -306,10 +309,9 @@ enum ForwardComposer {
 
     /// The text the user authored above the quoted block, or nil when the
     /// block was edited or removed (→ caller regenerates HTML from full body).
+    /// Shared with `ReplyComposer` — keep one "untouched quote" contract.
     static func userText(inBody body: String, expectedBlock block: String) -> String? {
-        guard body.hasSuffix(block) else { return nil }
-        return String(body.dropLast(block.count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        ComposeQuote.userText(inBody: body, expectedQuote: block)
     }
 
     /// True when a message carries Gmail's DRAFT label (space-separated ids).
@@ -353,16 +355,8 @@ enum ForwardComposer {
     /// HTML alternative: user text (markdown when present, else linkified
     /// plain via ComposeLinks), then each part's header + body.
     static func htmlBody(userText: String, parts: [Part]) -> String {
-        var out = ""
-        if !userText.isEmpty {
-            if Markdown.looksLikeMarkdown(userText) {
-                out += Markdown.toHTML(userText) + "<br>"
-            } else {
-                // ComposeLinks turns [label](url) and bare URLs into anchors and
-                // escapes everything else — same path as a normal compose send.
-                out += "<div>\(ComposeLinks.htmlFragment(from: userText))</div><br>"
-            }
-        }
+        var out = ComposeQuote.authoredHeadHTML(userText)
+        if !userText.isEmpty { out += "<br>" }
         for (i, part) in parts.enumerated() {
             if i > 0 { out += "<br>" }
             out += singleHTMLBlock(part)
@@ -392,23 +386,66 @@ enum ForwardComposer {
     }
 
     private static func singleHTMLBlock(_ part: Part) -> String {
-        var header = "\(marker)<br>From: \(escapeHTML(part.fromHeader))<br>"
-            + "Date: \(escapeHTML(dateFormatter.string(from: part.date)))<br>"
-            + "Subject: \(escapeHTML(part.subject))<br>To: \(escapeHTML(part.toHeader))<br>"
+        var header = "\(marker)<br>From: \(ComposeQuote.escapeHTML(part.fromHeader))<br>"
+            + "Date: \(ComposeQuote.escapeHTML(dateFormatter.string(from: part.date)))<br>"
+            + "Subject: \(ComposeQuote.escapeHTML(part.subject))<br>"
+            + "To: \(ComposeQuote.escapeHTML(part.toHeader))<br>"
         if !part.ccHeader.isEmpty {
-            header += "Cc: \(escapeHTML(part.ccHeader))<br>"
+            header += "Cc: \(ComposeQuote.escapeHTML(part.ccHeader))<br>"
         }
         let content: String
         if let html = part.bodyHTML {
-            content = html
+            content = ComposeQuote.sanitizeQuotedHTML(html)
         } else {
-            content = "<div>\(escapeHTML(part.bodyText))</div>"
+            content = "<div>\(ComposeQuote.escapeHTML(part.bodyText))</div>"
         }
         return "<div class=\"gmail_quote\"><div>\(header)</div><br>\(content)</div>"
     }
+}
 
-    private static func escapeHTML(_ s: String) -> String {
+/// Shared helpers for reply/forward quote matching and HTML emission.
+/// Keep one "untouched quote" contract and one authored-head policy so
+/// reply and forward can't silently diverge.
+enum ComposeQuote {
+    /// Byte-suffix match for an untouched quote package.
+    static func userText(inBody body: String, expectedQuote quote: String) -> String? {
+        guard body.hasSuffix(quote) else { return nil }
+        return String(body.dropLast(quote.count))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// Authored head → HTML: markdown when present, else linkified plain.
+    static func authoredHeadHTML(_ userText: String) -> String {
+        guard !userText.isEmpty else { return "" }
+        if Markdown.looksLikeMarkdown(userText) {
+            return Markdown.toHTML(userText)
+        }
+        return "<div>\(ComposeLinks.htmlFragment(from: userText))</div>"
+    }
+
+    static func escapeHTML(_ s: String) -> String {
         ComposeLinks.escapeText(s).replacingOccurrences(of: "\n", with: "<br>")
+    }
+
+    /// Harden HTML we nest under gmail_quote: drop document chrome and
+    /// `cid:` images (we don't re-attach inline parts on reply/forward, so
+    /// those refs would show as broken images). Style/script would also let
+    /// quoted CSS restyle the authored head in some clients.
+    static func sanitizeQuotedHTML(_ html: String) -> String {
+        var s = html
+        for tag in ["style", "script", "head", "title"] {
+            s = s.replacingOccurrences(
+                of: "<\(tag)\\b[^>]*>[\\s\\S]*?</\(tag)\\s*>",
+                with: " ", options: [.regularExpression, .caseInsensitive])
+        }
+        s = s.replacingOccurrences(
+            of: "</?(html|body)\\b[^>]*>",
+            with: "", options: [.regularExpression, .caseInsensitive])
+        // Whole <img … src="cid:…"> tags (and single-quoted / unquoted variants).
+        s = s.replacingOccurrences(
+            of: #"<img\b[^>]*\bsrc\s*=\s*(['"]?)cid:[^'"\s>]*\1[^>]*/?>"#,
+            with: "", options: [.regularExpression, .caseInsensitive])
+        return s
     }
 }
 
@@ -429,6 +466,16 @@ enum ForwardComposer {
 /// HTML in a standard Gmail quote block. If the user edited the quote,
 /// fall back to plain/markdown on the full body.
 enum ReplyComposer {
+    /// Pinned like ForwardComposer's formatter so send-time recompute matches
+    /// the prefill even if the user toggles 12/24-hour or locale mid-compose.
+    /// en_US_POSIX keeps month names stable; wall-clock timezone stays local.
+    private static let dateFormatter: DateFormatter = {
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.dateFormat = "MMM d, yyyy 'at' h:mm a"
+        return f
+    }()
+
     /// Attribution line, e.g. `On Jul 6, 2026 at 11:55 PM, Jane <j@x.com> wrote:`.
     static func attribution(for message: Message) -> String {
         let when = formatDate(message.date)
@@ -453,9 +500,7 @@ enum ReplyComposer {
     /// User-authored text above an untouched reply quote, or nil when the
     /// quote was edited/removed (caller regenerates HTML from the full body).
     static func userText(inBody body: String, expectedQuote quote: String) -> String? {
-        guard body.hasSuffix(quote) else { return nil }
-        return String(body.dropLast(quote.count))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        ComposeQuote.userText(inBody: body, expectedQuote: quote)
     }
 
     /// Send-path match: body still ends with the recomputed plain quote.
@@ -472,26 +517,15 @@ enum ReplyComposer {
     /// plain), then `gmail_quote` / `gmail_attr` / nested `blockquote`
     /// carrying the original message's HTML when present.
     static func htmlBody(userText: String, original: Message) -> String {
-        var out = ""
-        if !userText.isEmpty {
-            if Markdown.looksLikeMarkdown(userText) {
-                out += Markdown.toHTML(userText)
-            } else {
-                // Always wrap so multi-line replies keep structure; fragment
-                // already escapes and turns newlines into <br>.
-                out += "<div>\(ComposeLinks.htmlFragment(from: userText))</div>"
-            }
-        }
+        var out = ComposeQuote.authoredHeadHTML(userText)
         let attr = ComposeLinks.escapeText(attribution(for: original))
         let content: String
         if let html = original.bodyHTML, !html.isEmpty {
-            content = html
+            content = ComposeQuote.sanitizeQuotedHTML(html)
         } else {
             let plain = MessageParser.replyQuotableText(
                 text: original.bodyText, html: nil)
-            let escaped = ComposeLinks.escapeText(plain)
-                .replacingOccurrences(of: "\n", with: "<br>")
-            content = "<div>\(escaped)</div>"
+            content = "<div>\(ComposeQuote.escapeHTML(plain))</div>"
         }
         // Style matches gmail.com so the trail collapses and indents correctly
         // in Gmail and other clients that key off these class names.
@@ -504,11 +538,8 @@ enum ReplyComposer {
         return out
     }
 
-    /// Locale-aware date matching the historical compose prefill
-    /// (`formatted(date: .abbreviated, time: .shortened)`). Send-time
-    /// recompute must use the same function or the quote suffix won't match.
     static func formatDate(_ date: Date) -> String {
-        date.formatted(date: .abbreviated, time: .shortened)
+        dateFormatter.string(from: date)
     }
 }
 
