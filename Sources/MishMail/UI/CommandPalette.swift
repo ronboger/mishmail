@@ -94,7 +94,9 @@ struct CommandPalette: View {
                     $0.snoozingThread = thread
                 },
                 Command(id: "act.reply", title: "Reply", icon: "arrowshape.turn.up.left") { s in
-                    if let last = s.messages(inThread: thread.id).last {
+                    // Same "newest sent" resolver as keyboard r / toolbar —
+                    // never parent a reply on an unsent draft.
+                    if let last = s.newestSentMessage(inThread: thread.id) {
                         s.composeRequest = .init(replyTo: last)
                     }
                 },

@@ -395,7 +395,11 @@ struct ThreadListView: View {
     private func threadMenu(_ thread: MailThread) -> some View {
         if thread.labels.contains("DRAFT") {
             Button("Edit Draft") { store.editDraft(inThread: thread) }
-            Button("Delete Draft", role: .destructive) { store.confirmingDraftDelete = thread }
+            Button("Delete Draft", role: .destructive) {
+                if let draft = store.newestDraft(inThread: thread.id) {
+                    store.confirmingDraftDelete = draft
+                }
+            }
             Divider()
         }
         Button("Archive") { store.archive(thread) }

@@ -15,6 +15,23 @@ minor versions may still change behavior.
 - **Keybinding overrides beat new defaults** — a stored rebind (e.g. archive →
   `x`) is not stolen by a newly added catalog default on the same key;
   colliding defaults are migrated onto a free key.
+- **Collapsed quote height no longer leaves a dead gap** — HTML body measure
+  uses visible child bottoms instead of `scrollHeight` (which often mirrored
+  the WKWebView frame when content was shorter), so the "…" pill sits under
+  the authored text.
+- **Reply / reply-all / forward ignore draft messages everywhere** — shared
+  `ForwardComposer.newestSentMessage` resolver used by keyboard `r`/`a`/`f`, the
+  command palette, and the reading-pane toolbar (not toolbar-only).
+- **Empty reply drafts no longer preview the quote trail** — quote-only bodies
+  (reply opened, saved without typing) show the empty-draft state instead of
+  dumping "On … wrote:" into the card.
+- **Per-message Continue / Discard** — multi-draft threads edit/delete the card
+  that was clicked, not always the newest draft in the thread.
+- **Scroll-on-open anchors the newest sent message** — matches which card is
+  expanded; drafts no longer steal the scroll position.
+- **Date-section bucketing honors injected `now`** — `ThreadDateSections`
+  no longer uses `Calendar.isDateInToday` / `isDateInYesterday` (wall clock),
+  so pinned-time tests and any as-of grouping stay correct.
 
 ### Added
 - **Multi-select** — `x` toggles a checkbox on the focused conversation
@@ -22,6 +39,11 @@ minor versions may still change behavior.
   selected); Shift-click a checkbox to select a range; bulk Archive / Trash /
   Star / Read-Unread / Spam via shortcut or the selection bar; Esc clears
   checks. Bulk mutations reload the list once.
+- **Draft cards in the thread** — unsent Gmail drafts render as a dedicated
+  card (orange "Draft" pill, "Not sent", left accent, compact authored
+  preview without the quote trail). Continue / Discard sit on the card at the
+  bottom of the conversation; a slim top banner offers Continue only on long
+  threads (>3 messages) so short conversations aren't double-cued.
 
 ## [0.3.0] - 2026-07-11
 
