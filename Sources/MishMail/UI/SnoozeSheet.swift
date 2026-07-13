@@ -43,7 +43,7 @@ struct DatePickSheet: View {
             }
         } else {
             list = SnoozeDateParser.suggestions(for: query)
-                .filter { minDate.map { min in $0.date > min } ?? true }
+                .filter { s in minDate.map { s.date > $0 } ?? true }
                 .map { s in
                     let parts = s.label.components(separatedBy: "  ·  ")
                     return Option(title: parts.first ?? s.label,
