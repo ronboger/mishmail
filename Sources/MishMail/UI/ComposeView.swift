@@ -319,7 +319,16 @@ struct ComposeView: View {
             ensureFromSelection(preferCurrent: true)
         }
         .sheet(isPresented: $showScheduleSheet) {
-            ScheduleSendSheet { date in scheduleSend(at: date) }
+            // Same natural-language picker as snooze (type "tomorrow 9am"),
+            // with send-time presets. Past dates are filtered out.
+            DatePickSheet(
+                placeholder: "Send when? — try \"tomorrow 9am\", \"mon\", \"aug 12\"",
+                presets: SendSchedule.allCases.map { .init(title: $0.title, date: $0.date()) },
+                footnote: "Scheduled mail sends while MishMail is open",
+                minDate: Date()
+            ) { date in
+                if let date { scheduleSend(at: date) }
+            }
         }
         .sheet(isPresented: $showLinkSheet) {
             ComposeLinkSheet(
@@ -690,7 +699,9 @@ struct ComposeView: View {
                 }
                 .buttonStyle(.plain)
                 .help(editingDraft != nil ? "Discard (deletes this draft)" : "Discard without saving")
-                Button("Cancel") { saveAndClose() }
+                // "Close", not "Cancel" — it keeps your work (saves a draft),
+                // same as the header ✕. Trash is the destructive one.
+                Button("Close") { saveAndClose() }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help(hasContent ? "Close (saves as draft)" : "Close")
 
@@ -713,18 +724,15 @@ struct ComposeView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    // Never compress to "Se…" when the footer gets crowded.
+                    .fixedSize()
                     .keyboardShortcut(.return, modifiers: .command)
                     .help("Send (10s undo window)")
 
-                    Menu {
-                        ForEach(SendSchedule.allCases, id: \.self) { preset in
-                            let date = preset.date()
-                            Button("\(preset.title)  (\(date.formatted(.dateTime.weekday(.abbreviated).hour().minute())))") {
-                                scheduleSend(at: date)
-                            }
-                        }
-                        Divider()
-                        Button("Pick date & time…") { showScheduleSheet = true }
+                    // Opens the same natural-language picker as snooze —
+                    // presets plus "type a date" — instead of a menu.
+                    Button {
+                        showScheduleSheet = true
                     } label: {
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .bold))
@@ -737,11 +745,7 @@ struct ComposeView: View {
                                 .fill(Color.notionAccent))
                             .contentShape(Rectangle())
                     }
-                    // .button + .plain renders custom labels reliably on
-                    // macOS (same recipe as the From menu).
-                    .menuStyle(.button)
                     .buttonStyle(.plain)
-                    .menuIndicator(.hidden)
                     .fixedSize()
                     .help("Schedule send")
                 }

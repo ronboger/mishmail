@@ -32,6 +32,17 @@ minor versions may still change behavior.
 - **Date-section bucketing honors injected `now`** — `ThreadDateSections`
   no longer uses `Calendar.isDateInToday` / `isDateInYesterday` (wall clock),
   so pinned-time tests and any as-of grouping stay correct.
+- **Send button no longer truncates to "Se…"** — the label is exempt from
+  compression when the compose footer gets crowded.
+- **Compose "Cancel" is now "Close"** — the button always saved your work as a
+  draft (same as the header ✕); the label now says so. Trash remains the
+  destructive discard.
+
+### Changed
+- **Schedule send uses the snooze picker** — the chevron next to Send opens
+  the same natural-language date sheet as snoozing (type "tomorrow 9am",
+  "mon", "aug 12", or pick a preset; fully keyboard-driven) instead of a menu
+  plus calendar sheet. Past dates are filtered out.
 
 ### Added
 - **Multi-select** — `x` toggles a checkbox on the focused conversation
