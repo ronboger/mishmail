@@ -47,8 +47,8 @@ final class SnippetInsertionTests: XCTestCase {
     }
 
     func testSlashQueryIsExtracted() {
-        let t = SnippetInsertion.slashToken(in: "/intro find")
-        XCTAssertEqual(t?.query, "intro find")
+        let t = SnippetInsertion.slashToken(in: "/intro")
+        XCTAssertEqual(t?.query, "intro")
     }
 
     func testSlashAfterNewlineTriggers() {
@@ -67,6 +67,41 @@ final class SnippetInsertionTests: XCTestCase {
     func testNoSlashNoTrigger() {
         XCTAssertNil(SnippetInsertion.slashToken(in: "hello"))
         XCTAssertNil(SnippetInsertion.slashToken(in: ""))
+    }
+
+    func testQueryStopsAtSpace() {
+        // Space after the slash token ends the trigger — dismiss the picker;
+        // the typed `/query ` remains as literal body text.
+        XCTAssertNil(SnippetInsertion.slashToken(in: "/intro find"))
+        XCTAssertNil(SnippetInsertion.slashToken(in: "/ "))
+        XCTAssertNil(SnippetInsertion.slashToken(in: "/intro "))
+        let mid = "prefix /zoom trailing"
+        let afterSpace = mid.range(of: "/zoom ")!.upperBound
+        XCTAssertNil(SnippetInsertion.slashToken(in: mid, atCaret: afterSpace))
+    }
+
+    func testQueryStopsAtTab() {
+        XCTAssertNil(SnippetInsertion.slashToken(in: "/intro\t"))
+    }
+
+    func testQueryStopsAtNBSP() {
+        // U+00A0 is Character.isWhitespace — dismisses like a regular space.
+        XCTAssertNil(SnippetInsertion.slashToken(in: "/intro\u{00A0}"))
+    }
+
+    func testBackspaceAfterSpaceReopensPicker() {
+        // Unlike Esc (slashDismissed), space ends the token itself — so
+        // deleting the space restores a live `/query` token.
+        XCTAssertNil(SnippetInsertion.slashToken(in: "/intro "))
+        XCTAssertEqual(SnippetInsertion.slashToken(in: "/intro")?.query, "intro")
+    }
+
+    func testCaretBeforeTrailingSpaceKeepsTokenLive() {
+        // Caret between query and trailing space: only slash→caret is the
+        // query, so the token stays live even though a space sits after.
+        let text = "/intro "
+        let afterIntro = text.range(of: "/intro")!.upperBound
+        XCTAssertEqual(SnippetInsertion.slashToken(in: text, atCaret: afterIntro)?.query, "intro")
     }
 
     func testQueryStopsAtNewline() {

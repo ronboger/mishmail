@@ -1110,7 +1110,8 @@ struct ComposeView: View {
     /// query — type `/` to browse everything, Claude-style).
     private var slashMatches: [Snippet] {
         guard let token = slashToken else { return [] }
-        let q = token.query.trimmingCharacters(in: .whitespaces)
+        // Query never contains whitespace (slashToken ends on any whitespace).
+        let q = token.query
         return store.allSnippets.filter {
             q.isEmpty || $0.name.localizedCaseInsensitiveContains(q)
         }
