@@ -1338,6 +1338,11 @@ final class MailStore: ObservableObject {
     /// (view/search changes call `resetListWindow()` first).
     func reloadThreads() {
         guard !isShuttingDown else { return }
+        // Message rows may have changed (sync, draft discard, send). Bump
+        // before the async list read: the DB write is already committed by
+        // the time anyone calls reloadThreads, so the open reading pane can
+        // re-query its thread immediately.
+        threadContentVersion &+= 1
         chipReloadTask?.cancel()   // a direct reload supersedes a pending debounced one
         loadMoreTask?.cancel()
         loadMoreTask = nil
@@ -1531,6 +1536,11 @@ final class MailStore: ObservableObject {
         }
     }
 
+    /// Bumped whenever thread/message rows were reloaded from the DB (every
+    /// sync and local mutation funnels through `reloadThreads`). The open
+    /// reading pane keys off this to refresh its message list in place —
+    /// e.g. a discarded draft's card disappears without reopening the thread.
+    @Published private(set) var threadContentVersion = 0
     /// Whether the current list window may have older rows past the loaded depth.
     @Published private(set) var hasMoreThreads = false
     @Published private(set) var isLoadingMore = false

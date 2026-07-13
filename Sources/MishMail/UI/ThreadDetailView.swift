@@ -308,11 +308,32 @@ struct ThreadDetailView: View {
             aiSummary = nil; summaryError = nil; summarizing = false
             if thread.isUnread { store.setRead(thread, read: true) }
         }
+        // The store reloaded from the DB (sync, draft discard, send…): refresh
+        // the open thread in place so e.g. a discarded draft's card disappears
+        // without navigating away. Scroll anchor and summary stay put.
+        .onChange(of: store.threadContentVersion) {
+            refreshMessages()
+        }
+    }
+
+    /// Re-query this thread's rows and merge into the visible list, keeping
+    /// already-hydrated bodies so open cards don't collapse back to
+    /// "Loading…". No-op when nothing about the thread changed.
+    private func refreshMessages() {
+        let fresh = store.messageHeaders(inThread: thread.id)
+        let merged = ThreadRefresh.merge(current: messages, fresh: fresh)
+        guard merged != messages else { return }
+        withAnimation(.easeOut(duration: 0.1)) {
+            messages = merged
+        }
+        threadAttachments = merged.flatMap { msg in
+            store.attachments(for: msg.id).map { (message: msg, attachment: $0) }
+        }
     }
 
     /// True when a reading-pane message still needs a body fetch.
     static func needsBodyLoad(_ message: Message) -> Bool {
-        message.bodyText.isEmpty && (message.bodyHTML == nil || message.bodyHTML?.isEmpty == true)
+        ThreadRefresh.needsBodyLoad(message)
     }
 
     /// Any DRAFT-labeled message currently in the open thread.
