@@ -1,14 +1,27 @@
 import SwiftUI
 import AppKit
 
-/// Notion-style snooze picker: type a natural-language date ("tomorrow",
-/// "fri 3pm", "in 2 weeks", "aug 12") and pick from live suggestions, or
-/// choose a preset. Fully keyboard-driven: ↑/↓ move, Return snoozes,
-/// Esc cancels. Passing nil to `snooze` unsnoozes.
-struct SnoozeSheet: View {
+/// Notion-style date picker sheet shared by snooze and schedule-send: type a
+/// natural-language date ("tomorrow", "fri 3pm", "in 2 weeks", "aug 12") and
+/// pick from live suggestions, or choose a preset. Fully keyboard-driven:
+/// ↑/↓ move, Return picks, Esc cancels.
+struct DatePickSheet: View {
+    struct Preset {
+        let title: String
+        let date: Date
+    }
+
     @Environment(\.dismiss) private var dismiss
-    let current: Date?
-    let snooze: (Date?) -> Void
+    let placeholder: String
+    let presets: [Preset]
+    /// Extra row that picks `nil` (e.g. "Unsnooze"); omitted when absent.
+    var clearOption: (title: String, detail: String)?
+    /// Small caption under the divider (e.g. "Currently snoozed until …").
+    var footnote: String?
+    /// Reject typed suggestions at or before this instant (send times must
+    /// be in the future; snooze accepts whatever the parser offers).
+    var minDate: Date?
+    let pick: (Date?) -> Void
 
     @State private var query = ""
     @State private var highlight = 0
@@ -18,44 +31,36 @@ struct SnoozeSheet: View {
     private struct Option: Identifiable {
         let title: String
         let detail: String
-        let action: Date??   // .some(date) snooze, .some(nil) unsnooze
+        let action: Date??   // .some(date) picks a date, .some(nil) clears
         var id: String { title + detail }
-    }
-
-    private static func nextWeekday(_ weekday: Int, hour: Int) -> Date {
-        let cal = Calendar.current
-        let day = cal.nextDate(after: Date(), matching: DateComponents(weekday: weekday),
-                               matchingPolicy: .nextTime)!
-        return cal.date(bySettingHour: hour, minute: 0, second: 0, of: day)!
     }
 
     private var options: [Option] {
         var list: [Option] = []
         if query.trimmingCharacters(in: .whitespaces).isEmpty {
-            let evening = MailStore.snoozeDate(hour: 18)
-            var presets: [(String, Date)] = []
-            if evening > Date() { presets.append(("This evening", evening)) }
-            presets.append(("Tomorrow morning", MailStore.snoozeDate(hour: 8, addDays: 1)))
-            presets.append(("This weekend", Self.nextWeekday(7, hour: 8)))
-            presets.append(("Next week", Self.nextWeekday(2, hour: 8)))
-            list = presets.map { Option(title: $0.0, detail: SnoozeDateParser.format($0.1), action: $0.1) }
-        } else {
-            list = SnoozeDateParser.suggestions(for: query).map { s in
-                let parts = s.label.components(separatedBy: "  ·  ")
-                return Option(title: parts.first ?? s.label,
-                              detail: parts.count > 1 ? parts[1] : "",
-                              action: s.date)
+            list = presets.map {
+                Option(title: $0.title, detail: SnoozeDateParser.format($0.date), action: $0.date)
             }
+        } else {
+            list = SnoozeDateParser.suggestions(for: query)
+                .filter { minDate.map { min in $0.date > min } ?? true }
+                .map { s in
+                    let parts = s.label.components(separatedBy: "  ·  ")
+                    return Option(title: parts.first ?? s.label,
+                                  detail: parts.count > 1 ? parts[1] : "",
+                                  action: s.date)
+                }
         }
-        if current != nil {
-            list.append(Option(title: "Unsnooze", detail: "back to inbox", action: .some(nil)))
+        if let clearOption {
+            list.append(Option(title: clearOption.title, detail: clearOption.detail,
+                               action: .some(nil)))
         }
         return list
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 8) {
-            TextField("When? — try \"tomorrow\", \"fri 3pm\", \"aug 12\"", text: $query)
+            TextField(placeholder, text: $query)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14))
                 .focused($fieldFocused)
@@ -91,9 +96,9 @@ struct SnoozeSheet: View {
                 }
             }
 
-            if let current {
+            if let footnote {
                 Divider()
-                Text("Currently snoozed until \(SnoozeDateParser.format(current))")
+                Text(footnote)
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
@@ -108,13 +113,13 @@ struct SnoozeSheet: View {
     }
 
     private func choose(_ option: Option) {
-        if let action = option.action { snooze(action) }
+        if let action = option.action { pick(action) }
         dismiss()
     }
 
     /// The sheet owns the keyboard while it's up (the main window's monitor
-    /// stands down when a snooze sheet is presented): ↑/↓ move the highlight
-    /// even while typing, Return picks, Esc closes.
+    /// stands down or passes text-field events through): ↑/↓ move the
+    /// highlight even while typing, Return picks, Esc closes.
     private func installKeys() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -140,5 +145,37 @@ struct SnoozeSheet: View {
     private func removeKeys() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
+    }
+}
+
+/// Snooze flavor of the shared picker. Passing nil to `snooze` unsnoozes.
+struct SnoozeSheet: View {
+    let current: Date?
+    let snooze: (Date?) -> Void
+
+    private static func nextWeekday(_ weekday: Int, hour: Int) -> Date {
+        let cal = Calendar.current
+        let day = cal.nextDate(after: Date(), matching: DateComponents(weekday: weekday),
+                               matchingPolicy: .nextTime)!
+        return cal.date(bySettingHour: hour, minute: 0, second: 0, of: day)!
+    }
+
+    private var presets: [DatePickSheet.Preset] {
+        var list: [DatePickSheet.Preset] = []
+        let evening = MailStore.snoozeDate(hour: 18)
+        if evening > Date() { list.append(.init(title: "This evening", date: evening)) }
+        list.append(.init(title: "Tomorrow morning", date: MailStore.snoozeDate(hour: 8, addDays: 1)))
+        list.append(.init(title: "This weekend", date: Self.nextWeekday(7, hour: 8)))
+        list.append(.init(title: "Next week", date: Self.nextWeekday(2, hour: 8)))
+        return list
+    }
+
+    var body: some View {
+        DatePickSheet(
+            placeholder: "When? — try \"tomorrow\", \"fri 3pm\", \"aug 12\"",
+            presets: presets,
+            clearOption: current != nil ? ("Unsnooze", "back to inbox") : nil,
+            footnote: current.map { "Currently snoozed until \(SnoozeDateParser.format($0))" },
+            pick: snooze)
     }
 }
