@@ -370,6 +370,9 @@ final class MailStore: ObservableObject {
     /// button for these.
     @Published var accountsNeedingReauth: Set<String> = []
     @Published var composeRequest: ComposeRequest?
+    /// Compose card is collapsed to a title strip (Notion Mail-style). Draft
+    /// state stays mounted; inbox shortcuts work again while minimized.
+    @Published var composeMinimized = false
     @Published var undoAction: UndoAction?
     @Published var editingView: SavedView?
     @Published var editingAccountLabels = false

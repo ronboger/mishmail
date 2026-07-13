@@ -91,21 +91,26 @@ struct ContentView: View {
             }
         }
         // Compose docks bottom-right like Gmail/Notion; the rest of the app
-        // stays fully usable behind it.
+        // stays fully usable behind it. Minimized collapses to a title strip
+        // so you can keep drafting without covering the mailbox.
         .overlay(alignment: .bottomTrailing) {
             if let request = store.composeRequest {
+                let minimized = store.composeMinimized
                 ComposeView(request: request)
                     .id(request.id)
-                    .frame(width: 620, height: 500)
+                    .frame(width: minimized ? 300 : 620,
+                           height: minimized ? 40 : 500)
                     .background(Color(nsColor: .windowBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: PMRadius.lg))
-                    .pmCardElevation(cornerRadius: PMRadius.lg, intense: true)
+                    .clipShape(RoundedRectangle(cornerRadius: minimized ? PMRadius.md : PMRadius.lg))
+                    .pmCardElevation(cornerRadius: minimized ? PMRadius.md : PMRadius.lg,
+                                     intense: true)
                     .padding(16)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        // A touch of spring makes the draft→compose hop legible.
+        // A touch of spring makes the draft→compose hop (and minimize) legible.
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: store.composeRequest?.id)
+        .animation(.spring(response: 0.28, dampingFraction: 0.85), value: store.composeMinimized)
         // Undo/notice toast: centered on the bottom of the whole window.
         .overlay(alignment: .bottom) {
             if let undo = store.undoAction {
@@ -262,12 +267,12 @@ struct ContentView: View {
             // The snooze sheet runs its own monitor (↑/↓/Return/Esc while
             // typing a date) — everything must pass through untouched.
             if store.snoozingThread != nil { return event }
-            // Compose is open and the user is typing: every chord belongs to
-            // the text system / compose handlers (⌘K insert-link, ⌃F/⌃K caret
-            // motion, ⌘-digits, …), not to app-level shortcuts. Compose's own
-            // monitor turns ⌘K into a hyperlink sheet; SwiftUI .keyboardShortcut
-            // sends (⌘Return) and snippets (⌘/) still resolve before us.
-            if store.composeRequest != nil, event.window?.firstResponder is NSText {
+            // Expanded compose + typing: every chord belongs to the text system
+            // / compose handlers (⌘K insert-link, ⌃F/⌃K caret motion, …), not
+            // app-level shortcuts. Minimized compose resigns focus so inbox
+            // keys work again (Notion Mail-style).
+            if store.composeRequest != nil, !store.composeMinimized,
+               event.window?.firstResponder is NSText {
                 return event
             }
             let mods = event.modifierFlags.intersection([.command, .option, .control])
@@ -394,9 +399,11 @@ struct ContentView: View {
             // Esc: first press while typing (e.g. in search) drops focus back
             // to the list; otherwise it closes the reading pane (Notion
             // Mail-style) but KEEPS the selection, so you stay where you are.
-            // Compose and the view editor keep their own Esc behavior.
+            // Expanded compose / view editor keep their own Esc behavior;
+            // minimized compose does not block Esc (close is via the strip ×).
             if event.keyCode == 53,
-               store.composeRequest == nil, store.editingView == nil {
+               (store.composeRequest == nil || store.composeMinimized),
+               store.editingView == nil {
                 // The global monitor also fires for the Settings window. There,
                 // Esc should close Settings and return to the mailbox — not
                 // toggle the main window's reading pane. Drop text-field focus
@@ -435,7 +442,7 @@ struct ContentView: View {
             guard mods.isEmpty,
                   !store.showCommandPalette,
                   !store.showLabelPicker,
-                  store.composeRequest == nil,
+                  (store.composeRequest == nil || store.composeMinimized),
                   store.editingView == nil,
                   !(event.window?.firstResponder is NSTextView),
                   !(event.window?.firstResponder is NSTextField)

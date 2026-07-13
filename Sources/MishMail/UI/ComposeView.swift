@@ -73,9 +73,35 @@ struct ComposeView: View {
     @State private var initialBody = ""
     @State private var initialSubject = ""
     @State private var initialRecipients: [String] = []
+    /// Collapsed to a title strip — draft fields stay mounted (state preserved).
+    @State private var isMinimized = false
 
     private func close() {
+        store.composeMinimized = false
         store.composeRequest = nil
+    }
+
+    /// Title shown in the header and minimized strip.
+    private var headerTitle: String {
+        if editingDraft != nil {
+            return "Draft: \(subject.isEmpty ? "(no subject)" : subject)"
+        }
+        return subject.isEmpty ? "New Message" : subject
+    }
+
+    /// Collapse or restore the compose card. Resigns text focus when
+    /// minimizing so mailbox shortcuts (j/k, archive, …) work again.
+    private func setMinimized(_ value: Bool) {
+        guard isMinimized != value else { return }
+        isMinimized = value
+        store.composeMinimized = value
+        if value {
+            bodyFocused = false
+            showSnippets = false
+            showLinkSheet = false
+            showScheduleSheet = false
+            NSApp.keyWindow?.makeFirstResponder(nil)
+        }
     }
 
     /// The complete message body: what's in the editor plus the collapsed
@@ -242,28 +268,145 @@ struct ComposeView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            // Header: subject as title, close (saves a draft).
-            HStack {
-                Text(editingDraft != nil
-                     ? "Draft: \(subject.isEmpty ? "(no subject)" : subject)"
-                     : (subject.isEmpty ? "New Message" : subject))
-                    .font(.system(size: 13, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-                Spacer()
-                Button {
-                    saveAndClose()
-                } label: {
-                    Image(systemName: "xmark")
-                        .font(.system(size: 11, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .keyboardShortcut(.cancelAction)
-                .help(hasContent ? "Close (saves as draft)" : "Close")
+            if isMinimized {
+                minimizedBar
+            } else {
+                expandedHeader
+                expandedBody
             }
-            .padding(.bottom, 6)
+        }
+        .padding(isMinimized ? EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 8)
+                             : EdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14))
+        .onAppear {
+            store.composeMinimized = false
+            isMinimized = false
+            prefill()
+            installSlashKeyMonitor()
+        }
+        .onDisappear {
+            store.composeMinimized = false
+            if let monitor = slashKeyMonitor {
+                NSEvent.removeMonitor(monitor)
+                slashKeyMonitor = nil
+            }
+        }
+        .onChange(of: store.accounts) {
+            // Accounts can finish loading after the card appears — backfill From.
+            if fromEmail.isEmpty { ensureFromSelection() }
+        }
+        .onChange(of: store.sendIdentities) {
+            // Send-as aliases arrive after first sync — re-scope the menu.
+            // Prefer current selection, then a sticky draft/restore From, then
+            // the mailbox default (never silently replace a draft's send-as
+            // with the primary just because identities loaded late).
+            ensureFromSelection(preferCurrent: true)
+        }
+        .sheet(isPresented: $showScheduleSheet) {
+            ScheduleSendSheet { date in scheduleSend(at: date) }
+        }
+        .sheet(isPresented: $showLinkSheet) {
+            ComposeLinkSheet(
+                initialText: linkInitialText,
+                initialURL: linkInitialURL,
+                isEditing: linkIsEditing,
+                onApply: { text, url in applyLink(text: text, url: url) },
+                onRemove: { removeLinkAtSelection() }
+            )
+        }
+        .fileImporter(isPresented: $showFilePicker,
+                      allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
+            if case .success(let urls) = result { attachmentURLs.append(contentsOf: urls) }
+        }
+    }
 
+    // MARK: - Header / minimize chrome
+
+    /// Collapsed strip: click anywhere (except ×) to restore the full card.
+    private var minimizedBar: some View {
+        HStack(spacing: 8) {
+            Image(systemName: "square.and.pencil")
+                .font(.system(size: 11, weight: .semibold))
+                .foregroundStyle(.secondary)
+            Text(headerTitle)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+            Spacer(minLength: 4)
+            Button {
+                setMinimized(false)
+            } label: {
+                Image(systemName: "arrow.up.left.and.arrow.down.right")
+                    .font(.system(size: 10, weight: .semibold))
+                    .foregroundStyle(.secondary)
+            }
+            .buttonStyle(.plain)
+            .help("Expand compose")
+            closeButton
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+        .contentShape(Rectangle())
+        .onTapGesture { setMinimized(false) }
+        .help("Expand compose")
+    }
+
+    /// Expanded title bar: click chrome (title / empty space) to minimize,
+    /// like Notion Mail. Buttons still own their own hits.
+    private var expandedHeader: some View {
+        HStack(spacing: 6) {
+            Text(headerTitle)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+            Spacer(minLength: 8)
+            Button {
+                setMinimized(true)
+            } label: {
+                Image(systemName: "minus")
+                    .font(.system(size: 12, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 18, height: 18)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Minimize")
+            closeButton
+        }
+        .padding(.bottom, 6)
+        .contentShape(Rectangle())
+        .onTapGesture { setMinimized(true) }
+        .help("Minimize compose")
+    }
+
+    @ViewBuilder
+    private var closeButton: some View {
+        // Esc closes only while expanded — minimized compose yields Esc to the
+        // mailbox (reading-pane / multi-select ladder in ContentView).
+        if isMinimized {
+            Button(action: saveAndClose) {
+                closeGlyph
+            }
+            .buttonStyle(.plain)
+            .help(hasContent ? "Close (saves as draft)" : "Close")
+        } else {
+            Button(action: saveAndClose) {
+                closeGlyph
+            }
+            .buttonStyle(.plain)
+            .keyboardShortcut(.cancelAction)
+            .help(hasContent ? "Close (saves as draft)" : "Close")
+        }
+    }
+
+    private var closeGlyph: some View {
+        Image(systemName: "xmark")
+            .font(.system(size: 11, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .frame(width: 18, height: 18)
+            .contentShape(Rectangle())
+    }
+
+    private var expandedBody: some View {
+        VStack(alignment: .leading, spacing: 0) {
             // Reply/forward context. Forwards always start a new Gmail
             // conversation (gmail.com / Notion Mail); say so so users don't
             // expect the Kearney-style source thread to absorb the send.
@@ -589,44 +732,6 @@ struct ComposeView: View {
                 .disabled(cannotSend)
             }
             .padding(.top, 8)
-        }
-        .padding(14)
-        .onAppear {
-            prefill()
-            installSlashKeyMonitor()
-        }
-        .onDisappear {
-            if let monitor = slashKeyMonitor {
-                NSEvent.removeMonitor(monitor)
-                slashKeyMonitor = nil
-            }
-        }
-        .onChange(of: store.accounts) {
-            // Accounts can finish loading after the card appears — backfill From.
-            if fromEmail.isEmpty { ensureFromSelection() }
-        }
-        .onChange(of: store.sendIdentities) {
-            // Send-as aliases arrive after first sync — re-scope the menu.
-            // Prefer current selection, then a sticky draft/restore From, then
-            // the mailbox default (never silently replace a draft's send-as
-            // with the primary just because identities loaded late).
-            ensureFromSelection(preferCurrent: true)
-        }
-        .sheet(isPresented: $showScheduleSheet) {
-            ScheduleSendSheet { date in scheduleSend(at: date) }
-        }
-        .sheet(isPresented: $showLinkSheet) {
-            ComposeLinkSheet(
-                initialText: linkInitialText,
-                initialURL: linkInitialURL,
-                isEditing: linkIsEditing,
-                onApply: { text, url in applyLink(text: text, url: url) },
-                onRemove: { removeLinkAtSelection() }
-            )
-        }
-        .fileImporter(isPresented: $showFilePicker,
-                      allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { attachmentURLs.append(contentsOf: urls) }
         }
     }
 
