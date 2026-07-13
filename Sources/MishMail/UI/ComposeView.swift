@@ -75,8 +75,14 @@ struct ComposeView: View {
     @State private var initialRecipients: [String] = []
     /// Collapsed to a title strip — draft fields stay mounted (state preserved).
     @State private var isMinimized = false
+    /// Set by every explicit exit (send, schedule, discard, close). When the
+    /// card unmounts without it — a new compose/reply request replaced this
+    /// one, which single-key shortcuts allow while minimized — onDisappear
+    /// saves the draft instead of silently dropping it.
+    @State private var didFinish = false
 
     private func close() {
+        didFinish = true
         store.composeMinimized = false
         store.composeRequest = nil
     }
@@ -201,8 +207,10 @@ struct ComposeView: View {
             || restoredAttachments.map(\.filename) != prefilledAttachmentNames
     }
 
-    /// Close and keep the work: unsent content becomes a real Gmail draft.
-    private func saveAndClose() {
+    /// Persist unsent content as a real Gmail draft; no-op when nothing was
+    /// authored. Split from saveAndClose so onDisappear can save without
+    /// closing when another compose request replaces this card.
+    private func saveDraftIfNeeded() {
         // Typed-but-uncommitted addresses count too.
         for (draft, tokens) in [(toDraft, $toTokens), (ccDraft, $ccTokens), (bccDraft, $bccTokens)] {
             let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
@@ -248,6 +256,11 @@ struct ComposeView: View {
                                       attachments: atts, replacing: old)
             }
         }
+    }
+
+    /// Close and keep the work: unsent content becomes a real Gmail draft.
+    private func saveAndClose() {
+        saveDraftIfNeeded()
         close()
     }
 
@@ -284,6 +297,10 @@ struct ComposeView: View {
             installSlashKeyMonitor()
         }
         .onDisappear {
+            // Unmounted without an explicit exit: a new compose/reply request
+            // replaced this card (single-key shortcuts allow that while
+            // minimized). Keep the work as a draft instead of dropping it.
+            if !didFinish { saveDraftIfNeeded() }
             store.composeMinimized = false
             if let monitor = slashKeyMonitor {
                 NSEvent.removeMonitor(monitor)
