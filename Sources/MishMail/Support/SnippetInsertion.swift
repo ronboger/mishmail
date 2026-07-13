@@ -38,12 +38,13 @@ enum SnippetInsertion {
 
     /// An active slash trigger ending at `caret` (or at the end of `text` when
     /// caret is nil): a `/` at the start of the text or right after whitespace,
-    /// with everything from after it up to the caret (no newline) as the query.
+    /// with everything from after it up to the caret as the query.
     ///
     /// Caret-based so `/` works mid-message and more than once per compose —
     /// the old end-of-text rule silently failed whenever anything followed the
     /// query (or a prior snippet left a trailing newline below the caret).
-    /// Slashes inside words or URLs don't trigger.
+    /// Slashes inside words or URLs don't trigger. Any whitespace in the query
+    /// ends the trigger (Space/Tab/Return dismiss the picker; typed text stays).
     static func slashToken(in text: String, atCaret caret: String.Index? = nil) -> SlashToken? {
         let end = caret ?? text.endIndex
         guard end >= text.startIndex, end <= text.endIndex else { return nil }
@@ -54,7 +55,10 @@ enum SnippetInsertion {
             guard prev == " " || prev == "\n" || prev == "\t" else { return nil }
         }
         let query = text[text.index(after: slash)..<end]
-        guard !query.contains("\n") else { return nil }
+        // Space (and any other whitespace) ends the token — same as newline.
+        // Keeps `/name` filtering single-token and lets the user dismiss the
+        // picker by typing a space without Esc.
+        guard !query.contains(where: \.isWhitespace) else { return nil }
         return SlashToken(range: slash..<end, query: String(query))
     }
 
