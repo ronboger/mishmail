@@ -147,8 +147,8 @@ struct ContentView: View {
                 set: { if !$0 { store.confirmingDraftDelete = nil } }
             ),
             presenting: store.confirmingDraftDelete
-        ) { thread in
-            Button("Delete", role: .destructive) { store.deleteDraft(inThread: thread) }
+        ) { draft in
+            Button("Delete", role: .destructive) { store.deleteDraft(draft) }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("This can't be undone.")

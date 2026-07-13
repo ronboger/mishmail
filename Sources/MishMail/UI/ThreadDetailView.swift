@@ -33,29 +33,68 @@ struct ThreadDetailView: View {
 
                 summarySection
 
-                // Draft threads get an obvious way back into compose.
-                if thread.labels.contains("DRAFT") {
-                    HStack(spacing: 8) {
-                        Button {
-                            store.editDraft(inThread: thread)
-                        } label: {
-                            Label("Edit Draft", systemImage: "pencil")
+                // Slim cue for long threads only: on short threads the draft
+                // card is already in the first viewport, so a second orange
+                // affordance is noise. Continues the newest draft.
+                if showDraftBanner {
+                    Button {
+                        store.editDraft(inThread: thread)
+                    } label: {
+                        HStack(spacing: 8) {
+                            Text("Draft")
+                                .font(.system(size: 11 * fontScale, weight: .semibold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 7)
+                                .padding(.vertical, 2)
+                                .background(Color.orange, in: Capsule())
+                            Text("Unsent reply in this conversation")
+                                .font(.system(size: 12.5 * fontScale))
+                                .foregroundStyle(.primary)
+                                .lineLimit(1)
+                            Spacer(minLength: 8)
+                            Text("Continue")
+                                .font(.system(size: 12.5 * fontScale, weight: .medium))
+                                .foregroundStyle(Color.notionAccent)
+                            Image(systemName: "chevron.right")
+                                .font(.system(size: 10 * fontScale, weight: .semibold))
+                                .foregroundStyle(Color.notionAccent)
                         }
-                        .buttonStyle(.borderedProminent)
-                        Button("Delete Draft", role: .destructive) {
-                            store.confirmingDraftDelete = thread
+                        .padding(.horizontal, 12)
+                        .padding(.vertical, 9)
+                        .background(
+                            RoundedRectangle(cornerRadius: PMRadius.md)
+                                .fill(Color.orange.opacity(0.10))
+                        )
+                        .overlay {
+                            RoundedRectangle(cornerRadius: PMRadius.md)
+                                .strokeBorder(Color.orange.opacity(0.28), lineWidth: 1)
                         }
+                        .contentShape(RoundedRectangle(cornerRadius: PMRadius.md))
                     }
+                    .buttonStyle(.plain)
+                    .help("Continue editing the unsent draft")
                     .padding(.horizontal)
                 }
 
                 ForEach(messages) { message in
-                    MessageCard(message: message,
-                                isLast: message.id == messages.last?.id,
-                                loadImagesForThread: $loadRemoteImagesForThread,
-                                onReply: { onReply(message) },
-                                onNeedBody: { loadBodyIfNeeded(id: message.id) })
-                        .padding(.horizontal)
+                    if ForwardComposer.hasDraftLabel(message.labelIds) {
+                        // Drafts are not ordinary messages: no quote trail, no
+                        // Reply/Forward, clear "not sent" chrome. Edit lives on
+                        // the card so you don't have to scroll to the top.
+                        DraftMessageCard(
+                            message: message,
+                            onNeedBody: { loadBodyIfNeeded(id: message.id) })
+                            .padding(.horizontal)
+                            .id(message.id)
+                    } else {
+                        MessageCard(message: message,
+                                    isLast: message.id == lastNonDraftId,
+                                    loadImagesForThread: $loadRemoteImagesForThread,
+                                    onReply: { onReply(message) },
+                                    onNeedBody: { loadBodyIfNeeded(id: message.id) })
+                            .padding(.horizontal)
+                            .id(message.id)
+                    }
                 }
             }
             .scrollTargetLayout()
@@ -125,7 +164,10 @@ struct ThreadDetailView: View {
                     Label("Trash", systemImage: "trash")
                 }
                 .help("Move to Trash (\(store.keyBindings.key(for: .trash)))")
-                if let last = messages.last {
+                // Reply/forward target the newest *sent* message — never a draft
+                // (shared ForwardComposer.newestSentMessage; drafts open via
+                // Continue / editDraft, not Reply).
+                if let last = ForwardComposer.newestSentMessage(in: messages) {
                     Button { onReply(last) } label: {
                         Label("Reply", systemImage: "arrowshape.turn.up.left")
                     }
@@ -144,7 +186,7 @@ struct ThreadDetailView: View {
                     // Hide when only one non-draft message (drafts are excluded
                     // from the package — counting them would falsely enable this).
                     if ForwardComposer.forwardableMessages(messages).count > 1,
-                       let last = messages.last {
+                       let last = ForwardComposer.newestSentMessage(in: messages) {
                         Button {
                             store.composeRequest = .init(
                                 replyTo: last, forward: true, forwardAll: true)
@@ -228,26 +270,41 @@ struct ThreadDetailView: View {
                 .help("More actions")
             }
         }
-        // Long threads open with the top of the newest message at the top of
-        // the pane — positioned before display, not scrolled, so there's no
-        // visible jump.
+        // Long threads open with the top of the newest *sent* message at the
+        // top of the pane (matches which card is expanded). Drafts sit below
+        // and stay visible without stealing the scroll anchor.
         .scrollPosition(id: $scrolledMessageId, anchor: .top)
         .task(id: thread.id) {
-            // Headers only first — skip pulling every body on open. The last
-            // message is always expanded, so hydrate its body immediately.
+            // Headers only first — skip pulling every body on open. Hydrate the
+            // expanded sent message and any draft cards (preview needs body).
             bodyLoadAttempted = []
             loadRemoteImagesForThread = false
             var loaded = store.messageHeaders(inThread: thread.id)
-            if let lastId = loaded.last?.id, let full = store.messageBody(id: lastId) {
-                loaded[loaded.count - 1] = full
-                bodyLoadAttempted.insert(lastId)
+            // Expand the newest sent message; also pull bodies for draft cards
+            // so the compact preview is ready without a second hop.
+            var hydrateIds: [String] = []
+            if let sentId = ForwardComposer.newestSentMessage(in: loaded)?.id {
+                hydrateIds.append(sentId)
+            }
+            for draft in loaded where ForwardComposer.hasDraftLabel(draft.labelIds) {
+                if !hydrateIds.contains(draft.id) { hydrateIds.append(draft.id) }
+            }
+            for id in hydrateIds {
+                guard let idx = loaded.firstIndex(where: { $0.id == id }),
+                      let full = store.messageBody(id: id) else { continue }
+                loaded[idx] = full
+                bodyLoadAttempted.insert(id)
             }
             messages = loaded
             // Attachment rows key off messageId; header rows are enough.
             threadAttachments = loaded.flatMap { msg in
                 store.attachments(for: msg.id).map { (message: msg, attachment: $0) }
             }
-            scrolledMessageId = messages.count > 1 ? messages.last?.id : nil
+            // Anchor on newest sent when multi-message; draft-only falls back
+            // to the last row so a pure-draft pane still positions.
+            scrolledMessageId = messages.count > 1
+                ? (ForwardComposer.newestSentMessage(in: messages)?.id ?? messages.last?.id)
+                : nil
             aiSummary = nil; summaryError = nil; summarizing = false
             if thread.isUnread { store.setRead(thread, read: true) }
         }
@@ -256,6 +313,24 @@ struct ThreadDetailView: View {
     /// True when a reading-pane message still needs a body fetch.
     static func needsBodyLoad(_ message: Message) -> Bool {
         message.bodyText.isEmpty && (message.bodyHTML == nil || message.bodyHTML?.isEmpty == true)
+    }
+
+    /// Any DRAFT-labeled message currently in the open thread.
+    private var hasThreadDraft: Bool {
+        messages.contains { ForwardComposer.hasDraftLabel($0.labelIds) }
+    }
+
+    /// Banner only when the draft card is likely below the first viewport
+    /// (≥4 messages). Shorter threads already show the draft card on screen.
+    private var showDraftBanner: Bool {
+        hasThreadDraft && messages.count > 3
+    }
+
+    /// Expand the newest *sent* message by default — drafts get their own card
+    /// and must not steal the "last card is expanded" affordance from the
+    /// conversation the user is reading.
+    private var lastNonDraftId: String? {
+        ForwardComposer.newestSentMessage(in: messages)?.id
     }
 
     /// Hydrate one message's body into `messages` when the user expands it.
@@ -494,6 +569,142 @@ struct ThreadDetailView: View {
                 }
             }
         }
+    }
+}
+
+/// Saved Gmail draft rendered in the thread — not a regular MessageCard.
+///
+/// Gmail/Notion cues: orange "Draft" pill, warm tint, left accent, compact
+/// authored preview (no HTML quote trail / "…" gap), and Continue/Discard
+/// actions on the card itself so edit isn't only at the top of the pane.
+struct DraftMessageCard: View {
+    @EnvironmentObject var store: MailStore
+    @AppStorage("fontScale") private var fontScale = 1.0
+    let message: Message
+    let onNeedBody: () -> Void
+    @State private var cursorPushed = false
+
+    private var preview: String {
+        QuotedReply.authoredPreview(text: message.bodyText, html: message.bodyHTML)
+    }
+
+    private var toSummary: String {
+        let names = MessageParser.splitAddresses(message.toHeader)
+            .map { MessageParser.displayName(fromHeader: $0) }
+            .filter { !$0.isEmpty }
+        if names.isEmpty { return "No recipients" }
+        if names.count == 1 { return "To \(names[0])" }
+        return "To \(names[0]) +\(names.count - 1)"
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            HStack(alignment: .center, spacing: 8) {
+                Text("Draft")
+                    .font(.system(size: 11 * fontScale, weight: .semibold))
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 7)
+                    .padding(.vertical, 2)
+                    .background(Color.orange, in: Capsule())
+                Text("Not sent")
+                    .font(.system(size: 12 * fontScale, weight: .medium))
+                    .foregroundStyle(Color.orange)
+                Spacer(minLength: 8)
+                Text(message.date, format: .dateTime.month(.abbreviated).day().hour().minute())
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 6) {
+                Text(MessageParser.displayName(fromHeader: message.fromHeader))
+                    .font(.system(size: 13.5 * fontScale, weight: .semibold))
+                    .lineLimit(1)
+                Text("·")
+                    .foregroundStyle(.tertiary)
+                Text(toSummary)
+                    .font(.system(size: 12.5 * fontScale))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+
+            if ThreadDetailView.needsBodyLoad(message) {
+                Text("Loading draft…")
+                    .font(.system(size: 13.5 * fontScale))
+                    .foregroundStyle(.secondary)
+            } else if preview.isEmpty {
+                Text("Empty draft — click Continue to write")
+                    .font(.system(size: 13.5 * fontScale))
+                    .foregroundStyle(.secondary)
+                    .italic()
+            } else {
+                // No textSelection: the whole card opens compose, so a
+                // selection gesture would fight the tap-to-edit hit target.
+                Text(preview)
+                    .font(.system(size: 14 * fontScale))
+                    .lineSpacing(3)
+                    .lineLimit(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+
+            HStack(spacing: 8) {
+                Button {
+                    store.editDraft(message)
+                } label: {
+                    Label("Continue", systemImage: "pencil")
+                        .font(.system(size: 12.5 * fontScale))
+                }
+                .buttonStyle(.borderedProminent)
+                .help("Continue editing this draft")
+                Button(role: .destructive) {
+                    store.confirmingDraftDelete = message
+                } label: {
+                    Text("Discard")
+                        .font(.system(size: 12.5 * fontScale))
+                }
+                .buttonStyle(.bordered)
+                .help("Delete this draft")
+                Spacer(minLength: 0)
+            }
+            .padding(.top, 2)
+        }
+        .padding(12)
+        .padding(.leading, 4) // room for the accent bar inside the card
+        .background(
+            RoundedRectangle(cornerRadius: PMRadius.md)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(alignment: .leading) {
+            // Gmail-ish draft accent: solid orange rail, not a full red banner.
+            UnevenRoundedRectangle(
+                topLeadingRadius: PMRadius.md,
+                bottomLeadingRadius: PMRadius.md,
+                bottomTrailingRadius: 0,
+                topTrailingRadius: 0
+            )
+            .fill(Color.orange)
+            .frame(width: 4)
+        }
+        .overlay {
+            RoundedRectangle(cornerRadius: PMRadius.md)
+                .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
+        }
+        .pmCardElevation(cornerRadius: PMRadius.md)
+        .contentShape(RoundedRectangle(cornerRadius: PMRadius.md))
+        .onTapGesture { store.editDraft(message) }
+        .onHover { inside in
+            if inside {
+                if !cursorPushed { NSCursor.pointingHand.push(); cursorPushed = true }
+            } else if cursorPushed {
+                NSCursor.pop(); cursorPushed = false
+            }
+        }
+        .onDisappear {
+            // Discard-under-cursor removes the card while still hovered;
+            // without this the pointingHand stays pushed on the stack.
+            if cursorPushed { NSCursor.pop(); cursorPushed = false }
+        }
+        .onAppear { onNeedBody() }
+        .help("Continue editing this draft")
     }
 }
 
@@ -1137,13 +1348,39 @@ struct HTMLBodyView: NSViewRepresentable {
         }
 
         /// Content (images, layout) can settle after didFinish; re-measure a
-        /// few times and keep the tallest stable value.
+        /// few times. Prefer visible child bottoms over `scrollHeight`, which
+        /// often reports the *frame* height when content is shorter than the
+        /// WKWebView (classic source of empty space above a collapsed quote).
         private func measure(_ webView: WKWebView, attempt: Int) {
             // JS is disabled for page content; WebKit still allows evaluateJavaScript
             // from the app process for measurement / contrast tagging.
-            webView.evaluateJavaScript("Math.ceil(Math.max(document.body.scrollHeight, document.body.getBoundingClientRect().height))") { [weak self] result, _ in
+            let js = """
+            (function() {
+              var body = document.body;
+              if (!body) return 40;
+              var bodyTop = body.getBoundingClientRect().top;
+              var bottom = bodyTop;
+              var kids = body.children;
+              for (var i = 0; i < kids.length; i++) {
+                var r = kids[i].getBoundingClientRect();
+                // display:none quote containers report height 0 — skip them.
+                if (r.height > 0) bottom = Math.max(bottom, r.bottom);
+              }
+              var content = bottom - bodyTop;
+              if (content < 1) {
+                content = Math.max(body.scrollHeight, body.getBoundingClientRect().height);
+              }
+              return Math.ceil(Math.max(content, 40));
+            })()
+            """
+            webView.evaluateJavaScript(js) { [weak self] result, _ in
                 if let h = result as? CGFloat, h > 0 {
                     DispatchQueue.main.async { self?.setHeight?(max(h, 40)) }
+                } else if let n = result as? NSNumber {
+                    let h = CGFloat(truncating: n)
+                    if h > 0 {
+                        DispatchQueue.main.async { self?.setHeight?(max(h, 40)) }
+                    }
                 }
                 if attempt < 3 {
                     DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {

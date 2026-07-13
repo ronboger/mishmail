@@ -129,4 +129,82 @@ final class QuotedReplyTests: XCTestCase {
         let html = #"<div dir="ltr"><br></div><div class="gmail_quote">old</div>"#
         XCTAssertFalse(QuotedReply.hasHTMLQuote(html))
     }
+
+    // MARK: - Authored preview (draft cards)
+
+    func testAuthoredPreviewPlainTextStripsQuote() {
+        let body = """
+        Hey — happy to chat 1:1.
+
+        On Thu, Jul 12, 2026 at 11:00 AM, Matt <m@x.com> wrote:
+        > Let's find time
+        """
+        XCTAssertEqual(
+            QuotedReply.authoredPreview(text: body, html: nil),
+            "Hey — happy to chat 1:1.")
+    }
+
+    func testAuthoredPreviewHTMLFallsBackWhenTextEmpty() {
+        let html = #"<div dir="ltr">Hey MHappy to chat 1:1</div><br>"#
+            + #"<div class="gmail_quote"><blockquote>old thread</blockquote></div>"#
+        XCTAssertEqual(
+            QuotedReply.authoredPreview(text: "", html: html),
+            "Hey MHappy to chat 1:1")
+    }
+
+    func testAuthoredPreviewPrefersPlainTextOverHTML() {
+        // Compose keeps plain + HTML; plain split is the source of truth for
+        // what the user typed above the collapsed quote.
+        let text = "Short note.\n\nOn Mon, Bob wrote:\n> prior"
+        let html = #"<div>Short note.</div><div class="gmail_quote">prior</div>"#
+        XCTAssertEqual(
+            QuotedReply.authoredPreview(text: text, html: html),
+            "Short note.")
+    }
+
+    func testAuthoredPreviewNoQuoteReturnsFullBody() {
+        XCTAssertEqual(
+            QuotedReply.authoredPreview(text: "Just a draft.", html: nil),
+            "Just a draft.")
+    }
+
+    func testAuthoredPreviewEmpty() {
+        XCTAssertEqual(QuotedReply.authoredPreview(text: "", html: nil), "")
+        XCTAssertEqual(QuotedReply.authoredPreview(text: "  \n", html: nil), "")
+    }
+
+    func testAuthoredPreviewQuoteOnlyIsEmpty() {
+        // Reply → quote auto-inserted → save without typing. splitText is nil
+        // (empty head) but the body *is* a quote — must not dump the trail.
+        let body = """
+
+        On Thu, Jul 12, 2026 at 11:00 AM, Matt <m@x.com> wrote:
+        > Let's find time
+        """
+        XCTAssertTrue(QuotedReply.isQuoteOnlyText(body))
+        XCTAssertEqual(QuotedReply.authoredPreview(text: body, html: nil), "")
+    }
+
+    func testAuthoredPreviewQuoteOnlyAtStart() {
+        let body = "On Mon, Jun 1, 2026, Bob wrote:\n> prior"
+        // Marker needs a leading newline in the regex — bodies that *start*
+        // with "On … wrote:" without a preceding newline are not quote-only
+        // under the same rule as splitText (would otherwise hide real prose
+        // that happens to open with those words).
+        XCTAssertFalse(QuotedReply.isQuoteOnlyText(body))
+    }
+
+    func testAuthoredPreviewQuoteOnlyHTMLEmpty() {
+        let html = #"<br><div class="gmail_quote"><blockquote>old</blockquote></div>"#
+        XCTAssertEqual(QuotedReply.authoredPreview(text: "", html: html), "")
+    }
+
+    func testAuthoredPreviewQuoteOnlyPlainDefersToHTMLHead() {
+        // Plain is quote-only; HTML still has authored head — prefer that.
+        let plain = "\n\nOn Thu, Jul 12, 2026 at 11:00 AM, Matt <m@x.com> wrote:\n> old"
+        let html = #"<div dir="ltr">Still drafting</div><div class="gmail_quote">old</div>"#
+        XCTAssertEqual(
+            QuotedReply.authoredPreview(text: plain, html: html),
+            "Still drafting")
+    }
 }

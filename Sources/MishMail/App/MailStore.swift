@@ -376,7 +376,9 @@ final class MailStore: ObservableObject {
     @Published var showLabelPicker = false
     @Published var showLabelOrganizer = false
     @Published var snoozingThread: MailThread?   // custom snooze date sheet
-    @Published var confirmingDraftDelete: MailThread?   // delete-draft confirmation alert
+    /// Draft message pending the "Delete this draft?" alert (per-message so
+    /// multi-draft threads discard the card that was clicked, not always the newest).
+    @Published var confirmingDraftDelete: Message?
     // Per-keystroke picker state lives in its own object (constant reference,
     // so mutations don't fire MailStore.objectWillChange) — otherwise every
     // typed character re-renders the whole window, not just the picker.
@@ -2489,17 +2491,20 @@ final class MailStore: ObservableObject {
         case .next: moveSelection(1)
         case .prev: moveSelection(-1)
         case .toggleCheck: toggleCheckSelected()
-        case .reply: if let t = selectedThread {
-                         composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last)
+        case .reply: if let t = selectedThread,
+                        let msg = newestSentMessage(inThread: t.id) {
+                         composeRequest = ComposeRequest(replyTo: msg)
                      }
-        case .replyAll: if let t = selectedThread {
-                            composeRequest = ComposeRequest(replyTo: messages(inThread: t.id).last, replyAll: true)
+        case .replyAll: if let t = selectedThread,
+                           let msg = newestSentMessage(inThread: t.id) {
+                            composeRequest = ComposeRequest(replyTo: msg, replyAll: true)
                         }
-        case .forward: if let t = selectedThread {
-                           // Gmail `f`: forward the newest message only. Use
-                           // the thread ⋮ menu for "Forward all".
+        case .forward: if let t = selectedThread,
+                          let msg = newestSentMessage(inThread: t.id) {
+                           // Gmail `f`: forward the newest *sent* message only.
+                           // Use the thread ⋮ menu for "Forward all".
                            composeRequest = ComposeRequest(
-                               replyTo: messages(inThread: t.id).last, forward: true)
+                               replyTo: msg, forward: true)
                        }
         case .label: if selectedThread != nil { openLabelPicker() }
         case .undo: if let undo = undoAction { undo.undo() }
@@ -3470,24 +3475,42 @@ final class MailStore: ObservableObject {
 
     // MARK: - Draft management
 
+    /// Newest non-draft in a thread — thin wrapper over
+    /// `ForwardComposer.newestSentMessage` for callers that already hold the store.
+    func newestSentMessage(inThread threadId: String) -> Message? {
+        ForwardComposer.newestSentMessage(in: messages(inThread: threadId))
+    }
+
+    /// Newest draft in a thread.
+    func newestDraft(inThread threadId: String) -> Message? {
+        ForwardComposer.newestDraft(in: messages(inThread: threadId))
+    }
+
     /// A thread that is nothing but an unsent draft — opening it should hop
     /// straight into compose (Notion Mail-style), not the reading pane.
     /// Draft replies inside real conversations still open the thread.
     func isDraftOnly(_ thread: MailThread) -> Bool {
         guard thread.labels.contains("DRAFT") else { return false }
         let msgs = messages(inThread: thread.id)
-        return !msgs.isEmpty && msgs.allSatisfy { $0.labelIds.contains("DRAFT") }
+        return !msgs.isEmpty && msgs.allSatisfy { ForwardComposer.hasDraftLabel($0.labelIds) }
     }
 
-    /// Opens an existing draft back into compose. Reply drafts recover the
+    /// Opens a specific draft back into compose. Reply drafts recover the
     /// parent message so send still attaches In-Reply-To and the Gmail-style
     /// HTML upgrade; forward / brand-new-compose drafts leave replyTo nil.
+    func editDraft(_ draft: Message) {
+        guard ForwardComposer.hasDraftLabel(draft.labelIds) else { return }
+        let msgs = messages(inThread: draft.threadId)
+        // Prefer the in-memory full body when the card was header-only.
+        let full = messageBody(id: draft.id) ?? draft
+        let parent = Self.replyParent(forDraft: full, inThread: msgs)
+        composeRequest = ComposeRequest(replyTo: parent, editDraft: full)
+    }
+
+    /// Opens the newest draft in a thread (list/context-menu / top-banner entry).
     func editDraft(inThread thread: MailThread) {
-        let msgs = messages(inThread: thread.id)
-        guard let draft = msgs.last(where: { ForwardComposer.hasDraftLabel($0.labelIds) })
-        else { return }
-        let parent = Self.replyParent(forDraft: draft, inThread: msgs)
-        composeRequest = ComposeRequest(replyTo: parent, editDraft: draft)
+        guard let draft = newestDraft(inThread: thread.id) else { return }
+        editDraft(draft)
     }
 
     /// Latest non-draft message to thread a reopened reply draft against.
@@ -3536,9 +3559,15 @@ final class MailStore: ObservableObject {
         }
     }
 
-    func deleteDraft(inThread thread: MailThread) {
-        guard let draft = messages(inThread: thread.id).last(where: { $0.labelIds.contains("DRAFT") }) else { return }
+    /// Discard a specific draft (card-level Discard / confirmed alert).
+    func deleteDraft(_ draft: Message) {
         Task { await deleteUnderlyingDraft(draft) }
+    }
+
+    /// Discard the newest draft in a thread (list context menu).
+    func deleteDraft(inThread thread: MailThread) {
+        guard let draft = newestDraft(inThread: thread.id) else { return }
+        deleteDraft(draft)
     }
 
     /// Download every attachment on a message into a folder the user picks.

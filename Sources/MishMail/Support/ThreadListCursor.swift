@@ -80,8 +80,14 @@ enum ThreadDateSections {
 
     static func sectionKey(for date: Date, now: Date = Date(),
                            calendar: Calendar = .current) -> String {
-        if calendar.isDateInToday(date) { return "Today" }
-        if calendar.isDateInYesterday(date) { return "Yesterday" }
+        // Use the injected `now`, not Calendar.isDateInToday/Yesterday —
+        // those always consult the wall clock and break tests (and any
+        // future "as of" grouping) that pin a different reference time.
+        if calendar.isDate(date, inSameDayAs: now) { return "Today" }
+        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
+           calendar.isDate(date, inSameDayAs: yesterday) {
+            return "Yesterday"
+        }
         if date > now.addingTimeInterval(-7 * 86_400) { return "Last 7 days" }
         if date > now.addingTimeInterval(-30 * 86_400) { return "Last 30 days" }
         return "Older"

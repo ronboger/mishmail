@@ -325,6 +325,18 @@ enum ForwardComposer {
         messages.filter { !hasDraftLabel($0.labelIds) }
     }
 
+    /// Newest non-draft message in an oldest-first list. Shared by keyboard
+    /// reply/forward, command palette, and the reading-pane toolbar so none
+    /// parent a compose on an unsent draft at the end of the thread.
+    static func newestSentMessage(in msgs: [Message]) -> Message? {
+        msgs.last(where: { !hasDraftLabel($0.labelIds) })
+    }
+
+    /// Newest DRAFT-labeled message (oldest-first list → last match).
+    static func newestDraft(in msgs: [Message]) -> Message? {
+        msgs.last(where: { hasDraftLabel($0.labelIds) })
+    }
+
     /// Which forward package still suffixes `body`, for HTML upgrade at send.
     ///
     /// **Order matters:** try the full non-draft thread package *before* the
@@ -597,6 +609,57 @@ enum QuotedReply {
     /// siblings, so everything after `#divRplyFwdMsg` goes too.
     static let hideQuoteCSS = #"[class*="gmail_quote"], blockquote[type="cite" i], "#
         + "#divRplyFwdMsg, #divRplyFwdMsg ~ * { display: none; }"
+
+    /// User-authored text above any quoted trail — for draft cards and other
+    /// compact previews. Prefers the plain-text split (matches compose's
+    /// `quotedTail`); falls back to HTML strip above the quote marker so a
+    /// multipart draft still shows only what the user wrote, not the thread.
+    ///
+    /// Quote-only bodies (reply opened, quote auto-inserted, user saved
+    /// without typing) return `""` so the UI can show an empty-draft state
+    /// instead of dumping the whole trail into the preview.
+    static func authoredPreview(text: String, html: String?) -> String {
+        if let head = splitText(text)?.head {
+            return head
+        }
+        // splitText is nil when there is no marker *or* when the marker sits
+        // at the start with an empty authored head. The latter must not fall
+        // through to "return the whole body".
+        if isQuoteOnlyText(text) {
+            return htmlAuthoredHead(html)
+        }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !trimmed.isEmpty { return trimmed }
+        return htmlAuthoredHead(html)
+    }
+
+    /// True when plain text is only a quoted trail (marker present, no head).
+    /// Same empty-head guard as `splitText`, exposed so previews don't treat
+    /// quote-only bodies as authored content.
+    static func isQuoteOnlyText(_ body: String) -> Bool {
+        let ns = body as NSString
+        guard let match = textMarker.firstMatch(
+            in: body, range: NSRange(location: 0, length: ns.length))
+        else { return false }
+        return ns.substring(to: match.range.location)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .isEmpty
+    }
+
+    /// Authored head of an HTML body above a known quote container, or the
+    /// full stripped body when no marker is present. Empty when the HTML is
+    /// quote-only (or blank).
+    private static func htmlAuthoredHead(_ html: String?) -> String {
+        guard let html, !html.isEmpty else { return "" }
+        let ns = html as NSString
+        if let match = htmlMarker.firstMatch(
+            in: html, range: NSRange(location: 0, length: ns.length)) {
+            return MessageParser.stripHTML(ns.substring(to: match.range.location))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        return MessageParser.stripHTML(html)
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+    }
 }
 
 /// Builds RFC 2822 messages for sending/replying, optionally multipart/mixed
