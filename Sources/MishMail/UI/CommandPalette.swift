@@ -69,7 +69,7 @@ struct CommandPalette: View {
     private var commands: [Command] {
         var cmds: [Command] = [
             Command(id: "compose", title: "Compose New Message", icon: "square.and.pencil") {
-                $0.composeRequest = .init(replyTo: nil)
+                $0.openCompose(.init(replyTo: nil))
             },
             Command(id: "sync", title: "Sync All Accounts", icon: "arrow.clockwise") { s in
                 Task { await s.syncAll() }
@@ -97,7 +97,7 @@ struct CommandPalette: View {
                     // Same "newest sent" resolver as keyboard r / toolbar —
                     // never parent a reply on an unsent draft.
                     if let last = s.newestSentMessage(inThread: thread.id) {
-                        s.composeRequest = .init(replyTo: last)
+                        s.openCompose(.init(replyTo: last))
                     }
                 },
                 Command(id: "act.label", title: "Label Conversation…", icon: "tag") { $0.openLabelPicker() },

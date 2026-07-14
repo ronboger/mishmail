@@ -80,9 +80,27 @@ struct ComposeView: View {
     /// one, which single-key shortcuts allow while minimized — onDisappear
     /// saves the draft instead of silently dropping it.
     @State private var didFinish = false
+    /// Live draft Gmail message to replace on the next save (starts as
+    /// `editDraft`, then tracks each successful autosave).
+    @State private var replacingDraft: Message?
+    /// Notion-style footer status after typing.
+    @State private var draftStatus: DraftSaveStatus = .idle
+    @State private var autosaveTask: Task<Void, Never>?
+    /// Snapshot of fields last successfully saved — skip no-op autosaves.
+    @State private var lastSavedFingerprint = ""
+
+    private enum DraftSaveStatus: Equatable {
+        case idle
+        case saving
+        case saved
+        case failed
+    }
+
+    private var isInline: Bool { request.presentation == .inline }
 
     private func close() {
         didFinish = true
+        autosaveTask?.cancel()
         store.composeMinimized = false
         store.composeRequest = nil
     }
@@ -207,10 +225,37 @@ struct ComposeView: View {
             || restoredAttachments.map(\.filename) != prefilledAttachmentNames
     }
 
+    /// Fingerprint of fields that participate in draft persistence.
+    private var contentFingerprint: String {
+        [fromEmail, toTokens.joined(separator: ","), ccTokens.joined(separator: ","),
+         bccTokens.joined(separator: ","), subject, fullBody,
+         attachmentURLs.map(\.lastPathComponent).joined(separator: "|"),
+         restoredAttachments.map(\.filename).joined(separator: "|")]
+            .joined(separator: "\u{1e}")
+    }
+
+    /// Schedule a debounced silent autosave after the user types.
+    private func scheduleAutosave() {
+        guard hasContent else {
+            draftStatus = .idle
+            return
+        }
+        // Already saved this exact content (or still saving the same).
+        if contentFingerprint == lastSavedFingerprint { return }
+        draftStatus = draftStatus == .saved ? .idle : draftStatus
+        autosaveTask?.cancel()
+        autosaveTask = Task { @MainActor in
+            try? await Task.sleep(nanoseconds: 1_500_000_000)
+            guard !Task.isCancelled else { return }
+            await persistDraft(silent: true)
+        }
+    }
+
     /// Persist unsent content as a real Gmail draft; no-op when nothing was
     /// authored. Split from saveAndClose so onDisappear can save without
     /// closing when another compose request replaces this card.
-    private func saveDraftIfNeeded() {
+    @MainActor
+    private func persistDraft(silent: Bool) async {
         // Typed-but-uncommitted addresses count too.
         for (draft, tokens) in [(toDraft, $toTokens), (ccDraft, $ccTokens), (bccDraft, $bccTokens)] {
             let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
@@ -219,48 +264,84 @@ struct ComposeView: View {
             }
         }
         toDraft = ""; ccDraft = ""; bccDraft = ""
-        if hasContent {
-            // Best effort on the files: an unreadable pick shouldn't lose the text.
-            let attachments = (try? collectAttachments()) ?? restoredAttachments
-            // Closed while the prefilled files were still downloading: their
-            // chips aren't in yet, so re-fetch them before saving — otherwise
-            // the re-saved draft would silently drop them.
-            let pendingSources: [Message] = {
-                guard loadingAttachments else { return [] }
-                if let draft = editingDraft { return [draft] }
-                if request.forward, let original {
-                    if request.forwardAll {
-                        let thread = ForwardComposer.forwardableMessages(
-                            store.messages(inThread: original.threadId))
-                        return thread.isEmpty ? [original] : thread
-                    }
-                    return [original]
-                }
-                return []
-            }()
-            let (apiAccount, identity, to, cc, bcc, subj, body, old) =
-                (fromAccountId, fromEmail,
-                 toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
-                 bccTokens.joined(separator: ", "), subject, fullBody, editingDraft)
-            // Like the send path, a forward's original rides along so the
-            // draft keeps its HTML formatting (it won't thread the draft).
-            let (reply, isForward) = (request.replyTo, request.forward)
-            Task {
-                var atts = attachments
-                for source in pendingSources {
-                    atts = ((try? await store.loadAttachments(for: source)) ?? []) + atts
-                }
-                await store.saveDraft(from: apiAccount, fromEmail: identity,
-                                      to: to, cc: cc, bcc: bcc, subject: subj,
-                                      body: body, replyTo: reply, forward: isForward,
-                                      attachments: atts, replacing: old)
-            }
+        guard hasContent else {
+            draftStatus = .idle
+            return
         }
+        let fingerprint = contentFingerprint
+        if fingerprint == lastSavedFingerprint {
+            if silent { draftStatus = .saved }
+            return
+        }
+        if silent { draftStatus = .saving }
+        // Best effort on the files: an unreadable pick shouldn't lose the text.
+        let attachments = (try? collectAttachments()) ?? restoredAttachments
+        // Closed while the prefilled files were still downloading: their
+        // chips aren't in yet, so re-fetch them before saving — otherwise
+        // the re-saved draft would silently drop them.
+        let pendingSources: [Message] = {
+            guard loadingAttachments else { return [] }
+            if let draft = replacingDraft ?? editingDraft { return [draft] }
+            if request.forward, let original {
+                if request.forwardAll {
+                    let thread = ForwardComposer.forwardableMessages(
+                        store.messages(inThread: original.threadId))
+                    return thread.isEmpty ? [original] : thread
+                }
+                return [original]
+            }
+            return []
+        }()
+        let (apiAccount, identity, to, cc, bcc, subj, body, old) =
+            (fromAccountId, fromEmail,
+             toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
+             bccTokens.joined(separator: ", "), subject, fullBody,
+             replacingDraft ?? editingDraft)
+        // Like the send path, a forward's original rides along so the
+        // draft keeps its HTML formatting (it won't thread the draft).
+        let (reply, isForward) = (request.replyTo, request.forward)
+        var atts = attachments
+        for source in pendingSources {
+            atts = ((try? await store.loadAttachments(for: source)) ?? []) + atts
+        }
+        // Demo: no Gmail draft API — still show the Notion-style status so the
+        // chrome matches real accounts.
+        if store.demoMode {
+            if silent {
+                lastSavedFingerprint = fingerprint
+                draftStatus = .saved
+            }
+            return
+        }
+        let saved = await store.saveDraft(from: apiAccount, fromEmail: identity,
+                                          to: to, cc: cc, bcc: bcc, subject: subj,
+                                          body: body, replyTo: reply, forward: isForward,
+                                          attachments: atts, replacing: old,
+                                          silent: silent)
+        if let saved {
+            replacingDraft = saved
+            lastSavedFingerprint = fingerprint
+            if silent { draftStatus = .saved }
+        } else if silent {
+            draftStatus = .failed
+        }
+    }
+
+    /// Fire-and-forget save for unmount / close (keeps prior call shape).
+    private func saveDraftIfNeeded() {
+        autosaveTask?.cancel()
+        Task { await persistDraft(silent: true) }
     }
 
     /// Close and keep the work: unsent content becomes a real Gmail draft.
     private func saveAndClose() {
-        saveDraftIfNeeded()
+        autosaveTask?.cancel()
+        // Await isn't available from button actions; kick a save then close.
+        // If content already matches lastSavedFingerprint, this is a no-op.
+        let fingerprint = contentFingerprint
+        if hasContent, fingerprint != lastSavedFingerprint {
+            Task { await persistDraft(silent: true) }
+        }
         close()
     }
 
@@ -290,11 +371,25 @@ struct ComposeView: View {
         }
         .padding(isMinimized ? EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 8)
                              : EdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14))
-        .accessibilityIdentifier("composeCard")
+        .accessibilityIdentifier(isInline ? "composeInline" : "composeCard")
         .onAppear {
             store.composeMinimized = false
             isMinimized = false
+            replacingDraft = editingDraft
+            if editingDraft != nil {
+                // Reopened draft is already on the server.
+                lastSavedFingerprint = contentFingerprint
+                draftStatus = .saved
+            }
             prefill()
+            // Prefill mutates fields — re-baseline so we don't immediately
+            // autosave pure prefill as a new draft.
+            if editingDraft != nil {
+                lastSavedFingerprint = contentFingerprint
+            } else {
+                lastSavedFingerprint = contentFingerprint
+                draftStatus = .idle
+            }
             installSlashKeyMonitor()
         }
         .onDisappear {
@@ -303,11 +398,18 @@ struct ComposeView: View {
             // minimized). Keep the work as a draft instead of dropping it.
             if !didFinish { saveDraftIfNeeded() }
             store.composeMinimized = false
+            autosaveTask?.cancel()
             if let monitor = slashKeyMonitor {
                 NSEvent.removeMonitor(monitor)
                 slashKeyMonitor = nil
             }
         }
+        .onChange(of: body_) { scheduleAutosave() }
+        .onChange(of: subject) { scheduleAutosave() }
+        .onChange(of: toTokens) { scheduleAutosave() }
+        .onChange(of: ccTokens) { scheduleAutosave() }
+        .onChange(of: bccTokens) { scheduleAutosave() }
+        .onChange(of: attachmentURLs) { scheduleAutosave() }
         .onChange(of: store.accounts) {
             // Accounts can finish loading after the card appears — backfill From.
             if fromEmail.isEmpty { ensureFromSelection() }
@@ -377,7 +479,8 @@ struct ComposeView: View {
     }
 
     /// Expanded title bar: click chrome (title / empty space) to minimize,
-    /// like Notion Mail. Buttons still own their own hits.
+    /// like Notion Mail. Inline replies skip minimize (Pop out instead) so the
+    /// reading pane stays usable. Buttons still own their own hits.
     private var expandedHeader: some View {
         HStack(spacing: 6) {
             Text(headerTitle)
@@ -385,23 +488,39 @@ struct ComposeView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer(minLength: 8)
-            Button {
-                setMinimized(true)
-            } label: {
-                Image(systemName: "minus")
-                    .font(.system(size: 12, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 18, height: 18)
-                    .contentShape(Rectangle())
+            if isInline {
+                Button {
+                    store.popOutCompose()
+                } label: {
+                    Image(systemName: "arrow.up.forward.and.arrow.down.backward")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Pop out to floating compose")
+            } else {
+                Button {
+                    setMinimized(true)
+                } label: {
+                    Image(systemName: "minus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Minimize")
             }
-            .buttonStyle(.plain)
-            .help("Minimize")
             closeButton
         }
         .padding(.bottom, 6)
         .contentShape(Rectangle())
-        .onTapGesture { setMinimized(true) }
-        .help("Minimize compose")
+        .onTapGesture {
+            if !isInline { setMinimized(true) }
+        }
+        .help(isInline ? "Reply" : "Minimize compose")
     }
 
     @ViewBuilder
@@ -413,14 +532,37 @@ struct ComposeView: View {
                 closeGlyph
             }
             .buttonStyle(.plain)
-            .help(hasContent ? "Close (saves as draft)" : "Close")
+            .help(hasContent ? "Save draft & close" : "Close")
         } else {
             Button(action: saveAndClose) {
                 closeGlyph
             }
             .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
-            .help(hasContent ? "Close (saves as draft)" : "Close")
+            .help(hasContent ? "Save draft & close" : "Close")
+        }
+    }
+
+    @ViewBuilder
+    private var draftStatusLabel: some View {
+        switch draftStatus {
+        case .idle:
+            EmptyView()
+        case .saving:
+            Text("Saving…")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("draftStatusSaving")
+        case .saved:
+            Text("Draft saved")
+                .font(.system(size: 12))
+                .foregroundStyle(.secondary)
+                .accessibilityIdentifier("draftStatusSaved")
+        case .failed:
+            Text("Draft not saved")
+                .font(.system(size: 12))
+                .foregroundStyle(.red.opacity(0.85))
+                .accessibilityIdentifier("draftStatusFailed")
         }
     }
 
@@ -700,11 +842,10 @@ struct ComposeView: View {
                 }
                 .buttonStyle(.plain)
                 .help(editingDraft != nil ? "Discard (deletes this draft)" : "Discard without saving")
-                // "Close", not "Cancel" — it keeps your work (saves a draft),
-                // same as the header ✕. Trash is the destructive one.
-                Button("Close") { saveAndClose() }
-                    .buttonStyle(.plain).foregroundStyle(.secondary)
-                    .help(hasContent ? "Close (saves as draft)" : "Close")
+                // Notion-style draft status where "Close" used to sit — dismiss
+                // is the header ✕ (and Esc). Status only after the user types.
+                draftStatusLabel
+                    .padding(.horizontal, 4)
 
                 // Split send button: Send now | schedule menu. Drawn by hand
                 // so both halves match; the presets are a native menu (a

@@ -20,4 +20,19 @@ final class MailLayoutTests: XCTestCase {
         XCTAssertEqual(MailLayout.mode(width: 1_400, readingPaneHidden: true,
                                        hasSelection: true), .list)
     }
+
+    func testThreadFocusFillsTheWindowWhenAConversationIsSelected() {
+        XCTAssertEqual(MailLayout.mode(width: 1_200, readingPaneHidden: false,
+                                       hasSelection: true, threadFocus: true),
+                       .threadFocus)
+    }
+
+    func testThreadFocusWithoutSelectionFallsBack() {
+        XCTAssertEqual(MailLayout.mode(width: 1_200, readingPaneHidden: false,
+                                       hasSelection: false, threadFocus: true),
+                       .threePane)
+        XCTAssertEqual(MailLayout.mode(width: 1_200, readingPaneHidden: true,
+                                       hasSelection: false, threadFocus: true),
+                       .list)
+    }
 }

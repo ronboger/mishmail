@@ -6,6 +6,17 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Added
+- **Draft saved status** — compose autosaves after you pause typing and shows
+  Saving… / Draft saved in the footer (Notion Mail-style). Header ✕ / Esc still
+  dismiss and keep the draft; the old footer "Close" label is gone.
+- **Inline reply** — Reply / Reply all / Continue draft for the open thread
+  docks compose on the reading column so the conversation stays readable.
+  New mail and Forward stay floating; **Pop out** promotes inline → card.
+- **Thread focus (⌘↩)** — with a conversation selected (and compose not
+  claiming Send), ⌘↩ fills the app with the reading pane. Esc exits focus.
+  Toolbar: Focus Conversation.
+
 ### Fixed
 - **Delete under `is:unread` advances to the next thread** — opening an unread
   conversation pins it via read-state stickiness so the reading pane doesn't

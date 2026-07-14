@@ -374,6 +374,12 @@ final class MailStore: ObservableObject {
     /// Compose card is collapsed to a title strip (Notion Mail-style). Draft
     /// state stays mounted; inbox shortcuts work again while minimized.
     @Published var composeMinimized = false
+    /// Reading pane fills the window (sidebar + list hidden). Toggled with ⌘↩
+    /// when a conversation is selected and Send is not claiming the chord.
+    @Published var threadFocusMode = false
+    /// ContentView mirrors its AppStorage pane flag here so keyboard reply
+    /// can choose inline vs floating without reading UserDefaults itself.
+    var readingPaneHiddenForCompose = false
     @Published var undoAction: UndoAction?
     @Published var editingView: SavedView?
     @Published var editingAccountLabels = false
@@ -924,6 +930,50 @@ final class MailStore: ObservableObject {
         var editDraft: Message? = nil   // an existing Gmail draft being edited
         var restore: PendingSend? = nil // undone send: reopen with this content
         var prefillTo: String? = nil    // new mail straight to this address
+        /// Floating card vs reading-pane dock. Placement helpers set this;
+        /// pop-out / hide-pane can promote inline → floating without remount.
+        var presentation: ComposePresentation = .floating
+
+        /// Thread this compose is bound to (reply parent or draft), if any.
+        var boundThreadId: String? { replyTo?.threadId ?? editDraft?.threadId }
+    }
+
+    /// Open compose with placement decided from the current selection / pane.
+    /// Callers that already fixed `presentation` (pop-out) should assign
+    /// `composeRequest` directly instead.
+    func openCompose(_ request: ComposeRequest,
+                     readingPaneHidden: Bool? = nil) {
+        var req = request
+        let paneHidden = readingPaneHidden ?? readingPaneHiddenForCompose
+        req.presentation = ComposePlacement.preferred(
+            replyTo: req.replyTo,
+            editDraft: req.editDraft,
+            forward: req.forward,
+            selectedThreadId: selectedThreadId,
+            readingPaneHidden: paneHidden)
+        composeMinimized = false
+        composeRequest = req
+    }
+
+    /// Promote an inline compose to the floating card (same request id).
+    func popOutCompose() {
+        guard var req = composeRequest else { return }
+        req.presentation = .floating
+        composeRequest = req
+        composeMinimized = false
+    }
+
+    /// If compose was inline for a thread we left or hid, keep the work as a
+    /// floating card instead of tearing it down.
+    func promoteInlineComposeIfNeeded(selectedThreadId: String?,
+                                      readingPaneHidden: Bool) {
+        guard var req = composeRequest, req.presentation == .inline else { return }
+        let stillHere = !readingPaneHidden
+            && req.boundThreadId != nil
+            && req.boundThreadId == selectedThreadId
+        guard !stillHere else { return }
+        req.presentation = .floating
+        composeRequest = req
     }
 
     struct UndoAction: Identifiable {
@@ -2620,22 +2670,22 @@ final class MailStore: ObservableObject {
         case .toggleCheck: toggleCheckSelected()
         case .reply: if let t = selectedThread,
                         let msg = newestSentMessage(inThread: t.id) {
-                         composeRequest = ComposeRequest(replyTo: msg)
+                         openCompose(ComposeRequest(replyTo: msg))
                      }
         case .replyAll: if let t = selectedThread,
                            let msg = newestSentMessage(inThread: t.id) {
-                            composeRequest = ComposeRequest(replyTo: msg, replyAll: true)
+                            openCompose(ComposeRequest(replyTo: msg, replyAll: true))
                         }
         case .forward: if let t = selectedThread,
                           let msg = newestSentMessage(inThread: t.id) {
                            // Gmail `f`: forward the newest *sent* message only.
                            // Use the thread ⋮ menu for "Forward all".
-                           composeRequest = ComposeRequest(
-                               replyTo: msg, forward: true)
+                           openCompose(ComposeRequest(
+                               replyTo: msg, forward: true))
                        }
         case .label: if selectedThread != nil { openLabelPicker() }
         case .undo: if let undo = undoAction { undo.undo() }
-        case .compose: composeRequest = ComposeRequest(replyTo: nil)
+        case .compose: openCompose(ComposeRequest(replyTo: nil))
         }
     }
 
@@ -3581,14 +3631,20 @@ final class MailStore: ObservableObject {
 
     /// Saves compose state as a real Gmail draft (shows up in Gmail too).
     /// Replaces `replacing` when re-saving an edited draft.
+    /// - Parameter silent: skip the toast (autosave); still reports failures
+    ///   via `lastError` unless `silent` is true (caller owns status UI).
+    /// - Returns: a lightweight Message stand-in for the new draft so the
+    ///   next autosave can replace it without waiting on a full sync.
+    @discardableResult
     func saveDraft(from accountId: String, fromEmail: String = "",
                    to: String, cc: String, bcc: String = "", subject: String,
                    body: String, replyTo message: Message? = nil, forward: Bool = false,
                    attachments: [MIMEBuilder.Attachment] = [],
-                   replacing draft: Message? = nil) async {
+                   replacing draft: Message? = nil,
+                   silent: Bool = false) async -> Message? {
         guard !demoMode else {
-            showNotice("Drafts aren't saved in the demo inbox")
-            return
+            if !silent { showNotice("Drafts aren't saved in the demo inbox") }
+            return nil
         }
         // Same rules as send(): a forward's original doesn't thread the
         // draft, but supplies the HTML body when the quote is untouched.
@@ -3611,12 +3667,36 @@ final class MailStore: ObservableObject {
         )
         let gmailThreadId = ((threadParent ?? draft).map { String($0.threadId.split(separator: ":").last!) })
         do {
-            try await client(for: apiAccountId).createDraft(raw: raw, threadId: gmailThreadId)
+            let created = try await client(for: apiAccountId)
+                .createDraft(raw: raw, threadId: gmailThreadId)
             if let draft { await deleteUnderlyingDraft(draft, silent: true) }
-            showNotice("Draft saved — find it in Drafts")
-            await sync(accountId: apiAccountId)
+            if !silent {
+                showNotice("Draft saved — find it in Drafts")
+                await sync(accountId: apiAccountId)
+            }
+            // Stand-in for replace chaining. threadId prefers the local
+            // account-prefixed id we already know; gmail bare id as fallback.
+            let localThreadId = threadParent?.threadId
+                ?? draft?.threadId
+                ?? "\(apiAccountId):\(created.message.threadId)"
+            return Message(
+                id: "\(apiAccountId):\(created.message.id)",
+                accountId: apiAccountId,
+                gmailId: created.message.id,
+                threadId: localThreadId,
+                fromHeader: fromHeader(accountId: apiAccountId, fromEmail: identityEmail),
+                toHeader: to, ccHeader: cc, bccHeader: bcc,
+                subject: subject, date: Date(), snippet: String(body.prefix(120)),
+                bodyText: body, bodyHTML: nil,
+                messageIdHeader: "", referencesHeader: "",
+                labelIds: "DRAFT", isUnread: false, hasAttachment: !attachments.isEmpty)
         } catch {
-            lastError = "Draft not saved: \(error.localizedDescription)"
+            if silent {
+                // Autosave status is shown in compose; keep lastError free of spam.
+            } else {
+                lastError = "Draft not saved: \(error.localizedDescription)"
+            }
+            return nil
         }
     }
 
@@ -3651,7 +3731,7 @@ final class MailStore: ObservableObject {
         // Prefer the in-memory full body when the card was header-only.
         let full = messageBody(id: draft.id) ?? draft
         let parent = Self.replyParent(forDraft: full, inThread: msgs)
-        composeRequest = ComposeRequest(replyTo: parent, editDraft: full)
+        openCompose(ComposeRequest(replyTo: parent, editDraft: full))
     }
 
     /// Opens the newest draft in a thread (list/context-menu / top-banner entry).

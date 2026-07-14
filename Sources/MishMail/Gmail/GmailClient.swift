@@ -458,12 +458,14 @@ actor GmailClient {
         let _: GMessage = try await request("POST", "/messages/send", jsonBody: body)
     }
 
-    /// Saves an RFC 2822 message as a Gmail draft.
-    func createDraft(raw: Data, threadId: String? = nil) async throws {
-        struct DraftResp: Decodable { let id: String }
+    /// Saves an RFC 2822 message as a Gmail draft. Returns the draft id and
+    /// the message ref so callers can chain replace-autosaves without a full
+    /// listDrafts round-trip.
+    @discardableResult
+    func createDraft(raw: Data, threadId: String? = nil) async throws -> GDraftRef {
         var message: [String: Any] = ["raw": raw.base64URLEncoded()]
         if let threadId { message["threadId"] = threadId }
-        let _: DraftResp = try await request("POST", "/drafts", jsonBody: ["message": message])
+        return try await request("POST", "/drafts", jsonBody: ["message": message])
     }
 
     struct GDraftRef: Decodable {

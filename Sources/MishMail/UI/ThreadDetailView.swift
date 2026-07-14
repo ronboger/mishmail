@@ -189,14 +189,14 @@ struct ThreadDetailView: View {
                     if ReplyComposer.hasAdditionalReplyAllRecipients(
                         last, ownAddresses: store.ownEmailAddresses) {
                         Button {
-                            store.composeRequest = .init(replyTo: last, replyAll: true)
+                            store.openCompose(.init(replyTo: last, replyAll: true))
                         } label: {
                             Label("Reply all", systemImage: "arrowshape.turn.up.left.2")
                         }
                         .help("Reply all (\(store.keyBindings.key(for: .replyAll)))")
                     }
                     Button {
-                        store.composeRequest = .init(replyTo: last, forward: true)
+                        store.openCompose(.init(replyTo: last, forward: true))
                     } label: {
                         Label("Forward", systemImage: "arrowshape.turn.up.right")
                     }
@@ -211,8 +211,8 @@ struct ThreadDetailView: View {
                     if ForwardComposer.forwardableMessages(messages).count > 1,
                        let last = ForwardComposer.newestSentMessage(in: messages) {
                         Button {
-                            store.composeRequest = .init(
-                                replyTo: last, forward: true, forwardAll: true)
+                            store.openCompose(.init(
+                                replyTo: last, forward: true, forwardAll: true))
                         } label: {
                             Label("Forward all", systemImage: "arrowshape.turn.up.forward")
                         }
@@ -897,7 +897,7 @@ struct MessageCard: View {
                 }
                 if expanded {
                     Button {
-                        store.composeRequest = .init(replyTo: message)
+                        store.openCompose(.init(replyTo: message))
                     } label: {
                         Image(systemName: "arrowshape.turn.up.left")
                             .font(.system(size: 12 * fontScale))
@@ -907,7 +907,7 @@ struct MessageCard: View {
                     if ReplyComposer.hasAdditionalReplyAllRecipients(
                         message, ownAddresses: store.ownEmailAddresses) {
                         Button {
-                            store.composeRequest = .init(replyTo: message, replyAll: true)
+                            store.openCompose(.init(replyTo: message, replyAll: true))
                         } label: {
                             Image(systemName: "arrowshape.turn.up.left.2")
                                 .font(.system(size: 12 * fontScale))
@@ -916,7 +916,7 @@ struct MessageCard: View {
                         .help("Reply all (\(store.keyBindings.key(for: .replyAll)))")
                     }
                     Button {
-                        store.composeRequest = .init(replyTo: message, forward: true)
+                        store.openCompose(.init(replyTo: message, forward: true))
                     } label: {
                         Image(systemName: "arrowshape.turn.up.right")
                             .font(.system(size: 12 * fontScale))
@@ -1059,7 +1059,7 @@ struct MessageCard: View {
                 // Notion Mail-style action bar on every message.
                 HStack(spacing: 8) {
                     Button {
-                        store.composeRequest = .init(replyTo: message)
+                        store.openCompose(.init(replyTo: message))
                     } label: {
                         Label("Reply", systemImage: "arrowshape.turn.up.left")
                             .font(.system(size: 12.5 * fontScale))
@@ -1068,7 +1068,7 @@ struct MessageCard: View {
                     if ReplyComposer.hasAdditionalReplyAllRecipients(
                         message, ownAddresses: store.ownEmailAddresses) {
                         Button {
-                            store.composeRequest = .init(replyTo: message, replyAll: true)
+                            store.openCompose(.init(replyTo: message, replyAll: true))
                         } label: {
                             Label("Reply all", systemImage: "arrowshape.turn.up.left.2")
                                 .font(.system(size: 12.5 * fontScale))
@@ -1077,7 +1077,7 @@ struct MessageCard: View {
                         .help("Reply all (\(store.keyBindings.key(for: .replyAll)))")
                     }
                     Button {
-                        store.composeRequest = .init(replyTo: message, forward: true)
+                        store.openCompose(.init(replyTo: message, forward: true))
                     } label: {
                         Label("Forward", systemImage: "arrowshape.turn.up.right")
                             .font(.system(size: 12.5 * fontScale))
@@ -1182,7 +1182,7 @@ struct MessageCard: View {
         let name = MessageParser.displayName(fromHeader: raw)
         Menu {
             Button {
-                store.composeRequest = .init(replyTo: nil, prefillTo: email)
+                store.openCompose(.init(replyTo: nil, prefillTo: email))
             } label: {
                 Label("Draft email to \(name)", systemImage: "square.and.pencil")
             }

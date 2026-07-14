@@ -4,6 +4,8 @@ enum MailLayoutMode: Equatable {
     case list
     case compactDetail
     case threePane
+    /// Conversation fills the window (sidebar + list hidden). Entered via ⌘↩.
+    case threadFocus
 }
 
 enum MailLayout {
@@ -12,7 +14,10 @@ enum MailLayout {
     static let threePaneMinimumWidth: CGFloat = 1_080
 
     static func mode(width: CGFloat, readingPaneHidden: Bool,
-                     hasSelection: Bool) -> MailLayoutMode {
+                     hasSelection: Bool,
+                     threadFocus: Bool = false) -> MailLayoutMode {
+        // Focus needs a selected conversation; without one, fall through.
+        if threadFocus, hasSelection { return .threadFocus }
         if readingPaneHidden { return .list }
         if width < threePaneMinimumWidth {
             return hasSelection ? .compactDetail : .list

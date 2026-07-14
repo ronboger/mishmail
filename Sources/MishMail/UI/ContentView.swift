@@ -14,7 +14,8 @@ struct ContentView: View {
             let mode = MailLayout.mode(
                 width: proxy.size.width,
                 readingPaneHidden: readingPaneHidden,
-                hasSelection: store.selectedThreadId != nil)
+                hasSelection: store.selectedThreadId != nil,
+                threadFocus: store.threadFocusMode)
             mailboxLayout(mode)
                 .onAppear { layoutMode = mode }
                 .onChange(of: mode) { layoutMode = mode }
@@ -33,6 +34,13 @@ struct ContentView: View {
         // into compose at the bottom (Notion Mail-style).
         .onChange(of: store.selectedThreadId) {
             defer { store.selectionViaKeyboard = false }
+            // Leaving a thread (or clearing selection) promotes inline compose
+            // to the floating card so the draft stays editable.
+            store.promoteInlineComposeIfNeeded(
+                selectedThreadId: store.selectedThreadId,
+                readingPaneHidden: readingPaneHidden)
+            // Focus mode requires a conversation; drop it when selection clears.
+            if store.selectedThreadId == nil { store.threadFocusMode = false }
             guard store.selectedThreadId != nil else { return }
             if !store.selectionViaKeyboard {
                 if let thread = store.selectedThread, store.isDraftOnly(thread) {
@@ -42,6 +50,13 @@ struct ContentView: View {
                 }
                 readingPaneHidden = false
             }
+        }
+        .onChange(of: readingPaneHidden) {
+            store.readingPaneHiddenForCompose = readingPaneHidden
+            store.promoteInlineComposeIfNeeded(
+                selectedThreadId: store.selectedThreadId,
+                readingPaneHidden: readingPaneHidden)
+            if readingPaneHidden { store.threadFocusMode = false }
         }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
@@ -58,6 +73,7 @@ struct ContentView: View {
         }
         .onChange(of: store.chips) { store.reloadThreadsDebounced() }
         .onAppear {
+            store.readingPaneHiddenForCompose = readingPaneHidden
             installKeyMonitor()
             // Don't let the sidebar search field start with keyboard focus —
             // it would swallow Esc/j/k until clicked away.
@@ -78,29 +94,40 @@ struct ContentView: View {
                 .keyboardShortcut("0", modifiers: [.command, .option])
                 .help(readingPaneHidden ? "Show the reading pane (⌥⌘0)"
                                         : "Hide the reading pane (⌥⌘0)")
+                Button {
+                    guard store.selectedThreadId != nil else { return }
+                    store.threadFocusMode.toggle()
+                    if store.threadFocusMode {
+                        readingPaneHidden = false
+                        store.readingPaneHiddenForCompose = false
+                    }
+                } label: {
+                    Label(store.threadFocusMode ? "Exit Focus" : "Focus Conversation",
+                          systemImage: store.threadFocusMode
+                            ? "arrow.down.right.and.arrow.up.left"
+                            : "arrow.up.left.and.arrow.down.right")
+                }
+                .disabled(store.selectedThreadId == nil)
+                .help(store.threadFocusMode
+                      ? "Exit full-app conversation (esc or ⌘↩)"
+                      : "Open conversation full-app (⌘↩)")
             }
         }
-        // Compose docks bottom-right like Gmail/Notion; the rest of the app
-        // stays fully usable behind it. Minimized collapses to a title strip
-        // so you can keep drafting without covering the mailbox.
+        // Single ComposeView host for both floating and inline so presentation
+        // flips keep editor state. Floating = bottom-trailing card; inline =
+        // bottom of the reading-pane column (leading inset skips sidebar/list).
         .overlay(alignment: .bottomTrailing) {
             if let request = store.composeRequest {
-                let minimized = store.composeMinimized
-                ComposeView(request: request)
-                    .id(request.id)
-                    .frame(width: minimized ? 300 : 620,
-                           height: minimized ? 40 : 500)
-                    .background(Color(nsColor: .windowBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: minimized ? PMRadius.md : PMRadius.lg))
-                    .pmCardElevation(cornerRadius: minimized ? PMRadius.md : PMRadius.lg,
-                                     intense: true)
-                    .padding(16)
+                composeChrome(request)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
         // A touch of spring makes the draft→compose hop (and minimize) legible.
         .animation(.spring(response: 0.3, dampingFraction: 0.8), value: store.composeRequest?.id)
         .animation(.spring(response: 0.28, dampingFraction: 0.85), value: store.composeMinimized)
+        .animation(.spring(response: 0.3, dampingFraction: 0.85),
+                   value: store.composeRequest?.presentation)
+        .animation(.easeOut(duration: 0.2), value: store.threadFocusMode)
         // Undo/notice toast: centered on the bottom of the whole window.
         .overlay(alignment: .bottom) {
             if let undo = store.undoAction {
@@ -259,6 +286,49 @@ struct ContentView: View {
             } detail: {
                 detailPane(compact: false)
             }
+        case .threadFocus:
+            // Full-app conversation: no sidebar / list chrome.
+            detailPane(compact: false)
+        }
+    }
+
+    /// Floating card vs inline (reading-pane-width) compose. One ComposeView
+    /// identity so pop-out / promote keep the typed body.
+    @ViewBuilder
+    private func composeChrome(_ request: MailStore.ComposeRequest) -> some View {
+        let minimized = store.composeMinimized
+        let inline = request.presentation == .inline && !minimized
+        let cardWidth: CGFloat = minimized ? 300 : (inline ? 0 : 620)
+        let cardHeight: CGFloat = minimized ? 40 : (inline ? 380 : 500)
+        HStack(spacing: 0) {
+            if inline {
+                Spacer()
+                    .frame(minWidth: composeInlineLeadingInset, idealWidth: composeInlineLeadingInset)
+            }
+            ComposeView(request: request)
+                .id(request.id)
+                .frame(width: inline ? nil : cardWidth,
+                       height: cardHeight)
+                .frame(maxWidth: inline ? .infinity : cardWidth)
+                .background(Color(nsColor: .windowBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: minimized ? PMRadius.md : PMRadius.lg))
+                .pmCardElevation(cornerRadius: minimized ? PMRadius.md : PMRadius.lg,
+                                 intense: true)
+            if inline {
+                Spacer().frame(width: 12)
+            }
+        }
+        .padding(inline ? EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0)
+                        : EdgeInsets(top: 0, leading: 0, bottom: 16, trailing: 16))
+    }
+
+    /// Skip sidebar (+ list in three-pane) so inline reply sits on the reading column.
+    private var composeInlineLeadingInset: CGFloat {
+        switch layoutMode {
+        case .threadFocus: return 12
+        case .threePane: return 240 + 480
+        case .compactDetail: return 220
+        case .list: return 220
         }
     }
 
@@ -278,9 +348,18 @@ struct ContentView: View {
                let thread = store.threads.first(where: { $0.id == id }) {
                 ThreadDetailView(
                     thread: thread,
-                    compactMode: compact,
-                    onBack: { store.selectedThreadId = nil },
-                    onReply: { msg in store.composeRequest = .init(replyTo: msg) })
+                    compactMode: compact || store.threadFocusMode,
+                    onBack: {
+                        if store.threadFocusMode {
+                            store.threadFocusMode = false
+                        } else {
+                            store.selectedThreadId = nil
+                        }
+                    },
+                    onReply: { msg in
+                        store.openCompose(.init(replyTo: msg),
+                                          readingPaneHidden: readingPaneHidden)
+                    })
             } else {
                 Text("Select a conversation")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -313,6 +392,20 @@ struct ContentView: View {
             if mods == .command, event.charactersIgnoringModifiers == "k" {
                 store.showCommandPalette.toggle()
                 return nil
+            }
+            // ⌘↩: Send when expanded compose owns the chord (button shortcut).
+            // Otherwise toggle thread focus mode (conversation fills the app).
+            if mods == .command, event.keyCode == 36 {
+                let composeClaimsReturn = store.composeRequest != nil
+                    && !store.composeMinimized
+                if !composeClaimsReturn, store.selectedThreadId != nil {
+                    store.threadFocusMode.toggle()
+                    if store.threadFocusMode {
+                        readingPaneHidden = false
+                        store.readingPaneHiddenForCompose = false
+                    }
+                    return nil
+                }
             }
             // ⌘1 = All accounts, ⌘2… = individual accounts, in popover order
             // (Notion Mail-style inbox switching).
@@ -462,6 +555,11 @@ struct ContentView: View {
                     store.clearCheckedThreads()
                     return nil
                 }
+                // Exit full-app conversation before collapsing the pane.
+                if store.threadFocusMode {
+                    store.threadFocusMode = false
+                    return nil
+                }
                 // Next Esc drops an active search back to the plain inbox
                 // (so from the search field, Esc-Esc gets you home).
                 if !store.committedSearch.isEmpty || !store.searchText.isEmpty {
@@ -546,7 +644,7 @@ struct Sidebar: View {
             HStack(spacing: 6) {
                 AccountSwitcher()
                 Button {
-                    store.composeRequest = .init(replyTo: nil)
+                    store.openCompose(.init(replyTo: nil))
                 } label: {
                     Image(systemName: "square.and.pencil")
                         .font(.system(size: 14))
