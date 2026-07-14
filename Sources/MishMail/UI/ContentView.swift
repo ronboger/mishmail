@@ -3,31 +3,17 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject var store: MailStore
+    @Environment(\.openSettings) private var openSettings
     @State private var keyMonitor: Any?
     // Persisted so the layout survives relaunch, like the sidebar state.
     @AppStorage("readingPaneHidden") private var readingPaneHidden = false
 
     var body: some View {
-        Group {
-            if readingPaneHidden {
-                // Two columns: the thread list takes the full right side.
-                NavigationSplitView {
-                    Sidebar()
-                        .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 400)
-                } detail: {
-                    listColumn
-                }
-            } else {
-                NavigationSplitView {
-                    Sidebar()
-                        .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 400)
-                } content: {
-                    listColumn
-                        .navigationSplitViewColumnWidth(min: 420, ideal: 560)
-                } detail: {
-                    detailPane
-                }
-            }
+        GeometryReader { proxy in
+            mailboxLayout(MailLayout.mode(
+                width: proxy.size.width,
+                readingPaneHidden: readingPaneHidden,
+                hasSelection: store.selectedThreadId != nil))
         }
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         // Typing only feeds the dropdown preview; the list follows
@@ -196,11 +182,21 @@ struct ContentView: View {
                         .font(.system(size: 13))
                         .lineLimit(3)
                         .frame(maxWidth: 360, alignment: .leading)
-                    Button("Sync") {
-                        store.lastError = nil
-                        Task { await store.syncAll() }
+                    if store.accountsNeedingReauth.isEmpty {
+                        Button("Sync") {
+                            store.lastError = nil
+                            Task { await store.syncAll() }
+                        }
+                        .buttonStyle(.borderless)
+                    } else {
+                        Button("Reauthorize") {
+                            UserDefaults.standard.set(SettingsView.Pane.accounts.rawValue,
+                                                      forKey: "settingsPane")
+                            store.lastError = nil
+                            openSettings()
+                        }
+                        .buttonStyle(.borderless)
                     }
-                    .buttonStyle(.borderless)
                     Button {
                         store.lastError = nil
                     } label: {
@@ -222,10 +218,40 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.15), value: store.lastError)
         // First-run: guide the Google setup instead of dead-ending on an empty
-        // inbox. Disappears the moment an account connects.
+        // inbox. Disappears the moment an account connects or demo starts.
         .overlay {
             if store.accounts.isEmpty {
                 OnboardingView()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private func mailboxLayout(_ mode: MailLayoutMode) -> some View {
+        switch mode {
+        case .list:
+            NavigationSplitView {
+                Sidebar()
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 400)
+            } detail: {
+                listColumn
+            }
+        case .compactDetail:
+            NavigationSplitView {
+                Sidebar()
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 400)
+            } detail: {
+                detailPane
+            }
+        case .threePane:
+            NavigationSplitView {
+                Sidebar()
+                    .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 400)
+            } content: {
+                listColumn
+                    .navigationSplitViewColumnWidth(min: 420, ideal: 560)
+            } detail: {
+                detailPane
             }
         }
     }
@@ -516,6 +542,8 @@ struct Sidebar: View {
                 .buttonStyle(.borderless)
                 .keyboardShortcut("n", modifiers: .command)
                 .help("Compose (⌘N or \(store.keyBindings.key(for: .compose)))")
+                .accessibilityLabel("Compose")
+                .accessibilityIdentifier("composeButton")
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
             SearchField(prompt: "Search", text: $store.searchText, focused: $searchFocused,
@@ -572,6 +600,21 @@ struct Sidebar: View {
 
             // Settings pinned at the bottom (also Cmd-, from anywhere).
             Divider()
+            if store.demoMode {
+                HStack(spacing: 7) {
+                    Image(systemName: "sparkles.rectangle.stack")
+                        .font(.system(size: 12))
+                        .foregroundStyle(Color.notionAccent)
+                    Text("Demo inbox")
+                        .font(.system(size: 12.5, weight: .medium))
+                    Spacer()
+                    Button("Exit") { store.exitDemoMode() }
+                        .buttonStyle(.borderless)
+                        .accessibilityIdentifier("exitDemoInbox")
+                }
+                .padding(.horizontal, 12).padding(.top, 8)
+                .help("Fictional mail only — Gmail sync and sending are disabled")
+            }
             if let release = updates.available {
                 Button {
                     updates.openUpdate()

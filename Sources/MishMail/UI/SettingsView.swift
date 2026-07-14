@@ -38,7 +38,7 @@ struct SettingsView: View {
         }
     }
 
-    @State private var pane: Pane = .accounts
+    @AppStorage("settingsPane") private var pane: Pane = .accounts
     @ObservedObject private var updates = UpdateChecker.shared
 
     var body: some View {

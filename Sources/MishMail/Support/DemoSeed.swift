@@ -1,45 +1,61 @@
 import Foundation
 import GRDB
 
-/// Fills the (Debug-only) database with realistic but entirely fictional mail
+/// Fills the database with realistic but entirely fictional mail
 /// so the app can be screenshotted for the README without touching a real
 /// Gmail account. Everything here is fake — names, addresses, and bodies are
 /// invented — so nothing private can leak into a screenshot.
 ///
-/// Activated by launching with the `MISHMAIL_DEMO=1` environment variable
-/// (see `make demo`). It is compiled only into Debug builds and, even then,
-/// does nothing unless that variable is set — so it can never run in the
-/// Release app you install or ship.
+/// Activated by launching Debug with `MISHMAIL_DEMO=1` (see `make demo`) or by
+/// choosing “Try demo inbox” during first-run setup. The persisted path is
+/// allowed only while there are no real accounts, and exiting removes the
+/// fictional mailbox again.
 enum DemoSeed {
+    private static let defaultsKey = "demoModeEnabled"
+
     static var isActive: Bool {
-        // Hard-disabled outside Debug so no environment variable can ever
-        // wipe/replace a real mail cache in the installed Release app.
-        #if DEBUG
         ProcessInfo.processInfo.environment["MISHMAIL_DEMO"] == "1"
-        #else
-        false
-        #endif
+            || UserDefaults.standard.bool(forKey: defaultsKey)
     }
 
     static let account = "you@example.com"
 
-    /// Wipes the mail tables and inserts a fresh demo inbox. Idempotent: every
-    /// launch reseeds from scratch, so the screenshots are deterministic.
+    static func canActivate(accountIDs: [String]) -> Bool {
+        accountIDs.isEmpty || accountIDs.allSatisfy { $0 == account }
+    }
+
+    @discardableResult
+    static func activate(_ db: DatabasePool) -> Bool {
+        let existing = (try? db.read { try Account.fetchAll($0) }) ?? []
+        guard canActivate(accountIDs: existing.map(\.id)) else {
+            return false
+        }
+        UserDefaults.standard.set(true, forKey: defaultsKey)
+        seedIfRequested(db)
+        return true
+    }
+
+    static func deactivate(_ db: DatabasePool) {
+        let existing = (try? db.read { try Account.fetchAll($0) }) ?? []
+        guard canActivate(accountIDs: existing.map(\.id)) else { return }
+        clearDemoTables(db)
+        UserDefaults.standard.removeObject(forKey: defaultsKey)
+    }
+
+    /// Wipes demo-owned mail tables and inserts a fresh inbox. Idempotent:
+    /// every demo launch reseeds from scratch, so screenshots are deterministic.
     static func seedIfRequested(_ db: DatabasePool) {
         guard isActive else { return }
         // Never clobber a real signed-in account: the wipe below only runs on
         // a fresh database or one that already holds only the demo fixture.
         // (`make run DEMO=0` is the verb for a real-account Debug session.)
         let existing = (try? db.read { try Account.fetchAll($0) }) ?? []
-        guard existing.allSatisfy({ $0.id == account }) else {
+        guard canActivate(accountIDs: existing.map(\.id)) else {
             NSLog("MishMail: demo seed skipped — a real account is signed in")
             return
         }
+        clearDemoTables(db)
         try? db.write { database in
-            for table in ["message", "thread", "threadAI", "label", "vipSender",
-                          "attachment", "account"] {
-                try? database.execute(sql: "DELETE FROM \(table)")
-            }
 
             let acct = Account(id: account, displayName: "Personal",
                                historyId: nil, lastSyncAt: Date(), senderName: "Alex Rivera")
@@ -70,6 +86,18 @@ enum DemoSeed {
             for vip in ["dana@brightloop.io", "priya@example.edu"] {
                 let v = VIPSender(email: vip)
                 try v.insert(database)
+            }
+        }
+    }
+
+    private static func clearDemoTables(_ db: DatabasePool) {
+        try? db.write { database in
+            // Only mail fixture tables belong to demo mode. User-authored
+            // settings such as saved views, blocked senders, and VIP groups
+            // intentionally survive entering and leaving the demo inbox.
+            for table in ["message", "thread", "threadAI", "label", "vipSender",
+                          "attachment", "account"] {
+                try? database.execute(sql: "DELETE FROM \(table)")
             }
         }
     }

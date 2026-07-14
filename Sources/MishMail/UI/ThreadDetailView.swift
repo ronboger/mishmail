@@ -28,6 +28,7 @@ struct ThreadDetailView: View {
                     .font(.system(size: 19 * fontScale, weight: .semibold))
                     .textSelection(.enabled)
                     .padding(.horizontal)
+                    .accessibilityIdentifier("threadSubject")
 
                 threadMetaRow
 

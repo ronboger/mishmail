@@ -10,6 +10,22 @@ API (and, optionally, a local Ollama model that also never leaves the machine).
 
 ![MishMail inbox](docs/screenshots/inbox.png)
 
+| Read a conversation | Compose without leaving your inbox |
+|---|---|
+| ![MishMail reading pane](docs/screenshots/reading-pane.png) | ![MishMail composer](docs/screenshots/compose.png) |
+
+## Try MishMail
+
+- **Download:** get the signed, notarized app from
+  [GitHub Releases](https://github.com/ronboger/mishmail/releases/latest).
+- **Explore safely:** on first launch, choose **Try demo inbox** to browse
+  fictional mail before connecting Google. Demo mode never syncs or sends.
+- **Run the source:** clone the repository, install `xcodegen`, then run
+  `make run`. The Debug app opens the same isolated demo inbox by default.
+
+Connecting a real inbox requires your own free Google Desktop OAuth client;
+the guided setup is below. You can evaluate the entire interface first.
+
 ## Features
 
 - **Unified multi-account inbox** — connect several Google accounts; view them
@@ -95,9 +111,11 @@ xcodebuild -project MishMail.xcodeproj -scheme MishMail -configuration Release b
 Or, with the included Makefile:
 
 ```sh
-make build    # generate + build the app
-make test     # generate + run the unit tests
-make hooks    # install a pre-commit hook that runs the tests
+make run      # build + open an isolated fictional inbox
+make build    # generate + build without launching
+make test     # run the hostless unit tests
+make ui-test  # run the demo-inbox UI smoke test
+make hooks    # install a pre-commit hook that runs unit tests
 ```
 
 Or open `MishMail.xcodeproj` in Xcode and hit Run.
@@ -151,8 +169,8 @@ The images in this README come straight from the real app (`make run` or
 `make install`). Before capturing, pick or set up an inbox you're comfortable
 publishing — redact/crop anything sensitive (real names, subjects, addresses)
 before saving. Capture with **⌘⇧4 then Space** to grab the window, and save
-into [`docs/screenshots/`](docs/screenshots/) as `inbox.png` (and any others
-referenced above).
+into [`docs/screenshots/`](docs/screenshots/) using the filenames referenced
+above.
 
 
 ## Keyboard shortcuts

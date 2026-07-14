@@ -9,7 +9,9 @@ SwiftUI, the Gmail REST API, and GRDB/SQLCipher.
 brew install xcodegen
 make hooks     # installs a pre-commit hook that runs the tests
 make test      # generate the project + run the unit tests
+make ui-test   # launch the fictional inbox and smoke-test the core UI
 make build     # build the app
+make run       # open the isolated Debug app with fictional demo mail
 ```
 
 The Xcode project is **generated** from [`project.yml`](project.yml) by
@@ -22,7 +24,8 @@ Signing defaults to portable ad-hoc; see
 ## The test gate
 
 `make test` must pass before every commit (the pre-commit hook enforces this
-locally, and CI runs it on every push/PR). Tests live in
+locally, and CI runs it on every push/PR). `make ui-test` is the small
+end-to-end gate for launch, demo navigation, compose, and Settings. Tests live in
 `Tests/MishMailTests` and cover the non-UI core: message/MIME parsing, the
 DB schema and migrations, thread derivation, search-query parsing, and
 send-scheduling. The test target is **hostless** — it compiles the relevant

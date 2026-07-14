@@ -106,6 +106,8 @@ targets:
       - Sources/MishMail/Support/RemoteImagePolicy.swift
       - Sources/MishMail/Support/ThreadExporter.swift
       - Sources/MishMail/Support/Markdown.swift
+      - Sources/MishMail/Support/MailLayout.swift
+      - Sources/MishMail/Support/DemoSeed.swift
       - Sources/MishMail/Support/Ollama.swift
       - Sources/MishMail/Support/PerfMetrics.swift
       - Sources/MishMail/Support/ThreadTypeahead.swift
@@ -125,6 +127,16 @@ targets:
         GENERATE_INFOPLIST_FILE: true
         # Same GRDB incomplete-umbrella noise as the app target.
         OTHER_CFLAGS: "$(inherited) -Wno-incomplete-umbrella"
+  MishMailUITests:
+    type: bundle.ui-testing
+    platform: macOS
+    sources: [Tests/MishMailUITests]
+    dependencies:
+      - target: MishMail
+    settings:
+      base:
+        SWIFT_VERSION: 5.10
+        GENERATE_INFOPLIST_FILE: true
 schemes:
   MishMail:
     build:
@@ -142,3 +154,12 @@ schemes:
       config: Debug
       targets:
         - MishMailTests
+  MishMailUITests:
+    build:
+      targets:
+        MishMail: all
+        MishMailUITests: [test]
+    test:
+      config: Debug
+      targets:
+        - MishMailUITests

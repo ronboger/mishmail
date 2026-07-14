@@ -365,6 +365,7 @@ final class MailStore: ObservableObject {
     @Published var activeAccountId: String?   // nil = all accounts (unified)
     @Published var syncStatus: String = ""
     @Published var lastError: String?
+    @Published private(set) var demoMode = DemoSeed.isActive
     /// Account ids whose saved sign-in Google has rejected (expired/revoked
     /// refresh token); the Accounts settings pane offers a "Reauthorize"
     /// button for these.
@@ -965,6 +966,10 @@ final class MailStore: ObservableObject {
     init() {
         DemoSeed.seedIfRequested(AppDatabase.shared.dbPool)
         reloadAccounts()
+        // An environment flag must never turn a real Debug account into a
+        // fake/offline account when seeding was correctly refused.
+        demoMode = DemoSeed.isActive && !accounts.isEmpty
+            && accounts.allSatisfy { $0.id == DemoSeed.account }
         // Primaries immediately; send-as aliases fill in after the API call.
         sendIdentities = fallbackIdentities()
         reloadSavedViews()
@@ -986,6 +991,48 @@ final class MailStore: ObservableObject {
         rebuildContacts()
         reloadSnippets()
         seedDefaultSnippetsIfNeeded()
+    }
+
+    func enterDemoMode() {
+        guard accounts.isEmpty else {
+            showNotice("Remove real accounts before starting the demo inbox.")
+            return
+        }
+        guard DemoSeed.activate(db) else {
+            showNotice("The demo inbox couldn't be started.")
+            return
+        }
+        demoMode = true
+        lastError = nil
+        accountsNeedingReauth.removeAll()
+        selectedView = .inbox
+        selectedThreadId = nil
+        reloadAccounts()
+        reloadSavedViews()
+        loadVIPs()
+        loadBlocked()
+        reloadThreads()
+        reloadScheduledSends()
+        sendIdentities = fallbackIdentities()
+        showNotice("Demo inbox — changes stay on this Mac")
+    }
+
+    func exitDemoMode() {
+        guard demoMode else { return }
+        DemoSeed.deactivate(db)
+        demoMode = false
+        lastError = nil
+        accountsNeedingReauth.removeAll()
+        selectedView = .inbox
+        selectedThreadId = nil
+        composeRequest = nil
+        reloadAccounts()
+        reloadSavedViews()
+        loadVIPs()
+        loadBlocked()
+        reloadThreads()
+        reloadScheduledSends()
+        sendIdentities = []
     }
 
     /// One-time seed of the starter snippets, so `/` in compose has something
@@ -1053,6 +1100,10 @@ final class MailStore: ObservableObject {
     /// Refresh send-as identities for one account (or all). Failures leave
     /// that account as primary-only so compose still works.
     func refreshSendIdentities(accountId: String? = nil) async {
+        guard !demoMode else {
+            sendIdentities = fallbackIdentities()
+            return
+        }
         let targets = accountId.map { [$0] } ?? accounts.map(\.id)
         guard !targets.isEmpty else {
             sendIdentities = []
@@ -2223,7 +2274,7 @@ final class MailStore: ObservableObject {
     func startPolling() {
         // Demo mode has no real account and no token; polling would only spin
         // up failed syncs and error banners over the screenshot fixtures.
-        if DemoSeed.isActive { return }
+        if demoMode { return }
         guard !isShuttingDown else { return }
         fireDueSnoozes()  // catch snoozes that came due while the app was closed
         syncTimer?.invalidate()
@@ -2243,6 +2294,11 @@ final class MailStore: ObservableObject {
     /// (each engine is an independent actor). MainActor work — reload,
     /// blocklist, contacts — runs once at the end.
     func syncAll() async {
+        guard !demoMode else {
+            syncStatus = ""
+            showNotice("Demo inbox is offline")
+            return
+        }
         guard !isShuttingDown else { return }
         let ids = accounts.map(\.id)
         guard !ids.isEmpty else {
@@ -2307,6 +2363,10 @@ final class MailStore: ObservableObject {
     }
 
     func sync(accountId: String) async {
+        guard !demoMode else {
+            syncStatus = ""
+            return
+        }
         let engine = engines[accountId] ?? SyncEngine(accountId: accountId)
         engines[accountId] = engine
         syncStatus = "Syncing \(accountId)…"
@@ -2751,6 +2811,9 @@ final class MailStore: ObservableObject {
         if !suppressThreadReload {
             reloadThreads()
         }
+        // Demo interactions are intentionally local. They should feel real
+        // without attempting Gmail calls for the fictional account.
+        guard !demoMode else { return }
         let client = client(for: thread.accountId)
         let gmailThreadId = thread.gmailThreadId
         Task {
@@ -3231,6 +3294,10 @@ final class MailStore: ObservableObject {
 
     /// Queue a message: it actually sends after `undoSendWindow` unless undone.
     func queueSend(_ pending: PendingSend) {
+        guard !demoMode else {
+            showNotice("Sending is disabled in the demo inbox")
+            return
+        }
         // A second send flushes the first immediately — one window at a time.
         if let previous = takePendingSend() {
             Task { await self.performSend(previous) }
@@ -3299,6 +3366,10 @@ final class MailStore: ObservableObject {
     /// Persist a composed message to go out at `date`. Survives relaunch;
     /// anything overdue sends on next launch.
     func scheduleSend(_ p: PendingSend, at date: Date) {
+        guard !demoMode else {
+            showNotice("Scheduled sending is disabled in the demo inbox")
+            return
+        }
         let row = ScheduledSend(
             id: nil, accountId: p.accountId, fromEmail: p.effectiveFromEmail,
             toHeader: p.to, ccHeader: p.cc,
@@ -3361,6 +3432,7 @@ final class MailStore: ObservableObject {
     }
 
     func fireDueScheduledSends() async {
+        guard !demoMode else { return }
         let due = scheduledSends.filter { $0.sendAt <= Date() }
         guard !due.isEmpty else { return }
         for s in due {
@@ -3456,6 +3528,10 @@ final class MailStore: ObservableObject {
                    body: String, replyTo message: Message? = nil, forward: Bool = false,
                    attachments: [MIMEBuilder.Attachment] = [],
                    replacing draft: Message? = nil) async {
+        guard !demoMode else {
+            showNotice("Drafts aren't saved in the demo inbox")
+            return
+        }
         // Same rules as send(): a forward's original doesn't thread the
         // draft, but supplies the HTML body when the quote is untouched.
         let threadParent = forward ? nil : message

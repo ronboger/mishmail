@@ -24,3 +24,6 @@ jobs:
 
       - name: Build app
         run: make build
+
+      - name: Run UI smoke test
+        run: make ui-test

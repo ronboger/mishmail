@@ -21,6 +21,8 @@ struct OnboardingView: View {
             VStack(alignment: .leading, spacing: PMSpacing.lg) {
                 header
 
+                demoCallout
+
                 step(1, "Create a Google Cloud project & enable Gmail") {
                     Text("Create a project, then enable the Gmail API for it.")
                         .font(PMFont.secondary()).foregroundStyle(.secondary)
@@ -85,6 +87,29 @@ struct OnboardingView: View {
             Text("A quick, one-time Google setup keeps your mail flowing only between this Mac and Google — no third party, including MishMail, ever sees it.")
                 .font(PMFont.secondary()).foregroundStyle(.secondary)
         }
+    }
+
+    private var demoCallout: some View {
+        HStack(spacing: PMSpacing.md) {
+            Image(systemName: "sparkles.rectangle.stack")
+                .font(.system(size: 24))
+                .foregroundStyle(Color.notionAccent)
+                .frame(width: 38, height: 38)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Look around before connecting Google")
+                    .font(PMFont.body().weight(.semibold))
+                Text("Open a fictional inbox. Nothing syncs or sends, and you can exit at any time.")
+                    .font(PMFont.caption()).foregroundStyle(.secondary)
+            }
+            Spacer(minLength: PMSpacing.md)
+            Button("Try demo inbox") { store.enterDemoMode() }
+                .buttonStyle(.bordered)
+                .controlSize(.large)
+                .accessibilityIdentifier("tryDemoInbox")
+        }
+        .padding(PMSpacing.md)
+        .background(Color.notionAccent.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: PMRadius.md))
     }
 
     @ViewBuilder

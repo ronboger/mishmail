@@ -290,6 +290,7 @@ struct ComposeView: View {
         }
         .padding(isMinimized ? EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 8)
                              : EdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14))
+        .accessibilityIdentifier("composeCard")
         .onAppear {
             store.composeMinimized = false
             isMinimized = false

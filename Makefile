@@ -43,7 +43,7 @@ else
 RELEASE_SIGN_FLAGS =
 endif
 
-.PHONY: test build run demo install gen hooks release clean
+.PHONY: test ui-test build run demo install gen hooks release clean
 
 gen:
 	xcodegen generate
@@ -51,6 +51,12 @@ gen:
 test: gen
 	# No -quiet: show "Executed N tests" (silent pass looked like a no-op).
 	xcodebuild test -project $(PROJECT) -scheme MishMailTests \
+		-destination '$(DESTINATION)' -derivedDataPath $(DD)
+
+# Small end-to-end pass over the fictional inbox. No Google account or network
+# is involved; this catches launch, navigation, compose, and Settings regressions.
+ui-test: gen
+	xcodebuild test -project $(PROJECT) -scheme MishMailUITests \
 		-destination '$(DESTINATION)' -derivedDataPath $(DD)
 
 # The throwaway test app (Debug identity, isolated data).

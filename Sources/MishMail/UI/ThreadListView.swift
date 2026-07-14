@@ -217,6 +217,7 @@ struct ThreadListView: View {
                         ForEach(threads) { thread in
                             ThreadRow(thread: thread)
                                 .tag(thread.id)
+                                .accessibilityIdentifier("threadRow.\(thread.id)")
                                 // Notion Mail-style: READ rows recede on a
                                 // grey wash (adapts to dark mode); unread rows
                                 // sit on the plain background and pop.
@@ -560,7 +561,10 @@ struct FilterBar: View {
                 Task { await store.syncAll() }
             } label: {
                 HStack(spacing: 4) {
-                    if store.syncStatus.isEmpty {
+                    if store.demoMode {
+                        Image(systemName: "sparkles.rectangle.stack")
+                        Text("Demo inbox")
+                    } else if store.syncStatus.isEmpty {
                         Image(systemName: "arrow.clockwise")
                         if let last = lastSync {
                             Text(last, format: .relative(presentation: .named))
@@ -573,8 +577,10 @@ struct FilterBar: View {
                 .font(.caption).foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
-            .help("Sync now (Cmd-Shift-R)")
+            .help(store.demoMode ? "Fictional mail — syncing is disabled"
+                                 : "Sync now (Cmd-Shift-R)")
             .keyboardShortcut("r", modifiers: [.command, .shift])
+            .disabled(store.demoMode)
         }
         .padding(.horizontal, 10).padding(.vertical, 7)
     }
