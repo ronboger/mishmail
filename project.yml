@@ -113,6 +113,7 @@ targets:
       - Sources/MishMail/Support/Ollama.swift
       - Sources/MishMail/Support/PerfMetrics.swift
       - Sources/MishMail/Support/ThreadTypeahead.swift
+      - Sources/MishMail/Support/OpenFromSearch.swift
       - Sources/MishMail/Support/HistoryFetchFormat.swift
       - Sources/MishMail/Support/ThreadListCursor.swift
       - Sources/MishMail/Support/NeighborPrefetch.swift

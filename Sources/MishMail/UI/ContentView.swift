@@ -601,6 +601,15 @@ struct ContentView: View {
                 if event.window?.firstResponder is NSTextView
                     || event.window?.firstResponder is NSTextField {
                     event.window?.makeFirstResponder(nil)
+                    // Drop the `/` panel immediately on Esc (don't wait for
+                    // the deferred blur dismiss used by mouse clicks).
+                    if store.searchActive { store.dismissSearchPanel() }
+                    return nil
+                }
+                // Panel still up after the field already blurred (click-away
+                // grace window) — next Esc closes it.
+                if store.searchActive {
+                    store.dismissSearchPanel()
                     return nil
                 }
                 // Clear multi-select checks first (Gmail-style Esc ladder).
@@ -714,6 +723,7 @@ struct Sidebar: View {
                     // Fallback path — with the dropdown open, Enter is handled
                     // by the key monitor and routed to the panel instead.
                     store.commitSearch(store.searchText)
+                    store.dismissSearchPanel()
                     NSApp.keyWindow?.makeFirstResponder(nil)
                     if store.selectedThreadId == nil { store.moveSelection(1) }
                 })
@@ -722,7 +732,9 @@ struct Sidebar: View {
                 // Gmail's `/`: focus search.
                 .onChange(of: store.searchFocusToken) { searchFocused = true }
                 // Drive the window-level results panel from the field's focus.
-                .onChange(of: searchFocused) { store.searchActive = searchFocused }
+                // Blur is deferred (see noteSearchFocused) so a click on a
+                // result row can land before the panel is torn down.
+                .onChange(of: searchFocused) { store.noteSearchFocused(searchFocused) }
             List(selection: $store.selectedView) {
                 Section("Views") {
                     sidebarItem(.inbox, badge: store.unreadCounts["inbox"])
@@ -998,6 +1010,7 @@ struct SearchResultsPanel: View {
             runFullSearch(query)
         case nil:
             // Nothing to act on (e.g. empty recents) — just close the panel.
+            store.dismissSearchPanel()
             NSApp.keyWindow?.makeFirstResponder(nil)
         }
     }
@@ -1134,10 +1147,12 @@ struct SearchResultsPanel: View {
     }
 
     private func openThread(_ thread: MailThread) {
-        // Commit the query so the list shows the matching results, then select
-        // this thread within them (falling back to All Mail if it's not there).
+        // Commit the query so the list shows matching results, then select
+        // this thread (pinned into `threads` immediately so the reading pane
+        // can resolve it while the async reload finishes).
         if !trimmedSearch.isEmpty { store.commitSearch(trimmedSearch) }
-        store.openThread(id: thread.id)
+        store.openThread(thread)
+        store.dismissSearchPanel()
         NSApp.keyWindow?.makeFirstResponder(nil)
     }
 
@@ -1146,6 +1161,7 @@ struct SearchResultsPanel: View {
         let q = query.trimmingCharacters(in: .whitespaces)
         guard !q.isEmpty else { return }
         store.commitSearch(q)
+        store.dismissSearchPanel()
         NSApp.keyWindow?.makeFirstResponder(nil)
         if store.selectedThreadId == nil { store.moveSelection(1) }
     }

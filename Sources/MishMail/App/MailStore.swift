@@ -1392,16 +1392,52 @@ final class MailStore: ObservableObject {
         }
     }
 
-    /// Open a specific thread picked from search, even if it isn't in the
-    /// current view: fall back to All Mail so it's guaranteed to load.
-    func openThread(id: String) {
-        if !threads.contains(where: { $0.id == id }) {
-            selectedView = .allMail
-            searchText = ""
-            committedSearch = ""
-            reloadThreads()
+    /// One-shot: next `reloadThreads` re-attaches `selectedThreadId` if the
+    /// async result omitted it. Set by `openThread` (search panel) so we do
+    /// not re-pin a stale selection on every unrelated search/view reload.
+    private var preserveSelectedThreadOnNextReload = false
+
+    /// Open a specific thread picked from the `/` search panel.
+    ///
+    /// The reading pane only renders when the id is present in `threads`
+    /// (see ContentView.detailPane). Typeahead hits are often outside the
+    /// current mailbox page, and `commitSearch` reloads asynchronously — so
+    /// we pin the thread into the list immediately rather than flipping to
+    /// All Mail (which used to race ContentView's `selectedView` onChange
+    /// and clear `selectedThreadId` right after we set it).
+    func openThread(_ thread: MailThread) {
+        threads = OpenFromSearch.ensuringVisible(opening: thread, in: threads)
+        selectedThreadId = thread.id
+        preserveSelectedThreadOnNextReload = true
+    }
+
+    /// Keep the search results panel mounted briefly after the field blurs.
+    /// A click on a result resigns the search field first; if we drop
+    /// `searchActive` synchronously the panel is torn down before the row
+    /// Button receives the click. Token so a re-focus cancels a pending dismiss.
+    private var searchDismissGeneration = 0
+
+    func noteSearchFocused(_ focused: Bool) {
+        if focused {
+            searchDismissGeneration &+= 1
+            searchActive = true
+            return
         }
-        selectedThreadId = id
+        let generation = searchDismissGeneration
+        Task { @MainActor in
+            // Yield so the current mouse-up / Button action can run while
+            // the panel is still in the hierarchy.
+            await Task.yield()
+            try? await Task.sleep(nanoseconds: 120_000_000)
+            guard generation == searchDismissGeneration else { return }
+            searchActive = false
+        }
+    }
+
+    /// Drop the panel immediately (Esc, outside click, completed action).
+    func dismissSearchPanel() {
+        searchDismissGeneration &+= 1
+        searchActive = false
     }
 
     func client(for accountId: String) -> GmailClient {
@@ -1654,10 +1690,22 @@ final class MailStore: ObservableObject {
 
             await MainActor.run {
                 guard let self, generation == self.threadReloadGeneration else { return }
-                self.threads = payload.threads
+                // One-shot pin after openThread so a search-panel hit stays
+                // visible while commitSearch's async reload settles.
+                let list: [MailThread]
+                if self.preserveSelectedThreadOnNextReload {
+                    self.preserveSelectedThreadOnNextReload = false
+                    list = OpenFromSearch.mergingPinned(
+                        selectedId: self.selectedThreadId,
+                        previous: self.threads,
+                        reloaded: payload.threads)
+                } else {
+                    list = payload.threads
+                }
+                self.threads = list
                 // Drop multi-select checks for rows that left the list.
                 if !self.checkedThreadIds.isEmpty {
-                    let visible = Set(payload.threads.map(\.id))
+                    let visible = Set(list.map(\.id))
                     self.checkedThreadIds = self.checkedThreadIds.intersection(visible)
                     if let last = self.lastCheckedThreadId, !visible.contains(last) {
                         self.lastCheckedThreadId = nil
@@ -1665,14 +1713,14 @@ final class MailStore: ObservableObject {
                 }
                 // Keep expanded window across sync/star reloads; search never pages.
                 if search.isEmpty {
-                    self.listWindowLimit = max(self.listWindowLimit, payload.threads.count)
+                    self.listWindowLimit = max(self.listWindowLimit, list.count)
                     self.hasMoreThreads = payload.hasMore
                 } else {
                     self.hasMoreThreads = false
                 }
                 let inbound = MailStore.usesInboundSort(for: self.selectedView)
                 self.listCursor = ThreadListPaging.nextCursor(
-                    after: payload.threads, inboundSort: inbound)
+                    after: list, inboundSort: inbound)
                 self.vipThreadIds = payload.vipHits
                 // Local sidebar counts only: they use the same denorm filters as
                 // the visible lists (inbox/promotions/social exclude spam, and
