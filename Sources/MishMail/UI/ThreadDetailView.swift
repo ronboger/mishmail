@@ -8,6 +8,8 @@ struct ThreadDetailView: View {
     @AppStorage("readingPaneHidden") private var readingPaneHidden = false
     let thread: MailThread
     let compactMode: Bool
+    /// Full-app conversation (⌘↩) — back control exits focus, not the thread.
+    var focusMode: Bool = false
     let onBack: () -> Void
     let onReply: (Message) -> Void
 
@@ -113,7 +115,16 @@ struct ThreadDetailView: View {
                 ToolbarSpacer(.fixed, placement: .navigation)
             }
             ToolbarItem(placement: .navigation) {
-                if compactMode {
+                if focusMode {
+                    Button(action: onBack) {
+                        Label("Exit Focus",
+                              systemImage: "arrow.down.right.and.arrow.up.left")
+                    }
+                    .help("Exit full-app conversation (esc or ⌘↩)")
+                    .accessibilityIdentifier("exitFocusButton")
+                    .focusable(false)
+                    .focusEffectDisabled()
+                } else if compactMode {
                     Button(action: onBack) {
                         Label("Back to inbox", systemImage: "chevron.left")
                     }

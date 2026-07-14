@@ -76,4 +76,39 @@ final class ComposePlacementTests: XCTestCase {
             inThread: msg.threadId, presentation: .floating,
             replyTo: msg, editDraft: nil))
     }
+
+    func testInlineMetricsPinsCardToReadingPane() {
+        // Host is the full window; pane is the trailing column.
+        let host = CGRect(x: 100, y: 50, width: 1_200, height: 800)
+        let pane = CGRect(x: 100 + 240 + 480, y: 50, width: 480, height: 800)
+        let metrics = ComposePlacement.inlineMetrics(host: host, pane: pane)
+        XCTAssertNotNil(metrics)
+        XCTAssertEqual(metrics!.leading, 240 + 480 + ComposePlacement.inlineSidePadding,
+                       accuracy: 0.001)
+        XCTAssertEqual(metrics!.width,
+                       480 - ComposePlacement.inlineSidePadding * 2,
+                       accuracy: 0.001)
+    }
+
+    func testInlineMetricsNilWhileFramesAreZero() {
+        XCTAssertNil(ComposePlacement.inlineMetrics(host: .zero, pane: .zero))
+        XCTAssertNil(ComposePlacement.inlineMetrics(
+            host: CGRect(x: 0, y: 0, width: 800, height: 600),
+            pane: .zero))
+    }
+
+    func testFallbackLeadingInsetByLayoutMode() {
+        XCTAssertEqual(ComposePlacement.fallbackLeadingInset(layoutMode: .threadFocus),
+                       ComposePlacement.inlineSidePadding)
+        XCTAssertEqual(ComposePlacement.fallbackLeadingInset(layoutMode: .threePane),
+                       240 + 480)
+        XCTAssertEqual(ComposePlacement.fallbackLeadingInset(layoutMode: .compactDetail),
+                       220)
+    }
+
+    func testInlineReservedHeightIncludesCardAndPadding() {
+        XCTAssertEqual(ComposePlacement.inlineReservedHeight,
+                       ComposePlacement.inlineCardHeight
+                        + ComposePlacement.inlineBottomPadding)
+    }
 }

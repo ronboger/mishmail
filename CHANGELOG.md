@@ -15,7 +15,7 @@ minor versions may still change behavior.
   New mail and Forward stay floating; **Pop out** promotes inline → card.
 - **Thread focus (⌘↩)** — with a conversation selected (and compose not
   claiming Send), ⌘↩ fills the app with the reading pane. Esc exits focus.
-  Toolbar: Focus Conversation.
+  Toolbar: Focus Conversation. Documented on the `?` shortcuts sheet.
 
 ### Fixed
 - **Delete under `is:unread` advances to the next thread** — opening an unread

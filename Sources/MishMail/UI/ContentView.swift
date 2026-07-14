@@ -1,6 +1,24 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Global frame of the reading-pane column — used to pin inline compose.
+private struct ReadingPaneFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if next.width > 1 { value = next }
+    }
+}
+
+/// Global frame of the compose overlay host (window content).
+private struct ComposeHostFrameKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if next.width > 1 { value = next }
+    }
+}
+
 struct ContentView: View {
     @EnvironmentObject var store: MailStore
     @Environment(\.openSettings) private var openSettings
@@ -8,6 +26,9 @@ struct ContentView: View {
     @State private var layoutMode: MailLayoutMode = .list
     // Persisted so the layout survives relaunch, like the sidebar state.
     @AppStorage("readingPaneHidden") private var readingPaneHidden = false
+    /// Measured frames for PreferenceKey-aligned inline compose.
+    @State private var readingPaneFrame: CGRect = .zero
+    @State private var composeHostFrame: CGRect = .zero
 
     var body: some View {
         GeometryReader { proxy in
@@ -19,7 +40,16 @@ struct ContentView: View {
             mailboxLayout(mode)
                 .onAppear { layoutMode = mode }
                 .onChange(of: mode) { layoutMode = mode }
+                .background(
+                    GeometryReader { host in
+                        Color.clear.preference(
+                            key: ComposeHostFrameKey.self,
+                            value: host.frame(in: .global))
+                    }
+                )
         }
+        .onPreferenceChange(ReadingPaneFrameKey.self) { readingPaneFrame = $0 }
+        .onPreferenceChange(ComposeHostFrameKey.self) { composeHostFrame = $0 }
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         // Typing only feeds the dropdown preview; the list follows
         // committedSearch. Clearing the field also clears an active search.
@@ -298,38 +328,44 @@ struct ContentView: View {
     private func composeChrome(_ request: MailStore.ComposeRequest) -> some View {
         let minimized = store.composeMinimized
         let inline = request.presentation == .inline && !minimized
-        let cardWidth: CGFloat = minimized ? 300 : (inline ? 0 : 620)
-        let cardHeight: CGFloat = minimized ? 40 : (inline ? 380 : 500)
+        let measured = ComposePlacement.inlineMetrics(
+            host: composeHostFrame, pane: readingPaneFrame)
+        let inlineLeading = measured?.leading
+            ?? ComposePlacement.fallbackLeadingInset(layoutMode: layoutMode)
+        let inlineWidth = measured?.width
+        let cardWidth: CGFloat = minimized ? 300 : (inline ? (inlineWidth ?? 620) : 620)
+        let cardHeight: CGFloat = minimized ? 40
+            : (inline ? ComposePlacement.inlineCardHeight : 500)
         HStack(spacing: 0) {
             if inline {
                 Spacer()
-                    .frame(minWidth: composeInlineLeadingInset, idealWidth: composeInlineLeadingInset)
+                    .frame(width: inlineLeading)
             }
             ComposeView(request: request)
                 .id(request.id)
-                .frame(width: inline ? nil : cardWidth,
-                       height: cardHeight)
-                .frame(maxWidth: inline ? .infinity : cardWidth)
+                .frame(width: cardWidth, height: cardHeight)
                 .background(Color(nsColor: .windowBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: minimized ? PMRadius.md : PMRadius.lg))
                 .pmCardElevation(cornerRadius: minimized ? PMRadius.md : PMRadius.lg,
                                  intense: true)
             if inline {
-                Spacer().frame(width: 12)
+                Spacer(minLength: 0)
             }
         }
-        .padding(inline ? EdgeInsets(top: 0, leading: 0, bottom: 12, trailing: 0)
-                        : EdgeInsets(top: 0, leading: 0, bottom: 16, trailing: 16))
+        .padding(inline
+                 ? EdgeInsets(top: 0, leading: 0,
+                              bottom: ComposePlacement.inlineBottomPadding, trailing: 0)
+                 : EdgeInsets(top: 0, leading: 0, bottom: 16, trailing: 16))
     }
 
-    /// Skip sidebar (+ list in three-pane) so inline reply sits on the reading column.
-    private var composeInlineLeadingInset: CGFloat {
-        switch layoutMode {
-        case .threadFocus: return 12
-        case .threePane: return 240 + 480
-        case .compactDetail: return 220
-        case .list: return 220
-        }
+    /// True when expanded inline compose is open for the selected thread —
+    /// detail pane reserves bottom safe area so the scroll doesn't hide under it.
+    private var reservesInlineComposeSpace: Bool {
+        guard let req = store.composeRequest,
+              req.presentation == .inline,
+              !store.composeMinimized,
+              let selected = store.selectedThreadId else { return false }
+        return req.boundThreadId == selected
     }
 
     @ViewBuilder
@@ -348,7 +384,8 @@ struct ContentView: View {
                let thread = store.threads.first(where: { $0.id == id }) {
                 ThreadDetailView(
                     thread: thread,
-                    compactMode: compact || store.threadFocusMode,
+                    compactMode: compact,
+                    focusMode: store.threadFocusMode,
                     onBack: {
                         if store.threadFocusMode {
                             store.threadFocusMode = false
@@ -367,6 +404,22 @@ struct ContentView: View {
             }
         }
         .background(Color.notionContent)
+        // Publish the reading column's global frame for inline compose pin.
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: ReadingPaneFrameKey.self,
+                    value: geo.frame(in: .global))
+            }
+        )
+        // Keep the last messages above the overlay card.
+        .safeAreaInset(edge: .bottom, spacing: 0) {
+            if reservesInlineComposeSpace {
+                Color.clear
+                    .frame(height: ComposePlacement.inlineReservedHeight)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 
     /// Gmail-style single-key shortcuts plus Cmd-K. Ignores events when a

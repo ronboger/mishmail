@@ -1,7 +1,7 @@
 # Compose: draft status, inline reply, thread focus — Design
 
 Date: 2026-07-14  
-Status: implementing on `feat/compose-inline-draft-focus`
+Status: implemented on `feat/compose-inline-draft-focus`
 
 ## Problem
 
@@ -36,7 +36,10 @@ Three related reading/compose friction points:
 
 - **Reply / Reply all / Continue draft** for the *currently open* thread open
   compose **inline** at the bottom of the reading pane (full pane width),
-  not as the floating card.
+  not as the floating card. Placement uses PreferenceKey-measured frames
+  (host + reading pane in global space) with a layout-mode fallback before
+  first layout; the detail column reserves bottom safe area so the thread
+  scroll doesn't hide under the card.
 - **New message**, **Forward**, draft-only hop (no reading pane), and any
   compose whose thread ≠ selected thread stay **floating**.
 - Inline chrome: no minimize strip; **Pop out** promotes to the floating card
