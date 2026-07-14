@@ -3631,8 +3631,10 @@ final class MailStore: ObservableObject {
 
     /// Saves compose state as a real Gmail draft (shows up in Gmail too).
     /// Replaces `replacing` when re-saving an edited draft.
-    /// - Parameter silent: skip the toast (autosave); still reports failures
-    ///   via `lastError` unless `silent` is true (caller owns status UI).
+    /// - Parameter silent: skip the success toast (autosave / status UI owns feedback).
+    /// - Parameter syncAfter: refresh local DB after save. Defaults to `!silent`
+    ///   so autosave stays light; dismiss paths pass `true` so Drafts/thread
+    ///   rows match Gmail (no stale "continue draft" after replace).
     /// - Returns: a lightweight Message stand-in for the new draft so the
     ///   next autosave can replace it without waiting on a full sync.
     @discardableResult
@@ -3641,7 +3643,9 @@ final class MailStore: ObservableObject {
                    body: String, replyTo message: Message? = nil, forward: Bool = false,
                    attachments: [MIMEBuilder.Attachment] = [],
                    replacing draft: Message? = nil,
-                   silent: Bool = false) async -> Message? {
+                   silent: Bool = false,
+                   syncAfter: Bool? = nil) async -> Message? {
+        let shouldSync = syncAfter ?? !silent
         guard !demoMode else {
             if !silent { showNotice("Drafts aren't saved in the demo inbox") }
             return nil
@@ -3672,6 +3676,8 @@ final class MailStore: ObservableObject {
             if let draft { await deleteUnderlyingDraft(draft, silent: true) }
             if !silent {
                 showNotice("Draft saved — find it in Drafts")
+            }
+            if shouldSync {
                 await sync(accountId: apiAccountId)
             }
             // Stand-in for replace chaining. threadId prefers the local
@@ -3691,13 +3697,19 @@ final class MailStore: ObservableObject {
                 messageIdHeader: "", referencesHeader: "",
                 labelIds: "DRAFT", isUnread: false, hasAttachment: !attachments.isEmpty)
         } catch {
-            if silent {
-                // Autosave status is shown in compose; keep lastError free of spam.
-            } else {
+            // Always surface close-path failures (silent=false). Autosave keeps
+            // lastError clean and uses the in-card "Draft not saved" status.
+            if !silent {
                 lastError = "Draft not saved: \(error.localizedDescription)"
             }
             return nil
         }
+    }
+
+    /// Lightweight sync after a silent autosave session ends (✕ / Esc / replace).
+    func syncDraftMailbox(_ accountId: String) async {
+        guard !demoMode, !accountId.isEmpty else { return }
+        await sync(accountId: accountId)
     }
 
     // MARK: - Draft management

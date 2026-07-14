@@ -9,7 +9,8 @@ minor versions may still change behavior.
 ### Added
 - **Draft saved status** — compose autosaves after you pause typing and shows
   Saving… / Draft saved in the footer (Notion Mail-style). Header ✕ / Esc still
-  dismiss and keep the draft; the old footer "Close" label is gone.
+  dismiss and keep the draft; the old footer "Close" label is gone. Send /
+  Discard / undo-send use the live autosave draft id (no orphan Gmail drafts).
 - **Inline reply** — Reply / Reply all / Continue draft for the open thread
   docks compose on the reading column so the conversation stays readable.
   New mail and Forward stay floating; **Pop out** promotes inline → card.

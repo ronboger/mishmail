@@ -31,6 +31,14 @@ Three related reading/compose friction points:
   if already saved. Demo mode shows status locally without API calls.
 - `createDraft` returns the new draft/message ids so subsequent autosaves
   replace the live draft instead of stacking duplicates.
+- **Live draft chain** — `replacingDraft` (updated on each successful save)
+  is the single source of truth for Send (`PendingSend.replacingDraft`),
+  Discard (trash), and the next autosave replace. Never use only the original
+  `editDraft` after autosave has run.
+- **Serialized persist** — one in-flight save at a time; further edits
+  re-run after it completes (latest-wins). Send/Discard await idle first.
+- **Dismiss** awaits a non-silent final save (errors via `lastError`) and
+  syncs so the Drafts list matches Gmail. Demo never claims "Draft saved".
 
 ### 2. Inline reply in the reading pane
 

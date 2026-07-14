@@ -19,7 +19,7 @@ struct ShortcutsHelpView: View {
             ("x", "Select / deselect (multi-select)"),
             ("Shift-click checkbox", "Select a range"),
             ("/", "Search"),
-            ("Esc", "Exit focus → clear checks → close pane / drop focus"),
+            ("Esc", "Drop field focus → clear checks → exit focus → clear search → close pane"),
             ("⌘K", "Command palette (Insert link while composing)"),
             ("/ (in compose)", "Snippet picker (typed in body)"),
             ("⌘/", "Snippets panel (in compose)"),

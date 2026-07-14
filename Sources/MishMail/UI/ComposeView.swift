@@ -81,13 +81,19 @@ struct ComposeView: View {
     /// saves the draft instead of silently dropping it.
     @State private var didFinish = false
     /// Live draft Gmail message to replace on the next save (starts as
-    /// `editDraft`, then tracks each successful autosave).
+    /// `editDraft` / undo restore, then tracks each successful autosave).
+    /// Thread this into Send, Discard, and replace — never only into autosave.
     @State private var replacingDraft: Message?
     /// Notion-style footer status after typing.
     @State private var draftStatus: DraftSaveStatus = .idle
+    /// Debounced "save soon" timer (typing).
     @State private var autosaveTask: Task<Void, Never>?
+    /// Serialized persist chain (latest-wins after in-flight completes).
+    @State private var persistTask: Task<Void, Never>?
     /// Snapshot of fields last successfully saved — skip no-op autosaves.
     @State private var lastSavedFingerprint = ""
+    /// True after a silent autosave succeeded this session (close should sync).
+    @State private var didSilentSave = false
 
     private enum DraftSaveStatus: Equatable {
         case idle
@@ -98,6 +104,9 @@ struct ComposeView: View {
 
     private var isInline: Bool { request.presentation == .inline }
 
+    /// Draft id chain for replace / send / discard (autosave may have moved it).
+    private var liveDraft: Message? { replacingDraft ?? editingDraft }
+
     private func close() {
         didFinish = true
         autosaveTask?.cancel()
@@ -107,7 +116,7 @@ struct ComposeView: View {
 
     /// Title shown in the header and minimized strip.
     private var headerTitle: String {
-        if editingDraft != nil {
+        if liveDraft != nil {
             return "Draft: \(subject.isEmpty ? "(no subject)" : subject)"
         }
         return subject.isEmpty ? "New Message" : subject
@@ -236,26 +245,59 @@ struct ComposeView: View {
 
     /// Schedule a debounced silent autosave after the user types.
     private func scheduleAutosave() {
+        // Always cancel a pending debounce first — even when content reverts to
+        // the last-saved fingerprint, so a stale timer can't flip status later.
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        // Demo has nowhere to persist; don't claim "Draft saved".
+        guard !store.demoMode else {
+            draftStatus = .idle
+            return
+        }
         guard hasContent else {
             draftStatus = .idle
             return
         }
-        // Already saved this exact content (or still saving the same).
-        if contentFingerprint == lastSavedFingerprint { return }
+        // Already saved this exact content.
+        if contentFingerprint == lastSavedFingerprint {
+            draftStatus = .saved
+            return
+        }
         draftStatus = draftStatus == .saved ? .idle : draftStatus
-        autosaveTask?.cancel()
         autosaveTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard !Task.isCancelled else { return }
-            await persistDraft(silent: true)
+            await enqueuePersist(silent: true, syncAfter: false)
         }
     }
 
-    /// Persist unsent content as a real Gmail draft; no-op when nothing was
-    /// authored. Split from saveAndClose so onDisappear can save without
-    /// closing when another compose request replaces this card.
+    /// Serialize persists so concurrent autosave + close/send never both
+    /// createDraft against the same `replacingDraft` (duplicate Gmail drafts).
     @MainActor
-    private func persistDraft(silent: Bool) async {
+    private func enqueuePersist(silent: Bool, syncAfter: Bool) async {
+        let previous = persistTask
+        let task = Task { @MainActor in
+            await previous?.value
+            guard !Task.isCancelled else { return }
+            await performPersist(silent: silent, syncAfter: syncAfter)
+        }
+        persistTask = task
+        await task.value
+        if persistTask == task { persistTask = nil }
+    }
+
+    /// Wait for any in-flight persist (e.g. before Send packages `liveDraft`).
+    @MainActor
+    private func awaitPersistIdle() async {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        if let persistTask { await persistTask.value }
+    }
+
+    /// One save attempt against current fields. Call only via `enqueuePersist`
+    /// so overlapping runs stay serial.
+    @MainActor
+    private func performPersist(silent: Bool, syncAfter: Bool) async {
         // Typed-but-uncommitted addresses count too.
         for (draft, tokens) in [(toDraft, $toTokens), (ccDraft, $ccTokens), (bccDraft, $bccTokens)] {
             let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
@@ -271,6 +313,11 @@ struct ComposeView: View {
         let fingerprint = contentFingerprint
         if fingerprint == lastSavedFingerprint {
             if silent { draftStatus = .saved }
+            // Already on the server — still sync on dismiss so Drafts/thread UI
+            // pick up a silent autosave that never called sync().
+            if syncAfter, didSilentSave || liveDraft != nil {
+                await store.syncDraftMailbox(fromAccountId)
+            }
             return
         }
         if silent { draftStatus = .saving }
@@ -281,7 +328,7 @@ struct ComposeView: View {
         // the re-saved draft would silently drop them.
         let pendingSources: [Message] = {
             guard loadingAttachments else { return [] }
-            if let draft = replacingDraft ?? editingDraft { return [draft] }
+            if let draft = liveDraft { return [draft] }
             if request.forward, let original {
                 if request.forwardAll {
                     let thread = ForwardComposer.forwardableMessages(
@@ -296,7 +343,7 @@ struct ComposeView: View {
             (fromAccountId, fromEmail,
              toTokens.joined(separator: ", "), ccTokens.joined(separator: ", "),
              bccTokens.joined(separator: ", "), subject, fullBody,
-             replacingDraft ?? editingDraft)
+             liveDraft)
         // Like the send path, a forward's original rides along so the
         // draft keeps its HTML formatting (it won't thread the draft).
         let (reply, isForward) = (request.replyTo, request.forward)
@@ -304,45 +351,72 @@ struct ComposeView: View {
         for source in pendingSources {
             atts = ((try? await store.loadAttachments(for: source)) ?? []) + atts
         }
-        // Demo: no Gmail draft API — still show the Notion-style status so the
-        // chrome matches real accounts.
+        // Demo: never claim "Draft saved" — close uses non-silent for the notice.
         if store.demoMode {
-            if silent {
-                lastSavedFingerprint = fingerprint
-                draftStatus = .saved
+            if !silent {
+                _ = await store.saveDraft(from: apiAccount, fromEmail: identity,
+                                          to: to, cc: cc, bcc: bcc, subject: subj,
+                                          body: body, replyTo: reply, forward: isForward,
+                                          attachments: atts, replacing: old,
+                                          silent: false)
             }
+            draftStatus = .idle
             return
         }
         let saved = await store.saveDraft(from: apiAccount, fromEmail: identity,
                                           to: to, cc: cc, bcc: bcc, subject: subj,
                                           body: body, replyTo: reply, forward: isForward,
                                           attachments: atts, replacing: old,
-                                          silent: silent)
+                                          silent: silent,
+                                          syncAfter: syncAfter)
         if let saved {
             replacingDraft = saved
             lastSavedFingerprint = fingerprint
-            if silent { draftStatus = .saved }
+            if silent {
+                didSilentSave = true
+                draftStatus = .saved
+            }
+            // Content may have changed during the network round-trip — chain
+            // one more silent save so we don't leave an older body as "the"
+            // draft. Only after success (failed saves must not recurse).
+            if silent, hasContent, contentFingerprint != lastSavedFingerprint {
+                await performPersist(silent: true, syncAfter: false)
+            }
         } else if silent {
             draftStatus = .failed
         }
     }
 
-    /// Fire-and-forget save for unmount / close (keeps prior call shape).
+    /// Fire-and-forget save for unmount when another compose replaced us.
     private func saveDraftIfNeeded() {
         autosaveTask?.cancel()
-        Task { await persistDraft(silent: true) }
+        Task { @MainActor in
+            await enqueuePersist(silent: false, syncAfter: true)
+        }
     }
 
     /// Close and keep the work: unsent content becomes a real Gmail draft.
+    /// Awaits the save so offline failure still surfaces via lastError, and
+    /// always syncs after a silent autosave so the Drafts list is fresh.
     private func saveAndClose() {
         autosaveTask?.cancel()
-        // Await isn't available from button actions; kick a save then close.
-        // If content already matches lastSavedFingerprint, this is a no-op.
-        let fingerprint = contentFingerprint
-        if hasContent, fingerprint != lastSavedFingerprint {
-            Task { await persistDraft(silent: true) }
+        Task { @MainActor in
+            await enqueuePersist(silent: false, syncAfter: true)
+            close()
         }
-        close()
+    }
+
+    /// Discard without keeping a Gmail draft — deletes the live autosave chain.
+    private func discardAndClose() {
+        autosaveTask?.cancel()
+        Task { @MainActor in
+            // Finish any in-flight createDraft so we delete the real server draft.
+            await awaitPersistIdle()
+            if let draft = liveDraft {
+                await store.deleteUnderlyingDraft(draft)
+            }
+            close()
+        }
     }
 
     /// Everything attached right now, data loaded: chips carried in from a
@@ -375,17 +449,21 @@ struct ComposeView: View {
         .onAppear {
             store.composeMinimized = false
             isMinimized = false
-            replacingDraft = editingDraft
+            // Seed the replace chain before prefill so undo-send restores any
+            // draft that Send was about to delete.
+            replacingDraft = editingDraft ?? request.restore?.replacingDraft
+            prefill()
+            // Prefill mutates fields — re-baseline carefully:
+            // • editDraft: already on the server → clean.
+            // • restore (undo send): content is only in memory; must NOT look
+            //   clean or Esc/close drops the body without saving (H4).
+            // • new/reply prefill: baseline so pure quote isn't autosaved.
             if editingDraft != nil {
-                // Reopened draft is already on the server.
                 lastSavedFingerprint = contentFingerprint
                 draftStatus = .saved
-            }
-            prefill()
-            // Prefill mutates fields — re-baseline so we don't immediately
-            // autosave pure prefill as a new draft.
-            if editingDraft != nil {
-                lastSavedFingerprint = contentFingerprint
+            } else if request.restore != nil {
+                lastSavedFingerprint = ""
+                draftStatus = .idle
             } else {
                 lastSavedFingerprint = contentFingerprint
                 draftStatus = .idle
@@ -832,16 +910,13 @@ struct ComposeView: View {
                 Spacer()
 
                 Button {
-                    // Discard: no draft saved; editing an existing draft deletes it.
-                    if let draft = editingDraft {
-                        Task { await store.deleteUnderlyingDraft(draft) }
-                    }
-                    close()
+                    // Discard: delete the live autosave chain (not only editDraft).
+                    discardAndClose()
                 } label: {
                     Image(systemName: "trash").foregroundStyle(.secondary)
                 }
                 .buttonStyle(.plain)
-                .help(editingDraft != nil ? "Discard (deletes this draft)" : "Discard without saving")
+                .help(liveDraft != nil ? "Discard (deletes this draft)" : "Discard without saving")
                 // Notion-style draft status where "Close" used to sit — dismiss
                 // is the header ✕ (and Esc). Status only after the user types.
                 draftStatusLabel
@@ -1523,7 +1598,8 @@ struct ComposeView: View {
                 replyTo: request.replyTo, forward: request.forward,
                 forwardAll: request.forwardAll,
                 attachments: attachments,
-                replacingDraft: editingDraft)
+                // Live autosave chain — not the original editDraft only (B1).
+                replacingDraft: liveDraft)
         } catch {
             self.error = error.localizedDescription
             return nil
@@ -1531,14 +1607,22 @@ struct ComposeView: View {
     }
 
     private func send() {
-        guard let pending = buildPendingSend() else { return }
-        store.queueSend(pending)
-        close()
+        // Wait out in-flight autosave so liveDraft is current and we don't
+        // race a createDraft that would orphan after send.
+        Task { @MainActor in
+            await awaitPersistIdle()
+            guard let pending = buildPendingSend() else { return }
+            store.queueSend(pending)
+            close()
+        }
     }
 
     private func scheduleSend(at date: Date) {
-        guard let pending = buildPendingSend() else { return }
-        store.scheduleSend(pending, at: date)
-        close()
+        Task { @MainActor in
+            await awaitPersistIdle()
+            guard let pending = buildPendingSend() else { return }
+            store.scheduleSend(pending, at: date)
+            close()
+        }
     }
 }
