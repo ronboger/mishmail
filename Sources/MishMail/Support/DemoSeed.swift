@@ -19,6 +19,7 @@ enum DemoSeed {
     }
 
     static let account = "you@example.com"
+    static let vipSenders: Set<String> = ["dana@brightloop.io", "priya@example.edu"]
 
     static func canActivate(accountIDs: [String]) -> Bool {
         accountIDs.isEmpty || accountIDs.allSatisfy { $0 == account }
@@ -26,80 +27,110 @@ enum DemoSeed {
 
     @discardableResult
     static func activate(_ db: DatabasePool) -> Bool {
-        let existing = (try? db.read { try Account.fetchAll($0) }) ?? []
-        guard canActivate(accountIDs: existing.map(\.id)) else {
-            return false
-        }
+        guard let existing = accountIDs(in: db), canActivate(accountIDs: existing),
+              seed(db) else { return false }
         UserDefaults.standard.set(true, forKey: defaultsKey)
-        seedIfRequested(db)
         return true
     }
 
-    static func deactivate(_ db: DatabasePool) {
-        let existing = (try? db.read { try Account.fetchAll($0) }) ?? []
-        guard canActivate(accountIDs: existing.map(\.id)) else { return }
-        clearDemoTables(db)
+    /// Removes only rows owned by the fictional account. This remains safe if
+    /// an older build accidentally allowed a real account to coexist with it.
+    @discardableResult
+    static func deactivate(_ db: DatabasePool) -> Bool {
+        guard clearDemoData(db) else { return false }
         UserDefaults.standard.removeObject(forKey: defaultsKey)
+        return true
     }
 
     /// Wipes demo-owned mail tables and inserts a fresh inbox. Idempotent:
     /// every demo launch reseeds from scratch, so screenshots are deterministic.
-    static func seedIfRequested(_ db: DatabasePool) {
-        guard isActive else { return }
-        // Never clobber a real signed-in account: the wipe below only runs on
-        // a fresh database or one that already holds only the demo fixture.
-        // (`make run DEMO=0` is the verb for a real-account Debug session.)
-        let existing = (try? db.read { try Account.fetchAll($0) }) ?? []
-        guard canActivate(accountIDs: existing.map(\.id)) else {
+    @discardableResult
+    static func seedIfRequested(_ db: DatabasePool) -> Bool {
+        guard isActive else { return false }
+        // A read failure is not an empty database. Abort instead of treating
+        // uncertainty as permission to modify persistent mail state.
+        guard let existing = accountIDs(in: db) else { return false }
+        guard canActivate(accountIDs: existing) else {
             NSLog("MishMail: demo seed skipped — a real account is signed in")
-            return
+            // Recover state left by an older mixed-account build. Cleanup is
+            // demo-account-scoped, so the real mailbox remains untouched.
+            if !existing.contains(account) || clearDemoData(db) {
+                UserDefaults.standard.removeObject(forKey: defaultsKey)
+            }
+            return false
         }
-        clearDemoTables(db)
-        try? db.write { database in
+        return seed(db)
+    }
 
-            let acct = Account(id: account, displayName: "Personal",
-                               historyId: nil, lastSyncAt: Date(), senderName: "Alex Rivera")
-            try acct.insert(database)
-
-            for label in userLabels {
-                let row = LabelRow(id: "\(account):\(label.id)", accountId: account,
-                                   gmailLabelId: label.id, name: label.name, type: "user",
-                                   color: label.color, sortOrder: label.order)
-                try row.insert(database)
-            }
-
-            var touched = Set<String>()
-            var pending: [SyncEngine.PendingUpsert] = []
-            for msg in messages() {
-                pending.append(.init(message: msg, attachments: []))
-                touched.insert(msg.threadId)
-            }
-            // Same body-split path as live sync (v24 message_body).
-            _ = try SyncEngine.upsertPending(database, items: pending)
-            try SyncEngine.deriveThreads(database, for: touched, accountId: account)
-
-            for (threadId, category) in aiCategories {
-                let row = ThreadAICategory(threadId: threadId, category: category)
-                try row.insert(database)
-            }
-
-            for vip in ["dana@brightloop.io", "priya@example.edu"] {
-                let v = VIPSender(email: vip)
-                try v.insert(database)
-            }
+    private static func accountIDs(in db: DatabasePool) -> [String]? {
+        do {
+            return try db.read { try String.fetchAll($0, sql: "SELECT id FROM account") }
+        } catch {
+            NSLog("MishMail: demo account check failed — %@", "\(error)")
+            return nil
         }
     }
 
-    private static func clearDemoTables(_ db: DatabasePool) {
-        try? db.write { database in
-            // Only mail fixture tables belong to demo mode. User-authored
-            // settings such as saved views, blocked senders, and VIP groups
-            // intentionally survive entering and leaving the demo inbox.
-            for table in ["message", "thread", "threadAI", "label", "vipSender",
-                          "attachment", "account"] {
-                try? database.execute(sql: "DELETE FROM \(table)")
+    /// Clear + insert is one transaction: a failed fixture insert rolls the
+    /// cleanup back instead of leaving a half-created demo mailbox.
+    private static func seed(_ db: DatabasePool) -> Bool {
+        do {
+            try db.write { database in
+                try clearDemoData(in: database)
+
+                let acct = Account(id: account, displayName: "Personal",
+                                   historyId: nil, lastSyncAt: Date(), senderName: "Alex Rivera")
+                try acct.insert(database)
+
+                for label in userLabels {
+                    let row = LabelRow(id: "\(account):\(label.id)", accountId: account,
+                                       gmailLabelId: label.id, name: label.name, type: "user",
+                                       color: label.color, sortOrder: label.order)
+                    try row.insert(database)
+                }
+
+                var touched = Set<String>()
+                var pending: [SyncEngine.PendingUpsert] = []
+                for msg in messages() {
+                    pending.append(.init(message: msg, attachments: []))
+                    touched.insert(msg.threadId)
+                }
+                // Same body-split path as live sync (v24 message_body).
+                _ = try SyncEngine.upsertPending(database, items: pending)
+                try SyncEngine.deriveThreads(database, for: touched, accountId: account)
+
+                for (threadId, category) in aiCategories {
+                    let row = ThreadAICategory(threadId: threadId, category: category)
+                    try row.insert(database)
+                }
             }
+            return true
+        } catch {
+            NSLog("MishMail: demo seed failed — %@", "\(error)")
+            return false
         }
+    }
+
+    private static func clearDemoData(_ db: DatabasePool) -> Bool {
+        do {
+            try db.write { try clearDemoData(in: $0) }
+            return true
+        } catch {
+            NSLog("MishMail: demo cleanup failed — %@", "\(error)")
+            return false
+        }
+    }
+
+    private static func clearDemoData(in database: GRDB.Database) throws {
+        // account cascades through messages, bodies, attachments, threads,
+        // thread labels, and labels. The remaining tables are not account-FK'd.
+        try database.execute(sql: "DELETE FROM threadAI WHERE threadId LIKE ?",
+                             arguments: ["\(account):%"])
+        try database.execute(sql: "DELETE FROM scheduledSend WHERE accountId = ?",
+                             arguments: [account])
+        try database.execute(sql: "DELETE FROM savedView WHERE accountId = ?",
+                             arguments: [account])
+        try database.execute(sql: "DELETE FROM account WHERE id = ?", arguments: [account])
     }
 
     // MARK: - Fixture data

@@ -108,6 +108,7 @@ targets:
       - Sources/MishMail/Support/Markdown.swift
       - Sources/MishMail/Support/MailLayout.swift
       - Sources/MishMail/Support/DemoSeed.swift
+      - Sources/MishMail/Support/ErrorRecovery.swift
       - Sources/MishMail/Support/Ollama.swift
       - Sources/MishMail/Support/PerfMetrics.swift
       - Sources/MishMail/Support/ThreadTypeahead.swift

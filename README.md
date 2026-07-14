@@ -16,13 +16,14 @@ API (and, optionally, a local Ollama model that also never leaves the machine).
 
 ## Try MishMail
 
-- **Download:** get the signed, notarized app from
+- **Build from source (recommended):** clone the repository, install
+  `xcodegen`, then run `make run`. The Debug app opens an isolated demo inbox.
+- **Download the current development build:** use
   [GitHub Releases](https://github.com/ronboger/mishmail/releases/latest).
+  It is development-signed but not notarized yet, so macOS may require you to
+  right-click the app and choose **Open** on first launch.
 - **Explore safely:** on first launch, choose **Try demo inbox** to browse
   fictional mail before connecting Google. Demo mode never syncs or sends.
-- **Run the source:** clone the repository, install `xcodegen`, then run
-  `make run`. The Debug app opens the same isolated demo inbox by default.
-
 Connecting a real inbox requires your own free Google Desktop OAuth client;
 the guided setup is below. You can evaluate the entire interface first.
 

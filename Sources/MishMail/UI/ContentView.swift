@@ -5,15 +5,19 @@ struct ContentView: View {
     @EnvironmentObject var store: MailStore
     @Environment(\.openSettings) private var openSettings
     @State private var keyMonitor: Any?
+    @State private var layoutMode: MailLayoutMode = .list
     // Persisted so the layout survives relaunch, like the sidebar state.
     @AppStorage("readingPaneHidden") private var readingPaneHidden = false
 
     var body: some View {
         GeometryReader { proxy in
-            mailboxLayout(MailLayout.mode(
+            let mode = MailLayout.mode(
                 width: proxy.size.width,
                 readingPaneHidden: readingPaneHidden,
-                hasSelection: store.selectedThreadId != nil))
+                hasSelection: store.selectedThreadId != nil)
+            mailboxLayout(mode)
+                .onAppear { layoutMode = mode }
+                .onChange(of: mode) { layoutMode = mode }
         }
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         // Typing only feeds the dropdown preview; the list follows
@@ -182,7 +186,9 @@ struct ContentView: View {
                         .font(.system(size: 13))
                         .lineLimit(3)
                         .frame(maxWidth: 360, alignment: .leading)
-                    if store.accountsNeedingReauth.isEmpty {
+                    if ErrorRecovery.action(
+                        for: error,
+                        accountsNeedingReauth: store.accountsNeedingReauth) == .retrySync {
                         Button("Sync") {
                             store.lastError = nil
                             Task { await store.syncAll() }
@@ -241,7 +247,7 @@ struct ContentView: View {
                 Sidebar()
                     .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 400)
             } detail: {
-                detailPane
+                detailPane(compact: true)
             }
         case .threePane:
             NavigationSplitView {
@@ -251,7 +257,7 @@ struct ContentView: View {
                 listColumn
                     .navigationSplitViewColumnWidth(min: 420, ideal: 560)
             } detail: {
-                detailPane
+                detailPane(compact: false)
             }
         }
     }
@@ -266,13 +272,15 @@ struct ContentView: View {
     }
 
     @ViewBuilder
-    private var detailPane: some View {
+    private func detailPane(compact: Bool) -> some View {
         Group {
             if let id = store.selectedThreadId,
                let thread = store.threads.first(where: { $0.id == id }) {
-                ThreadDetailView(thread: thread, onReply: { msg in
-                    store.composeRequest = .init(replyTo: msg)
-                })
+                ThreadDetailView(
+                    thread: thread,
+                    compactMode: compact,
+                    onBack: { store.selectedThreadId = nil },
+                    onReply: { msg in store.composeRequest = .init(replyTo: msg) })
             } else {
                 Text("Select a conversation")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -458,6 +466,10 @@ struct ContentView: View {
                 // (so from the search field, Esc-Esc gets you home).
                 if !store.committedSearch.isEmpty || !store.searchText.isEmpty {
                     store.clearSearch()
+                    return nil
+                }
+                if layoutMode == .compactDetail {
+                    store.selectedThreadId = nil
                     return nil
                 }
                 if !readingPaneHidden {

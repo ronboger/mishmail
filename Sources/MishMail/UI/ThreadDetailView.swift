@@ -7,6 +7,8 @@ struct ThreadDetailView: View {
     @AppStorage("fontScale") private var fontScale = 1.0
     @AppStorage("readingPaneHidden") private var readingPaneHidden = false
     let thread: MailThread
+    let compactMode: Bool
+    let onBack: () -> Void
     let onReply: (Message) -> Void
 
     @State private var messages: [Message] = []
@@ -101,6 +103,7 @@ struct ThreadDetailView: View {
             .scrollTargetLayout()
             .padding(.vertical)
         }
+        .navigationTitle(store.selectedView.title)
         .toolbar {
             // Notion Mail-style left cluster: close the pane, prev/next thread.
             // Separate ToolbarItems (not a group) + hidden shared glass on
@@ -110,17 +113,27 @@ struct ThreadDetailView: View {
                 ToolbarSpacer(.fixed, placement: .navigation)
             }
             ToolbarItem(placement: .navigation) {
-                Button {
-                    // Keep the selection so the list stays where you are.
-                    readingPaneHidden = true
-                } label: {
-                    Label("Hide Reading Pane", systemImage: "chevron.right.2")
+                if compactMode {
+                    Button(action: onBack) {
+                        Label("Back to inbox", systemImage: "chevron.left")
+                    }
+                    .help("Back to conversation list (esc)")
+                    .accessibilityIdentifier("compactBackButton")
+                    .focusable(false)
+                    .focusEffectDisabled()
+                } else {
+                    Button {
+                        // Keep the selection so the list stays where you are.
+                        readingPaneHidden = true
+                    } label: {
+                        Label("Hide Reading Pane", systemImage: "chevron.right.2")
+                    }
+                    // Collapses the reading pane so the list fills the window;
+                    // selection stays put — click a thread (or press Enter) to reopen.
+                    .help("Hide reading pane (esc)")
+                    .focusable(false)
+                    .focusEffectDisabled()
                 }
-                // Collapses the reading pane so the list fills the window;
-                // selection stays put — click a thread (or press Enter) to reopen.
-                .help("Hide reading pane (esc)")
-                .focusable(false)
-                .focusEffectDisabled()
             }
             .pmHideSharedBackground()
             ToolbarItem(placement: .navigation) {

@@ -295,9 +295,15 @@ final class AppDatabase {
     private let closeLock = NSLock()
 
     init() throws {
-        let dir = try FileManager.default.url(for: .applicationSupportDirectory,
-                                              in: .userDomainMask, appropriateFor: nil, create: true)
-            .appendingPathComponent("MishMail", isDirectory: true)
+        let root = try FileManager.default.url(for: .applicationSupportDirectory,
+                                               in: .userDomainMask, appropriateFor: nil, create: true)
+        let isUITest = ProcessInfo.processInfo.environment["MISHMAIL_UI_TEST"] == "1"
+        let dir = Self.storageDirectory(root: root, isUITest: isUITest)
+        // UI automation gets a dedicated, disposable database. A developer's
+        // signed-in Debug mailbox is never inspected, seeded, or removed.
+        if isUITest, FileManager.default.fileExists(atPath: dir.path) {
+            try FileManager.default.removeItem(at: dir)
+        }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let path = dir.appendingPathComponent("mail.sqlite").path
 
@@ -318,6 +324,11 @@ final class AppDatabase {
             try Self.setAsideUnreadable(path: path)
             dbPool = try Self.openAndMigrate(path: path, passphrase: passphrase)
         }
+    }
+
+    static func storageDirectory(root: URL, isUITest: Bool) -> URL {
+        root.appendingPathComponent(isUITest ? "MishMailUITests" : "MishMail",
+                                    isDirectory: true)
     }
 
     /// Abort in-flight statements so cancelled tasks can finish promptly

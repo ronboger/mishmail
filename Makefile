@@ -56,6 +56,9 @@ test: gen
 # Small end-to-end pass over the fictional inbox. No Google account or network
 # is involved; this catches launch, navigation, compose, and Settings regressions.
 ui-test: gen
+	# XCUITest cannot attach deterministically when another Debug build with the
+	# same bundle id is already open (for example from a different worktree).
+	-pkill -f "MishMail Debug" 2>/dev/null || true
 	xcodebuild test -project $(PROJECT) -scheme MishMailUITests \
 		-destination '$(DESTINATION)' -derivedDataPath $(DD)
 

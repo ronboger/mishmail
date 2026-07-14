@@ -299,17 +299,26 @@ struct AccountsSettings: View {
                             if store.accountsNeedingReauth.contains(account.id) {
                                 Button("Reauthorize…") { store.addAccount(reauthorizing: account.id) }
                             }
-                            Button("Remove Account", role: .destructive) {
-                                store.removeAccount(account.id)
+                            if store.demoMode, account.id == DemoSeed.account {
+                                Button("Exit Demo") { store.exitDemoMode() }
+                            } else {
+                                Button("Remove Account", role: .destructive) {
+                                    store.removeAccount(account.id)
+                                }
                             }
                         }
                         SyncWindowPicker(accountId: account.id)
                     }
                 }
                 Section {
-                    Button("Add Google Account…") { store.addAccount() }
+                    Button(store.demoMode ? "Connect Google and exit demo…"
+                                          : "Add Google Account…") {
+                        store.addAccount()
+                    }
                 } footer: {
-                    Text("Keep mail from controls what is stored on this Mac per account — Gmail itself is never changed. Narrowing it (or choosing Nothing) removes the older local copies; widening downloads older mail in the background. Starred mail is always kept and downloaded regardless of age.")
+                    Text(store.demoMode
+                         ? "After Google sign-in succeeds, MishMail removes the fictional inbox and starts syncing your account."
+                         : "Keep mail from controls what is stored on this Mac per account — Gmail itself is never changed. Narrowing it (or choosing Nothing) removes the older local copies; widening downloads older mail in the background. Starred mail is always kept and downloaded regardless of age.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
@@ -360,6 +369,9 @@ struct GmailFiltersSettings: View {
                             }
                         }
                         .font(.system(size: 12))
+                        .disabled(store.demoMode)
+                        .help(store.demoMode ? "Gmail is unavailable in the fictional inbox"
+                                             : "Open Gmail filter settings")
                     }
                     .padding(20)
                 }

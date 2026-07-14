@@ -521,6 +521,7 @@ final class MailStore: ObservableObject {
     func loadVIPs() {
         let rows = (try? db.read { try VIPSender.fetchAll($0) }) ?? []
         vipEmails = Set(rows.map { $0.email.lowercased() })
+        if demoMode { vipEmails.formUnion(DemoSeed.vipSenders) }
         var groups: [String: String] = [:]
         for row in rows {
             if let groupName = row.groupName, !groupName.isEmpty {
@@ -542,6 +543,10 @@ final class MailStore: ObservableObject {
     }
 
     func addVIP(_ email: String, group: String? = nil) {
+        guard !demoMode else {
+            showNotice("VIP changes are disabled in the demo inbox")
+            return
+        }
         let e = email.trimmingCharacters(in: .whitespaces).lowercased()
         guard e.contains("@") else { return }
         try? db.write { db in
@@ -557,6 +562,10 @@ final class MailStore: ObservableObject {
     /// Returns how many were actually new.
     @discardableResult
     func addVIPs(_ emails: [String], group: String? = nil) -> Int {
+        guard !demoMode else {
+            showNotice("VIP changes are disabled in the demo inbox")
+            return 0
+        }
         let fresh = Set(emails.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
             .filter { $0.contains("@") && !vipEmails.contains($0) })
         guard !fresh.isEmpty else { return 0 }
@@ -572,6 +581,10 @@ final class MailStore: ObservableObject {
     }
 
     func removeVIP(_ email: String) {
+        guard !demoMode else {
+            showNotice("VIP changes are disabled in the demo inbox")
+            return
+        }
         let e = email.trimmingCharacters(in: .whitespaces).lowercased()
         try? db.write { _ = try VIPSender.deleteOne($0, key: e) }
         loadVIPs()
@@ -579,6 +592,10 @@ final class MailStore: ObservableObject {
     }
 
     func setVIPGroup(_ email: String, group: String?) {
+        guard !demoMode else {
+            showNotice("VIP changes are disabled in the demo inbox")
+            return
+        }
         let e = email.trimmingCharacters(in: .whitespaces).lowercased()
         let g = (group ?? "").isEmpty ? nil : group
         try? db.write { db in
@@ -594,6 +611,10 @@ final class MailStore: ObservableObject {
 
     /// Pause/resume VIP status for a whole group.
     func setVIPGroupEnabled(_ name: String, _ enabled: Bool) {
+        guard !demoMode else {
+            showNotice("VIP changes are disabled in the demo inbox")
+            return
+        }
         try? db.write { try VIPGroupRow(name: name, enabled: enabled).save($0) }
         loadVIPs()
         reloadThreads()
@@ -688,6 +709,11 @@ final class MailStore: ObservableObject {
     /// a `force` caller that joins an in-flight load then starts a fresh
     /// fetch so Settings still gets a refresh.
     func ensureFiltersLoaded(for accountId: String, force: Bool = false) async {
+        guard !demoMode else {
+            filtersByAccount[accountId] = []
+            filtersLoadError[accountId] = nil
+            return
+        }
         if !force, filtersByAccount[accountId] != nil { return }
 
         if let inflight = filterLoadTasks[accountId] {
@@ -761,6 +787,10 @@ final class MailStore: ObservableObject {
 
     /// Open the thread in gmail.com (useful for filter edits / full Gmail UI).
     func openInGmail(_ thread: MailThread) {
+        guard !demoMode else {
+            showNotice("Opening Gmail is disabled in the demo inbox")
+            return
+        }
         guard let url = GmailWebLinks.threadURL(
             accountEmail: thread.accountId, gmailThreadId: thread.gmailThreadId)
         else { return }
@@ -792,6 +822,10 @@ final class MailStore: ObservableObject {
     }
 
     func blockSender(_ email: String) {
+        guard !demoMode else {
+            showNotice("Blocking is disabled in the demo inbox")
+            return
+        }
         let e = email.trimmingCharacters(in: .whitespaces).lowercased()
         guard e.contains("@") else { return }
         try? db.write { try BlockedSender(email: e).save($0) }
@@ -801,6 +835,10 @@ final class MailStore: ObservableObject {
     }
 
     func unblockSender(_ email: String) {
+        guard !demoMode else {
+            showNotice("Blocking is disabled in the demo inbox")
+            return
+        }
         let e = email.trimmingCharacters(in: .whitespaces).lowercased()
         try? db.write { _ = try BlockedSender.deleteOne($0, key: e) }
         loadBlocked()
@@ -964,11 +1002,11 @@ final class MailStore: ObservableObject {
     }
 
     init() {
-        DemoSeed.seedIfRequested(AppDatabase.shared.dbPool)
+        let demoSeeded = DemoSeed.seedIfRequested(AppDatabase.shared.dbPool)
         reloadAccounts()
         // An environment flag must never turn a real Debug account into a
         // fake/offline account when seeding was correctly refused.
-        demoMode = DemoSeed.isActive && !accounts.isEmpty
+        demoMode = demoSeeded && !accounts.isEmpty
             && accounts.allSatisfy { $0.id == DemoSeed.account }
         // Primaries immediately; send-as aliases fill in after the API call.
         sendIdentities = fallbackIdentities()
@@ -1014,12 +1052,16 @@ final class MailStore: ObservableObject {
         reloadThreads()
         reloadScheduledSends()
         sendIdentities = fallbackIdentities()
-        showNotice("Demo inbox — changes stay on this Mac")
+        showNotice("Fictional mail — nothing syncs or sends")
     }
 
-    func exitDemoMode() {
-        guard demoMode else { return }
-        DemoSeed.deactivate(db)
+    @discardableResult
+    func exitDemoMode() -> Bool {
+        guard demoMode else { return true }
+        guard DemoSeed.deactivate(db) else {
+            showNotice("The demo inbox couldn't be closed. Try again.")
+            return false
+        }
         demoMode = false
         lastError = nil
         accountsNeedingReauth.removeAll()
@@ -1033,6 +1075,9 @@ final class MailStore: ObservableObject {
         reloadThreads()
         reloadScheduledSends()
         sendIdentities = []
+        filtersByAccount[DemoSeed.account] = nil
+        filtersLoadError[DemoSeed.account] = nil
+        return true
     }
 
     /// One-time seed of the starter snippets, so `/` in compose has something
@@ -2209,6 +2254,11 @@ final class MailStore: ObservableObject {
                 let (data, _) = try await URLSession.shared.data(for: req)
                 let info = try JSONDecoder().decode(UserInfo.self, from: data)
 
+                // A successful connection replaces the fictional mailbox.
+                // Exit only after OAuth succeeds, so cancelling sign-in leaves
+                // the user's demo session intact.
+                guard !demoMode || exitDemoMode() else { return }
+
                 try Keychain.set(refresh, forKey: "refreshToken.\(info.email)")
                 try await db.write { db in
                     if var existing = try Account.fetchOne(db, key: info.email) {
@@ -2247,6 +2297,10 @@ final class MailStore: ObservableObject {
     }
 
     func removeAccount(_ id: String) {
+        if demoMode, id == DemoSeed.account {
+            _ = exitDemoMode()
+            return
+        }
         Keychain.delete("refreshToken.\(id)")
         try? db.write { db in _ = try Account.deleteOne(db, key: id) }
         engines[id] = nil
@@ -2622,6 +2676,10 @@ final class MailStore: ObservableObject {
     /// label lands highlighted in the (re-emptied) picker list so the applied
     /// checkmark is visible.
     func createLabelAndApply(name: String, thread: MailThread) {
+        guard !demoMode else {
+            showNotice("Creating labels is disabled in the demo inbox")
+            return
+        }
         let accountId = thread.accountId
         let client = client(for: accountId)
         Task {
