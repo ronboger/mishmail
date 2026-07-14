@@ -172,6 +172,15 @@ struct ThreadDetailView: View {
                         Label("Reply", systemImage: "arrowshape.turn.up.left")
                     }
                     .help("Reply (\(store.keyBindings.key(for: .reply)))")
+                    if ReplyComposer.hasAdditionalReplyAllRecipients(
+                        last, ownAddresses: store.ownEmailAddresses) {
+                        Button {
+                            store.composeRequest = .init(replyTo: last, replyAll: true)
+                        } label: {
+                            Label("Reply all", systemImage: "arrowshape.turn.up.left.2")
+                        }
+                        .help("Reply all (\(store.keyBindings.key(for: .replyAll)))")
+                    }
                     Button {
                         store.composeRequest = .init(replyTo: last, forward: true)
                     } label: {
@@ -881,6 +890,17 @@ struct MessageCard: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help("Reply (\(store.keyBindings.key(for: .reply)))")
+                    if ReplyComposer.hasAdditionalReplyAllRecipients(
+                        message, ownAddresses: store.ownEmailAddresses) {
+                        Button {
+                            store.composeRequest = .init(replyTo: message, replyAll: true)
+                        } label: {
+                            Image(systemName: "arrowshape.turn.up.left.2")
+                                .font(.system(size: 12 * fontScale))
+                        }
+                        .buttonStyle(.plain).foregroundStyle(.secondary)
+                        .help("Reply all (\(store.keyBindings.key(for: .replyAll)))")
+                    }
                     Button {
                         store.composeRequest = .init(replyTo: message, forward: true)
                     } label: {
@@ -1031,6 +1051,17 @@ struct MessageCard: View {
                             .font(.system(size: 12.5 * fontScale))
                     }
                     .buttonStyle(.bordered)
+                    if ReplyComposer.hasAdditionalReplyAllRecipients(
+                        message, ownAddresses: store.ownEmailAddresses) {
+                        Button {
+                            store.composeRequest = .init(replyTo: message, replyAll: true)
+                        } label: {
+                            Label("Reply all", systemImage: "arrowshape.turn.up.left.2")
+                                .font(.system(size: 12.5 * fontScale))
+                        }
+                        .buttonStyle(.bordered)
+                        .help("Reply all (\(store.keyBindings.key(for: .replyAll)))")
+                    }
                     Button {
                         store.composeRequest = .init(replyTo: message, forward: true)
                     } label: {

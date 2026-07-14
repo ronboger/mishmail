@@ -149,4 +149,54 @@ final class ReplyComposerTests: XCTestCase {
         // Pinned en_US_POSIX shape — not locale-sensitive abbreviated style.
         XCTAssertTrue(ReplyComposer.formatDate(d).contains("at"))
     }
+
+    // MARK: - Reply-all affordance
+
+    private let me: Set<String> = ["ron@x.com"]
+
+    func testHasReplyAllWhenCcPresent() {
+        var m = message(from: "Jane <jane@ex.com>")
+        m.toHeader = "ron@x.com"
+        m.ccHeader = "Bob <bob@ex.com>"
+        XCTAssertTrue(ReplyComposer.hasAdditionalReplyAllRecipients(m, ownAddresses: me))
+    }
+
+    func testNoReplyAllOnOneToOne() {
+        var m = message(from: "Jane <jane@ex.com>")
+        m.toHeader = "ron@x.com"
+        m.ccHeader = ""
+        XCTAssertFalse(ReplyComposer.hasAdditionalReplyAllRecipients(m, ownAddresses: me))
+    }
+
+    func testHasReplyAllWhenMultipleToRecipients() {
+        var m = message(from: "Jane <jane@ex.com>")
+        m.toHeader = "ron@x.com, Bob <bob@ex.com>"
+        m.ccHeader = ""
+        XCTAssertTrue(ReplyComposer.hasAdditionalReplyAllRecipients(m, ownAddresses: me))
+    }
+
+    func testNoReplyAllWhenOnlyOwnAddressesOnToCc() {
+        // From Jane to only me (and my send-as) — no other humans.
+        var m = message(from: "Jane <jane@ex.com>")
+        m.toHeader = "ron@x.com"
+        m.ccHeader = "Ron Alias <alias@x.com>"
+        XCTAssertFalse(ReplyComposer.hasAdditionalReplyAllRecipients(
+            m, ownAddresses: ["ron@x.com", "alias@x.com"]))
+    }
+
+    func testReplyAllOnOwnMailUsesCcAsExtra() {
+        // Replying to a message I sent: To already has the targets; Cc is extra.
+        var m = message(from: "Ron <ron@x.com>")
+        m.toHeader = "Jane <jane@ex.com>"
+        m.ccHeader = "Bob <bob@ex.com>"
+        XCTAssertTrue(ReplyComposer.hasAdditionalReplyAllRecipients(m, ownAddresses: me))
+    }
+
+    func testNoReplyAllOnOwnMailWithOnlyToTargets() {
+        // Own mail To: A,B — plain reply already targets both; nothing extra for all.
+        var m = message(from: "Ron <ron@x.com>")
+        m.toHeader = "Jane <jane@ex.com>, Bob <bob@ex.com>"
+        m.ccHeader = ""
+        XCTAssertFalse(ReplyComposer.hasAdditionalReplyAllRecipients(m, ownAddresses: me))
+    }
 }
