@@ -553,6 +553,37 @@ enum ReplyComposer {
     static func formatDate(_ date: Date) -> String {
         dateFormatter.string(from: date)
     }
+
+    /// True when Reply All would put someone on Cc beyond a plain Reply's To.
+    /// Mirrors `ComposeView` recipient prefill so the button only appears when
+    /// it would change the recipient set (group threads / multi-recipient mail).
+    static func hasAdditionalReplyAllRecipients(
+        _ message: Message,
+        ownAddresses: Set<String>
+    ) -> Bool {
+        let own = Set(ownAddresses.map { $0.lowercased() })
+        let sender = MessageParser.emailAddress(message.fromHeader).lowercased()
+
+        // Plain-reply To targets — same rules as ComposeView.setupFromReply.
+        let toTargets: [String]
+        if own.contains(sender) {
+            // Replying to own mail: target its recipients, not self.
+            toTargets = MessageParser.splitAddresses(message.toHeader)
+                .map { MessageParser.emailAddress($0).lowercased() }
+                .filter { $0.contains("@") && !own.contains($0) }
+        } else {
+            toTargets = sender.contains("@") ? [sender] : []
+        }
+        let taken = Set(toTargets)
+
+        let extras = MessageParser.splitAddresses(message.toHeader + "," + message.ccHeader)
+            .map { MessageParser.emailAddress($0).lowercased() }
+            .filter { $0.contains("@") }
+            .filter { !own.contains($0)
+                      && $0 != sender
+                      && !taken.contains($0) }
+        return !extras.isEmpty
+    }
 }
 
 /// Detects the quoted reply trail inside a message body so the thread view

@@ -590,26 +590,36 @@ private struct SnippetEditor: View {
                 Spacer()
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                Button("Save") {
-                    if snippet.id == nil {
-                        store.saveSnippet(name: name, body: body_, movesToBcc: movesToBcc)
-                    } else {
-                        var updated = snippet
-                        updated.name = name
-                        updated.body = body_
-                        updated.movesToBcc = movesToBcc
-                        store.updateSnippet(updated)
-                    }
-                    dismiss()
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
-                .disabled(name.trimmingCharacters(in: .whitespaces).isEmpty
-                          || body_.trimmingCharacters(in: .whitespaces).isEmpty)
+                Button("Save") { save() }
+                    // ⌘↩ — plain Return inserts a newline in the body editor
+                    // (NSTextView), same contract as compose Send.
+                    .keyboardShortcut(.return, modifiers: .command)
+                    .buttonStyle(.borderedProminent)
+                    .disabled(!canSave)
+                    .help("Save (⌘↩)")
             }
         }
         .padding(16)
         .frame(width: 460)
+    }
+
+    private var canSave: Bool {
+        !name.trimmingCharacters(in: .whitespaces).isEmpty
+            && !body_.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private func save() {
+        guard canSave else { return }
+        if snippet.id == nil {
+            store.saveSnippet(name: name, body: body_, movesToBcc: movesToBcc)
+        } else {
+            var updated = snippet
+            updated.name = name
+            updated.body = body_
+            updated.movesToBcc = movesToBcc
+            store.updateSnippet(updated)
+        }
+        dismiss()
     }
 }
 

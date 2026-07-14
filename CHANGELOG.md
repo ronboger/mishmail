@@ -45,6 +45,11 @@ minor versions may still change behavior.
   plus calendar sheet. Past dates are filtered out.
 
 ### Added
+- **Reply all button** — on multi-recipient messages (extra To/Cc beyond a
+  plain reply), the reading pane shows Reply all next to Reply (toolbar,
+  header icons, and message action bar). Keyboard `a` was already wired.
+- **⌘↩ saves a snippet** — in Settings → Snippets create/edit, Cmd-Return
+  saves (plain Return still inserts a newline in the body editor).
 - **Multi-select** — `x` toggles a checkbox on the focused conversation
   (rebindable); row checkboxes (Notion-style, visible on hover or when any are
   selected); Shift-click a checkbox to select a range; bulk Archive / Trash /
