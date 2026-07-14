@@ -1,20 +1,20 @@
 import XCTest
 
 final class ErrorRecoveryTests: XCTestCase {
-    func testCurrentReauthErrorOpensAccountRecovery() {
-        XCTAssertEqual(ErrorRecovery.action(
-            for: "person@example.org: needs to be reauthorized (Settings → Accounts).",
-            accountsNeedingReauth: ["person@example.org"]), .reauthorize)
+    func testReauthorizationPresentationCarriesItsRecoveryAction() {
+        let error = ErrorRecovery.reauthorizationRequired(for: "person@example.org")
+
+        XCTAssertEqual(error.recovery, .reauthorize)
+        XCTAssertEqual(
+            error.message,
+            "person@example.org: needs to be reauthorized (Settings → Accounts).")
     }
 
-    func testUnrelatedNetworkErrorKeepsRetryEvenWhenAnotherAccountNeedsReauth() {
-        XCTAssertEqual(ErrorRecovery.action(
-            for: "other@example.org: The Internet connection appears to be offline.",
-            accountsNeedingReauth: ["person@example.org"]), .retrySync)
-    }
+    func testRetryPresentationDoesNotInferRecoveryFromMessageWording() {
+        let message = "person@example.org: needs to be reauthorized someday."
+        let error = ErrorRecovery.retry(message)
 
-    func testGenericErrorKeepsRetry() {
-        XCTAssertEqual(ErrorRecovery.action(
-            for: "Request timed out.", accountsNeedingReauth: []), .retrySync)
+        XCTAssertEqual(error.message, message)
+        XCTAssertEqual(error.recovery, .retrySync)
     }
 }

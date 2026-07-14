@@ -44,6 +44,8 @@ enum DemoSeed {
 
     /// Wipes demo-owned mail tables and inserts a fresh inbox. Idempotent:
     /// every demo launch reseeds from scratch, so screenshots are deterministic.
+    /// If a transactional reseed fails, an existing fixture is still safe to
+    /// show offline because rollback restores it in full.
     @discardableResult
     static func seedIfRequested(_ db: DatabasePool) -> Bool {
         guard isActive else { return false }
@@ -59,7 +61,12 @@ enum DemoSeed {
             }
             return false
         }
-        return seed(db)
+        if seed(db) { return true }
+        if existing == [account] {
+            NSLog("MishMail: using the previous demo fixture after reseed failure")
+            return true
+        }
+        return false
     }
 
     private static func accountIDs(in db: DatabasePool) -> [String]? {

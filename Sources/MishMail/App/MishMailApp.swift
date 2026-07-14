@@ -68,6 +68,7 @@ struct MishMailApp: App {
                     UpdateChecker.shared.startPeriodicChecks()
                 }
         }
+        .defaultSize(width: 1000, height: 640)
         .commands {
             CommandGroup(replacing: .appInfo) {
                 Button("About MishMail") { AboutPanel.show() }

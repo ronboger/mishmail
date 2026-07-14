@@ -364,7 +364,17 @@ final class MailStore: ObservableObject {
     }
     @Published var activeAccountId: String?   // nil = all accounts (unified)
     @Published var syncStatus: String = ""
-    @Published var lastError: String?
+    @Published private var presentedError: PresentedError?
+    /// Existing callers can continue assigning plain messages; they safely
+    /// default to retry. Errors that require another action set a structured
+    /// presentation instead of relying on wording inspection in the UI.
+    var lastError: String? {
+        get { presentedError?.message }
+        set { presentedError = newValue.map(ErrorRecovery.retry) }
+    }
+    var lastErrorRecovery: ErrorRecoveryAction {
+        presentedError?.recovery ?? .retrySync
+    }
     @Published private(set) var demoMode = DemoSeed.isActive
     /// Account ids whose saved sign-in Google has rejected (expired/revoked
     /// refresh token); the Accounts settings pane offers a "Reauthorize"
@@ -2439,6 +2449,11 @@ final class MailStore: ObservableObject {
         }
     }
 
+    private func requireReauthorization(for accountID: String) {
+        accountsNeedingReauth.insert(accountID)
+        presentedError = ErrorRecovery.reauthorizationRequired(for: accountID)
+    }
+
     // MARK: - Sync
 
     func startPolling() {
@@ -2505,8 +2520,7 @@ final class MailStore: ObservableObject {
             for await (id, error) in group {
                 if let error {
                     if Self.isReauthRequired(error) {
-                        accountsNeedingReauth.insert(id)
-                        lastError = "\(id): needs to be reauthorized (Settings → Accounts)."
+                        requireReauthorization(for: id)
                     } else if case GmailError.partialFetch = error {
                         // Soft: historyId not advanced; next sync retries.
                         // Still run post-sync so successful upserts appear.
@@ -2553,8 +2567,7 @@ final class MailStore: ObservableObject {
         } catch {
             syncStatus = ""
             if Self.isReauthRequired(error) {
-                accountsNeedingReauth.insert(accountId)
-                lastError = "\(accountId): needs to be reauthorized (Settings → Accounts)."
+                requireReauthorization(for: accountId)
             } else if case GmailError.partialFetch = error {
                 // Soft: apply what we got; historyId stays put for retry.
                 accountsNeedingReauth.remove(accountId)

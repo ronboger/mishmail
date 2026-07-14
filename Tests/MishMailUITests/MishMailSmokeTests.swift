@@ -12,6 +12,10 @@ final class MishMailSmokeTests: XCTestCase {
         app.launch()
         addTeardownBlock { app.terminate() }
 
+        XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
+        XCTAssertLessThan(app.windows.firstMatch.frame.width, 1080,
+                          "The default launch width must exercise compact detail navigation")
+        app.activate()
         let demoThread = app.staticTexts
             .matching(identifier: "threadRow.you@example.com:t1").firstMatch
         XCTAssertTrue(demoThread.waitForExistence(timeout: 10))

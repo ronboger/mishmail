@@ -243,9 +243,7 @@ struct ContentView: View {
                         .font(.system(size: 13))
                         .lineLimit(3)
                         .frame(maxWidth: 360, alignment: .leading)
-                    if ErrorRecovery.action(
-                        for: error,
-                        accountsNeedingReauth: store.accountsNeedingReauth) == .retrySync {
+                    if store.lastErrorRecovery == .retrySync {
                         Button("Sync") {
                             store.lastError = nil
                             Task { await store.syncAll() }

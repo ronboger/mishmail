@@ -65,6 +65,34 @@ final class DemoSeedTests: XCTestCase {
         XCTAssertFalse(UserDefaults.standard.bool(forKey: "demoModeEnabled"))
     }
 
+    func testFailedReseedKeepsThePreviousFixtureOffline() throws {
+        let (pool, path) = try makeDatabase()
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        XCTAssertTrue(DemoSeed.activate(pool))
+        let originalMessageCount = try pool.read { try Int.fetchOne(
+            $0, sql: "SELECT COUNT(*) FROM message") ?? 0 }
+        try pool.write { db in
+            try db.execute(sql: """
+                CREATE TRIGGER reject_demo_reseed
+                BEFORE INSERT ON account
+                WHEN NEW.id = '\(DemoSeed.account)'
+                BEGIN
+                    SELECT RAISE(FAIL, 'simulated transient write failure');
+                END
+                """)
+        }
+
+        XCTAssertTrue(DemoSeed.seedIfRequested(pool))
+
+        let state = try pool.read { db in
+            (try String.fetchAll(db, sql: "SELECT id FROM account"),
+             try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM message") ?? 0)
+        }
+        XCTAssertEqual(state.0, [DemoSeed.account])
+        XCTAssertEqual(state.1, originalMessageCount)
+        XCTAssertTrue(UserDefaults.standard.bool(forKey: "demoModeEnabled"))
+    }
+
     private func makeDatabase() throws -> (DatabasePool, String) {
         let path = NSTemporaryDirectory() + "mishmail-demo-\(UUID().uuidString).sqlite"
         let pool = try DatabasePool(path: path)
