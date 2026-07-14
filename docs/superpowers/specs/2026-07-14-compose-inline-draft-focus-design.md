@@ -39,6 +39,12 @@ Three related reading/compose friction points:
   re-run after it completes (latest-wins). Send/Discard await idle first.
 - **Dismiss** awaits a non-silent final save (errors via `lastError`) and
   syncs so the Drafts list matches Gmail. Demo never claims "Draft saved".
+- **Undo-send baseline** — `request.restore` wins over `editDraft` when both
+  are set (common after autosave-then-send); fingerprint stays dirty so Esc
+  re-saves the full restore body, not just the last autosaved snapshot.
+- **Finish re-entry guard** — `beginFinish()` sets `didFinish` before any
+  await on Send / Schedule / Discard / Close so double-⌘↩ cannot queue two
+  sends while persist is in flight.
 
 ### 2. Inline reply in the reading pane
 

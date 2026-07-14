@@ -107,9 +107,27 @@ struct ComposeView: View {
     /// Draft id chain for replace / send / discard (autosave may have moved it).
     private var liveDraft: Message? { replacingDraft ?? editingDraft }
 
+    /// Claim the finish path immediately (before any await) so Send / Esc /
+    /// Discard / Schedule can't re-enter and double-queue. Returns false if
+    /// another finish is already in flight.
+    @discardableResult
+    private func beginFinish() -> Bool {
+        guard !didFinish else { return false }
+        didFinish = true
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        return true
+    }
+
+    /// Undo `beginFinish` when the action can't complete (e.g. empty To:).
+    private func abortFinish() {
+        didFinish = false
+    }
+
     private func close() {
         didFinish = true
         autosaveTask?.cancel()
+        autosaveTask = nil
         store.composeMinimized = false
         store.composeRequest = nil
     }
@@ -320,7 +338,9 @@ struct ComposeView: View {
             }
             return
         }
-        if silent { draftStatus = .saving }
+        // Show Saving… for both autosave and dismiss-path saves so offline
+        // ✕/Esc doesn't look hung while URLSession waits (N2).
+        draftStatus = .saving
         // Best effort on the files: an unreadable pick shouldn't lose the text.
         let attachments = (try? collectAttachments()) ?? restoredAttachments
         // Closed while the prefilled files were still downloading: their
@@ -372,17 +392,15 @@ struct ComposeView: View {
         if let saved {
             replacingDraft = saved
             lastSavedFingerprint = fingerprint
-            if silent {
-                didSilentSave = true
-                draftStatus = .saved
-            }
+            if silent { didSilentSave = true }
+            draftStatus = .saved
             // Content may have changed during the network round-trip — chain
             // one more silent save so we don't leave an older body as "the"
             // draft. Only after success (failed saves must not recurse).
             if silent, hasContent, contentFingerprint != lastSavedFingerprint {
                 await performPersist(silent: true, syncAfter: false)
             }
-        } else if silent {
+        } else {
             draftStatus = .failed
         }
     }
@@ -399,7 +417,7 @@ struct ComposeView: View {
     /// Awaits the save so offline failure still surfaces via lastError, and
     /// always syncs after a silent autosave so the Drafts list is fresh.
     private func saveAndClose() {
-        autosaveTask?.cancel()
+        guard beginFinish() else { return }
         Task { @MainActor in
             await enqueuePersist(silent: false, syncAfter: true)
             close()
@@ -408,7 +426,7 @@ struct ComposeView: View {
 
     /// Discard without keeping a Gmail draft — deletes the live autosave chain.
     private func discardAndClose() {
-        autosaveTask?.cancel()
+        guard beginFinish() else { return }
         Task { @MainActor in
             // Finish any in-flight createDraft so we delete the real server draft.
             await awaitPersistIdle()
@@ -453,18 +471,21 @@ struct ComposeView: View {
             // draft that Send was about to delete.
             replacingDraft = editingDraft ?? request.restore?.replacingDraft
             prefill()
-            // Prefill mutates fields — re-baseline carefully:
-            // • editDraft: already on the server → clean.
-            // • restore (undo send): content is only in memory; must NOT look
-            //   clean or Esc/close drops the body without saving (H4).
-            // • new/reply prefill: baseline so pure quote isn't autosaved.
-            if editingDraft != nil {
-                lastSavedFingerprint = contentFingerprint
-                draftStatus = .saved
-            } else if request.restore != nil {
+            // Prefill mutates fields — re-baseline carefully.
+            // restore MUST win over editDraft: cancelPendingSend often sets
+            // both (editDraft = the autosaved chain). The server draft only
+            // has the last-autosaved body; anything typed in the ≤1.5s before
+            // Send lives only in restore.body. Treating that as clean loses
+            // the tail on Esc (H4 residual).
+            if request.restore != nil {
                 lastSavedFingerprint = ""
                 draftStatus = .idle
+            } else if editingDraft != nil {
+                // Reopened draft is already on the server.
+                lastSavedFingerprint = contentFingerprint
+                draftStatus = .saved
             } else {
+                // New/reply prefill — baseline so pure quote isn't autosaved.
                 lastSavedFingerprint = contentFingerprint
                 draftStatus = .idle
             }
@@ -941,6 +962,7 @@ struct ComposeView: View {
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .disabled(didFinish)
                     // Never compress to "Se…" when the footer gets crowded.
                     .fixedSize()
                     .keyboardShortcut(.return, modifiers: .command)
@@ -1607,20 +1629,29 @@ struct ComposeView: View {
     }
 
     private func send() {
-        // Wait out in-flight autosave so liveDraft is current and we don't
-        // race a createDraft that would orphan after send.
+        // Claim finish before any await so a second click / ⌘↩ can't queue
+        // two sends while we wait on in-flight autosave (N1).
+        guard beginFinish() else { return }
         Task { @MainActor in
             await awaitPersistIdle()
-            guard let pending = buildPendingSend() else { return }
+            guard let pending = buildPendingSend() else {
+                // Not sendable (empty To:) — re-enable the card.
+                abortFinish()
+                return
+            }
             store.queueSend(pending)
             close()
         }
     }
 
     private func scheduleSend(at date: Date) {
+        guard beginFinish() else { return }
         Task { @MainActor in
             await awaitPersistIdle()
-            guard let pending = buildPendingSend() else { return }
+            guard let pending = buildPendingSend() else {
+                abortFinish()
+                return
+            }
             store.scheduleSend(pending, at: date)
             close()
         }
