@@ -122,6 +122,7 @@ targets:
       - Sources/MishMail/Support/NeighborPrefetch.swift
       - Sources/MishMail/Support/ThreadRefresh.swift
       - Sources/MishMail/Support/DefaultMailClient.swift
+      - Sources/MishMail/Support/MarkReadOnOpen.swift
       - Sources/MishMail/Auth/OAuth.swift
     dependencies:
       - package: GRDB

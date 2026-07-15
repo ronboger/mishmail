@@ -3223,15 +3223,25 @@ final class MailStore: ObservableObject {
     func archive(_ thread: MailThread) {
         let wasSelected = selectedThreadId == thread.id
         let neighbor = SelectionAdvance.neighborId(in: selectionOrder, removing: thread.id)
-        mutateThread(thread) { $0.inInbox = false } remote: { client, id in
-            try await client.modifyThread(id: id, remove: ["INBOX"])
+        // Archive always marks read: selection advance cancels the reading-pane
+        // dwell timer, and Gmail's own archive treats the conversation as seen.
+        mutateThread(thread) {
+            $0.inInbox = false
+            $0.isUnread = false
+        } remote: { client, id in
+            try await client.modifyThread(id: id, remove: ["INBOX", "UNREAD"])
         }
         advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
         let priorFocus = wasSelected ? thread.id : selectedThreadId
         offerUndo("Archived") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep([thread.id])
-            self.mutateThread(thread) { $0.inInbox = true } remote: { client, id in
+            // Undo restores inbox only — stay read (matches Gmail undo-archive).
+            // Local starts from the pre-archive snapshot, so re-assert isUnread.
+            self.mutateThread(thread) {
+                $0.inInbox = true
+                $0.isUnread = false
+            } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"])
             }
             self.restoreSelectionFocus(priorFocus)
@@ -3246,8 +3256,13 @@ final class MailStore: ObservableObject {
         let order = selectionOrder
         let removed = Set(targets.map(\.id))
         let focus = selectedThreadId
-        mutateThreads(targets, local: { $0.inInbox = false }, remote: { client, id in
-            try await client.modifyThread(id: id, remove: ["INBOX"])
+        // Same as single archive: drop UNREAD so a fast multi-select `e`
+        // does not leave archived mail unread (dwell is cancelled by advance).
+        mutateThreads(targets, local: {
+            $0.inInbox = false
+            $0.isUnread = false
+        }, remote: { client, id in
+            try await client.modifyThread(id: id, remove: ["INBOX", "UNREAD"])
         })
         clearCheckedThreads()
         advanceAfterRemoving(removed, fromOrder: order, focus: focus)
@@ -3256,7 +3271,10 @@ final class MailStore: ObservableObject {
         offerUndo(n == 1 ? "Archived" : "Archived \(n) conversations") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep(ids)
-            self.mutateThreads(targets, local: { $0.inInbox = true }, remote: { client, id in
+            self.mutateThreads(targets, local: {
+                $0.inInbox = true
+                $0.isUnread = false
+            }, remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"])
             })
             self.restoreSelectionFocus(focus)

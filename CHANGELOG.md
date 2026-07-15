@@ -28,6 +28,11 @@ minor versions may still change behavior.
   Toolbar: Focus Conversation. Documented on the `?` shortcuts sheet.
 
 ### Changed
+- **Mark-as-read waits ~1s on open** — skimming the inbox with j/k or
+  click-select no longer clears every unread badge on contact. Stay on a
+  conversation for about a second (or press `u`) to mark read. **Archive
+  (`e`) marks read immediately** so a quick archive does not leave the
+  thread unread in All Mail.
 - **Snippets settings list scrolls clearly** — list is height-constrained with
   always-visible scroll indicators and a “Scroll for more” fade when content
   overflows.
