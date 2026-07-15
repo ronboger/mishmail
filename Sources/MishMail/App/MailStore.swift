@@ -1392,10 +1392,13 @@ final class MailStore: ObservableObject {
         }
     }
 
-    /// One-shot: next `reloadThreads` re-attaches `selectedThreadId` if the
-    /// async result omitted it. Set by `openThread` (search panel) so we do
-    /// not re-pin a stale selection on every unrelated search/view reload.
-    private var preserveSelectedThreadOnNextReload = false
+    /// Pin from `openThread`: only the reload generation that was in flight
+    /// (or last completed) when the user picked the hit may re-attach it.
+    /// A boolean "next reload" flag is wrong — if that reload is cancelled
+    /// (new query / view switch), a later unrelated reload would pin a
+    /// non-matching thread into its list.
+    private var preserveOpenThreadId: String?
+    private var preserveOpenThreadGeneration: Int?
 
     /// Open a specific thread picked from the `/` search panel.
     ///
@@ -1408,7 +1411,10 @@ final class MailStore: ObservableObject {
     func openThread(_ thread: MailThread) {
         threads = OpenFromSearch.ensuringVisible(opening: thread, in: threads)
         selectedThreadId = thread.id
-        preserveSelectedThreadOnNextReload = true
+        // Bind pin to the current reload epoch (commitSearch already bumped
+        // this when the panel path commits a query first).
+        preserveOpenThreadId = thread.id
+        preserveOpenThreadGeneration = threadReloadGeneration
     }
 
     /// Keep the search results panel mounted briefly after the field blurs.
@@ -1690,16 +1696,27 @@ final class MailStore: ObservableObject {
 
             await MainActor.run {
                 guard let self, generation == self.threadReloadGeneration else { return }
-                // One-shot pin after openThread so a search-panel hit stays
-                // visible while commitSearch's async reload settles.
+                // Generation-scoped pin: only the reload openThread paired with
+                // may re-attach the hit. Superseded reloads clear without pin.
                 let list: [MailThread]
-                if self.preserveSelectedThreadOnNextReload {
-                    self.preserveSelectedThreadOnNextReload = false
+                switch OpenFromSearch.pinDecision(
+                    pendingThreadId: self.preserveOpenThreadId,
+                    pendingGeneration: self.preserveOpenThreadGeneration,
+                    completedGeneration: generation,
+                    currentSelectedId: self.selectedThreadId
+                ) {
+                case .apply(let threadId):
+                    self.preserveOpenThreadId = nil
+                    self.preserveOpenThreadGeneration = nil
                     list = OpenFromSearch.mergingPinned(
-                        selectedId: self.selectedThreadId,
+                        selectedId: threadId,
                         previous: self.threads,
                         reloaded: payload.threads)
-                } else {
+                case .clear:
+                    self.preserveOpenThreadId = nil
+                    self.preserveOpenThreadGeneration = nil
+                    list = payload.threads
+                case .ignore:
                     list = payload.threads
                 }
                 self.threads = list

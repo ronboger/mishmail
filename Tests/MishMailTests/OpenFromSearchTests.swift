@@ -71,4 +71,40 @@ final class OpenFromSearchTests: XCTestCase {
             reloaded: reloaded)
         XCTAssertEqual(merged.map(\.id), reloaded.map(\.id))
     }
+
+    // MARK: - Generation-scoped pin decision
+
+    func testPinDecisionAppliesOnlyMatchingGenerationAndSelection() {
+        XCTAssertEqual(
+            OpenFromSearch.pinDecision(
+                pendingThreadId: "t1", pendingGeneration: 6,
+                completedGeneration: 6, currentSelectedId: "t1"),
+            .apply(threadId: "t1"))
+    }
+
+    func testPinDecisionClearsWhenReloadSuperseded() {
+        // openThread pinned gen 6; user typed a new query → gen 7 completes.
+        XCTAssertEqual(
+            OpenFromSearch.pinDecision(
+                pendingThreadId: "t1", pendingGeneration: 6,
+                completedGeneration: 7, currentSelectedId: "t1"),
+            .clear,
+            "must not pin a non-matching hit into a later reload's list")
+    }
+
+    func testPinDecisionClearsWhenSelectionMoved() {
+        XCTAssertEqual(
+            OpenFromSearch.pinDecision(
+                pendingThreadId: "t1", pendingGeneration: 6,
+                completedGeneration: 6, currentSelectedId: "t2"),
+            .clear)
+    }
+
+    func testPinDecisionIgnoresWhenNoPinPending() {
+        XCTAssertEqual(
+            OpenFromSearch.pinDecision(
+                pendingThreadId: nil, pendingGeneration: nil,
+                completedGeneration: 6, currentSelectedId: "t1"),
+            .ignore)
+    }
 }
