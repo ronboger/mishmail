@@ -161,11 +161,19 @@ enum HTMLBodyLayout {
           }
 
           function viewportWidth(){
+            /* Prefer the real viewport, not body clientWidth — email CSS often
+               sets body min-width:600 while the WKWebView is narrower; maxing
+               with body would skip proportional fit. */
             var w = 0;
             try {
-              if (document.body) w = Math.max(w, document.body.clientWidth || 0);
-              if (document.documentElement) {
-                w = Math.max(w, document.documentElement.clientWidth || 0);
+              if (typeof window !== 'undefined' && window.innerWidth) {
+                w = window.innerWidth;
+              }
+              if ((!w || w <= 0) && document.documentElement) {
+                w = document.documentElement.clientWidth || 0;
+              }
+              if ((!w || w <= 0) && document.body) {
+                w = document.body.clientWidth || 0;
               }
             } catch (e) {}
             return w > 0 ? w : MAX_W;

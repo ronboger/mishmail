@@ -94,9 +94,9 @@ enum HTMLBodyDocument {
                 i = indexAfter("-->", from: i + 4, in: chars) ?? n
                 continue
             }
-            // Closing tag — skip.
+            // Closing tag — skip (attributes rare; still quote-aware).
             if i + 1 < n, chars[i + 1] == "/" {
-                i = indexAfter(">", from: i + 2, in: chars) ?? n
+                i = indexAfterOpenTagClose(from: i + 2, in: chars) ?? n
                 continue
             }
             // Doctype / processing instruction / bogus comment.
@@ -105,14 +105,14 @@ enum HTMLBodyDocument {
                 continue
             }
 
-            guard let (tagName, tagEnd) = readOpenTagName(at: i, in: chars) else {
+            guard let (tagName, _) = readOpenTagName(at: i, in: chars) else {
                 i += 1
                 continue
             }
 
             if tagName == target {
-                // Full open tag ends at `>` (or end of string).
-                let close = indexAfter(">", from: i + 1, in: chars) ?? n
+                // Full open tag ends at unquoted `>` (or end of string).
+                let close = indexAfterOpenTagClose(from: i + 1, in: chars) ?? n
                 let start = html.index(html.startIndex, offsetBy: i)
                 let end = html.index(html.startIndex, offsetBy: close)
                 return start..<end
@@ -120,12 +120,12 @@ enum HTMLBodyDocument {
 
             if rawTextElements.contains(tagName) {
                 // Skip contents until matching close tag (case-insensitive).
-                let afterOpen = indexAfter(">", from: i + 1, in: chars) ?? n
+                let afterOpen = indexAfterOpenTagClose(from: i + 1, in: chars) ?? n
                 i = indexAfterRawTextClose(tagName, from: afterOpen, in: chars)
                 continue
             }
 
-            i = indexAfter(">", from: i + 1, in: chars) ?? n
+            i = indexAfterOpenTagClose(from: i + 1, in: chars) ?? n
         }
         return nil
     }
@@ -157,6 +157,34 @@ enum HTMLBodyDocument {
                 }
             }
             if match { return i + n.count }
+            i += 1
+        }
+        return nil
+    }
+
+    /// Index just past the `>` that terminates an open/close tag, starting
+    /// after the tag name (or after `</`). Skips `>` characters that appear
+    /// inside single- or double-quoted attribute values so
+    /// `<head data-decoy=">">` is not truncated mid-attribute (which would
+    /// leave CSP injection inside the attribute and parser-inert).
+    static func indexAfterOpenTagClose(from: Int, in chars: [Character]) -> Int? {
+        var i = from
+        var quote: Character?
+        while i < chars.count {
+            let c = chars[i]
+            if let q = quote {
+                if c == q { quote = nil }
+                i += 1
+                continue
+            }
+            if c == "\"" || c == "'" {
+                quote = c
+                i += 1
+                continue
+            }
+            if c == ">" {
+                return i + 1
+            }
             i += 1
         }
         return nil
@@ -208,7 +236,7 @@ enum HTMLBodyDocument {
                 if after >= chars.count { return chars.count }
                 let b = chars[after]
                 if b == ">" || b.isWhitespace || b == "/" {
-                    return indexAfter(">", from: after, in: chars) ?? chars.count
+                    return indexAfterOpenTagClose(from: after, in: chars) ?? chars.count
                 }
             }
             i += 1

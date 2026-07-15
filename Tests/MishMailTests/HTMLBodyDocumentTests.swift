@@ -163,4 +163,47 @@ final class HTMLBodyDocumentTests: XCTestCase {
         XCTAssertTrue(out.contains("<html><head><meta id=csp></head>"))
         XCTAssertFalse(out.contains("<!-- <head></head><meta id=csp>"))
     }
+
+    /// Quoted `>` inside attributes must not truncate the open tag — otherwise
+    /// CSP lands inside the attribute value and is parser-inert (Ask bypass).
+    func testHeadOpenTagWithDoubleQuotedGreaterThan() {
+        let html = #"<html><head data-decoy=">"><title>t</title></head><body>x</body></html>"#
+        let range = HTMLBodyDocument.rangeOfOpeningTag("head", in: html)
+        XCTAssertEqual(range.map { String(html[$0]) }, #"<head data-decoy=">">"#)
+
+        let csp = HTMLBodyCSP.metaTag(allowRemoteImages: false)
+        let out = HTMLBodyDocument.assemble(html: html, cspMeta: csp, styleCSS: "/*m*/")
+        // Injection after the full open tag, not inside the attribute.
+        XCTAssertTrue(out.contains(#"<head data-decoy=">">"# + csp),
+                      "CSP must follow the complete open tag, not sit in the attr")
+        // Attribute still only contains the decoy character, not CSP.
+        XCTAssertFalse(out.contains(#"data-decoy=">\#(csp.prefix(20))"#))
+        XCTAssertTrue(out.contains("Content-Security-Policy"))
+    }
+
+    func testHeadOpenTagWithSingleQuotedGreaterThan() {
+        let html = #"<html><head data-decoy='>' id=h></head><body/></html>"#
+        let range = HTMLBodyDocument.rangeOfOpeningTag("head", in: html)
+        XCTAssertEqual(range.map { String(html[$0]) }, #"<head data-decoy='>' id=h>"#)
+
+        let out = HTMLBodyDocument.injectIntoHead(html, injection: "<meta id=csp>")
+        XCTAssertTrue(out.contains(#"<head data-decoy='>' id=h><meta id=csp>"#))
+    }
+
+    func testHtmlFallbackWithQuotedGreaterThan() {
+        // No real head; inject after <html …> that embeds quoted `>`.
+        let html = #"<html data-x=">"><body>x</body></html>"#
+        let range = HTMLBodyDocument.rangeOfOpeningTag("html", in: html)
+        XCTAssertEqual(range.map { String(html[$0]) }, #"<html data-x=">">"#)
+        let out = HTMLBodyDocument.injectIntoHead(html, injection: "<meta id=csp>")
+        XCTAssertTrue(out.contains(#"<html data-x=">"><head><meta id=csp></head>"#))
+    }
+
+    func testIndexAfterOpenTagCloseSkipsQuotedGreaterThan() {
+        let s = Array(#"head data="a>b" data2='c>d'>"#)
+        // from after implicit `<` — start at 0 for "head …"
+        let end = HTMLBodyDocument.indexAfterOpenTagClose(from: 0, in: s)
+        XCTAssertEqual(end, s.count)
+        XCTAssertEqual(s[end! - 1], ">")
+    }
 }

@@ -93,6 +93,11 @@ final class HTMLBodyLayoutTests: XCTestCase {
         // Viewport-proportional fit + reflow on resize.
         XCTAssertTrue(js.contains("fitViewport"))
         XCTAssertTrue(js.contains("reflowPlaceholders"))
+        // Prefer window/documentElement over body clientWidth (fixed email body).
+        XCTAssertTrue(js.contains("window.innerWidth"))
+        XCTAssertTrue(js.contains("documentElement.clientWidth"))
+        // Body is fallback only — not Math.max'd with viewport.
+        XCTAssertFalse(js.contains("Math.max(w, document.body.clientWidth"))
         // Continuous measure: ResizeObserver + message handler + image events.
         XCTAssertTrue(js.contains("ResizeObserver"))
         XCTAssertTrue(js.contains(HTMLBodyLayout.heightHandlerName))

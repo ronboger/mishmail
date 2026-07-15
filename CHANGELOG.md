@@ -15,8 +15,9 @@ minor versions may still change behavior.
   reflow proportionally to the reading-pane width on resize. Height tracking
   uses a ResizeObserver plus image load/error events instead of a fixed ~1.2s
   poll. Complete HTML documents keep author head styles; CSP/CSS are injected
-  via an HTML-aware scanner that skips comments and raw-text elements (so a
-  decoy `<!-- <head> -->` cannot disable Ask-policy CSP). Fragments still wrap.
+  via an HTML-aware scanner that skips comments and raw-text elements and ends
+  open tags only at unquoted `>` (so decoy `<!-- <head> -->` or
+  `data-decoy=">"` cannot disable Ask-policy CSP). Fragments still wrap.
   Message cards gain a manual **Show plain text** control for the multipart
   alternative. Recycled WebViews tear down observers and script handlers.
 
