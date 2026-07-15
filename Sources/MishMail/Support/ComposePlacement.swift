@@ -40,7 +40,9 @@ enum ComposePlacement {
     }
 
     /// Expanded inline compose card height (matches ContentView chrome).
-    static let inlineCardHeight: CGFloat = 380
+    /// Tall enough for From/To/Subject + a usable body while the quote "…"
+    /// pill and footer stay on-screen; reading-pane reserve tracks this.
+    static let inlineCardHeight: CGFloat = 460
     /// Vertical padding under the inline card inside the host overlay.
     static let inlineBottomPadding: CGFloat = 12
     /// Horizontal inset from the reading-pane edges.

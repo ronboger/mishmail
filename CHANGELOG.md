@@ -29,7 +29,19 @@ minor versions may still change behavior.
 - **Design/AppIcon.svg** — source artwork updated to the MishMail apricot
   (no Perfect Mail checkmark badge). Shipping PNGs were already apricot.
 
+### Changed
+- **Taller inline reply compose** — card height 380→460; collapsed-quote body
+  editor floor 120→180 so short replies get a real writing surface.
+
 ### Fixed
+- **Message-card "…" hides plain `>` history** — quote collapse now treats a
+  run of ≥2 `>`-prefixed lines to EOF (and peels a trailing `>` block above a
+  later "On … wrote:") as the trail, so nested history without a bare
+  attribution no longer stays always-visible. HTML without structured
+  gmail_quote falls back to the plain-text head when collapsed. Heuristic
+  tradeoff (documented in tests): multi-line trailing shell/docs snippets
+  that look like `> cmd` collapse behind "…" too; single-line citations do not.
+  CRLF bodies are normalized first (Swift treats `\r\n` as one Character).
 - **Slash snippet picker ranking / stale rows** — `/bball` ranks exact and
   prefix name matches first, selection tracks snippet identity (not a recycled
   list index), and the picker re-scrolls when the query narrows so Enter and

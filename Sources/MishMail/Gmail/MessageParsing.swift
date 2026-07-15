@@ -610,18 +610,167 @@ enum QuotedReply {
             + #"<blockquote[^>]*type\s*=\s*["']?cite"#,
         options: [.caseInsensitive])
 
-    /// Splits a plain-text body at the reply attribution ("On …, X wrote:")
-    /// or forwarded-message marker. Returns nil when there is no quoted trail
-    /// or no authored text above it (collapsing would hide the whole message).
+    /// Splits a plain-text body at the earliest quoted trail so the thread
+    /// card can collapse history behind "…". Boundaries (earliest wins):
+    /// 1. Reply attribution ("On …, X wrote:") or forwarded-message marker
+    /// 2. A run of ≥2 `>`-prefixed lines that continues to EOF after prose
+    ///    (clients that dump nested history without a bare attribution)
+    ///
+    /// After a marker cut, a trailing `>` block still sitting in the head
+    /// (attribution below inlined quotes) is peeled into the trail so the
+    /// pill actually hides the history the user sees.
+    ///
+    /// Returns nil when there is no trail or no authored text above it
+    /// (collapsing would hide the whole message).
     static func splitText(_ body: String) -> (head: String, tail: String)? {
+        // CRLF is a single Swift Character; Character-based line scans never
+        // see "\n" inside it. Normalize before any line walk or String.Index cut.
+        let body = normalizeNewlines(body)
+        var cut: String.Index?
+
         let ns = body as NSString
-        guard let match = textMarker.firstMatch(
-            in: body, range: NSRange(location: 0, length: ns.length))
-        else { return nil }
-        let head = ns.substring(to: match.range.location)
+        if let match = textMarker.firstMatch(
+            in: body, range: NSRange(location: 0, length: ns.length)),
+           let range = Range(match.range, in: body) {
+            cut = range.lowerBound
+        }
+        if let gt = greaterThanBlockStart(in: body) {
+            cut = cut.map { min($0, gt) } ?? gt
+        }
+        guard let cut else { return nil }
+
+        var head = String(body[..<cut])
             .trimmingCharacters(in: .whitespacesAndNewlines)
+        var tail = String(body[cut...])
+
+        if let peeled = peelTrailingGreaterThanBlock(from: head) {
+            head = peeled.head
+            let mid = peeled.peeled
+            if mid.isEmpty {
+                // keep tail
+            } else if tail.isEmpty {
+                tail = mid
+            } else {
+                let needsNL = !mid.hasSuffix("\n") && !tail.hasPrefix("\n")
+                tail = mid + (needsNL ? "\n" : "") + tail
+            }
+        }
+
         guard !head.isEmpty else { return nil }
-        return (head, ns.substring(from: match.range.location))
+        return (head, tail)
+    }
+
+    /// Gmail plain text may use CRLF or bare CR. Swift treats U+000D U+000A as
+    /// one Character, which breaks Character-indexed line scans that look for
+    /// `"\n"`. Collapse to LF so line walks and regex cuts stay consistent.
+    private static func normalizeNewlines(_ body: String) -> String {
+        guard body.utf8.contains(UInt8(ascii: "\r")) else { return body }
+        return body.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+    }
+
+    /// True when a line is a classic plain-text quote (`>` / `> `), ignoring
+    /// leading horizontal whitespace.
+    private static func isGreaterThanLine(_ line: Substring) -> Bool {
+        let t = line.drop(while: { $0 == " " || $0 == "\t" })
+        return t.first == ">"
+    }
+
+    private static func isBlankLine(_ line: Substring) -> Bool {
+        line.allSatisfy { $0.isWhitespace }
+    }
+
+    /// Line starts + content (split on `\n`, keeps empty lines).
+    private static func enumeratedLines(_ body: String)
+        -> [(start: String.Index, content: Substring)] {
+        var lines: [(start: String.Index, content: Substring)] = []
+        var start = body.startIndex
+        var i = body.startIndex
+        while i < body.endIndex {
+            if body[i] == "\n" {
+                lines.append((start, body[start..<i]))
+                i = body.index(after: i)
+                start = i
+            } else {
+                i = body.index(after: i)
+            }
+        }
+        lines.append((start, body[start..<body.endIndex]))
+        return lines
+    }
+
+    /// Start of a pure `>`-prefixed trail to EOF (≥2 quoted lines) after
+    /// authored prose. Nested history often has no bare "On … wrote:" —
+    /// only `> On … wrote:` — so the attribution regex never fires.
+    ///
+    /// Single backward pass (O(n)): the pure trailing region is a suffix of
+    /// blank + `>` lines; the first non-quoted non-blank line walking up from
+    /// EOF ends it. Avoids the O(n²) forward scan that re-counted to EOF at
+    /// every candidate.
+    private static func greaterThanBlockStart(in body: String) -> String.Index? {
+        let lines = enumeratedLines(body)
+        guard !lines.isEmpty else { return nil }
+
+        var idx = lines.count - 1
+        while idx >= 0, isBlankLine(lines[idx].content) { idx -= 1 }
+        guard idx >= 0 else { return nil }
+
+        var quoted = 0
+        var blockStart: Int?
+        while idx >= 0 {
+            let c = lines[idx].content
+            if isBlankLine(c) {
+                idx -= 1
+                continue
+            }
+            if isGreaterThanLine(c) {
+                blockStart = idx
+                quoted += 1
+                idx -= 1
+                continue
+            }
+            // Non-quoted non-blank = prose; pure trailing region ends above.
+            break
+        }
+
+        // Need ≥2 quoted lines and prose before the block (`idx` still on that
+        // prose line, or -1 when the body is quote-only from the top).
+        guard let start = blockStart, quoted >= 2, idx >= 0 else { return nil }
+        return lines[start].start
+    }
+
+    /// If `head` ends with a pure `>` block (≥2 lines) after real prose, peel
+    /// it off so a later "On … wrote:" cut doesn't leave history in the head.
+    private static func peelTrailingGreaterThanBlock(from head: String)
+        -> (head: String, peeled: String)? {
+        let lines = enumeratedLines(head)
+        var lastProse: Int?
+        for (idx, line) in lines.enumerated() {
+            if isBlankLine(line.content) { continue }
+            if !isGreaterThanLine(line.content) { lastProse = idx }
+        }
+        guard let proseIdx = lastProse else { return nil }
+
+        var blockStart: Int?
+        var quoted = 0
+        for idx in (proseIdx + 1)..<lines.count {
+            let c = lines[idx].content
+            if isBlankLine(c) { continue }
+            if isGreaterThanLine(c) {
+                if blockStart == nil { blockStart = idx }
+                quoted += 1
+            } else {
+                return nil
+            }
+        }
+        guard let start = blockStart, quoted >= 2 else { return nil }
+
+        let newHead = String(head[head.startIndex..<lines[proseIdx].content.endIndex])
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !newHead.isEmpty else { return nil }
+        // Blanks between last prose and the first `>` line travel with the trail.
+        let peeled = String(head[lines[start].start...])
+        return (newHead, peeled)
     }
 
     /// True when an HTML body carries a quoted trail that `hideQuoteCSS`
@@ -664,17 +813,23 @@ enum QuotedReply {
         return htmlAuthoredHead(html)
     }
 
-    /// True when plain text is only a quoted trail (marker present, no head).
-    /// Same empty-head guard as `splitText`, exposed so previews don't treat
-    /// quote-only bodies as authored content.
+    /// True when plain text is only a quoted trail (marker present, no head,
+    /// or every non-blank line is `>`-prefixed). Same empty-head guard as
+    /// `splitText`, exposed so previews don't treat quote-only bodies as
+    /// authored content.
     static func isQuoteOnlyText(_ body: String) -> Bool {
+        let body = normalizeNewlines(body)
         let ns = body as NSString
-        guard let match = textMarker.firstMatch(
-            in: body, range: NSRange(location: 0, length: ns.length))
-        else { return false }
-        return ns.substring(to: match.range.location)
-            .trimmingCharacters(in: .whitespacesAndNewlines)
-            .isEmpty
+        if let match = textMarker.firstMatch(
+            in: body, range: NSRange(location: 0, length: ns.length)) {
+            return ns.substring(to: match.range.location)
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+                .isEmpty
+        }
+        let lines = enumeratedLines(body)
+        let nonBlank = lines.map(\.content).filter { !isBlankLine($0) }
+        guard !nonBlank.isEmpty else { return false }
+        return nonBlank.allSatisfy { isGreaterThanLine($0) }
     }
 
     /// Authored head of an HTML body above a known quote container, or the
