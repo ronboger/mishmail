@@ -350,13 +350,17 @@ struct ThreadDetailView: View {
             } catch {
                 return
             }
-            let liveUnread = store.threads.first(where: { $0.id == thread.id })?.isUnread
-                ?? thread.isUnread
+            // Require a live list row — never fall back to the captured
+            // `thread` snapshot. After archive of the last visible row,
+            // selection can still point here while the row is gone; using
+            // the stale model would re-save inInbox=true via setRead.
+            let liveThread = store.threads.first(where: { $0.id == thread.id })
             guard MarkReadOnOpen.shouldMarkRead(
                 selectedId: store.selectedThreadId,
                 threadId: thread.id,
-                isUnread: liveUnread) else { return }
-            store.setRead(thread, read: true)
+                liveIsUnread: liveThread?.isUnread),
+                  let liveThread else { return }
+            store.setRead(liveThread, read: true)
         }
         // The store reloaded from the DB (sync, draft discard, send…): refresh
         // the open thread in place so e.g. a discarded draft's card disappears

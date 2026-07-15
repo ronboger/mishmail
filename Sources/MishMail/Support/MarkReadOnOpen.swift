@@ -15,9 +15,13 @@ enum MarkReadOnOpen {
     /// - Parameters:
     ///   - selectedId: current `selectedThreadId` (must still be this thread)
     ///   - threadId: the thread the open task was started for
-    ///   - isUnread: latest unread flag for that thread (prefer live store state)
+    ///   - liveIsUnread: unread flag from the **live** store list row. `nil`
+    ///     means the row is gone (archived, filtered out, etc.) — never fall
+    ///     back to the pre-open snapshot, which can resurrect `inInbox` via
+    ///     a stale whole-model `setRead`.
     static func shouldMarkRead(selectedId: String?, threadId: String,
-                               isUnread: Bool) -> Bool {
-        selectedId == threadId && isUnread
+                               liveIsUnread: Bool?) -> Bool {
+        guard let liveIsUnread else { return false }
+        return selectedId == threadId && liveIsUnread
     }
 }
