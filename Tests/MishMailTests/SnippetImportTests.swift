@@ -5,13 +5,15 @@ final class SnippetImportTests: XCTestCase {
     func testDecode() throws {
         let json = """
         [{"name": "Zoom Link", "body": "Here's my zoom link: {zoom_link}"},
-         {"name": "intro find time", "body": "Thanks {bcc_first_name}!", "movesToBcc": true}]
+         {"name": "intro find time", "body": "Thanks {bcc_first_name}!", "movesToBcc": true},
+         {"name": "work only", "body": "Hi", "accountIds": ["a@x.com"]}]
         """
         let items = try SnippetImport.decode(Data(json.utf8))
-        XCTAssertEqual(items.count, 2)
+        XCTAssertEqual(items.count, 3)
         XCTAssertEqual(items[0].name, "Zoom Link")
         XCTAssertNil(items[0].movesToBcc)
         XCTAssertEqual(items[1].movesToBcc, true)
+        XCTAssertEqual(items[2].accountIds, ["a@x.com"])
     }
 
     func testPlanSkipsExistingNamesCaseInsensitively() {

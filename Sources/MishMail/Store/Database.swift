@@ -180,7 +180,42 @@ struct Snippet: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     var body: String
     /// Intro etiquette: inserting this snippet moves To → Bcc and Cc → To.
     var movesToBcc: Bool = false
+    /// JSON array of account emails that may use this snippet. `nil` or `[]`
+    /// means available on every account (the default).
+    var accountIdsJSON: String? = nil
     mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+
+    /// Account emails this snippet is scoped to. Empty = all accounts.
+    var accountIds: [String] {
+        get {
+            guard let raw = accountIdsJSON?.data(using: .utf8),
+                  let decoded = try? JSONDecoder().decode([String].self, from: raw)
+            else { return [] }
+            return decoded
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+        set {
+            let cleaned = newValue
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+            if cleaned.isEmpty {
+                accountIdsJSON = nil
+            } else if let data = try? JSONEncoder().encode(cleaned),
+                      let s = String(data: data, encoding: .utf8) {
+                accountIdsJSON = s
+            }
+        }
+    }
+
+    /// Whether this snippet may appear while composing as `accountId`.
+    func isAvailable(for accountId: String) -> Bool {
+        let ids = accountIds
+        guard !ids.isEmpty else { return true }
+        let target = accountId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !target.isEmpty else { return true }
+        return ids.contains { $0.caseInsensitiveCompare(target) == .orderedSame }
+    }
 
     /// Case-insensitive name-or-body match, shared by the compose panel and
     /// the settings page so their search behavior can't drift apart.
@@ -193,6 +228,12 @@ struct Snippet: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
 
     /// One-line preview for list rows.
     var previewLine: String { body.replacingOccurrences(of: "\n", with: " ") }
+
+    /// Stable identity for SwiftUI lists (optional DB id is nil for drafts).
+    var listId: String {
+        if let id { return "id-\(id)" }
+        return "name-\(name.lowercased())"
+    }
 }
 
 /// A composed message waiting for its send time. Gmail has no schedule-send
@@ -921,6 +962,12 @@ final class AppDatabase {
                 try db.execute(sql: """
                     UPDATE thread SET lastDate = ?, lastInboundDate = ? WHERE id = ?
                     """, arguments: [newest.date, inbound, threadKey])
+            }
+        }
+        // v26: per-snippet account scope (nil/empty JSON = all accounts).
+        m.registerMigration("v26") { db in
+            try db.alter(table: "snippet") { t in
+                t.add(column: "accountIdsJSON", .text)
             }
         }
         return m

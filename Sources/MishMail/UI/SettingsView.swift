@@ -114,7 +114,9 @@ struct PaneScaffold<Content: View>: View {
             .padding(.horizontal, 20).padding(.top, 18).padding(.bottom, 12)
             Divider().padding(.horizontal, 20)
             content
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 }
 
@@ -432,9 +434,16 @@ struct SnippetsSettings: View {
     @State private var editing: Snippet?
     @State private var showImporter = false
     @State private var importResult: String?
+    @State private var listContentHeight: CGFloat = 0
+    @State private var listViewportHeight: CGFloat = 0
 
     private var filtered: [Snippet] {
         store.allSnippets.filter { $0.matches(search) }
+    }
+
+    /// True when the snippet list is taller than its viewport (overflow).
+    private var listOverflows: Bool {
+        listContentHeight > listViewportHeight + 8 && listViewportHeight > 0
     }
 
     var body: some View {
@@ -453,7 +462,7 @@ struct SnippetsSettings: View {
                             .foregroundStyle(.secondary)
                     }
                     Button("Import…") { showImporter = true }
-                        .help("Import snippets from a JSON file: [{\"name\", \"body\", \"movesToBcc\"}]")
+                        .help("Import snippets from a JSON file: [{\"name\", \"body\", \"movesToBcc\", \"accountIds\"}]")
                     Button("Create new") {
                         editing = Snippet(id: nil, name: "", body: "")
                     }
@@ -465,31 +474,79 @@ struct SnippetsSettings: View {
                         .frame(width: 170, alignment: .leading)
                     Text("Preview")
                     Spacer()
+                    Text("Accounts")
+                        .frame(width: 110, alignment: .trailing)
                 }
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
                 .padding(.horizontal, 20).padding(.bottom, 6)
                 Divider().padding(.horizontal, 20)
 
-                ScrollView {
-                    LazyVStack(spacing: 0) {
-                        ForEach(filtered) { snippet in
-                            SnippetTableRow(snippet: snippet,
-                                            edit: { editing = snippet },
-                                            delete: { store.deleteSnippet(snippet) })
-                            Divider().padding(.leading, 20)
+                // Constrain the list to the remaining pane height so it
+                // actually scrolls (unbounded ScrollViews in a top-aligned
+                // VStack get clipped with no scroll). Always-visible
+                // indicators + a bottom fade make overflow obvious.
+                ZStack(alignment: .bottom) {
+                    ScrollView {
+                        LazyVStack(spacing: 0) {
+                            ForEach(filtered, id: \.listId) { snippet in
+                                SnippetTableRow(snippet: snippet,
+                                                edit: { editing = snippet },
+                                                delete: { store.deleteSnippet(snippet) })
+                                Divider().padding(.leading, 20)
+                            }
+                            if filtered.isEmpty {
+                                Text(search.isEmpty
+                                     ? "No snippets yet — create one to reuse text in compose."
+                                     : "No snippets match “\(search)”.")
+                                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                    .padding(20)
+                            }
                         }
-                        if filtered.isEmpty {
-                            Text(search.isEmpty
-                                 ? "No snippets yet — create one to reuse text in compose."
-                                 : "No snippets match “\(search)”.")
-                                .font(.system(size: 12)).foregroundStyle(.secondary)
-                                .frame(maxWidth: .infinity, alignment: .leading)
-                                .padding(20)
+                        .background(
+                            GeometryReader { geo in
+                                Color.clear.preference(
+                                    key: SnippetScrollHeightKey.self,
+                                    value: geo.size.height)
+                            }
+                        )
+                    }
+                    .scrollIndicators(.visible)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
+                    .background(
+                        GeometryReader { geo in
+                            Color.clear.preference(
+                                key: SnippetViewportHeightKey.self,
+                                value: geo.size.height)
                         }
+                    )
+
+                    if listOverflows {
+                        VStack(spacing: 0) {
+                            LinearGradient(
+                                colors: [.clear, Color(nsColor: .windowBackgroundColor).opacity(0.92)],
+                                startPoint: .top, endPoint: .bottom)
+                                .frame(height: 28)
+                            HStack(spacing: 4) {
+                                Image(systemName: "chevron.down")
+                                    .font(.system(size: 9, weight: .semibold))
+                                Text("Scroll for more")
+                                    .font(.system(size: 10, weight: .medium))
+                            }
+                            .foregroundStyle(.secondary)
+                            .padding(.bottom, 6)
+                            .frame(maxWidth: .infinity)
+                            .background(Color(nsColor: .windowBackgroundColor).opacity(0.92))
+                        }
+                        .allowsHitTesting(false)
+                        .transition(.opacity)
                     }
                 }
+                .onPreferenceChange(SnippetScrollHeightKey.self) { listContentHeight = $0 }
+                .onPreferenceChange(SnippetViewportHeightKey.self) { listViewportHeight = $0 }
             }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .top)
         }
         .sheet(item: $editing) { snippet in
             SnippetEditor(snippet: snippet)
@@ -510,6 +567,20 @@ struct SnippetsSettings: View {
                 break
             }
         }
+    }
+}
+
+private struct SnippetScrollHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
+    }
+}
+
+private struct SnippetViewportHeightKey: PreferenceKey {
+    static var defaultValue: CGFloat = 0
+    static func reduce(value: inout CGFloat, nextValue: () -> CGFloat) {
+        value = max(value, nextValue())
     }
 }
 
@@ -536,6 +607,11 @@ private struct SnippetTableRow: View {
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Spacer(minLength: 8)
+                    Text(scopeLabel)
+                        .font(.system(size: 11))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .frame(width: 110, alignment: .trailing)
                 }
                 .contentShape(Rectangle())
             }
@@ -562,6 +638,13 @@ private struct SnippetTableRow: View {
         .background(hovering ? Color.primary.opacity(0.04) : .clear)
         .onHover { hovering = $0 }
     }
+
+    private var scopeLabel: String {
+        let ids = snippet.accountIds
+        if ids.isEmpty { return "All accounts" }
+        if ids.count == 1 { return ids[0] }
+        return "\(ids.count) accounts"
+    }
 }
 
 private struct SnippetEditor: View {
@@ -571,12 +654,18 @@ private struct SnippetEditor: View {
     @State private var name: String
     @State private var body_: String
     @State private var movesToBcc: Bool
+    /// Empty = available on every account (default).
+    @State private var selectedAccountIds: Set<String>
+    @State private var limitToAccounts = false
 
     init(snippet: Snippet) {
         self.snippet = snippet
         _name = State(initialValue: snippet.name)
         _body_ = State(initialValue: snippet.body)
         _movesToBcc = State(initialValue: snippet.movesToBcc)
+        let ids = Set(snippet.accountIds)
+        _selectedAccountIds = State(initialValue: ids)
+        _limitToAccounts = State(initialValue: !ids.isEmpty)
     }
 
     var body: some View {
@@ -598,6 +687,63 @@ private struct SnippetEditor: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
+
+            // Account scope — same “per mailbox” grouping idea as Gmail filters.
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Limit to specific accounts", isOn: $limitToAccounts)
+                    .font(.system(size: 12.5))
+                    .onChange(of: limitToAccounts) {
+                        if !limitToAccounts {
+                            selectedAccountIds = []
+                        } else if selectedAccountIds.isEmpty,
+                                  let first = store.accounts.first {
+                            selectedAccountIds = [first.id]
+                        }
+                    }
+                Text(limitToAccounts
+                     ? "Only show this snippet when composing from the accounts below."
+                     : "Available when composing from any account.")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+
+                if limitToAccounts {
+                    if store.accounts.isEmpty {
+                        Text("Add a Google account first — until then this stays available everywhere.")
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                    } else {
+                        VStack(alignment: .leading, spacing: 0) {
+                            ForEach(store.accounts) { account in
+                                Toggle(isOn: Binding(
+                                    get: { selectedAccountIds.contains(account.id) },
+                                    set: { on in
+                                        if on { selectedAccountIds.insert(account.id) }
+                                        else { selectedAccountIds.remove(account.id) }
+                                    }
+                                )) {
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(account.id)
+                                            .font(.system(size: 12.5))
+                                        if !account.displayName.isEmpty,
+                                           account.displayName != account.id {
+                                            Text(account.displayName)
+                                                .font(.system(size: 11))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                }
+                                .toggleStyle(.checkbox)
+                                .padding(.vertical, 4)
+                            }
+                        }
+                        .padding(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .background(Color.primary.opacity(0.04),
+                                    in: RoundedRectangle(cornerRadius: 6))
+                    }
+                }
+            }
+
             HStack {
                 Spacer()
                 Button("Cancel") { dismiss() }
@@ -612,23 +758,30 @@ private struct SnippetEditor: View {
             }
         }
         .padding(16)
-        .frame(width: 460)
+        .frame(width: 480)
     }
 
     private var canSave: Bool {
-        !name.trimmingCharacters(in: .whitespaces).isEmpty
+        let named = !name.trimmingCharacters(in: .whitespaces).isEmpty
             && !body_.trimmingCharacters(in: .whitespaces).isEmpty
+        if limitToAccounts && !store.accounts.isEmpty && selectedAccountIds.isEmpty {
+            return false
+        }
+        return named
     }
 
     private func save() {
         guard canSave else { return }
+        let ids = limitToAccounts ? Array(selectedAccountIds).sorted() : []
         if snippet.id == nil {
-            store.saveSnippet(name: name, body: body_, movesToBcc: movesToBcc)
+            store.saveSnippet(name: name, body: body_, movesToBcc: movesToBcc,
+                              accountIds: ids)
         } else {
             var updated = snippet
             updated.name = name
             updated.body = body_
             updated.movesToBcc = movesToBcc
+            updated.accountIds = ids
             store.updateSnippet(updated)
         }
         dismiss()

@@ -1,13 +1,16 @@
 import Foundation
 
 /// JSON snippet import (Settings → Snippets → Import): an array of
-/// `{"name": "...", "body": "...", "movesToBcc": true}` objects — an easy
-/// hand-conversion target for a Notion Mail snippet export.
+/// `{"name": "...", "body": "...", "movesToBcc": true, "accountIds": ["…"]}`
+/// objects — an easy hand-conversion target for a Notion Mail snippet export.
 enum SnippetImport {
     struct Item: Codable, Equatable {
         var name: String
         var body: String
         var movesToBcc: Bool?
+        /// Optional account emails that may use this snippet. Omitted/empty =
+        /// available on every account.
+        var accountIds: [String]? = nil
     }
 
     static func decode(_ data: Data) throws -> [Item] {

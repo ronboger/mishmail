@@ -44,9 +44,10 @@ struct ComposeView: View {
     @State private var loadingAttachments = false
     @State private var showFilePicker = false
     @State private var showSnippets = false
-    /// Slash trigger: highlighted row in the `/` picker, and whether the user
-    /// Esc-dismissed the current token (cleared when the token goes away).
-    @State private var slashSelection = 0
+    /// Slash trigger: highlighted row in the `/` picker (by stable list id),
+    /// and whether the user Esc-dismissed the current token (cleared when the
+    /// token goes away).
+    @State private var slashSelectionId: String?
     @State private var slashDismissed = false
     /// UTF-16 caret in the body editor — drives caret-aware `/` detection.
     @State private var bodyCaretUTF16 = 0
@@ -779,12 +780,15 @@ struct ComposeView: View {
                 // bodyEditorMaxHeight.
                 .frame(minHeight: 120, maxHeight: bodyEditorMaxHeight)
                 .onChange(of: body_) {
-                    slashSelection = 0
+                    syncSlashSelection()
                     if slashToken == nil { slashDismissed = false }
                 }
                 .onChange(of: bodyCaretUTF16) {
-                    slashSelection = 0
+                    syncSlashSelection()
                     if slashToken == nil { slashDismissed = false }
+                }
+                .onChange(of: fromAccountId) {
+                    syncSlashSelection()
                 }
 
             // The `/` picker renders directly under the editor, where the
@@ -792,7 +796,7 @@ struct ComposeView: View {
             if slashActive {
                 SlashSnippetPicker(snippets: slashMatches,
                                    query: slashToken?.query ?? "",
-                                   selection: min(slashSelection, max(slashMatches.count - 1, 0)),
+                                   selectionId: slashSelectionId,
                                    choose: { insertSlashSnippet($0) })
                     .padding(.top, 4)
                     .transition(.opacity)
@@ -890,7 +894,7 @@ struct ComposeView: View {
                     saveCurrentAsSnippet()
                 }, close: {
                     withAnimation(.easeOut(duration: 0.12)) { showSnippets = false }
-                })
+                }, accountId: fromAccountId)
                 .environmentObject(store)
                 .padding(.bottom, 8)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
@@ -1349,15 +1353,28 @@ struct ComposeView: View {
         bodyFocused && !slashDismissed && slashToken != nil
     }
 
-    /// Snippets matching the active slash query (all of them on an empty
-    /// query — type `/` to browse everything, Claude-style).
+    /// Snippets matching the active slash query for the current From account
+    /// (all available ones on an empty query — type `/` to browse).
     private var slashMatches: [Snippet] {
         guard let token = slashToken else { return [] }
         // Query never contains whitespace (slashToken ends on any whitespace).
-        let q = token.query
-        return store.allSnippets.filter {
-            q.isEmpty || $0.name.localizedCaseInsensitiveContains(q)
+        return SnippetMatch.ranked(store.allSnippets,
+                                   query: token.query,
+                                   accountId: fromAccountId)
+    }
+
+    /// Keep the highlight on a live match; prefer exact/prefix winners when
+    /// the typed query changes rather than freezing on a stale index.
+    private func syncSlashSelection() {
+        let matches = slashMatches
+        if matches.isEmpty {
+            slashSelectionId = nil
+            return
         }
+        if let id = slashSelectionId, matches.contains(where: { $0.listId == id }) {
+            return
+        }
+        slashSelectionId = matches.first?.listId
     }
 
     /// Routes compose-body chords the NSTextView would otherwise swallow:
@@ -1387,15 +1404,16 @@ struct ComposeView: View {
             }
             let matches = slashMatches
             guard !matches.isEmpty else { return event }
+            let idx = matches.firstIndex(where: { $0.listId == slashSelectionId }) ?? 0
             switch event.keyCode {
             case 125:  // ↓
-                slashSelection = min(slashSelection + 1, matches.count - 1)
+                slashSelectionId = matches[min(idx + 1, matches.count - 1)].listId
                 return nil
             case 126:  // ↑
-                slashSelection = max(slashSelection - 1, 0)
+                slashSelectionId = matches[max(idx - 1, 0)].listId
                 return nil
             case 36, 76, 48:  // Return, keypad Enter, Tab
-                insertSlashSnippet(matches[min(slashSelection, matches.count - 1)])
+                insertSlashSnippet(matches[idx])
                 return nil
             default:
                 return event
@@ -1508,7 +1526,7 @@ struct ComposeView: View {
         // Park the caret just after the inserted text so a second `/` can
         // fire immediately without the picker latching onto mid-snippet text.
         setBody(next, caretUTF16: (before as NSString).length + (expanded as NSString).length)
-        slashSelection = 0
+        slashSelectionId = nil
         slashDismissed = false
     }
 

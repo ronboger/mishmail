@@ -1,69 +1,83 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg width="1024" height="1024" viewBox="0 0 1024 1024" xmlns="http://www.w3.org/2000/svg">
   <defs>
-    <!-- macOS squircle background gradient -->
+    <!-- MishMail: mishmish (apricot) + mail. Warm coral tile, peach in envelope. -->
     <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#4C8DFF"/>
-      <stop offset="0.55" stop-color="#2F6BF2"/>
-      <stop offset="1" stop-color="#1E49C7"/>
+      <stop offset="0" stop-color="#FF8A65"/>
+      <stop offset="0.55" stop-color="#F4511E"/>
+      <stop offset="1" stop-color="#D84315"/>
     </linearGradient>
-    <!-- top sheen -->
     <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
-      <stop offset="0.35" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.22"/>
+      <stop offset="0.4" stop-color="#ffffff" stop-opacity="0"/>
     </linearGradient>
-    <!-- envelope body gradient -->
-    <linearGradient id="paper" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#ffffff"/>
-      <stop offset="1" stop-color="#EAF1FF"/>
+    <linearGradient id="envelope" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#FFE0B2"/>
+      <stop offset="1" stop-color="#FFCC80"/>
     </linearGradient>
-    <!-- flap gradient -->
     <linearGradient id="flap" x1="0" y1="0" x2="0" y2="1">
-      <stop offset="0" stop-color="#F4F8FF"/>
-      <stop offset="1" stop-color="#D4E2FB"/>
+      <stop offset="0" stop-color="#FFECB3"/>
+      <stop offset="1" stop-color="#FFB74D"/>
     </linearGradient>
-    <linearGradient id="check" x1="0" y1="0" x2="1" y2="1">
-      <stop offset="0" stop-color="#39D98A"/>
-      <stop offset="1" stop-color="#22B36B"/>
+    <linearGradient id="fruit" x1="0.2" y1="0" x2="0.8" y2="1">
+      <stop offset="0" stop-color="#FFB74D"/>
+      <stop offset="0.45" stop-color="#FF9800"/>
+      <stop offset="1" stop-color="#EF6C00"/>
+    </linearGradient>
+    <linearGradient id="leaf" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#AED581"/>
+      <stop offset="1" stop-color="#7CB342"/>
     </linearGradient>
     <filter id="softShadow" x="-30%" y="-30%" width="160%" height="160%">
-      <feDropShadow dx="0" dy="22" stdDeviation="26" flood-color="#0A2A7A" flood-opacity="0.30"/>
+      <feDropShadow dx="0" dy="18" stdDeviation="22" flood-color="#BF360C" flood-opacity="0.28"/>
     </filter>
   </defs>
 
-  <!-- Rounded-rect (squircle-ish) app tile: 824x824 inset 100, r=185 -->
+  <!-- Squircle app tile -->
   <g>
     <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#bg)"/>
     <rect x="100" y="100" width="824" height="824" rx="185" ry="185" fill="url(#sheen)"/>
   </g>
 
-  <!-- Envelope, centered -->
+  <!-- Open envelope -->
   <g filter="url(#softShadow)">
-    <!-- envelope body -->
-    <rect x="248" y="330" width="528" height="372" rx="52" ry="52" fill="url(#paper)"/>
-    <!-- flap: V shape overlaid on top portion -->
-    <path d="M 268 372
-             L 512 560
-             L 756 372
-             L 756 392
-             C 756 356 728 352 712 364
-             L 512 518
-             L 312 364
-             C 296 352 268 356 268 392
+    <path d="M 220 430
+             L 512 250
+             L 804 430
+             L 804 720
+             C 804 760 772 790 732 790
+             L 292 790
+             C 252 790 220 760 220 720
              Z"
-          fill="url(#flap)"/>
-    <!-- clean flap crease line -->
-    <path d="M 276 366 L 512 548 L 748 366"
-          fill="none" stroke="#B9CCEB" stroke-width="14"
-          stroke-linecap="round" stroke-linejoin="round" opacity="0.55"/>
+          fill="url(#envelope)"/>
+    <!-- Flap crease -->
+    <path d="M 240 430 L 512 600 L 784 430"
+          fill="none" stroke="#E65100" stroke-width="10"
+          stroke-linecap="round" stroke-linejoin="round" opacity="0.25"/>
+    <!-- Front flap fold -->
+    <path d="M 220 430 L 512 620 L 804 430 L 804 460
+             C 700 560 600 610 512 610
+             C 424 610 324 560 220 460 Z"
+          fill="url(#flap)" opacity="0.95"/>
   </g>
 
-  <!-- "Perfect" checkmark badge, bottom-right of envelope -->
+  <!-- Apricot / peach nestled in the envelope -->
   <g filter="url(#softShadow)">
-    <circle cx="726" cy="672" r="104" fill="url(#check)"/>
-    <circle cx="726" cy="672" r="104" fill="none" stroke="#ffffff" stroke-width="10" opacity="0.9"/>
-    <path d="M 676 674 L 712 710 L 780 634"
-          fill="none" stroke="#ffffff" stroke-width="26"
-          stroke-linecap="round" stroke-linejoin="round"/>
+    <ellipse cx="512" cy="430" rx="168" ry="158" fill="url(#fruit)"/>
+    <!-- Highlight -->
+    <ellipse cx="450" cy="370" rx="54" ry="40" fill="#ffffff" opacity="0.28"/>
+    <!-- Cleft -->
+    <path d="M 512 300 C 500 380 500 460 512 540"
+          fill="none" stroke="#E65100" stroke-width="8"
+          stroke-linecap="round" opacity="0.35"/>
+    <!-- Leaf -->
+    <path d="M 545 300
+             C 590 250 660 255 680 300
+             C 640 310 590 320 545 300 Z"
+          fill="url(#leaf)"/>
+    <!-- Stem -->
+    <path d="M 520 295 L 545 270"
+          fill="none" stroke="#6D4C41" stroke-width="12"
+          stroke-linecap="round"/>
   </g>
 </svg>

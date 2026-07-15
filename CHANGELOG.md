@@ -7,6 +7,10 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Added
+- **Per-account snippet scope** — snippets default to all accounts; optionally
+  limit a snippet to one or more mailboxes (Settings → Snippets editor, same
+  per-account idea as Gmail filters). The compose `/` picker and Snippets
+  panel only show snippets available for the current From account.
 - **Draft saved status** — compose autosaves after you pause typing and shows
   Saving… / Draft saved in the footer (Notion Mail-style). Header ✕ / Esc still
   dismiss and keep the draft; the old footer "Close" label is gone. Send /
@@ -18,7 +22,18 @@ minor versions may still change behavior.
   claiming Send), ⌘↩ fills the app with the reading pane. Esc exits focus.
   Toolbar: Focus Conversation. Documented on the `?` shortcuts sheet.
 
+### Changed
+- **Snippets settings list scrolls clearly** — list is height-constrained with
+  always-visible scroll indicators and a “Scroll for more” fade when content
+  overflows.
+- **Design/AppIcon.svg** — source artwork updated to the MishMail apricot
+  (no Perfect Mail checkmark badge). Shipping PNGs were already apricot.
+
 ### Fixed
+- **Slash snippet picker ranking / stale rows** — `/bball` ranks exact and
+  prefix name matches first, selection tracks snippet identity (not a recycled
+  list index), and the picker re-scrolls when the query narrows so Enter and
+  the highlighted row stay on the same snippet.
 - **Delete under `is:unread` advances to the next thread** — opening an unread
   conversation pins it via read-state stickiness so the reading pane doesn't
   blank; trash/archive/spam now still remove the row optimistically so

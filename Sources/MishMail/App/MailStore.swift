@@ -1140,8 +1140,9 @@ final class MailStore: ObservableObject {
                                          existingNames: allSnippets.map(\.name))
         try? db.write { db in
             for item in planned {
-                let s = Snippet(id: nil, name: item.name, body: item.body,
+                var s = Snippet(id: nil, name: item.name, body: item.body,
                                 movesToBcc: item.movesToBcc ?? false)
+                s.accountIds = item.accountIds ?? []
                 try s.insert(db)
             }
         }
@@ -4057,9 +4058,11 @@ final class MailStore: ObservableObject {
         allSnippets = (try? db.read { try Snippet.order(Column("name")).fetchAll($0) }) ?? []
     }
 
-    func saveSnippet(name: String, body: String, movesToBcc: Bool = false) {
+    func saveSnippet(name: String, body: String, movesToBcc: Bool = false,
+                     accountIds: [String] = []) {
         try? db.write { db in
-            let s = Snippet(id: nil, name: name, body: body, movesToBcc: movesToBcc)
+            var s = Snippet(id: nil, name: name, body: body, movesToBcc: movesToBcc)
+            s.accountIds = accountIds
             try s.insert(db)
         }
         reloadSnippets()
@@ -4078,8 +4081,9 @@ final class MailStore: ObservableObject {
         objectWillChange.send()
     }
 
-    /// Imports snippets from a JSON file (`[{"name", "body", "movesToBcc"}]`),
-    /// skipping any whose name already exists so re-importing is harmless.
+    /// Imports snippets from a JSON file
+    /// (`[{"name", "body", "movesToBcc", "accountIds"}]`), skipping any whose
+    /// name already exists so re-importing is harmless.
     func importSnippets(from url: URL) throws -> (added: Int, skipped: Int) {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
@@ -4087,8 +4091,9 @@ final class MailStore: ObservableObject {
         let planned = SnippetImport.plan(items, existingNames: allSnippets.map(\.name))
         try db.write { db in
             for item in planned {
-                let s = Snippet(id: nil, name: item.name.trimmingCharacters(in: .whitespaces),
+                var s = Snippet(id: nil, name: item.name.trimmingCharacters(in: .whitespaces),
                                 body: item.body, movesToBcc: item.movesToBcc ?? false)
+                s.accountIds = item.accountIds ?? []
                 try s.insert(db)
             }
         }
