@@ -129,8 +129,9 @@ struct ComposeView: View {
         didFinish = true
         autosaveTask?.cancel()
         autosaveTask = nil
-        store.composeMinimized = false
-        store.composeRequest = nil
+        // clearComposeRequest (not a bare nil) flushes a queued mailto: from
+        // an external link that waited on this expanded draft.
+        store.clearComposeRequest()
     }
 
     /// Title shown in the header and minimized strip.

@@ -7,7 +7,7 @@ struct SettingsView: View {
     @EnvironmentObject var store: MailStore
 
     enum Pane: String, Identifiable {
-        case accounts, googleAPI, filters, snippets, appearance, shortcuts, ai, updates
+        case accounts, googleAPI, filters, snippets, general, appearance, shortcuts, ai, updates
 
         var id: String { rawValue }
 
@@ -17,6 +17,7 @@ struct SettingsView: View {
             case .googleAPI: return "Google API"
             case .filters: return "Gmail filters"
             case .snippets: return "Snippets"
+            case .general: return "General"
             case .appearance: return "Appearance"
             case .shortcuts: return "Keyboard shortcuts"
             case .ai: return "AI"
@@ -30,6 +31,7 @@ struct SettingsView: View {
             case .googleAPI: return "key"
             case .filters: return "line.3.horizontal.decrease"
             case .snippets: return "curlybraces"
+            case .general: return "gearshape"
             case .appearance: return "textformat.size"
             case .shortcuts: return "keyboard"
             case .ai: return "sparkles"
@@ -51,6 +53,7 @@ struct SettingsView: View {
                     row(.snippets)
                 }
                 Section("App") {
+                    row(.general)
                     row(.appearance)
                     row(.shortcuts)
                     row(.ai)
@@ -89,6 +92,7 @@ struct SettingsView: View {
         case .googleAPI: GoogleAPISettings()
         case .filters: GmailFiltersSettings()
         case .snippets: SnippetsSettings()
+        case .general: GeneralSettings()
         case .appearance: AppearanceSettings()
         case .shortcuts: ShortcutsSettings(bindings: store.keyBindings)
         case .ai: AISettings()
@@ -859,26 +863,34 @@ private struct SnippetEditor: View {
     }
 }
 
-struct AppearanceSettings: View {
-    @EnvironmentObject var store: MailStore
-    @AppStorage("fontScale") private var fontScale = 1.0
-    @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
-    @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
-    @AppStorage("vipAlwaysPins") private var vipAlwaysPins = true
-    /// Default `.ask` preserves privacy (no open-tracking until opt-in).
-    @AppStorage(RemoteImagePolicy.defaultsKey) private var remoteImagePolicyRaw =
-        RemoteImagePolicy.ask.rawValue
-    @State private var showVIPManager = false
-    @State private var isDefaultMailApp = DefaultMailClient.isDefault
+/// System integration (default email reader, etc.) — not look-and-feel.
+struct GeneralSettings: View {
+    /// Lazy: don't hit LaunchServices on every view construction.
+    @State private var isDefaultMailApp = false
     @State private var settingDefaultMail = false
     @State private var defaultMailError: String?
 
-    private var priorityMode: PrioritySplit.Mode {
-        PrioritySplit.Mode(rawValue: priorityModeRaw) ?? .starred
+    /// Debug builds use a separate bundle id + sandbox; claiming mailto: only
+    /// affects this build (not the installed Release app in /Applications).
+    private var isDebugBundle: Bool {
+        Bundle.main.bundleIdentifier?.hasSuffix(".debug") == true
+    }
+
+    private var defaultMailFooter: String {
+        var parts = [
+            "When set, clicking a mailto: link in a browser or another app opens compose here (To, Cc, Bcc, subject, and body when the link includes them).",
+            "Opening .eml files is not supported yet.",
+            "There is no in-app “unset”; change it in Apple Mail → Settings → General → Default email reader."
+        ]
+        if isDebugBundle {
+            parts.append(
+                "This is the Debug build — it claims mailto for itself only, from its build folder; a clean/rebuild can leave links pointing at a stale path. Use the installed Release app for a durable default.")
+        }
+        return parts.joined(separator: " ")
     }
 
     var body: some View {
-        PaneScaffold(title: "Appearance") {
+        PaneScaffold(title: "General") {
             Form {
                 Section {
                     if isDefaultMailApp {
@@ -921,10 +933,39 @@ struct AppearanceSettings: View {
                 } header: {
                     Text("Default email app")
                 } footer: {
-                    Text("When set, clicking a mailto: link in a browser or another app opens compose here (To, Cc, Bcc, subject, and body when the link includes them). You can also change this in Apple Mail → Settings → General → Default email reader.")
+                    Text(defaultMailFooter)
                         .font(.caption).foregroundStyle(.secondary)
                 }
+            }
+            .formStyle(.grouped)
+        }
+        .onAppear { isDefaultMailApp = DefaultMailClient.isDefault }
+        // Re-check after changing the default in Apple Mail (or another app).
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            isDefaultMailApp = DefaultMailClient.isDefault
+        }
+    }
+}
 
+struct AppearanceSettings: View {
+    @EnvironmentObject var store: MailStore
+    @AppStorage("fontScale") private var fontScale = 1.0
+    @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
+    @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
+    @AppStorage("vipAlwaysPins") private var vipAlwaysPins = true
+    /// Default `.ask` preserves privacy (no open-tracking until opt-in).
+    @AppStorage(RemoteImagePolicy.defaultsKey) private var remoteImagePolicyRaw =
+        RemoteImagePolicy.ask.rawValue
+    @State private var showVIPManager = false
+
+    private var priorityMode: PrioritySplit.Mode {
+        PrioritySplit.Mode(rawValue: priorityModeRaw) ?? .starred
+    }
+
+    var body: some View {
+        PaneScaffold(title: "Appearance") {
+            Form {
                 Section {
                     Picker("Priority section in Inbox", selection: $priorityModeRaw) {
                         ForEach(PrioritySplit.Mode.allCases, id: \.rawValue) { mode in
@@ -1010,13 +1051,6 @@ struct AppearanceSettings: View {
             .formStyle(.grouped)
         }
         .sheet(isPresented: $showVIPManager) { VIPManager() }
-        .onAppear { isDefaultMailApp = DefaultMailClient.isDefault }
-        // Re-check when returning to Settings after changing the default in
-        // Apple Mail (or another app claiming the handler).
-        .onReceive(NotificationCenter.default.publisher(
-            for: NSApplication.didBecomeActiveNotification)) { _ in
-            isDefaultMailApp = DefaultMailClient.isDefault
-        }
     }
 }
 

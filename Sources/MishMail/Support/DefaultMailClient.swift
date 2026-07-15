@@ -88,21 +88,25 @@ enum DefaultMailClient {
             for pair in query.split(separator: "&", omittingEmptySubsequences: true) {
                 let parts = pair.split(separator: "=", maxSplits: 1, omittingEmptySubsequences: false)
                 let key = percentDecode(String(parts[0])).lowercased()
-                // `+` in query values is a legacy form-encoding space (RFC 1866);
-                // real `+` in addresses should already be percent-encoded as %2B.
                 let rawValue = parts.count > 1 ? String(parts[1]) : ""
-                let value = percentDecode(rawValue.replacingOccurrences(of: "+", with: " "))
+                // RFC 6068 has no form-encoding: `+` is a literal plus. Text
+                // fields still honor the legacy space reading, because links in
+                // the wild are written that way — but addresses must not, or
+                // plus-addressed mailboxes (`ron+news@gmail.com`) silently
+                // become `ron news@gmail.com` and the send bounces.
+                let address = percentDecode(rawValue)
+                let text = percentDecode(rawValue.replacingOccurrences(of: "+", with: " "))
                 switch key {
                 case "to":
-                    to.append(contentsOf: splitAddresses(value))
+                    to.append(contentsOf: splitAddresses(address))
                 case "cc":
-                    cc.append(contentsOf: splitAddresses(value))
+                    cc.append(contentsOf: splitAddresses(address))
                 case "bcc":
-                    bcc.append(contentsOf: splitAddresses(value))
+                    bcc.append(contentsOf: splitAddresses(address))
                 case "subject":
-                    subject = value
+                    subject = text
                 case "body":
-                    body = value
+                    body = text
                 default:
                     break
                 }
@@ -117,10 +121,57 @@ enum DefaultMailClient {
             body: body)
     }
 
+    /// Prefill strings for `ComposeRequest` (comma-joined address lists).
+    /// Pure so the join shape is unit-testable without MailStore.
+    struct ComposePrefill: Equatable {
+        var to: String?
+        var cc: String?
+        var bcc: String?
+        var subject: String?
+        var body: String?
+    }
+
+    static func composePrefill(from mail: Mailto) -> ComposePrefill {
+        func join(_ list: [String]) -> String? {
+            list.isEmpty ? nil : list.joined(separator: ", ")
+        }
+        return ComposePrefill(
+            to: join(mail.to),
+            cc: join(mail.cc),
+            bcc: join(mail.bcc),
+            subject: mail.subject,
+            body: mail.body)
+    }
+
     // MARK: - internals
 
+    /// Decode percent-escapes. A single malformed `%` must not leave the rest
+    /// of the string encoded (`body=100%%20sure` → `100% sure`, not the raw
+    /// form). Valid `%HH` runs are preserved; lone `%` becomes a literal `%`.
     private static func percentDecode(_ s: String) -> String {
-        s.removingPercentEncoding ?? s
+        if let full = s.removingPercentEncoding { return full }
+        // Escape invalid `%` so a second pass can decode the valid sequences.
+        var fixed = ""
+        fixed.reserveCapacity(s.count)
+        var i = s.startIndex
+        while i < s.endIndex {
+            if s[i] == "%" {
+                let h1 = s.index(i, offsetBy: 1, limitedBy: s.endIndex)
+                let h2 = s.index(i, offsetBy: 2, limitedBy: s.endIndex)
+                if let h1, let h2, h2 < s.endIndex,
+                   s[h1].isHexDigit, s[h2].isHexDigit {
+                    fixed.append(contentsOf: s[i...h2])
+                    i = s.index(after: h2)
+                    continue
+                }
+                fixed.append("%25")  // lone or short `%` → literal after decode
+                i = s.index(after: i)
+                continue
+            }
+            fixed.append(s[i])
+            i = s.index(after: i)
+        }
+        return fixed.removingPercentEncoding ?? fixed
     }
 
     /// Comma-separated address list (RFC 6068); keep tokens that look like

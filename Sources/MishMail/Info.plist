@@ -11,7 +11,8 @@
 			<key>CFBundleTypeRole</key>
 			<string>Editor</string>
 			<key>CFBundleURLName</key>
-			<string>dev.ronboger.MishMail.mailto</string>
+			<!-- Expanded at build time so Debug vs Release labels match bundle id. -->
+			<string>$(PRODUCT_BUNDLE_IDENTIFIER).mailto</string>
 			<key>CFBundleURLSchemes</key>
 			<array>
 				<string>mailto</string>

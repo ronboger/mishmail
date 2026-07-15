@@ -970,21 +970,54 @@ final class MailStore: ObservableObject {
         composeRequest = req
     }
 
+    /// `mailto:` waiting while an expanded compose is open (matches in-app
+    /// compose shortcuts). Latest wins: a newer link replaces the queue, and
+    /// a direct open (e.g. after minimize) clears it.
+    private var pendingMailto: DefaultMailClient.Mailto?
+
     /// Handle a system open-URL (primarily `mailto:` from browsers / other apps).
     /// Non-mailto schemes are ignored so we don't steal future custom URLs.
     func handleOpenURL(_ url: URL) {
         guard let mail = DefaultMailClient.parseMailto(url) else { return }
-        let join: ([String]) -> String? = { list in
-            list.isEmpty ? nil : list.joined(separator: ", ")
+        NSApp.activate(ignoringOtherApps: true)
+        // Expanded compose owns the card — same guard as in-app shortcuts.
+        // Content would still land in Gmail Drafts via onDisappear →
+        // saveDraftIfNeeded, but yanking the open card mid-sentence is bad UX.
+        // Queue and open once the user finishes/dismisses. Minimized compose
+        // is fine to replace (saveDraftIfNeeded still runs).
+        if composeRequest != nil && !composeMinimized {
+            pendingMailto = mail
+            showNotice("Finish your draft — the email link will open next")
+            return
         }
+        openMailtoCompose(mail)
+    }
+
+    /// Open compose from a parsed `mailto:`. Joins address arrays with ", "
+    /// for the existing String prefill fields (ComposeView re-splits via
+    /// MessageParser — same path as header "email to X").
+    private func openMailtoCompose(_ mail: DefaultMailClient.Mailto) {
+        // Direct open supersedes anything queued (e.g. mailto while expanded,
+        // then minimize, then a second mailto — only the direct one should win).
+        pendingMailto = nil
+        let fields = DefaultMailClient.composePrefill(from: mail)
         openCompose(.init(
             replyTo: nil,
-            prefillTo: join(mail.to),
-            prefillCc: join(mail.cc),
-            prefillBcc: join(mail.bcc),
-            prefillSubject: mail.subject,
-            prefillBody: mail.body))
-        NSApp.activate(ignoringOtherApps: true)
+            prefillTo: fields.to,
+            prefillCc: fields.cc,
+            prefillBcc: fields.bcc,
+            prefillSubject: fields.subject,
+            prefillBody: fields.body))
+    }
+
+    /// Clear the active compose card. Flushes a queued `mailto:` if any so a
+    /// browser handoff still lands after the user closes their draft.
+    func clearComposeRequest() {
+        composeRequest = nil
+        composeMinimized = false
+        guard let mail = pendingMailto else { return }
+        pendingMailto = nil
+        openMailtoCompose(mail)
     }
 
     /// Promote an inline compose to the floating card (same request id).
@@ -1149,7 +1182,10 @@ final class MailStore: ObservableObject {
         accountsNeedingReauth.removeAll()
         selectedView = .inbox
         selectedThreadId = nil
+        // Drop any queued browser mailto: — demo teardown isn't a user close.
+        pendingMailto = nil
         composeRequest = nil
+        composeMinimized = false
         reloadAccounts()
         reloadSavedViews()
         loadVIPs()

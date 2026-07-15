@@ -52,10 +52,25 @@ final class DefaultMailClientTests: XCTestCase {
     }
 
     func testPlusAsSpaceInQueryAndEncodedPlusInAddress() {
-        // Form encoding: unencoded + → space in query values.
+        // Legacy form encoding: unencoded + → space, but only in text fields.
         let m = DefaultMailClient.parseMailto("mailto:user%2Blist@example.com?subject=Hello+World")
         XCTAssertEqual(m?.to, ["user+list@example.com"])
         XCTAssertEqual(m?.subject, "Hello World")
+    }
+
+    func testPlusInQueryAddressStaysLiteral() {
+        // Plus-addressed mailboxes are real; a space here would bounce the send.
+        let m = DefaultMailClient.parseMailto(
+            "mailto:?to=ron+news@gmail.com&cc=a+b@x.com&bcc=c+d@y.com&body=one+two")
+        XCTAssertEqual(m?.to, ["ron+news@gmail.com"])
+        XCTAssertEqual(m?.cc, ["a+b@x.com"])
+        XCTAssertEqual(m?.bcc, ["c+d@y.com"])
+        XCTAssertEqual(m?.body, "one two")
+    }
+
+    func testEncodedPlusInQueryAddress() {
+        let m = DefaultMailClient.parseMailto("mailto:?to=ron%2Bnews@gmail.com")
+        XCTAssertEqual(m?.to, ["ron+news@gmail.com"])
     }
 
     func testAngleBracketDisplayName() {
@@ -78,5 +93,36 @@ final class DefaultMailClientTests: XCTestCase {
     func testSemicolonSeparatedTo() {
         let m = DefaultMailClient.parseMailto("mailto:a@x.com;b@y.com")
         XCTAssertEqual(m?.to, ["a@x.com", "b@y.com"])
+    }
+
+    func testComposePrefillJoinsAddresses() {
+        let mail = DefaultMailClient.Mailto(
+            to: ["a@x.com", "b@y.com"],
+            cc: ["c@z.com"],
+            bcc: [],
+            subject: "Hi",
+            body: "Body")
+        let p = DefaultMailClient.composePrefill(from: mail)
+        XCTAssertEqual(p.to, "a@x.com, b@y.com")
+        XCTAssertEqual(p.cc, "c@z.com")
+        XCTAssertNil(p.bcc)
+        XCTAssertEqual(p.subject, "Hi")
+        XCTAssertEqual(p.body, "Body")
+    }
+
+    func testComposePrefillEmptyListsAreNil() {
+        let mail = DefaultMailClient.Mailto(
+            to: [], cc: [], bcc: [], subject: nil, body: nil)
+        let p = DefaultMailClient.composePrefill(from: mail)
+        XCTAssertNil(p.to)
+        XCTAssertNil(p.cc)
+        XCTAssertNil(p.bcc)
+    }
+
+    func testMalformedPercentStillDecodesValidSequences() {
+        // A bare `%%` would make removingPercentEncoding return nil for the
+        // whole string; lenient decode must still expand the good `%20`.
+        let m = DefaultMailClient.parseMailto("mailto:?body=100%%20sure")
+        XCTAssertEqual(m?.body, "100% sure")
     }
 }
