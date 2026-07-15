@@ -6,6 +6,17 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Fixed
+- **HTML mail no longer collapses when remote images are blocked** — blocked
+  or failed `<img>` tags keep capped authored width/height (max 1200×2000) so
+  table-based transactional layouts (e.g. 2FA) keep vertical structure under
+  Ask policy; successful loads drop the override and restore proportional
+  `height: auto`. Height tracking uses a ResizeObserver plus image load/error
+  events instead of a fixed ~1.2s poll. Complete HTML documents keep author
+  head styles (CSP/CSS injected into `<head>`); fragments still wrap.
+  Message cards gain a manual **Show plain text** control for the multipart
+  alternative. Recycled WebViews tear down observers and script handlers.
+
 ### Added
 - **Default email app** — Settings → General can make MishMail the system
   default for `mailto:` links (browsers and other apps open compose here).
