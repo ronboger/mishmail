@@ -7,7 +7,7 @@ struct SettingsView: View {
     @EnvironmentObject var store: MailStore
 
     enum Pane: String, Identifiable {
-        case accounts, googleAPI, filters, snippets, appearance, shortcuts, ai, updates
+        case accounts, googleAPI, filters, snippets, general, appearance, shortcuts, ai, updates
 
         var id: String { rawValue }
 
@@ -17,6 +17,7 @@ struct SettingsView: View {
             case .googleAPI: return "Google API"
             case .filters: return "Gmail filters"
             case .snippets: return "Snippets"
+            case .general: return "General"
             case .appearance: return "Appearance"
             case .shortcuts: return "Keyboard shortcuts"
             case .ai: return "AI"
@@ -30,6 +31,7 @@ struct SettingsView: View {
             case .googleAPI: return "key"
             case .filters: return "line.3.horizontal.decrease"
             case .snippets: return "curlybraces"
+            case .general: return "gearshape"
             case .appearance: return "textformat.size"
             case .shortcuts: return "keyboard"
             case .ai: return "sparkles"
@@ -51,6 +53,7 @@ struct SettingsView: View {
                     row(.snippets)
                 }
                 Section("App") {
+                    row(.general)
                     row(.appearance)
                     row(.shortcuts)
                     row(.ai)
@@ -89,6 +92,7 @@ struct SettingsView: View {
         case .googleAPI: GoogleAPISettings()
         case .filters: GmailFiltersSettings()
         case .snippets: SnippetsSettings()
+        case .general: GeneralSettings()
         case .appearance: AppearanceSettings()
         case .shortcuts: ShortcutsSettings(bindings: store.keyBindings)
         case .ai: AISettings()
@@ -856,6 +860,91 @@ private struct SnippetEditor: View {
             store.updateSnippet(updated)
         }
         dismiss()
+    }
+}
+
+/// System integration (default email reader, etc.) — not look-and-feel.
+struct GeneralSettings: View {
+    /// Lazy: don't hit LaunchServices on every view construction.
+    @State private var isDefaultMailApp = false
+    @State private var settingDefaultMail = false
+    @State private var defaultMailError: String?
+
+    /// Debug builds use a separate bundle id + sandbox; claiming mailto: only
+    /// affects this build (not the installed Release app in /Applications).
+    private var isDebugBundle: Bool {
+        Bundle.main.bundleIdentifier?.hasSuffix(".debug") == true
+    }
+
+    private var defaultMailFooter: String {
+        var parts = [
+            "When set, clicking a mailto: link in a browser or another app opens compose here (To, Cc, Bcc, subject, and body when the link includes them).",
+            "Opening .eml files is not supported yet.",
+            "There is no in-app “unset”; change it in Apple Mail → Settings → General → Default email reader."
+        ]
+        if isDebugBundle {
+            parts.append(
+                "This is the Debug build — it claims mailto for itself only, from its build folder; a clean/rebuild can leave links pointing at a stale path. Use the installed Release app for a durable default.")
+        }
+        return parts.joined(separator: " ")
+    }
+
+    var body: some View {
+        PaneScaffold(title: "General") {
+            Form {
+                Section {
+                    if isDefaultMailApp {
+                        Label("\(DefaultMailClient.appDisplayName) is your default email app",
+                              systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        HStack {
+                            Button {
+                                settingDefaultMail = true
+                                defaultMailError = nil
+                                DefaultMailClient.makeDefault { error in
+                                    Task { @MainActor in
+                                        settingDefaultMail = false
+                                        if let error {
+                                            defaultMailError = error.localizedDescription
+                                        }
+                                        isDefaultMailApp = DefaultMailClient.isDefault
+                                    }
+                                }
+                            } label: {
+                                if settingDefaultMail {
+                                    HStack(spacing: 6) {
+                                        ProgressView().controlSize(.small)
+                                        Text("Setting…")
+                                    }
+                                } else {
+                                    Text("Make \(DefaultMailClient.appDisplayName) your default email app")
+                                }
+                            }
+                            .disabled(settingDefaultMail)
+                            Spacer()
+                        }
+                        if let defaultMailError {
+                            Text(defaultMailError)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.red)
+                        }
+                    }
+                } header: {
+                    Text("Default email app")
+                } footer: {
+                    Text(defaultMailFooter)
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+        }
+        .onAppear { isDefaultMailApp = DefaultMailClient.isDefault }
+        // Re-check after changing the default in Apple Mail (or another app).
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            isDefaultMailApp = DefaultMailClient.isDefault
+        }
     }
 }
 
