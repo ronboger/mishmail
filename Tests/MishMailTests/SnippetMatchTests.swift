@@ -75,4 +75,25 @@ final class SnippetMatchTests: XCTestCase {
         XCTAssertNil(s.accountIdsJSON)
         XCTAssertTrue(s.isAvailable(for: "anyone@x.com"))
     }
+
+    func testPartitionLiveVsRemovedAccounts() {
+        let s = snip("work", accounts: ["live@x.com", "gone@y.com", "LIVE@x.com"])
+        // Setter keeps both case variants if written separately; among() uses
+        // the cleaned accountIds list.
+        let part = s.accountIds(among: ["live@x.com", "other@z.com"])
+        XCTAssertTrue(part.live.map { $0.lowercased() }.contains("live@x.com"))
+        XCTAssertTrue(part.removed.map { $0.lowercased() }.contains("gone@y.com"))
+        // Fully orphaned → invisible in every compose (no live mailbox match).
+        let orphan = snip("hidden", accounts: ["gone@y.com"])
+        XCTAssertFalse(orphan.isAvailable(for: "live@x.com"))
+        XCTAssertEqual(orphan.accountIds(among: ["live@x.com"]).removed, ["gone@y.com"])
+        XCTAssertTrue(orphan.accountIds(among: ["live@x.com"]).live.isEmpty)
+    }
+
+    func testEmptyFromAccountIdKeepsScopedVisible() {
+        // Compose fills From before send; empty id must not hide scoped snippets.
+        let s = snip("work", accounts: ["me@work.com"])
+        XCTAssertTrue(s.isAvailable(for: ""))
+        XCTAssertTrue(s.isAvailable(for: "   "))
+    }
 }

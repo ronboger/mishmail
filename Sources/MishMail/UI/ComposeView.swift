@@ -790,6 +790,10 @@ struct ComposeView: View {
                 .onChange(of: fromAccountId) {
                     syncSlashSelection()
                 }
+                .onChange(of: store.allSnippets) {
+                    // Delete/edit in Settings while the picker is open.
+                    syncSlashSelection()
+                }
 
             // The `/` picker renders directly under the editor, where the
             // cursor is, so it reads as results for what you're typing.
@@ -1363,8 +1367,9 @@ struct ComposeView: View {
                                    accountId: fromAccountId)
     }
 
-    /// Keep the highlight on a live match; prefer exact/prefix winners when
-    /// the typed query changes rather than freezing on a stale index.
+    /// Keep the highlight on the snippet the user already pointed at when it
+    /// still ranks in the current matches; otherwise fall back to the top
+    /// ranked hit (exact/prefix first via `SnippetMatch.ranked`).
     private func syncSlashSelection() {
         let matches = slashMatches
         if matches.isEmpty {

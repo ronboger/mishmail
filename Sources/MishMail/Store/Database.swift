@@ -209,12 +209,32 @@ struct Snippet: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     }
 
     /// Whether this snippet may appear while composing as `accountId`.
+    /// Empty `accountId` is treated as "not yet resolved" and keeps every
+    /// snippet visible (compose fills From before send is allowed).
     func isAvailable(for accountId: String) -> Bool {
         let ids = accountIds
         guard !ids.isEmpty else { return true }
         let target = accountId.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !target.isEmpty else { return true }
         return ids.contains { $0.caseInsensitiveCompare(target) == .orderedSame }
+    }
+
+    /// Scope entries that still match a signed-in account (case-insensitive).
+    /// Used to surface "removed account" orphans after sign-out.
+    func accountIds(among knownAccountIds: [String]) -> (live: [String], removed: [String]) {
+        let known = Set(knownAccountIds
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty })
+        var live: [String] = []
+        var removed: [String] = []
+        for id in accountIds {
+            if known.contains(id.lowercased()) {
+                live.append(id)
+            } else {
+                removed.append(id)
+            }
+        }
+        return (live, removed)
     }
 
     /// Case-insensitive name-or-body match, shared by the compose panel and

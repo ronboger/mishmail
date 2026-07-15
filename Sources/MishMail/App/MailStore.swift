@@ -4084,21 +4084,32 @@ final class MailStore: ObservableObject {
     /// Imports snippets from a JSON file
     /// (`[{"name", "body", "movesToBcc", "accountIds"}]`), skipping any whose
     /// name already exists so re-importing is harmless.
-    func importSnippets(from url: URL) throws -> (added: Int, skipped: Int) {
+    /// `unknownAccountIds` counts scope emails that don't match a signed-in
+    /// account (typos hide the snippet until fixed).
+    func importSnippets(from url: URL) throws -> (added: Int, skipped: Int, unknownAccountIds: Int) {
         let access = url.startAccessingSecurityScopedResource()
         defer { if access { url.stopAccessingSecurityScopedResource() } }
         let items = try SnippetImport.decode(Data(contentsOf: url))
         let planned = SnippetImport.plan(items, existingNames: allSnippets.map(\.name))
+        let known = Set(accounts.map { $0.id.lowercased() })
+        var unknownAccountIds = 0
         try db.write { db in
             for item in planned {
                 var s = Snippet(id: nil, name: item.name.trimmingCharacters(in: .whitespaces),
                                 body: item.body, movesToBcc: item.movesToBcc ?? false)
-                s.accountIds = item.accountIds ?? []
+                let scope = item.accountIds ?? []
+                s.accountIds = scope
+                for email in scope {
+                    let e = email.trimmingCharacters(in: .whitespacesAndNewlines)
+                    if !e.isEmpty, !known.contains(e.lowercased()) {
+                        unknownAccountIds += 1
+                    }
+                }
                 try s.insert(db)
             }
         }
         reloadSnippets()
         objectWillChange.send()
-        return (planned.count, items.count - planned.count)
+        return (planned.count, items.count - planned.count, unknownAccountIds)
     }
 }

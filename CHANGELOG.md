@@ -34,6 +34,10 @@ minor versions may still change behavior.
   prefix name matches first, selection tracks snippet identity (not a recycled
   list index), and the picker re-scrolls when the query narrows so Enter and
   the highlighted row stay on the same snippet.
+- **Snippet scope for removed accounts** — signed-out mailbox emails stay
+  editable as removable “Removed account” rows (list shows a warning) so a
+  solely-orphaned snippet isn’t stuck invisible with no UI path to fix it.
+  Import reports unknown `accountIds` in the result string.
 - **Delete under `is:unread` advances to the next thread** — opening an unread
   conversation pins it via read-state stickiness so the reading pane doesn't
   blank; trash/archive/spam now still remove the row optimistically so

@@ -491,6 +491,7 @@ struct SnippetsSettings: View {
                         LazyVStack(spacing: 0) {
                             ForEach(filtered, id: \.listId) { snippet in
                                 SnippetTableRow(snippet: snippet,
+                                                knownAccountIds: store.accounts.map(\.id),
                                                 edit: { editing = snippet },
                                                 delete: { store.deleteSnippet(snippet) })
                                 Divider().padding(.leading, 20)
@@ -557,9 +558,15 @@ struct SnippetsSettings: View {
             case .success(let url):
                 do {
                     let counts = try store.importSnippets(from: url)
-                    importResult = counts.skipped == 0
+                    var msg = counts.skipped == 0
                         ? "Imported \(counts.added)"
                         : "Imported \(counts.added), skipped \(counts.skipped) existing"
+                    if counts.unknownAccountIds > 0 {
+                        msg += "; \(counts.unknownAccountIds) unknown account id"
+                            + (counts.unknownAccountIds == 1 ? "" : "s")
+                            + " (snippet hidden until fixed)"
+                    }
+                    importResult = msg
                 } catch {
                     importResult = "Import failed: \(error.localizedDescription)"
                 }
@@ -586,6 +593,7 @@ private struct SnippetViewportHeightKey: PreferenceKey {
 
 private struct SnippetTableRow: View {
     let snippet: Snippet
+    let knownAccountIds: [String]
     let edit: () -> Void
     let delete: () -> Void
     @State private var hovering = false
@@ -609,7 +617,7 @@ private struct SnippetTableRow: View {
                     Spacer(minLength: 8)
                     Text(scopeLabel)
                         .font(.system(size: 11))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(hasRemovedAccounts ? Color.orange : .secondary)
                         .lineLimit(1)
                         .frame(width: 110, alignment: .trailing)
                 }
@@ -639,11 +647,29 @@ private struct SnippetTableRow: View {
         .onHover { hovering = $0 }
     }
 
+    private var partitioned: (live: [String], removed: [String]) {
+        snippet.accountIds(among: knownAccountIds)
+    }
+
+    private var hasRemovedAccounts: Bool { !partitioned.removed.isEmpty }
+
     private var scopeLabel: String {
         let ids = snippet.accountIds
         if ids.isEmpty { return "All accounts" }
-        if ids.count == 1 { return ids[0] }
-        return "\(ids.count) accounts"
+        let live = partitioned.live
+        let removed = partitioned.removed
+        if live.isEmpty {
+            return removed.count == 1 ? "Removed account" : "\(removed.count) removed"
+        }
+        if removed.isEmpty {
+            if live.count == 1 { return live[0] }
+            return "\(live.count) accounts"
+        }
+        // Mix of live + signed-out accounts.
+        if live.count == 1 {
+            return "\(live[0]) +\(removed.count)"
+        }
+        return "\(live.count) accts +\(removed.count)"
     }
 }
 
@@ -654,7 +680,8 @@ private struct SnippetEditor: View {
     @State private var name: String
     @State private var body_: String
     @State private var movesToBcc: Bool
-    /// Empty = available on every account (default).
+    /// Empty = available on every account (default). Includes any still-
+    /// selected removed-account emails until the user clears them.
     @State private var selectedAccountIds: Set<String>
     @State private var limitToAccounts = false
 
@@ -666,6 +693,14 @@ private struct SnippetEditor: View {
         let ids = Set(snippet.accountIds)
         _selectedAccountIds = State(initialValue: ids)
         _limitToAccounts = State(initialValue: !ids.isEmpty)
+    }
+
+    /// Scope emails not among currently signed-in accounts.
+    private var orphanAccountIds: [String] {
+        let known = Set(store.accounts.map { $0.id.lowercased() })
+        return selectedAccountIds
+            .filter { !known.contains($0.lowercased()) }
+            .sorted()
     }
 
     var body: some View {
@@ -707,7 +742,7 @@ private struct SnippetEditor: View {
                     .foregroundStyle(.secondary)
 
                 if limitToAccounts {
-                    if store.accounts.isEmpty {
+                    if store.accounts.isEmpty && orphanAccountIds.isEmpty {
                         Text("Add a Google account first — until then this stays available everywhere.")
                             .font(.system(size: 11))
                             .foregroundStyle(.secondary)
@@ -715,10 +750,15 @@ private struct SnippetEditor: View {
                         VStack(alignment: .leading, spacing: 0) {
                             ForEach(store.accounts) { account in
                                 Toggle(isOn: Binding(
-                                    get: { selectedAccountIds.contains(account.id) },
+                                    get: { selectedAccountIds.contains(where: {
+                                        $0.caseInsensitiveCompare(account.id) == .orderedSame
+                                    }) },
                                     set: { on in
+                                        // Drop any case-variant of this id, then re-add canonical.
+                                        selectedAccountIds = Set(selectedAccountIds.filter {
+                                            $0.caseInsensitiveCompare(account.id) != .orderedSame
+                                        })
                                         if on { selectedAccountIds.insert(account.id) }
-                                        else { selectedAccountIds.remove(account.id) }
                                     }
                                 )) {
                                     VStack(alignment: .leading, spacing: 1) {
@@ -733,6 +773,31 @@ private struct SnippetEditor: View {
                                     }
                                 }
                                 .toggleStyle(.checkbox)
+                                .padding(.vertical, 4)
+                            }
+
+                            // Signed-out / typo’d scope entries — removable so
+                            // the snippet can become visible again.
+                            ForEach(orphanAccountIds, id: \.self) { orphan in
+                                HStack(spacing: 8) {
+                                    VStack(alignment: .leading, spacing: 1) {
+                                        Text(orphan)
+                                            .font(.system(size: 12.5))
+                                            .strikethrough()
+                                        Text("Removed account — not signed in")
+                                            .font(.system(size: 11))
+                                            .foregroundStyle(.orange)
+                                    }
+                                    Spacer(minLength: 8)
+                                    Button("Remove") {
+                                        selectedAccountIds.remove(orphan)
+                                        if selectedAccountIds.isEmpty,
+                                           store.accounts.isEmpty {
+                                            limitToAccounts = false
+                                        }
+                                    }
+                                    .font(.system(size: 11))
+                                }
                                 .padding(.vertical, 4)
                             }
                         }
@@ -764,7 +829,10 @@ private struct SnippetEditor: View {
     private var canSave: Bool {
         let named = !name.trimmingCharacters(in: .whitespaces).isEmpty
             && !body_.trimmingCharacters(in: .whitespaces).isEmpty
-        if limitToAccounts && !store.accounts.isEmpty && selectedAccountIds.isEmpty {
+        // Allow saving a scoped snippet that only has removed-account ids so
+        // the user can open the editor and clear them; block truly empty scope
+        // when live accounts exist and limit is on.
+        if limitToAccounts && selectedAccountIds.isEmpty && !store.accounts.isEmpty {
             return false
         }
         return named
@@ -772,16 +840,22 @@ private struct SnippetEditor: View {
 
     private func save() {
         guard canSave else { return }
+        // Persist only currently selected ids (orphans the user didn't remove
+        // stay until they hit Remove — intentional so nothing is dropped silently).
         let ids = limitToAccounts ? Array(selectedAccountIds).sorted() : []
+        // If every remaining id is an orphan and no live accounts are checked,
+        // still save as-is; user can clear orphans next time. If they removed
+        // everything, treat as unscoped.
+        let finalIds = ids
         if snippet.id == nil {
             store.saveSnippet(name: name, body: body_, movesToBcc: movesToBcc,
-                              accountIds: ids)
+                              accountIds: finalIds)
         } else {
             var updated = snippet
             updated.name = name
             updated.body = body_
             updated.movesToBcc = movesToBcc
-            updated.accountIds = ids
+            updated.accountIds = finalIds
             store.updateSnippet(updated)
         }
         dismiss()
