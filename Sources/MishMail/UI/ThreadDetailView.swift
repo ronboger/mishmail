@@ -340,7 +340,27 @@ struct ThreadDetailView: View {
                 ? (ForwardComposer.newestSentMessage(in: messages)?.id ?? messages.last?.id)
                 : nil
             aiSummary = nil; summaryError = nil; summarizing = false
-            if thread.isUnread { store.setRead(thread, read: true) }
+            // Dwell before auto mark-read so j/k / scroll-select through the
+            // inbox does not clear every unread badge. Archive (`e`) marks
+            // read immediately in MailStore.archive; `.task(id:)` cancels
+            // this sleep when selection leaves.
+            guard thread.isUnread else { return }
+            do {
+                try await Task.sleep(nanoseconds: MarkReadOnOpen.dwellNanoseconds)
+            } catch {
+                return
+            }
+            // Require a live list row — never fall back to the captured
+            // `thread` snapshot. After archive of the last visible row,
+            // selection can still point here while the row is gone; using
+            // the stale model would re-save inInbox=true via setRead.
+            let liveThread = store.threads.first(where: { $0.id == thread.id })
+            guard MarkReadOnOpen.shouldMarkRead(
+                selectedId: store.selectedThreadId,
+                threadId: thread.id,
+                liveIsUnread: liveThread?.isUnread),
+                  let liveThread else { return }
+            store.setRead(liveThread, read: true)
         }
         // The store reloaded from the DB (sync, draft discard, send…): refresh
         // the open thread in place so e.g. a discarded draft's card disappears
