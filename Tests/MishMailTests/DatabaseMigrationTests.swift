@@ -75,6 +75,9 @@ final class DatabaseMigrationTests: XCTestCase {
                 "SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = ?",
                 arguments: ["thread_on_inInbox_inTrash_lastInboundDate"]) ?? false
             XCTAssertTrue(inboundIdx, "v25 must create lastInboundDate list index")
+            let snippetCols = try db.columns(in: "snippet").map(\.name)
+            XCTAssertTrue(snippetCols.contains("accountIdsJSON"),
+                          "v26 must add accountIdsJSON on snippet")
         }
     }
 

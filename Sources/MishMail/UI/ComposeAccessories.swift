@@ -8,7 +8,8 @@ import SwiftUI
 struct SlashSnippetPicker: View {
     let snippets: [Snippet]
     let query: String
-    let selection: Int
+    /// Stable `Snippet.listId` of the highlighted row.
+    let selectionId: String?
     let choose: (Snippet) -> Void
 
     var body: some View {
@@ -30,11 +31,13 @@ struct SlashSnippetPicker: View {
                     .padding(.horizontal, 10).padding(.bottom, 8)
             } else {
                 // Reader keeps the ↑/↓ highlight visible: arrowing past the
-                // fold scrolls the list to follow the selection.
+                // fold scrolls the list to follow the selection. Also re-scroll
+                // when the query narrows so a recycled LazyVStack row can't
+                // leave a stale name on screen while Enter inserts the top hit.
                 ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 1) {
-                            ForEach(Array(snippets.enumerated()), id: \.element.id) { idx, snippet in
+                            ForEach(snippets, id: \.listId) { snippet in
                                 Button { choose(snippet) } label: {
                                     HStack(spacing: 6) {
                                         Text("/\(snippet.name)")
@@ -42,6 +45,9 @@ struct SlashSnippetPicker: View {
                                             .lineLimit(1)
                                         if snippet.movesToBcc {
                                             MovesToBccBadge()
+                                        }
+                                        if !snippet.accountIds.isEmpty {
+                                            AccountScopeBadge(count: snippet.accountIds.count)
                                         }
                                         Text(snippet.previewLine)
                                             .font(.system(size: 11))
@@ -51,12 +57,13 @@ struct SlashSnippetPicker: View {
                                     }
                                     .padding(.horizontal, 8).padding(.vertical, 4)
                                     .frame(maxWidth: .infinity, alignment: .leading)
-                                    .background(idx == selection ? Color.notionAccent.opacity(0.14) : .clear,
+                                    .background(snippet.listId == selectionId
+                                                ? Color.notionAccent.opacity(0.14) : .clear,
                                                 in: RoundedRectangle(cornerRadius: 5))
                                     .contentShape(Rectangle())
                                 }
                                 .buttonStyle(.plain)
-                                .id(idx)
+                                .id(snippet.listId)
                             }
                         }
                         .padding(4)
@@ -65,11 +72,9 @@ struct SlashSnippetPicker: View {
                     // handful of user snippets are all visible without scroll;
                     // longer lists still scroll with the selection.
                     .frame(maxHeight: 200)
-                    .onChange(of: selection) {
-                        withAnimation(.easeOut(duration: 0.1)) {
-                            proxy.scrollTo(selection)
-                        }
-                    }
+                    .onChange(of: selectionId) { scrollToSelection(proxy) }
+                    .onChange(of: query) { scrollToSelection(proxy) }
+                    .onChange(of: snippets.map(\.listId)) { scrollToSelection(proxy) }
                 }
 
                 Divider()
@@ -84,6 +89,13 @@ struct SlashSnippetPicker: View {
         .overlay(RoundedRectangle(cornerRadius: 8).strokeBorder(.separator))
         .shadow(color: .black.opacity(0.12), radius: 8, y: 3)
     }
+
+    private func scrollToSelection(_ proxy: ScrollViewProxy) {
+        guard let selectionId else { return }
+        withAnimation(.easeOut(duration: 0.1)) {
+            proxy.scrollTo(selectionId, anchor: .center)
+        }
+    }
 }
 
 /// Small "→ Bcc" tag shown on snippets that move the intro to Bcc on insert.
@@ -95,6 +107,19 @@ struct MovesToBccBadge: View {
             .padding(.horizontal, 4).padding(.vertical, 1)
             .background(Color.primary.opacity(0.07), in: Capsule())
             .help("Inserting moves To recipients to Bcc and promotes Cc to To")
+    }
+}
+
+/// Tag for snippets limited to one or more accounts.
+struct AccountScopeBadge: View {
+    let count: Int
+    var body: some View {
+        Text(count == 1 ? "1 account" : "\(count) accounts")
+            .font(.system(size: 9.5, weight: .medium))
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 4).padding(.vertical, 1)
+            .background(Color.primary.opacity(0.07), in: Capsule())
+            .help("Only available when composing from selected accounts")
     }
 }
 
@@ -112,8 +137,12 @@ struct SnippetsPanel: View {
 
     @State private var query = ""
 
+    /// Account the compose card is sending as — scopes the panel the same
+    /// way the `/` picker does. Empty string = show unscoped + all (no filter).
+    var accountId: String = ""
+
     private var snippets: [Snippet] {
-        store.allSnippets
+        store.allSnippets.filter { $0.isAvailable(for: accountId) }
     }
     private var filtered: [Snippet] {
         snippets.filter { $0.matches(query) }
@@ -208,6 +237,9 @@ private struct SnippetRow: View {
                             .font(.system(size: 12, weight: .medium))
                             .lineLimit(1)
                         if snippet.movesToBcc { MovesToBccBadge() }
+                        if !snippet.accountIds.isEmpty {
+                            AccountScopeBadge(count: snippet.accountIds.count)
+                        }
                     }
                     Text(snippet.previewLine)
                         .font(.system(size: 11))
