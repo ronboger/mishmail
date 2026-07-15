@@ -67,6 +67,9 @@ struct MishMailApp: App {
                     RemoteImagePolicy.migrateIfNeeded()
                     UpdateChecker.shared.startPeriodicChecks()
                 }
+                // mailto: from browsers / other apps when we're the default
+                // email reader (Settings → Appearance can claim that role).
+                .onOpenURL { store.handleOpenURL($0) }
         }
         .defaultSize(width: 1000, height: 640)
         .commands {

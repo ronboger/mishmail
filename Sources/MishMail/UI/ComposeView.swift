@@ -1175,9 +1175,36 @@ struct ComposeView: View {
             initialSubject = subject
             initialRecipients = toTokens + ccTokens + bccTokens
         }
-        // "Draft email to X" from a message header: new mail, To prefilled.
-        if let to = request.prefillTo, original == nil {
-            toTokens = [to]
+        // New mail prefill: header click ("email to X") or system `mailto:`.
+        if original == nil,
+           request.prefillTo != nil
+            || request.prefillCc != nil
+            || request.prefillBcc != nil
+            || request.prefillSubject != nil
+            || request.prefillBody != nil {
+            if let to = request.prefillTo {
+                toTokens = MessageParser.splitAddresses(to)
+                    .map { MessageParser.emailAddress($0) }
+                    .filter { $0.contains("@") }
+            }
+            if let cc = request.prefillCc {
+                ccTokens = MessageParser.splitAddresses(cc)
+                    .map { MessageParser.emailAddress($0) }
+                    .filter { $0.contains("@") }
+                if !ccTokens.isEmpty { showCc = true }
+            }
+            if let bcc = request.prefillBcc {
+                bccTokens = MessageParser.splitAddresses(bcc)
+                    .map { MessageParser.emailAddress($0) }
+                    .filter { $0.contains("@") }
+                if !bccTokens.isEmpty { showBcc = true }
+            }
+            if let s = request.prefillSubject { subject = s }
+            if let b = request.prefillBody {
+                setBody(b, caretUTF16: 0)
+                // Prefill is not author-typed dirty content for discard prompts.
+                initialBody = b
+            }
             focusBody()
             return
         }

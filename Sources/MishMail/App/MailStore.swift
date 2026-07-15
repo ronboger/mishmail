@@ -940,6 +940,11 @@ final class MailStore: ObservableObject {
         var editDraft: Message? = nil   // an existing Gmail draft being edited
         var restore: PendingSend? = nil // undone send: reopen with this content
         var prefillTo: String? = nil    // new mail straight to this address
+        /// Optional headers from a `mailto:` handoff (cc/bcc/subject/body).
+        var prefillCc: String? = nil
+        var prefillBcc: String? = nil
+        var prefillSubject: String? = nil
+        var prefillBody: String? = nil
         /// Floating card vs reading-pane dock. Placement helpers set this;
         /// pop-out / hide-pane can promote inline → floating without remount.
         var presentation: ComposePresentation = .floating
@@ -963,6 +968,23 @@ final class MailStore: ObservableObject {
             readingPaneHidden: paneHidden)
         composeMinimized = false
         composeRequest = req
+    }
+
+    /// Handle a system open-URL (primarily `mailto:` from browsers / other apps).
+    /// Non-mailto schemes are ignored so we don't steal future custom URLs.
+    func handleOpenURL(_ url: URL) {
+        guard let mail = DefaultMailClient.parseMailto(url) else { return }
+        let join: ([String]) -> String? = { list in
+            list.isEmpty ? nil : list.joined(separator: ", ")
+        }
+        openCompose(.init(
+            replyTo: nil,
+            prefillTo: join(mail.to),
+            prefillCc: join(mail.cc),
+            prefillBcc: join(mail.bcc),
+            prefillSubject: mail.subject,
+            prefillBody: mail.body))
+        NSApp.activate(ignoringOtherApps: true)
     }
 
     /// Promote an inline compose to the floating card (same request id).

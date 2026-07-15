@@ -45,6 +45,8 @@ targets:
         CURRENT_PROJECT_VERSION: 2
         SWIFT_VERSION: 5.10
         GENERATE_INFOPLIST_FILE: true
+        # Merged with generated keys: registers mailto: for default email app.
+        INFOPLIST_FILE: Sources/MishMail/Info.plist
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
@@ -119,6 +121,7 @@ targets:
       - Sources/MishMail/Support/ThreadListCursor.swift
       - Sources/MishMail/Support/NeighborPrefetch.swift
       - Sources/MishMail/Support/ThreadRefresh.swift
+      - Sources/MishMail/Support/DefaultMailClient.swift
       - Sources/MishMail/Auth/OAuth.swift
     dependencies:
       - package: GRDB

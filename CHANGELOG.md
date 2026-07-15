@@ -7,6 +7,9 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Added
+- **Default email app** — Settings → Appearance can make MishMail the system
+  default for `mailto:` links (browsers and other apps open compose here).
+  Registers the `mailto` URL scheme and prefills To/Cc/Bcc/subject/body.
 - **Per-account snippet scope** — snippets default to all accounts; optionally
   limit a snippet to one or more mailboxes (Settings → Snippets editor, same
   per-account idea as Gmail filters). The compose `/` picker and Snippets

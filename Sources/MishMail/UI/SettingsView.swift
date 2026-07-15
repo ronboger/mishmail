@@ -869,6 +869,9 @@ struct AppearanceSettings: View {
     @AppStorage(RemoteImagePolicy.defaultsKey) private var remoteImagePolicyRaw =
         RemoteImagePolicy.ask.rawValue
     @State private var showVIPManager = false
+    @State private var isDefaultMailApp = DefaultMailClient.isDefault
+    @State private var settingDefaultMail = false
+    @State private var defaultMailError: String?
 
     private var priorityMode: PrioritySplit.Mode {
         PrioritySplit.Mode(rawValue: priorityModeRaw) ?? .starred
@@ -877,6 +880,51 @@ struct AppearanceSettings: View {
     var body: some View {
         PaneScaffold(title: "Appearance") {
             Form {
+                Section {
+                    if isDefaultMailApp {
+                        Label("\(DefaultMailClient.appDisplayName) is your default email app",
+                              systemImage: "checkmark.circle.fill")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        HStack {
+                            Button {
+                                settingDefaultMail = true
+                                defaultMailError = nil
+                                DefaultMailClient.makeDefault { error in
+                                    Task { @MainActor in
+                                        settingDefaultMail = false
+                                        if let error {
+                                            defaultMailError = error.localizedDescription
+                                        }
+                                        isDefaultMailApp = DefaultMailClient.isDefault
+                                    }
+                                }
+                            } label: {
+                                if settingDefaultMail {
+                                    HStack(spacing: 6) {
+                                        ProgressView().controlSize(.small)
+                                        Text("Setting…")
+                                    }
+                                } else {
+                                    Text("Make \(DefaultMailClient.appDisplayName) your default email app")
+                                }
+                            }
+                            .disabled(settingDefaultMail)
+                            Spacer()
+                        }
+                        if let defaultMailError {
+                            Text(defaultMailError)
+                                .font(.system(size: 11))
+                                .foregroundStyle(.red)
+                        }
+                    }
+                } header: {
+                    Text("Default email app")
+                } footer: {
+                    Text("When set, clicking a mailto: link in a browser or another app opens compose here (To, Cc, Bcc, subject, and body when the link includes them). You can also change this in Apple Mail → Settings → General → Default email reader.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 Section {
                     Picker("Priority section in Inbox", selection: $priorityModeRaw) {
                         ForEach(PrioritySplit.Mode.allCases, id: \.rawValue) { mode in
@@ -962,6 +1010,13 @@ struct AppearanceSettings: View {
             .formStyle(.grouped)
         }
         .sheet(isPresented: $showVIPManager) { VIPManager() }
+        .onAppear { isDefaultMailApp = DefaultMailClient.isDefault }
+        // Re-check when returning to Settings after changing the default in
+        // Apple Mail (or another app claiming the handler).
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            isDefaultMailApp = DefaultMailClient.isDefault
+        }
     }
 }
 
