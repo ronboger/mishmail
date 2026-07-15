@@ -4,8 +4,31 @@ import WebKit
 /// Scroll events pass through to the enclosing SwiftUI `ScrollView` so the
 /// message pane never traps the wheel/trackpad.
 final class PassthroughWebView: WKWebView {
+    /// Tracks whether `HTMLBodyLayout.heightHandlerName` is registered on this
+    /// view's `userContentController`. `removeScriptMessageHandler` raises if
+    /// the name is absent, so we only remove when we know we added it.
+    var hasHeightMessageHandler = false
+
     override func scrollWheel(with event: NSEvent) {
         nextResponder?.scrollWheel(with: event)
+    }
+
+    func installHeightHandler(_ handler: WKScriptMessageHandler) {
+        if hasHeightMessageHandler {
+            configuration.userContentController
+                .removeScriptMessageHandler(forName: HTMLBodyLayout.heightHandlerName)
+            hasHeightMessageHandler = false
+        }
+        configuration.userContentController
+            .add(handler, name: HTMLBodyLayout.heightHandlerName)
+        hasHeightMessageHandler = true
+    }
+
+    func removeHeightHandlerIfNeeded() {
+        guard hasHeightMessageHandler else { return }
+        configuration.userContentController
+            .removeScriptMessageHandler(forName: HTMLBodyLayout.heightHandlerName)
+        hasHeightMessageHandler = false
     }
 }
 
@@ -51,9 +74,24 @@ enum HTMLWebViewPool {
     }
 
     /// Drop heavy DOM and return the view to the pool (or let it deallocate).
+    ///
+    /// Callers must remove any `WKScriptMessageHandler` they registered (e.g.
+    /// `HTMLBodyLayout.heightHandlerName`) *before* recycle — a recycled view
+    /// reuses its `WKUserContentController`, and double-adding a handler name
+    /// crashes. Layout teardown JS runs first so ResizeObservers from the
+    /// previous message cannot fire into a deallocated coordinator.
     static func recycle(_ webView: WKWebView) {
         webView.stopLoading()
         webView.navigationDelegate = nil
+        // Best-effort: disconnect ResizeObserver before wiping the DOM.
+        webView.evaluateJavaScript(HTMLBodyLayout.teardownJS, completionHandler: nil)
+        if let view = webView as? PassthroughWebView {
+            view.removeHeightHandlerIfNeeded()
+        } else {
+            // Non-pooled path (shouldn't happen for HTML bodies).
+            webView.configuration.userContentController
+                .removeScriptMessageHandler(forName: HTMLBodyLayout.heightHandlerName)
+        }
         // Release the previous message's DOM/images before parking or dropping.
         webView.loadHTMLString("", baseURL: nil)
         guard let view = webView as? PassthroughWebView else { return }

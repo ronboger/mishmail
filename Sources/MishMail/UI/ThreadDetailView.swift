@@ -802,6 +802,10 @@ struct MessageCard: View {
     @State private var htmlHeight: CGFloat = 120
     /// Per-message opt-in when policy is ask/vip and the sender isn't allowed.
     @State private var loadRemoteImages = false
+    /// Manual escape hatch: render multipart plain text instead of HTML.
+    /// Useful for privacy-sensitive transactional mail when remote images are
+    /// blocked and the HTML shell is unreadable — not an automatic switch.
+    @State private var showPlainText = false
     @State private var cardCursorPushed = false
     // The quoted reply trail below the new text stays collapsed behind a "…"
     // pill (Gmail-style) on every message — threads repeat their history in
@@ -920,7 +924,21 @@ struct MessageCard: View {
                     }
                 }
                 Spacer()
-                if expanded, message.bodyHTML != nil, !allowRemoteImages {
+                if expanded, message.bodyHTML != nil, !message.bodyText.isEmpty {
+                    Button {
+                        showPlainText.toggle()
+                    } label: {
+                        Text(showPlainText ? "Show HTML" : "Show plain text")
+                            .font(.caption)
+                    }
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                    .help(showPlainText
+                          ? "Render the HTML body again"
+                          : "Show the multipart plain-text alternative (no remote images; useful when HTML is unreadable)")
+                }
+                if expanded, message.bodyHTML != nil, !allowRemoteImages, !showPlainText {
                     // Click loads this message; chevron / long-press offers the thread.
                     Menu {
                         Button("This conversation") { loadImagesForThread = true }
@@ -990,6 +1008,12 @@ struct MessageCard: View {
                 // so nested `>` history doesn't stay visible by default.
                 if hasQuotedTrail, let head = textHead, !showQuoted {
                     Text(head)
+                        .font(.system(size: 14.5 * fontScale))
+                        .lineSpacing(3)
+                        .textSelection(.enabled)
+                } else if showPlainText, !message.bodyText.isEmpty {
+                    // Manual plain-text escape hatch (see header control).
+                    Text(message.bodyText)
                         .font(.system(size: 14.5 * fontScale))
                         .lineSpacing(3)
                         .textSelection(.enabled)
@@ -1409,12 +1433,18 @@ private struct MatchingFiltersSection: View {
     }
 }
 
-/// Sandboxed HTML rendering: page JavaScript disabled; remote content blocked
-/// by CSP unless the user opts in (per message or Settings → Appearance default).
+/// Sandboxed HTML rendering: page JavaScript disabled; remote images blocked
+/// by a WebKit content rule plus CSP unless the user opts in (per message or
+/// Settings → Appearance default).
 /// Sizes itself to its content. External links open in the default browser.
 ///
 /// Web views are drawn from `HTMLWebViewPool` (recycle + per-view ephemeral
 /// store) so expanding/collapsing cards does not thrash WKWebView creation.
+///
+/// Height updates come from a `ResizeObserver` + image load/error handlers
+/// (`HTMLBodyLayout`) posting to a `WKScriptMessageHandler`, not a fixed
+/// multi-second poll. Blocked/failed images keep capped authored dimensions
+/// so table-based transactional layouts do not collapse under Ask policy.
 struct HTMLBodyView: NSViewRepresentable {
     let html: String
     let allowRemoteImages: Bool
@@ -1427,6 +1457,8 @@ struct HTMLBodyView: NSViewRepresentable {
     func makeNSView(context: Context) -> WKWebView {
         let webView = HTMLWebViewPool.dequeue()
         webView.navigationDelegate = context.coordinator
+        // Flag-guarded: recycled views never double-add the handler name.
+        webView.installHeightHandler(context.coordinator)
         webView.setValue(false, forKey: "drawsBackground")
         return webView
     }
@@ -1439,74 +1471,111 @@ struct HTMLBodyView: NSViewRepresentable {
         let csp = HTMLBodyCSP.metaTag(allowRemoteImages: allowRemoteImages)
         // Force light text over dark chrome; per-element contrast from
         // effective background (attribute fast path + applyContrastJS).
+        // Includes HTMLBodyLayout.imageCSS for blocked-image placeholders.
         let css = HTMLBodyDarkMode.injectedCSS(
             fontScale: fontScale, collapseQuote: collapseQuote, html: html)
-        let style = "<style>\n\(css)\n</style>"
-        webView.loadHTMLString("<html><head>\(csp)\(style)</head><body>\(html)</body></html>", baseURL: nil)
+        // Fragments get a synthetic shell; complete documents keep author
+        // head styles and receive CSP/CSS via head injection.
+        let document = HTMLBodyDocument.assemble(
+            html: html, cspMeta: csp, styleCSS: css)
+        let trustedFallback = HTMLBodyDocument.trustedWrapper(
+            html: html, cspMeta: csp, styleCSS: css)
+        context.coordinator.load(
+            document: document,
+            trustedFallback: trustedFallback,
+            allowRemoteImages: allowRemoteImages,
+            in: webView)
     }
 
     static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
-        coordinator.loadedKey = nil
-        coordinator.setHeight = nil
+        coordinator.detach(from: nsView)
         HTMLWebViewPool.recycle(nsView)
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
 
-    final class Coordinator: NSObject, WKNavigationDelegate {
+    final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var loadedKey: String?
         var setHeight: ((CGFloat) -> Void)?
+        private var loadToken = UUID()
+
+        /// Apply/remove the network-level remote-image rule before navigating.
+        /// A generation token prevents a late compile callback from mutating a
+        /// recycled view or superseding a newer Load-images request.
+        func load(document: String, trustedFallback: String,
+                  allowRemoteImages: Bool, in webView: WKWebView) {
+            let token = UUID()
+            loadToken = token
+            let controller = webView.configuration.userContentController
+            controller.removeAllContentRuleLists()
+
+            if allowRemoteImages {
+                webView.loadHTMLString(document, baseURL: nil)
+                return
+            }
+
+            HTMLRemoteImageBlocker.ruleList { [weak self, weak webView] ruleList in
+                guard let self, let webView, self.loadToken == token else { return }
+                let controller = webView.configuration.userContentController
+                controller.removeAllContentRuleLists()
+                if let ruleList {
+                    controller.add(ruleList)
+                    webView.loadHTMLString(document, baseURL: nil)
+                } else {
+                    // Compilation is expected to be infallible for the static
+                    // rule, but privacy fails closed if WebKit rejects it.
+                    webView.loadHTMLString(trustedFallback, baseURL: nil)
+                }
+            }
+        }
+
+        /// Drop height callbacks before the view is recycled so a late
+        /// ResizeObserver tick cannot write into a new card. Handler removal
+        /// and observer teardown live in `HTMLWebViewPool.recycle` (single
+        /// owner — double-remove of a script handler raises).
+        func detach(from webView: WKWebView) {
+            loadToken = UUID()
+            loadedKey = nil
+            setHeight = nil
+            webView.evaluateJavaScript(HTMLBodyLayout.teardownJS, completionHandler: nil)
+        }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             // Primary contrast pass runs as WKUserScript at document-end
             // (WebViewPool) before first paint. Re-run here for recycled views
-            // / late styles, then measure.
+            // / late styles, then install layout preservation + continuous
+            // measure (ResizeObserver + image events).
             webView.evaluateJavaScript(HTMLBodyDarkMode.applyContrastJS) { [weak self] _, _ in
-                self?.measure(webView, attempt: 0)
+                self?.installLayoutAndMeasure(webView)
             }
         }
 
-        /// Content (images, layout) can settle after didFinish; re-measure a
-        /// few times. Prefer visible child bottoms over `scrollHeight`, which
-        /// often reports the *frame* height when content is shorter than the
-        /// WKWebView (classic source of empty space above a collapsed quote).
-        private func measure(_ webView: WKWebView, attempt: Int) {
-            // JS is disabled for page content; WebKit still allows evaluateJavaScript
-            // from the app process for measurement / contrast tagging.
-            let js = """
-            (function() {
-              var body = document.body;
-              if (!body) return 40;
-              var bodyTop = body.getBoundingClientRect().top;
-              var bottom = bodyTop;
-              var kids = body.children;
-              for (var i = 0; i < kids.length; i++) {
-                var r = kids[i].getBoundingClientRect();
-                // display:none quote containers report height 0 — skip them.
-                if (r.height > 0) bottom = Math.max(bottom, r.bottom);
-              }
-              var content = bottom - bodyTop;
-              if (content < 1) {
-                content = Math.max(body.scrollHeight, body.getBoundingClientRect().height);
-              }
-              return Math.ceil(Math.max(content, 40));
-            })()
-            """
-            webView.evaluateJavaScript(js) { [weak self] result, _ in
-                if let h = result as? CGFloat, h > 0 {
-                    DispatchQueue.main.async { self?.setHeight?(max(h, 40)) }
-                } else if let n = result as? NSNumber {
-                    let h = CGFloat(truncating: n)
-                    if h > 0 {
-                        DispatchQueue.main.async { self?.setHeight?(max(h, 40)) }
-                    }
-                }
-                if attempt < 3 {
-                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.4) {
-                        self?.measure(webView, attempt: attempt + 1)
-                    }
-                }
+        private func installLayoutAndMeasure(_ webView: WKWebView) {
+            webView.evaluateJavaScript(HTMLBodyLayout.installLayoutAndMeasureJS) { [weak self] result, _ in
+                self?.applyMeasuredHeight(result)
             }
+        }
+
+        private func applyMeasuredHeight(_ result: Any?) {
+            let floor = CGFloat(HTMLBodyLayout.minContentHeight)
+            if let h = result as? CGFloat, h > 0 {
+                DispatchQueue.main.async { self.setHeight?(max(h, floor)) }
+            } else if let n = result as? NSNumber {
+                let h = CGFloat(truncating: n)
+                if h > 0 {
+                    DispatchQueue.main.async { self.setHeight?(max(h, floor)) }
+                }
+            } else if let d = result as? Double, d > 0 {
+                DispatchQueue.main.async { self.setHeight?(max(CGFloat(d), floor)) }
+            } else if let i = result as? Int, i > 0 {
+                DispatchQueue.main.async { self.setHeight?(max(CGFloat(i), floor)) }
+            }
+        }
+
+        func userContentController(_ userContentController: WKUserContentController,
+                                   didReceive message: WKScriptMessage) {
+            guard message.name == HTMLBodyLayout.heightHandlerName else { return }
+            applyMeasuredHeight(message.body)
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
