@@ -23,6 +23,7 @@ struct ShortcutsHelpView: View {
             ("⌘K", "Command palette (Insert link while composing)"),
             ("/ (in compose)", "Snippet picker (typed in body)"),
             ("⌘/", "Snippets panel (in compose)"),
+            ("⌘⇧V", "Paste without formatting"),
             ("⌃F", "Filter menu"),
             ("⌘⇧R", "Sync all"),
             ("⌘+ / ⌘− / ⌘0", "Text size"),

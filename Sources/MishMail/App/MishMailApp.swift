@@ -77,6 +77,15 @@ struct MishMailApp: App {
                 Button("Sync All") { Task { await store.syncAll() } }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
             }
+            // Slack/Chrome/VS Code convention. System "Paste and Match Style"
+            // stays on ⌥⇧⌘V; this is the muscle-memory chord for plain paste
+            // in any focused text field (compose, subject, search, settings).
+            CommandGroup(after: .pasteboard) {
+                Button("Paste without Formatting") {
+                    NSApp.sendAction(#selector(NSTextView.pasteAsPlainText(_:)), to: nil, from: nil)
+                }
+                .keyboardShortcut("v", modifiers: [.command, .shift])
+            }
             CommandGroup(after: .sidebar) {
                 Button("Increase Text Size") { fontScale = min(1.6, fontScale + 0.1) }
                     .keyboardShortcut("+", modifiers: .command)
