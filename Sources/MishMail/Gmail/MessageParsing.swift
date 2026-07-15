@@ -623,6 +623,9 @@ enum QuotedReply {
     /// Returns nil when there is no trail or no authored text above it
     /// (collapsing would hide the whole message).
     static func splitText(_ body: String) -> (head: String, tail: String)? {
+        // CRLF is a single Swift Character; Character-based line scans never
+        // see "\n" inside it. Normalize before any line walk or String.Index cut.
+        let body = normalizeNewlines(body)
         var cut: String.Index?
 
         let ns = body as NSString
@@ -655,6 +658,15 @@ enum QuotedReply {
 
         guard !head.isEmpty else { return nil }
         return (head, tail)
+    }
+
+    /// Gmail plain text may use CRLF or bare CR. Swift treats U+000D U+000A as
+    /// one Character, which breaks Character-indexed line scans that look for
+    /// `"\n"`. Collapse to LF so line walks and regex cuts stay consistent.
+    private static func normalizeNewlines(_ body: String) -> String {
+        guard body.utf8.contains(UInt8(ascii: "\r")) else { return body }
+        return body.replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
     }
 
     /// True when a line is a classic plain-text quote (`>` / `> `), ignoring
@@ -793,6 +805,7 @@ enum QuotedReply {
     /// `splitText`, exposed so previews don't treat quote-only bodies as
     /// authored content.
     static func isQuoteOnlyText(_ body: String) -> Bool {
+        let body = normalizeNewlines(body)
         let ns = body as NSString
         if let match = textMarker.firstMatch(
             in: body, range: NSRange(location: 0, length: ns.length)) {

@@ -983,7 +983,9 @@ struct MessageCard: View {
                                  height: $htmlHeight)
                         .frame(height: htmlHeight)
                 } else if !message.bodyText.isEmpty {
-                    Text((showQuoted ? nil : textHead) ?? message.bodyText)
+                    // Collapsed plain-text heads are handled above; this branch
+                    // is full body (no trail, or showQuoted).
+                    Text(message.bodyText)
                         .font(.system(size: 14.5 * fontScale))
                         .lineSpacing(3)
                         .textSelection(.enabled)
