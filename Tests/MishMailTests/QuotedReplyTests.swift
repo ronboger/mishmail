@@ -69,6 +69,88 @@ final class QuotedReplyTests: XCTestCase {
         XCTAssertNil(QuotedReply.splitText("On my desk I wrote: a note.\nThat's all."))
     }
 
+    func testSplitTextGreaterThanBlockWithoutAttribution() {
+        // Clients often dump nested history as plain `>` lines with no bare
+        // "On … wrote:" — only `> On … wrote:` — so the attribution regex
+        // never fires. The `>` run itself must still collapse.
+        let body = """
+        I'm glad to meet you Seyone. thanks for the introduction Ron.
+
+        > family vacation for a few weeks, but i can do early august. i've
+        > cc'd my colleague emily hostage, who would also like to meet you.
+        > let me know about your availability.
+        > best
+        > jon.
+        > On 2026-07-08, 12:06 AM, "Ron Boger" <ron@ronboger.com>
+        > wrote:
+        > Hey Seyone and Jon,
+        > I think you two will have a good chat
+        > Ron
+        """
+        let split = QuotedReply.splitText(body)
+        XCTAssertEqual(
+            split?.head,
+            "I'm glad to meet you Seyone. thanks for the introduction Ron.")
+        XCTAssertTrue(
+            split?.tail.trimmingCharacters(in: .whitespacesAndNewlines)
+                .hasPrefix(">") == true)
+    }
+
+    func testSplitTextPeelsGreaterThanBlockAboveAttribution() {
+        // Attribution sits below an inlined `>` dump — earliest cut would be
+        // "On … wrote:", leaving the dump in the head. Peel it so "…" hides
+        // the whole trail.
+        let body = """
+        Free at 2pm.
+
+        > earlier reply nested in history
+        > On Mon, Bob wrote:
+        > prior note
+
+        On Thu, Jul 2, 2026 at 6:41 PM, Ron Boger <ron@ronboger.com> wrote:
+        > Sure!
+        """
+        let split = QuotedReply.splitText(body)
+        XCTAssertEqual(split?.head, "Free at 2pm.")
+        let tail = split?.tail ?? ""
+        XCTAssertTrue(tail.contains("> earlier reply nested in history"))
+        XCTAssertTrue(tail.contains("On Thu, Jul 2, 2026"))
+    }
+
+    func testSplitTextSingleGreaterThanLineNotCollapsed() {
+        // One `>` line can be an intentional citation, not a trail.
+        let body = """
+        See the note below.
+
+        > one cited line only
+        """
+        XCTAssertNil(QuotedReply.splitText(body))
+    }
+
+    func testSplitTextGreaterThanBlockWithSignatureAfterNotCollapsed() {
+        // Quote in the middle with prose after is not a trail-to-EOF.
+        let body = """
+        Intro
+
+        > quoted bit
+        > more quoted
+
+        Thanks,
+        Jon
+        """
+        XCTAssertNil(QuotedReply.splitText(body))
+    }
+
+    func testSplitTextGreaterThanOnlyBodyStaysVisible() {
+        // Whole body is `>` lines — no authored head to keep.
+        let body = """
+        > only quote
+        > more quote
+        """
+        XCTAssertNil(QuotedReply.splitText(body))
+        XCTAssertTrue(QuotedReply.isQuoteOnlyText(body))
+    }
+
     // MARK: - HTML
 
     func testHasHTMLQuoteGmail() {

@@ -183,7 +183,16 @@ struct ComposeView: View {
         }
         if visualLines < 1 { visualLines = 1 }
         let contentHeight = 16 + visualLines * lineHeight
-        return min(max(contentHeight, 120), 280)
+        // Floor leaves a real writing surface on short replies (inline card
+        // is taller); cap keeps footer + "…" on-screen for long drafts.
+        return min(max(contentHeight, 180), 320)
+    }
+
+    /// Body editor minimum while the quote is collapsed — matches the floor
+    /// in `bodyEditorMaxHeight` so short replies don't look like a one-liner
+    /// field under a tall card of empty chrome.
+    private var bodyEditorMinHeight: CGFloat {
+        quotedTail.isEmpty ? 120 : 180
     }
 
     /// Focuses the body editor. Setting the FocusState synchronously in
@@ -777,8 +786,8 @@ struct ComposeView: View {
                 .padding(.bottom, 6)
                 // Grow with authored content while the quote is collapsed so
                 // short replies don't scroll under the "…" pill; see
-                // bodyEditorMaxHeight.
-                .frame(minHeight: 120, maxHeight: bodyEditorMaxHeight)
+                // bodyEditorMaxHeight / bodyEditorMinHeight.
+                .frame(minHeight: bodyEditorMinHeight, maxHeight: bodyEditorMaxHeight)
                 .onChange(of: body_) {
                     syncSlashSelection()
                     if slashToken == nil { slashDismissed = false }

@@ -815,12 +815,20 @@ struct MessageCard: View {
         if hasBody, let cached = Self.trailCache[message.id] {
             (textHead, hasQuotedTrail) = cached
         } else if hasBody {
-            if let html = message.bodyHTML, !html.isEmpty {
+            // Prefer structured HTML collapse (gmail_quote / cite). When HTML
+            // has no marker but plain text still has a `>` / "On … wrote:"
+            // trail, keep a text head so "…" can hide it (some clients ship
+            // nested history as plain `>` lines inside a single HTML div).
+            if let html = message.bodyHTML, !html.isEmpty,
+               QuotedReply.hasHTMLQuote(html) {
                 textHead = nil
-                hasQuotedTrail = QuotedReply.hasHTMLQuote(html)
+                hasQuotedTrail = true
+            } else if let head = QuotedReply.splitText(message.bodyText)?.head {
+                textHead = head
+                hasQuotedTrail = true
             } else {
-                textHead = QuotedReply.splitText(message.bodyText)?.head
-                hasQuotedTrail = textHead != nil
+                textHead = nil
+                hasQuotedTrail = false
             }
             if Self.trailCache.count > 512 { Self.trailCache.removeAll() }
             Self.trailCache[message.id] = (textHead, hasQuotedTrail)
@@ -956,10 +964,22 @@ struct MessageCard: View {
             if expanded {
                 // Collapsed cards never mount HTMLBodyView (gated on expanded).
                 // Header-only rows show nothing until the parent hydrates the body.
-                if let html = message.bodyHTML, !html.isEmpty {
+                //
+                // When we only have a plain-text head (no structured HTML quote),
+                // show that head while collapsed — even if bodyHTML exists —
+                // so nested `>` history doesn't stay visible by default.
+                if hasQuotedTrail, let head = textHead, !showQuoted {
+                    Text(head)
+                        .font(.system(size: 14.5 * fontScale))
+                        .lineSpacing(3)
+                        .textSelection(.enabled)
+                } else if let html = message.bodyHTML, !html.isEmpty {
                     HTMLBodyView(html: html, allowRemoteImages: allowRemoteImages,
                                  fontScale: fontScale,
-                                 collapseQuote: hasQuotedTrail && !showQuoted,
+                                 // Structured HTML only: plain-text heads use
+                                 // the branch above when collapsed.
+                                 collapseQuote: textHead == nil
+                                     && hasQuotedTrail && !showQuoted,
                                  height: $htmlHeight)
                         .frame(height: htmlHeight)
                 } else if !message.bodyText.isEmpty {
