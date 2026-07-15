@@ -840,22 +840,19 @@ private struct SnippetEditor: View {
 
     private func save() {
         guard canSave else { return }
-        // Persist only currently selected ids (orphans the user didn't remove
-        // stay until they hit Remove — intentional so nothing is dropped silently).
+        // Persist currently selected ids. Orphans the user didn't Remove stay
+        // on purpose (nothing dropped silently). Empty selection with limit
+        // off → unscoped (all accounts).
         let ids = limitToAccounts ? Array(selectedAccountIds).sorted() : []
-        // If every remaining id is an orphan and no live accounts are checked,
-        // still save as-is; user can clear orphans next time. If they removed
-        // everything, treat as unscoped.
-        let finalIds = ids
         if snippet.id == nil {
             store.saveSnippet(name: name, body: body_, movesToBcc: movesToBcc,
-                              accountIds: finalIds)
+                              accountIds: ids)
         } else {
             var updated = snippet
             updated.name = name
             updated.body = body_
             updated.movesToBcc = movesToBcc
-            updated.accountIds = finalIds
+            updated.accountIds = ids
             store.updateSnippet(updated)
         }
         dismiss()

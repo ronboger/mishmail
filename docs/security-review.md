@@ -1,5 +1,9 @@
 # MishMail Security Review
 
+Date: 2026-07-09  
+Source: Codex / open-source readiness security pass (source-based; not dynamic
+fuzzing or dependency CVE scan). Findings SEC-001–003 were fixed the same day.
+
 ## Executive summary
 
 MishMail has a strong security baseline for a local mail client: it uses OAuth PKCE with a loopback-only callback and state validation, stores tokens and the SQLCipher key in the macOS Keychain, encrypts the mail cache, renders email in a JavaScript-disabled ephemeral `WKWebView` with a restrictive CSP and default-deny navigation, and sanitizes and quarantines attachments.
