@@ -415,12 +415,6 @@ final class ComposeBodyTextView: NSTextView {
         case ("x", true, false):  onFormat?(.strikethrough); return true
         case ("e", false, false): onFormat?(.code); return true
         case ("m", true, false):  onFormat?(.math); return true
-        // ⌘⇧V = paste without formatting (Slack/Chrome/VS Code convention).
-        // Body is already plain-text markdown, so this matches ⌘V / system
-        // paste — but ⌘⇧V is not bound by default and would otherwise no-op.
-        case ("v", true, false):
-            pasteAsPlainText(nil)
-            return true
         // ⌘K is owned by ComposeView's link sheet (local key monitor) — don't
         // also inject raw `[text](url)` here or the sheet never opens.
         case ("1", false, true):  onFormat?(.heading1); return true
