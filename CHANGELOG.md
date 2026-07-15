@@ -17,7 +17,9 @@ minor versions may still change behavior.
   poll. Complete HTML documents keep author head styles; CSP/CSS are injected
   via an HTML-aware scanner that skips comments and raw-text elements and ends
   open tags only at unquoted `>` (so decoy `<!-- <head> -->` or
-  `data-decoy=">"` cannot disable Ask-policy CSP). Fragments still wrap.
+  `data-decoy=">"` cannot disable CSP). Ask-mode privacy is independently
+  enforced by a WebKit content rule installed before navigation, with a trusted
+  CSP wrapper as a fail-closed fallback. Fragments still wrap.
   Message cards gain a manual **Show plain text** control for the multipart
   alternative. Recycled WebViews tear down observers and script handlers.
 

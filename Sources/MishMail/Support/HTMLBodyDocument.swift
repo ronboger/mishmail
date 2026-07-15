@@ -55,6 +55,16 @@ enum HTMLBodyDocument {
         return "<html><head>\(injection)</head><body>\(html)</body></html>"
     }
 
+    /// Fail-closed assembly used only when WebKit's remote-image content rule
+    /// cannot be prepared. The trusted CSP is in an outer head whose position
+    /// cannot be influenced by message markup. WebKit still parses author
+    /// inline styles/body content, though malformed full-document chrome may be
+    /// less faithful than the normal head-injection path.
+    static func trustedWrapper(html: String, cspMeta: String, styleCSS: String) -> String {
+        let styleTag = "<style>\n\(styleCSS)\n</style>"
+        return "<html><head>\(cspMeta)\(styleTag)</head><body>\(html)</body></html>"
+    }
+
     /// Insert `injection` immediately after the first *real* opening `<head…>`
     /// tag (not inside comments / raw-text). If there is no head, insert a
     /// head after the first real `<html…>` (or wrap entirely).

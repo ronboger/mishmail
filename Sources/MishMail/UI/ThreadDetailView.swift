@@ -1413,8 +1413,9 @@ private struct MatchingFiltersSection: View {
     }
 }
 
-/// Sandboxed HTML rendering: page JavaScript disabled; remote content blocked
-/// by CSP unless the user opts in (per message or Settings → Appearance default).
+/// Sandboxed HTML rendering: page JavaScript disabled; remote images blocked
+/// by a WebKit content rule plus CSP unless the user opts in (per message or
+/// Settings → Appearance default).
 /// Sizes itself to its content. External links open in the default browser.
 ///
 /// Web views are drawn from `HTMLWebViewPool` (recycle + per-view ephemeral
@@ -1457,7 +1458,13 @@ struct HTMLBodyView: NSViewRepresentable {
         // head styles and receive CSP/CSS via head injection.
         let document = HTMLBodyDocument.assemble(
             html: html, cspMeta: csp, styleCSS: css)
-        webView.loadHTMLString(document, baseURL: nil)
+        let trustedFallback = HTMLBodyDocument.trustedWrapper(
+            html: html, cspMeta: csp, styleCSS: css)
+        context.coordinator.load(
+            document: document,
+            trustedFallback: trustedFallback,
+            allowRemoteImages: allowRemoteImages,
+            in: webView)
     }
 
     static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
@@ -1470,12 +1477,44 @@ struct HTMLBodyView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var loadedKey: String?
         var setHeight: ((CGFloat) -> Void)?
+        private var loadToken = UUID()
+
+        /// Apply/remove the network-level remote-image rule before navigating.
+        /// A generation token prevents a late compile callback from mutating a
+        /// recycled view or superseding a newer Load-images request.
+        func load(document: String, trustedFallback: String,
+                  allowRemoteImages: Bool, in webView: WKWebView) {
+            let token = UUID()
+            loadToken = token
+            let controller = webView.configuration.userContentController
+            controller.removeAllContentRuleLists()
+
+            if allowRemoteImages {
+                webView.loadHTMLString(document, baseURL: nil)
+                return
+            }
+
+            HTMLRemoteImageBlocker.ruleList { [weak self, weak webView] ruleList in
+                guard let self, let webView, self.loadToken == token else { return }
+                let controller = webView.configuration.userContentController
+                controller.removeAllContentRuleLists()
+                if let ruleList {
+                    controller.add(ruleList)
+                    webView.loadHTMLString(document, baseURL: nil)
+                } else {
+                    // Compilation is expected to be infallible for the static
+                    // rule, but privacy fails closed if WebKit rejects it.
+                    webView.loadHTMLString(trustedFallback, baseURL: nil)
+                }
+            }
+        }
 
         /// Drop height callbacks before the view is recycled so a late
         /// ResizeObserver tick cannot write into a new card. Handler removal
         /// and observer teardown live in `HTMLWebViewPool.recycle` (single
         /// owner — double-remove of a script handler raises).
         func detach(from webView: WKWebView) {
+            loadToken = UUID()
             loadedKey = nil
             setHeight = nil
             webView.evaluateJavaScript(HTMLBodyLayout.teardownJS, completionHandler: nil)
