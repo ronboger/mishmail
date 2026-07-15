@@ -27,6 +27,14 @@ final class HTMLBodyLayoutTests: XCTestCase {
         XCTAssertLessThanOrEqual(s!.height!, HTMLBodyLayout.maxPreservedHeight)
     }
 
+    func testCappedSizeFitsViewportProportionally() {
+        // After max-cap 1200×600, viewport 400 → 400×200 (not 400×600).
+        let s = HTMLBodyLayout.cappedSize(width: 1200, height: 600,
+                                          maxViewportWidth: 400)
+        XCTAssertEqual(s?.width, 400)
+        XCTAssertEqual(s?.height, 200)
+    }
+
     func testCappedSizeClampsTallOnly() {
         let s = HTMLBodyLayout.cappedSize(width: 100, height: 50_000)
         XCTAssertEqual(s?.height, HTMLBodyLayout.maxPreservedHeight)
@@ -76,9 +84,15 @@ final class HTMLBodyLayoutTests: XCTestCase {
         // Blocked path stamps layout class + inline sizes.
         XCTAssertTrue(js.contains(HTMLBodyLayout.layoutImageClass))
         XCTAssertTrue(js.contains("setProperty('height'"))
-        // Successful load clears override (height:auto path restored).
+        // Successful load restores author styles (snapshot), does not blindly wipe.
         XCTAssertTrue(js.contains("naturalWidth > 0"))
-        XCTAssertTrue(js.contains("removeProperty('height')"))
+        XCTAssertTrue(js.contains("__mmLayoutSnap"))
+        XCTAssertTrue(js.contains("snapshotProp"))
+        XCTAssertTrue(js.contains("restoreProp"))
+        XCTAssertTrue(js.contains("if (!snap) return"))
+        // Viewport-proportional fit + reflow on resize.
+        XCTAssertTrue(js.contains("fitViewport"))
+        XCTAssertTrue(js.contains("reflowPlaceholders"))
         // Continuous measure: ResizeObserver + message handler + image events.
         XCTAssertTrue(js.contains("ResizeObserver"))
         XCTAssertTrue(js.contains(HTMLBodyLayout.heightHandlerName))

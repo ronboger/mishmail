@@ -15,7 +15,8 @@ import Foundation
 /// Email HTML is untrusted. Authored dimensions are capped so
 /// `<img height="100000">` cannot create an enormous card. Caps apply only to
 /// the *layout placeholder* path (blocked / failed images); successfully
-/// loaded images drop the override and use proportional `height: auto`.
+/// loaded images drop the override and restore any author inline styles we
+/// temporarily replaced (never `removeProperty` blindly).
 enum HTMLBodyLayout {
     /// Class stamped on images using preserved authored dimensions.
     static let layoutImageClass = "mm-img-layout"
@@ -46,9 +47,12 @@ enum HTMLBodyLayout {
     /// - Both dimensions present: scale proportionally so neither exceeds max.
     /// - One present: clamp that axis only.
     /// - Neither / non-positive: `nil` (no layout override).
+    /// - Optional `maxViewportWidth`: further scale the pair so width fits the
+    ///   reading pane (keeps height proportional — avoids 1200×600 → 400×600).
     static func cappedSize(width: Int?, height: Int?,
                            maxWidth: Int = maxPreservedWidth,
-                           maxHeight: Int = maxPreservedHeight) -> CappedSize? {
+                           maxHeight: Int = maxPreservedHeight,
+                           maxViewportWidth: Int? = nil) -> CappedSize? {
         let wIn = width.flatMap { $0 > 0 ? $0 : nil }
         let hIn = height.flatMap { $0 > 0 ? $0 : nil }
         guard wIn != nil || hIn != nil else { return nil }
@@ -75,6 +79,12 @@ enum HTMLBodyLayout {
             if let ch = h { h = ch * scale }
         }
 
+        if let vp = maxViewportWidth, vp > 0, let cw = w, cw > Double(vp) {
+            let scale = Double(vp) / cw
+            w = Double(vp)
+            if let ch = h { h = ch * scale }
+        }
+
         return CappedSize(
             width: w.map { max(1, Int($0.rounded())) },
             height: h.map { max(1, Int($0.rounded())) })
@@ -83,7 +93,9 @@ enum HTMLBodyLayout {
     // MARK: - CSS
 
     /// Extra stylesheet rules appended after the base `img { max-width… }` rule.
-    /// Inline `!important` sizes from JS win over `height: auto` for layout boxes.
+    /// Inline sizes from JS are set without `!important` when possible; layout
+    /// class keeps box-sizing. Viewport fitting is done in JS so height stays
+    /// proportional when width is constrained.
     static var imageCSS: String {
         let layout = layoutImageClass
         let failed = failedImageClass
@@ -103,10 +115,10 @@ enum HTMLBodyLayout {
 
     // MARK: - JavaScript (app-injected; page scripts stay disabled)
 
-    /// Preserve capped authored dimensions on blocked/failed images; clear
-    /// overrides when an image loads successfully. Installs load/error
-    /// listeners and a `ResizeObserver` that posts measured height to
-    /// `webkit.messageHandlers.mmHeight`.
+    /// Preserve capped authored dimensions on blocked/failed images; restore
+    /// author inline styles when an image loads successfully. Installs
+    /// load/error listeners and a `ResizeObserver` that reflows placeholders
+    /// to the viewport and posts measured height to `mmHeight`.
     ///
     /// Safe to re-run: disconnects any prior observer and rebinds listeners.
     /// Idempotent class/style updates.
@@ -148,11 +160,55 @@ enum HTMLBodyLayout {
             };
           }
 
+          function viewportWidth(){
+            var w = 0;
+            try {
+              if (document.body) w = Math.max(w, document.body.clientWidth || 0);
+              if (document.documentElement) {
+                w = Math.max(w, document.documentElement.clientWidth || 0);
+              }
+            } catch (e) {}
+            return w > 0 ? w : MAX_W;
+          }
+
+          /* Scale the capped pair so width fits the reading pane; keep aspect. */
+          function fitViewport(capped){
+            if (!capped || capped.w == null) return capped;
+            var avail = viewportWidth();
+            if (avail > 0 && capped.w > avail) {
+              var scale = avail / capped.w;
+              capped = {
+                w: Math.max(1, Math.round(capped.w * scale)),
+                h: capped.h != null ? Math.max(1, Math.round(capped.h * scale)) : null
+              };
+            }
+            return capped;
+          }
+
+          function snapshotProp(img, snap, name){
+            if (snap[name] != null) return; /* already captured before our override */
+            var v = img.style.getPropertyValue(name);
+            var p = img.style.getPropertyPriority(name);
+            snap[name] = { had: !!(v && v.length), value: v || '', priority: p || '' };
+          }
+
+          function restoreProp(img, saved, name){
+            if (saved == null) return; /* we never overrode this property */
+            if (saved.had) {
+              img.style.setProperty(name, saved.value, saved.priority);
+            } else {
+              img.style.removeProperty(name);
+            }
+          }
+
           function clearLayout(img){
             img.classList.remove(LAYOUT, FAILED);
-            img.style.removeProperty('width');
-            img.style.removeProperty('height');
-            img.style.removeProperty('max-height');
+            var snap = img.__mmLayoutSnap;
+            if (!snap) return; /* never overrode — leave author styles alone */
+            restoreProp(img, snap.width, 'width');
+            restoreProp(img, snap.height, 'height');
+            restoreProp(img, snap['max-height'], 'max-height');
+            try { delete img.__mmLayoutSnap; } catch (e) { img.__mmLayoutSnap = null; }
           }
 
           function applyImage(img){
@@ -162,18 +218,27 @@ enum HTMLBodyLayout {
             }
             var attrW = img.getAttribute('width');
             var attrH = img.getAttribute('height');
-            var capped = capPair(attrW, attrH);
+            var capped = fitViewport(capPair(attrW, attrH));
             if (!capped) {
               img.classList.add(FAILED);
               return;
             }
+            if (!img.__mmLayoutSnap) img.__mmLayoutSnap = {};
+            var snap = img.__mmLayoutSnap;
             img.classList.add(LAYOUT, FAILED);
             if (capped.w != null) {
+              snapshotProp(img, snap, 'width');
               img.style.setProperty('width', capped.w + 'px', 'important');
             }
             if (capped.h != null) {
+              snapshotProp(img, snap, 'height');
               img.style.setProperty('height', capped.h + 'px', 'important');
             }
+          }
+
+          function reflowPlaceholders(){
+            var imgs = document.querySelectorAll('img');
+            for (var i = 0; i < imgs.length; i++) applyImage(imgs[i]);
           }
 
           function measure(){
@@ -223,7 +288,10 @@ enum HTMLBodyLayout {
             if (window.__mmRO) { window.__mmRO.disconnect(); window.__mmRO = null; }
           } catch (e) {}
           if (typeof ResizeObserver !== 'undefined' && document.body) {
-            window.__mmRO = new ResizeObserver(function(){ report(); });
+            window.__mmRO = new ResizeObserver(function(){
+              reflowPlaceholders();
+              report();
+            });
             window.__mmRO.observe(document.body);
             try {
               if (document.documentElement) {

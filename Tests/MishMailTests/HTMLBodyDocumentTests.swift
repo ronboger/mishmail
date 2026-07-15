@@ -96,4 +96,71 @@ final class HTMLBodyDocumentTests: XCTestCase {
         XCTAssertTrue(meta.contains("img-src data: cid:"))
         XCTAssertFalse(meta.contains("img-src data: cid: https:"))
     }
+
+    /// Adversarial: a commented-out `<head>` must not receive the CSP injection
+    /// (would leave Ask-policy CSP inert → HTTPS images load).
+    func testCSPNotInjectedIntoCommentedHead() {
+        let html = """
+            <!DOCTYPE html>
+            <!-- <head><meta charset="utf-8"></head> -->
+            <html>
+            <head><title>real</title></head>
+            <body><p>Hello</p></body>
+            </html>
+            """
+        let csp = HTMLBodyCSP.metaTag(allowRemoteImages: false)
+        let out = HTMLBodyDocument.assemble(html: html, cspMeta: csp, styleCSS: "/*m*/")
+
+        // Comment still present and does not contain our CSP.
+        XCTAssertTrue(out.contains("<!-- <head>"))
+        if let comment = out.range(of: #"<!--[\s\S]*?-->"#, options: .regularExpression) {
+            XCTAssertFalse(out[comment].contains("Content-Security-Policy"),
+                           "CSP must not land inside an HTML comment")
+        } else {
+            XCTFail("expected comment preserved")
+        }
+
+        // Injection sits immediately after the real open <head>, before title.
+        XCTAssertTrue(out.contains("<head>" + csp),
+                      "injection should sit immediately after the real <head>")
+        XCTAssertTrue(out.contains("<title>real</title>"))
+        XCTAssertTrue(out.contains("<p>Hello</p>"))
+    }
+
+    func testHeadInsideStyleIsIgnored() {
+        let html = """
+            <html>
+            <style>/* <head> decoy */ .x{}</style>
+            <head id="real"></head>
+            <body></body>
+            </html>
+            """
+        let out = HTMLBodyDocument.assemble(
+            html: html, cspMeta: "<meta id=csp>", styleCSS: "a{}")
+        // Style block still has the decoy text, but CSP is not only there.
+        XCTAssertTrue(out.contains("<head id=\"real\"><meta id=csp>"),
+                      "must inject into the real head, not style text")
+        // Decoy comment in style must not be the only place with meta id=csp
+        // before real head — ensure real head open is followed by meta.
+        if let styleRange = out.range(of: #"<style>[\s\S]*?</style>"#,
+                                      options: .regularExpression) {
+            XCTAssertFalse(out[styleRange].contains("<meta id=csp>"))
+        }
+    }
+
+    func testRangeOfOpeningTagSkipsCommentAndFindsReal() {
+        let html = "<!-- <head> --><html><head id=h></head></html>"
+        let range = HTMLBodyDocument.rangeOfOpeningTag("head", in: html)
+        XCTAssertNotNil(range)
+        XCTAssertEqual(String(html[range!]), "<head id=h>")
+    }
+
+    func testRangeOfOpeningTagNilWhenOnlyCommented() {
+        let html = "<!DOCTYPE html><!-- <head></head> --><html><body>x</body></html>"
+        XCTAssertNil(HTMLBodyDocument.rangeOfOpeningTag("head", in: html))
+        // Falls back to html open for injection.
+        let out = HTMLBodyDocument.injectIntoHead(html, injection: "<meta id=csp>")
+        XCTAssertTrue(out.contains("<html><head><meta id=csp></head>"))
+        XCTAssertFalse(out.contains("<!-- <head></head><meta id=csp>"))
+    }
 }
