@@ -702,28 +702,41 @@ enum QuotedReply {
     /// Start of a pure `>`-prefixed trail to EOF (≥2 quoted lines) after
     /// authored prose. Nested history often has no bare "On … wrote:" —
     /// only `> On … wrote:` — so the attribution regex never fires.
+    ///
+    /// Single backward pass (O(n)): the pure trailing region is a suffix of
+    /// blank + `>` lines; the first non-quoted non-blank line walking up from
+    /// EOF ends it. Avoids the O(n²) forward scan that re-counted to EOF at
+    /// every candidate.
     private static func greaterThanBlockStart(in body: String) -> String.Index? {
         let lines = enumeratedLines(body)
-        var sawProse = false
-        for (idx, line) in lines.enumerated() {
-            if isBlankLine(line.content) { continue }
-            if isGreaterThanLine(line.content) {
-                guard sawProse else { continue }
-                var quoted = 0
-                var nonQuoted = 0
-                for j in idx..<lines.count {
-                    let c = lines[j].content
-                    if isBlankLine(c) { continue }
-                    if isGreaterThanLine(c) { quoted += 1 } else { nonQuoted += 1 }
-                }
-                if quoted >= 2 && nonQuoted == 0 {
-                    return line.start
-                }
+        guard !lines.isEmpty else { return nil }
+
+        var idx = lines.count - 1
+        while idx >= 0, isBlankLine(lines[idx].content) { idx -= 1 }
+        guard idx >= 0 else { return nil }
+
+        var quoted = 0
+        var blockStart: Int?
+        while idx >= 0 {
+            let c = lines[idx].content
+            if isBlankLine(c) {
+                idx -= 1
                 continue
             }
-            sawProse = true
+            if isGreaterThanLine(c) {
+                blockStart = idx
+                quoted += 1
+                idx -= 1
+                continue
+            }
+            // Non-quoted non-blank = prose; pure trailing region ends above.
+            break
         }
-        return nil
+
+        // Need ≥2 quoted lines and prose before the block (`idx` still on that
+        // prose line, or -1 when the body is quote-only from the top).
+        guard let start = blockStart, quoted >= 2, idx >= 0 else { return nil }
+        return lines[start].start
     }
 
     /// If `head` ends with a pure `>` block (≥2 lines) after real prose, peel
