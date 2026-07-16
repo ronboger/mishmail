@@ -31,7 +31,16 @@ enum SnoozePresets {
         }
         func add(_ title: String, _ date: Date) {
             guard date > now else { return }
-            guard !list.contains(where: { $0.date == date }) else { return }
+            // Same instant, different semantics (Fri→Sat: "Tomorrow morning"
+            // and "This weekend"; Sun→Mon: "Tomorrow morning" and "Next week").
+            // Keep one row and merge titles so neither label is silently dropped.
+            if let i = list.firstIndex(where: { $0.date == date }) {
+                let existing = list[i].title
+                if !existing.contains(title) {
+                    list[i] = Preset(title: "\(existing) · \(title)", date: date)
+                }
+                return
+            }
             list.append(Preset(title: title, date: date))
         }
 

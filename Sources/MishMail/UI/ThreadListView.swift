@@ -411,7 +411,9 @@ struct ThreadListView: View {
         Menu("Snooze") {
             // Same daypart-aware list as the snooze sheet (includes "This
             // morning" after midnight; drops anchors already past).
-            ForEach(SnoozePresets.presets(), id: \.title) { preset in
+            // Key on date: titles can merge on collisions ("Tomorrow morning ·
+            // This weekend") and dates are unique after SnoozePresets.dedup.
+            ForEach(SnoozePresets.presets(), id: \.date) { preset in
                 Button("\(preset.title) (\(SnoozeDateParser.format(preset.date)))") {
                     store.snooze(thread, until: preset.date)
                 }

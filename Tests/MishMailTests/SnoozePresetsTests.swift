@@ -18,7 +18,12 @@ final class SnoozePresetsTests: XCTestCase {
 
     private func preset(_ title: String, at now: Date) -> Date? {
         SnoozePresets.presets(now: now, calendar: cal)
-            .first(where: { $0.title == title })?.date
+            .first(where: { $0.title == title || $0.title.contains(title) })?.date
+    }
+
+    private func titlesUniqueByDate(at now: Date) {
+        let dates = SnoozePresets.presets(now: now, calendar: cal).map(\.date)
+        XCTAssertEqual(dates.count, Set(dates).count, "preset dates must be unique")
     }
 
     // MARK: - Late night (the screenshot bug: 12:55 AM)
@@ -101,6 +106,48 @@ final class SnoozePresetsTests: XCTestCase {
     func testNextWeekFromMondaySkipsToday() {
         let monday = date(2026, 7, 13, 9, 0)  // a Monday
         XCTAssertEqual(preset("Next week", at: monday), date(2026, 7, 20, 8, 0))
+    }
+
+    /// Friday night: tomorrow *is* Saturday, so "Tomorrow morning" and
+    /// "This weekend" share Sat 8am. Merge titles — do not drop weekend.
+    func testFridayNightMergesTomorrowAndWeekend() {
+        // Friday 2026-07-17 21:00.
+        let now = date(2026, 7, 17, 21, 0)
+        let list = SnoozePresets.presets(now: now, calendar: cal)
+        titlesUniqueByDate(at: now)
+
+        let sat = date(2026, 7, 18, 8, 0)
+        let merged = list.first(where: { $0.date == sat })
+        XCTAssertEqual(merged?.date, sat)
+        XCTAssertTrue(merged?.title.contains("Tomorrow morning") == true,
+                      "got: \(merged?.title ?? "nil")")
+        XCTAssertTrue(merged?.title.contains("This weekend") == true,
+                      "got: \(merged?.title ?? "nil")")
+
+        // Still only one row for that instant.
+        XCTAssertEqual(list.filter { $0.date == sat }.count, 1)
+        // Next week (Mon) remains its own row.
+        XCTAssertEqual(preset("Next week", at: now), date(2026, 7, 20, 8, 0))
+    }
+
+    /// Sunday night: tomorrow *is* Monday, so "Tomorrow morning" and
+    /// "Next week" share Mon 8am. Merge titles — do not drop next week.
+    func testSundayNightMergesTomorrowAndNextWeek() {
+        // Sunday 2026-07-19 21:00.
+        let now = date(2026, 7, 19, 21, 0)
+        let list = SnoozePresets.presets(now: now, calendar: cal)
+        titlesUniqueByDate(at: now)
+
+        let mon = date(2026, 7, 20, 8, 0)
+        let merged = list.first(where: { $0.date == mon })
+        XCTAssertEqual(merged?.date, mon)
+        XCTAssertTrue(merged?.title.contains("Tomorrow morning") == true,
+                      "got: \(merged?.title ?? "nil")")
+        XCTAssertTrue(merged?.title.contains("Next week") == true,
+                      "got: \(merged?.title ?? "nil")")
+        XCTAssertEqual(list.filter { $0.date == mon }.count, 1)
+        // Weekend is still the following Saturday.
+        XCTAssertEqual(preset("This weekend", at: now), date(2026, 7, 25, 8, 0))
     }
 
     // MARK: - Month boundary
