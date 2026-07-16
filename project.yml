@@ -109,6 +109,7 @@ targets:
       - Sources/MishMail/Support/HTMLBodyDarkMode.swift
       - Sources/MishMail/Support/HTMLBodyDocument.swift
       - Sources/MishMail/Support/HTMLBodyLayout.swift
+      - Sources/MishMail/Support/HTMLBodyPerformance.swift
       - Sources/MishMail/Support/HTMLRemoteImageBlocker.swift
       - Sources/MishMail/Support/RemoteImagePolicy.swift
       - Sources/MishMail/Support/ThreadExporter.swift

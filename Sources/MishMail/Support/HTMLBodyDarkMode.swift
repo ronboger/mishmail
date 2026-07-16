@@ -46,11 +46,8 @@ enum HTMLBodyDarkMode {
     static let alphaFloor = 0.5
 
     /// Injected stylesheet contents (no outer `<style>` tags) for the message pane.
-    static func injectedCSS(fontScale: Double, collapseQuote: Bool, html: String = "") -> String {
-        // `html` kept for API stability / future per-message tweaks; unused now.
-        _ = html
+    static func injectedCSS(fontScale: Double) -> String {
         let font = Int(14.5 * fontScale)
-        let quote = collapseQuote ? QuotedReply.hideQuoteCSS : ""
         // Attribute light surfaces: style the element only (no descendant
         // combinator). Nested dark sections must not inherit force-dark text
         // from a white outer table — JS stamps per-node fg classes for that.
@@ -92,7 +89,6 @@ enum HTMLBodyDarkMode {
           a.\(onLight), a.\(onLight) * { color: #0b57d0 !important; }
           a.\(onDark), a.\(onDark) * { color: #6cb2ff !important; }
         }
-        \(quote)
         """
     }
 
@@ -125,9 +121,8 @@ enum HTMLBodyDarkMode {
     /// per-line highlighter fragments, not designed cards. `inline-block`
     /// CTAs/pills keep their fill.
     ///
-    /// Installed as a `WKUserScript` at `.atDocumentEnd` (before first paint)
-    /// and re-run from `didFinish`. Safe to re-run; replaces prior fg/strip
-    /// classes.
+    /// Installed as a `WKUserScript` at `.atDocumentEnd` for every navigation.
+    /// Safe to re-run; replaces prior fg/strip classes.
     static var applyContrastJS: String {
         let onLight = fgOnLightClass
         let onDark = fgOnDarkClass
@@ -209,13 +204,8 @@ enum HTMLBodyDarkMode {
     /// HTML above the first reply/forward quote container, or the full string
     /// when there is no recognized trail.
     static func authoredHead(of html: String) -> String {
-        let ns = html as NSString
-        guard let match = quoteMarker.firstMatch(
-            in: html, range: NSRange(location: 0, length: ns.length))
-        else { return html }
-        let head = ns.substring(to: match.range.location)
-        let stripped = head.trimmingCharacters(in: .whitespacesAndNewlines)
-        return stripped.isEmpty ? html : head
+        guard let head = QuotedReply.rawHTMLHead(html) else { return html }
+        return head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? html : head
     }
 
     // MARK: - Light surface CSS selectors
@@ -292,14 +282,6 @@ enum HTMLBodyDarkMode {
     }
 
     // MARK: - Detection (tests / diagnostics)
-
-    private static let quoteMarker: NSRegularExpression = {
-        try! NSRegularExpression(
-            pattern: #"<[^>]+class\s*=\s*["'][^"']*gmail_quote"# + "|"
-                + #"<[^>]+id\s*=\s*["']?divRplyFwdMsg"# + "|"
-                + #"<blockquote[^>]*type\s*=\s*["']?cite"#,
-            options: [.caseInsensitive])
-    }()
 
     private static let lightColor =
         #"(?:#[d-fD-F][0-9a-fA-F]{2}(?:[d-fD-F][0-9a-fA-F]{2}[d-fD-F][0-9a-fA-F]{2})?|#[d-fD-F]{3}|white|ivory|snow|beige|linen|seashell|oldlace|cornsilk|whitesmoke|ghostwhite|floralwhite|honeydew|mintcream|azure|aliceblue|lavenderblush|lightyellow|lightcyan|lemonchiffon|papayawhip|blanchedalmond|antiquewhite|mistyrose|rgb\(\s*(?:2[0-5]\d|1\d\d)\s*,\s*(?:2[0-5]\d|1\d\d)\s*,\s*(?:2[0-5]\d|1\d\d)\s*\))"#

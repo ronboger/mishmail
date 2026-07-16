@@ -84,7 +84,7 @@ final class HTMLBodyDocumentTests: XCTestCase {
         let assembled = HTMLBodyDocument.assemble(
             html: Transactional2FAFixture.completeDocumentHTML,
             cspMeta: blocked,
-            styleCSS: HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false))
+            styleCSS: HTMLBodyDarkMode.injectedCSS(fontScale: 1))
         // The CSP meta itself must still block; author img tags may mention https.
         guard let metaRange = assembled.range(
             of: #"<meta http-equiv="Content-Security-Policy"[^>]+>"#,

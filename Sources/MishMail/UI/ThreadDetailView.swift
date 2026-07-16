@@ -27,7 +27,10 @@ struct ThreadDetailView: View {
 
     var body: some View {
         ScrollView {
-            LazyVStack(alignment: .leading, spacing: 12) {
+            // Message cards are cheap while collapsed and only expanded cards
+            // mount WKWebView. An eager stack avoids LazyVStack's geometry
+            // cache repeatedly invalidating around dynamically sized WebViews.
+            VStack(alignment: .leading, spacing: 12) {
                 Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
                     .font(.system(size: 19 * fontScale, weight: .semibold))
                     .textSelection(.enabled)
@@ -806,6 +809,9 @@ struct MessageCard: View {
     /// Useful for privacy-sensitive transactional mail when remote images are
     /// blocked and the HTML shell is unreadable — not an automatic switch.
     @State private var showPlainText = false
+    /// Giant HTML bodies require an explicit click before WebKit receives the
+    /// full document. This stays scoped to the card/session.
+    @State private var approvedOversizedHTML = false
     @State private var cardCursorPushed = false
     // The quoted reply trail below the new text stays collapsed behind a "…"
     // pill (Gmail-style) on every message — threads repeat their history in
@@ -814,16 +820,54 @@ struct MessageCard: View {
     /// The authored text above a plain-text quoted trail; nil when there is
     /// nothing to collapse (always nil for HTML bodies).
     private let textHead: String?
+    /// Raw authored HTML above a structured quote container. Loading this
+    /// instead of hiding the full trail with CSS avoids parsing repeated mail.
+    private let htmlHead: String?
+    private let htmlBytes: Int
+    private let htmlHeadBytes: Int
     /// Whether this message carries a collapsible quoted trail — HTML bodies
-    /// hide it with CSS, plain text via `textHead`.
+    /// load only `htmlHead`, plain text renders `textHead`.
     private let hasQuotedTrail: Bool
 
     /// The trail scans are whole-body regexes and the parent ForEach re-inits
     /// every card whenever the store publishes, so results are cached per
-    /// message — bodies are immutable. Cleared wholesale when it grows past
-    /// a few threads' worth. Only cache when a body is present so lazy-loaded
+    /// message — bodies are immutable. Count and byte budgets keep cached raw
+    /// HTML heads bounded. Only cache when a body is present so lazy-loaded
     /// headers don't poison the entry with an empty-body result.
-    private static var trailCache: [String: (head: String?, hasTrail: Bool)] = [:]
+    private final class TrailCacheEntry {
+        let textHead: String?
+        let htmlHead: String?
+        let hasTrail: Bool
+        let htmlBytes: Int
+        let htmlHeadBytes: Int
+
+        init(textHead: String?, htmlHead: String?, hasTrail: Bool,
+             htmlBytes: Int, htmlHeadBytes: Int) {
+            self.textHead = textHead
+            self.htmlHead = htmlHead
+            self.hasTrail = hasTrail
+            self.htmlBytes = htmlBytes
+            self.htmlHeadBytes = htmlHeadBytes
+        }
+
+        var cacheCost: Int {
+            htmlHeadBytes + (textHead?.utf8.count ?? 0)
+        }
+    }
+
+    private static let maximumTrailCacheCost = 8 * 1_024 * 1_024
+    private static let maximumTrailCacheEntries = 512
+    private static let trailCache: NSCache<NSString, TrailCacheEntry> = {
+        let cache = NSCache<NSString, TrailCacheEntry>()
+        cache.countLimit = maximumTrailCacheEntries
+        cache.totalCostLimit = maximumTrailCacheCost
+        return cache
+    }()
+
+    private static func cacheTrail(_ entry: TrailCacheEntry, for id: String) {
+        guard entry.cacheCost <= maximumTrailCacheCost else { return }
+        trailCache.setObject(entry, forKey: id as NSString, cost: entry.cacheCost)
+    }
 
     init(message: Message, isLast: Bool,
          loadImagesForThread: Binding<Bool> = .constant(false),
@@ -836,29 +880,58 @@ struct MessageCard: View {
         self.onNeedBody = onNeedBody
         _expanded = State(initialValue: isLast)
         let hasBody = !ThreadDetailView.needsBodyLoad(message)
-        if hasBody, let cached = Self.trailCache[message.id] {
-            (textHead, hasQuotedTrail) = cached
+        if hasBody, let cached = Self.trailCache.object(forKey: message.id as NSString) {
+            textHead = cached.textHead
+            htmlHead = cached.htmlHead
+            hasQuotedTrail = cached.hasTrail
+            htmlBytes = cached.htmlBytes
+            htmlHeadBytes = cached.htmlHeadBytes
         } else if hasBody {
+            let fullHTMLBytes = message.bodyHTML?.utf8.count ?? 0
             // Prefer structured HTML collapse (gmail_quote / cite). When HTML
             // has no marker but plain text still has a `>` / "On … wrote:"
             // trail, keep a text head so "…" can hide it (some clients ship
             // nested history as plain `>` lines inside a single HTML div).
-            if let html = message.bodyHTML, !html.isEmpty,
-               QuotedReply.hasHTMLQuote(html) {
+            // Giant bodies skip all whole-body trail scans and go straight to
+            // the explicit-load placeholder; scanning them on the main actor
+            // would defeat the guard before WebKit even mounts.
+            let detectedHTMLHead: String? = {
+                guard let html = message.bodyHTML, !html.isEmpty else { return nil }
+                if fullHTMLBytes <= HTMLBodyRenderPolicy.maximumAutomaticBytes {
+                    return QuotedReply.authoredHTMLHead(html)
+                }
+                return QuotedReply.authoredHTMLHead(
+                    html,
+                    scanCharacterLimit: HTMLBodyRenderPolicy.oversizedQuoteScanCharacterLimit)
+            }()
+            if let head = detectedHTMLHead {
                 textHead = nil
+                htmlHead = head
                 hasQuotedTrail = true
-            } else if let head = QuotedReply.splitText(message.bodyText)?.head {
+            } else if fullHTMLBytes <= HTMLBodyRenderPolicy.maximumAutomaticBytes,
+                      let head = QuotedReply.splitText(message.bodyText)?.head {
                 textHead = head
+                htmlHead = nil
                 hasQuotedTrail = true
             } else {
                 textHead = nil
+                htmlHead = nil
                 hasQuotedTrail = false
             }
-            if Self.trailCache.count > 512 { Self.trailCache.removeAll() }
-            Self.trailCache[message.id] = (textHead, hasQuotedTrail)
+            htmlBytes = fullHTMLBytes
+            htmlHeadBytes = htmlHead?.utf8.count ?? 0
+            Self.cacheTrail(TrailCacheEntry(
+                textHead: textHead,
+                htmlHead: htmlHead,
+                hasTrail: hasQuotedTrail,
+                htmlBytes: htmlBytes,
+                htmlHeadBytes: htmlHeadBytes), for: message.id)
         } else {
             textHead = nil
+            htmlHead = nil
             hasQuotedTrail = false
+            htmlBytes = 0
+            htmlHeadBytes = 0
         }
     }
 
@@ -1018,14 +1091,26 @@ struct MessageCard: View {
                         .lineSpacing(3)
                         .textSelection(.enabled)
                 } else if let html = message.bodyHTML, !html.isEmpty {
-                    HTMLBodyView(html: html, allowRemoteImages: allowRemoteImages,
-                                 fontScale: fontScale,
-                                 // Structured HTML only: plain-text heads use
-                                 // the branch above when collapsed.
-                                 collapseQuote: textHead == nil
-                                     && hasQuotedTrail && !showQuoted,
-                                 height: $htmlHeight)
-                        .frame(height: htmlHeight)
+                    // Structured quotes are removed before WebKit sees the
+                    // document. Besides avoiding repeated history parsing,
+                    // this gives head/full loads distinct constant-time ids.
+                    let useAuthoredHTML = textHead == nil && !showQuoted
+                        && htmlHead != nil
+                    let renderedHTML = useAuthoredHTML ? (htmlHead ?? html) : html
+                    let renderedBytes = useAuthoredHTML ? htmlHeadBytes : htmlBytes
+                    if HTMLBodyRenderPolicy.requiresExplicitLoad(
+                        byteCount: renderedBytes,
+                        userApproved: approvedOversizedHTML) {
+                        oversizedHTMLPlaceholder(byteCount: renderedBytes)
+                    } else {
+                        HTMLBodyView(
+                            contentID: message.id + (useAuthoredHTML ? ":authored" : ":full"),
+                            html: renderedHTML,
+                            allowRemoteImages: allowRemoteImages,
+                            fontScale: fontScale,
+                            height: $htmlHeight)
+                            .frame(height: htmlHeight)
+                    }
                 } else if !message.bodyText.isEmpty {
                     // Collapsed plain-text heads are handled above; this branch
                     // is full body (no trail, or showQuoted).
@@ -1044,6 +1129,14 @@ struct MessageCard: View {
                         // Expanding only grows, so the height stays put until
                         // the new load reports in (no visible snap).
                         if showQuoted { htmlHeight = 120 }
+                        // Showing the full trail is itself an explicit request
+                        // to load it. Keep the authored head visible instead of
+                        // replacing it with another confirmation placeholder.
+                        if !showQuoted,
+                           HTMLBodyRenderPolicy.quoteExpansionApprovesFullBody(
+                               byteCount: htmlBytes) {
+                            approvedOversizedHTML = true
+                        }
                         withAnimation { showQuoted.toggle() }
                     } label: {
                         Image(systemName: "ellipsis")
@@ -1198,6 +1291,34 @@ struct MessageCard: View {
             // Last card starts expanded; ask parent to hydrate if still headers-only.
             if expanded { onNeedBody() }
         }
+    }
+
+    private func oversizedHTMLPlaceholder(byteCount: Int) -> some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Label("Large HTML message", systemImage: "doc.richtext")
+                .font(.system(size: 13 * fontScale, weight: .semibold))
+            Text("This body is \(byteSize(byteCount)). Loading it may briefly slow the reading pane.")
+                .font(.system(size: 12.5 * fontScale))
+                .foregroundStyle(.secondary)
+            // Gmail's snippet is already short. Do not call authoredPreview
+            // here: its plain-text/HTML quote detection is intentionally
+            // thorough and would scan the giant body this placeholder avoids.
+            let preview = message.snippet.trimmingCharacters(
+                in: .whitespacesAndNewlines)
+            if !preview.isEmpty {
+                Text(String(preview.prefix(HTMLBodyRenderPolicy.previewCharacterLimit)))
+                    .font(.system(size: 13 * fontScale))
+                    .lineLimit(8)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+            Button("Load full HTML") {
+                approvedOversizedHTML = true
+            }
+            .buttonStyle(.bordered)
+        }
+        .padding(12)
+        .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
     }
 
     /// Compact recipient line: "To me", "To Van Ju +3" (extras include Cc).
@@ -1446,12 +1567,12 @@ private struct MatchingFiltersSection: View {
 /// multi-second poll. Blocked/failed images keep capped authored dimensions
 /// so table-based transactional layouts do not collapse under Ask policy.
 struct HTMLBodyView: NSViewRepresentable {
+    /// Stable O(1)-sized identity supplied by the message card. Never derive
+    /// this by hashing the untrusted, potentially multi-megabyte HTML string.
+    let contentID: String
     let html: String
     let allowRemoteImages: Bool
     var fontScale: Double = 1.0
-    /// Hides the quoted reply trail (Gmail/Apple Mail/Outlook containers)
-    /// while the message card's "…" pill is collapsed.
-    var collapseQuote: Bool = false
     @Binding var height: CGFloat
 
     func makeNSView(context: Context) -> WKWebView {
@@ -1464,16 +1585,25 @@ struct HTMLBodyView: NSViewRepresentable {
     }
 
     func updateNSView(_ webView: WKWebView, context: Context) {
-        let key = "\(allowRemoteImages):\(fontScale):\(collapseQuote):\(html.hashValue)"
+        // Refresh the binding callback even when the document identity did not
+        // change. Capture the Binding only — capturing `self` retains `html`.
+        let heightBinding = _height
+        context.coordinator.setHeight = { heightBinding.wrappedValue = $0 }
+
+        let key = HTMLBodyLoadKey(
+            contentID: contentID,
+            allowRemoteImages: allowRemoteImages,
+            fontScale: fontScale)
         guard context.coordinator.loadedKey != key else { return }
         context.coordinator.loadedKey = key
-        context.coordinator.setHeight = { self.height = $0 }
+        context.coordinator.beginRender(
+            byteCount: html.utf8.count,
+            variant: contentID.hasSuffix(":authored") ? "authored" : "full")
         let csp = HTMLBodyCSP.metaTag(allowRemoteImages: allowRemoteImages)
         // Force light text over dark chrome; per-element contrast from
         // effective background (attribute fast path + applyContrastJS).
         // Includes HTMLBodyLayout.imageCSS for blocked-image placeholders.
-        let css = HTMLBodyDarkMode.injectedCSS(
-            fontScale: fontScale, collapseQuote: collapseQuote, html: html)
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: fontScale)
         // Fragments get a synthetic shell; complete documents keep author
         // head styles and receive CSP/CSS via head injection.
         let document = HTMLBodyDocument.assemble(
@@ -1495,9 +1625,34 @@ struct HTMLBodyView: NSViewRepresentable {
     func makeCoordinator() -> Coordinator { Coordinator() }
 
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
-        var loadedKey: String?
+        var loadedKey: HTMLBodyLoadKey?
         var setHeight: ((CGFloat) -> Void)?
         private var loadToken = UUID()
+        private var heightStability = HTMLHeightStability()
+        private var heightUpdateCount = 0
+        private var renderInterval: PerfMetrics.Interval?
+        private var renderTimeout: DispatchWorkItem?
+        private var acceptsHeightReports = false
+        private var navigationGate = HTMLNavigationIdentityGate()
+
+        func beginRender(byteCount: Int, variant: String) {
+            finishRender(reason: "superseded")
+            acceptsHeightReports = false
+            navigationGate.reset()
+            heightStability.reset()
+            heightUpdateCount = 0
+            renderInterval = PerfMetrics.begin(
+                .openHTML,
+                meta: "bytes=\(byteCount) variant=\(variant)")
+
+            // ResizeObserver normally produces a confirming height quickly.
+            // End diagnostics even for malformed documents that never settle.
+            let timeout = DispatchWorkItem { [weak self] in
+                self?.finishRender(reason: "timeout")
+            }
+            renderTimeout = timeout
+            DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
+        }
 
         /// Apply/remove the network-level remote-image rule before navigating.
         /// A generation token prevents a late compile callback from mutating a
@@ -1510,7 +1665,7 @@ struct HTMLBodyView: NSViewRepresentable {
             controller.removeAllContentRuleLists()
 
             if allowRemoteImages {
-                webView.loadHTMLString(document, baseURL: nil)
+                startNavigation(webView, document: document)
                 return
             }
 
@@ -1520,13 +1675,18 @@ struct HTMLBodyView: NSViewRepresentable {
                 controller.removeAllContentRuleLists()
                 if let ruleList {
                     controller.add(ruleList)
-                    webView.loadHTMLString(document, baseURL: nil)
+                    self.startNavigation(webView, document: document)
                 } else {
                     // Compilation is expected to be infallible for the static
                     // rule, but privacy fails closed if WebKit rejects it.
-                    webView.loadHTMLString(trustedFallback, baseURL: nil)
+                    self.startNavigation(webView, document: trustedFallback)
                 }
             }
+        }
+
+        private func startNavigation(_ webView: WKWebView, document: String) {
+            let navigation = webView.loadHTMLString(document, baseURL: nil)
+            navigationGate.didStart(navigation)
         }
 
         /// Drop height callbacks before the view is recycled so a late
@@ -1537,17 +1697,21 @@ struct HTMLBodyView: NSViewRepresentable {
             loadToken = UUID()
             loadedKey = nil
             setHeight = nil
+            acceptsHeightReports = false
+            navigationGate.reset()
+            finishRender(reason: "detached")
+            heightStability.reset()
             webView.evaluateJavaScript(HTMLBodyLayout.teardownJS, completionHandler: nil)
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+            guard navigationGate.accepts(navigation) else { return }
             // Primary contrast pass runs as WKUserScript at document-end
-            // (WebViewPool) before first paint. Re-run here for recycled views
-            // / late styles, then install layout preservation + continuous
-            // measure (ResizeObserver + image events).
-            webView.evaluateJavaScript(HTMLBodyDarkMode.applyContrastJS) { [weak self] _, _ in
-                self?.installLayoutAndMeasure(webView)
-            }
+            // (WebViewPool) for every navigation, including recycled views.
+            // Run the expensive DOM/getComputedStyle walk once, then install
+            // layout preservation + continuous measurement.
+            acceptsHeightReports = true
+            installLayoutAndMeasure(webView)
         }
 
         private func installLayoutAndMeasure(_ webView: WKWebView) {
@@ -1557,19 +1721,53 @@ struct HTMLBodyView: NSViewRepresentable {
         }
 
         private func applyMeasuredHeight(_ result: Any?) {
+            guard acceptsHeightReports else { return }
             let floor = CGFloat(HTMLBodyLayout.minContentHeight)
-            if let h = result as? CGFloat, h > 0 {
-                DispatchQueue.main.async { self.setHeight?(max(h, floor)) }
+            let rawHeight: CGFloat?
+            if let h = result as? CGFloat {
+                rawHeight = h
             } else if let n = result as? NSNumber {
-                let h = CGFloat(truncating: n)
-                if h > 0 {
-                    DispatchQueue.main.async { self.setHeight?(max(h, floor)) }
-                }
-            } else if let d = result as? Double, d > 0 {
-                DispatchQueue.main.async { self.setHeight?(max(CGFloat(d), floor)) }
-            } else if let i = result as? Int, i > 0 {
-                DispatchQueue.main.async { self.setHeight?(max(CGFloat(i), floor)) }
+                rawHeight = CGFloat(truncating: n)
+            } else if let d = result as? Double {
+                rawHeight = CGFloat(d)
+            } else if let i = result as? Int {
+                rawHeight = CGFloat(i)
+            } else {
+                rawHeight = nil
             }
+            guard let rawHeight, rawHeight > 0 else { return }
+
+            let height = max(rawHeight, floor)
+            let observation = heightStability.observe(height)
+            if observation.shouldPublish {
+                heightUpdateCount += 1
+                DispatchQueue.main.async { [weak self] in self?.setHeight?(height) }
+            }
+            if observation.isStable {
+                finishRender(reason: "stable")
+            }
+        }
+
+        private func finishRender(reason: String) {
+            renderTimeout?.cancel()
+            renderTimeout = nil
+            guard let interval = renderInterval else { return }
+            renderInterval = nil
+            interval.end(extraMeta: "heightUpdates=\(heightUpdateCount) \(reason)")
+        }
+
+        func webView(_ webView: WKWebView, didFail navigation: WKNavigation!,
+                     withError error: Error) {
+            guard navigationGate.accepts(navigation) else { return }
+            acceptsHeightReports = false
+            finishRender(reason: "navigationError")
+        }
+
+        func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
+                     withError error: Error) {
+            guard navigationGate.accepts(navigation) else { return }
+            acceptsHeightReports = false
+            finishRender(reason: "provisionalError")
         }
 
         func userContentController(_ userContentController: WKUserContentController,

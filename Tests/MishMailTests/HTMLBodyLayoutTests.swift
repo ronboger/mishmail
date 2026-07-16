@@ -70,7 +70,7 @@ final class HTMLBodyLayoutTests: XCTestCase {
     }
 
     func testInjectedDarkModeCSSIncludesLayoutImageRules() {
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         XCTAssertTrue(css.contains("img { max-width: 100%; height: auto; }"))
         XCTAssertTrue(css.contains(HTMLBodyLayout.layoutImageClass))
         XCTAssertTrue(css.contains(HTMLBodyLayout.failedImageClass))
@@ -112,14 +112,6 @@ final class HTMLBodyLayoutTests: XCTestCase {
         let js = HTMLBodyLayout.teardownJS
         XCTAssertTrue(js.contains("__mmRO"))
         XCTAssertTrue(js.contains("disconnect"))
-    }
-
-    func testQuoteCollapseCSSStillInjected() {
-        // Acceptance: collapsed quote trails must not restore dead space.
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: true)
-        XCTAssertTrue(css.contains("gmail_quote") || css.contains(QuotedReply.hideQuoteCSS)
-                      || css.contains("display: none"))
-        XCTAssertTrue(css.contains(HTMLBodyLayout.layoutImageClass))
     }
 
     func testFixturePlainTextContainsCode() {

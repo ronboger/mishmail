@@ -25,6 +25,7 @@ import os
 /// | `reload.total` | Whole reload (compare to list+counts+vip) |
 /// | `open.headers` | Thread open header projection |
 /// | `open.body` | Body hydrate on expand |
+/// | `open.html` | HTML document assembly/load through stable WebView height |
 /// | `sync.flush` | Chunked write transaction |
 /// | `sync.fetchAll` | Full backfill pass wall time |
 /// | `sync.blocklist` | applyBlocklist scan |
@@ -55,6 +56,7 @@ enum PerfMetrics {
         case reloadTotal = "reload.total"
         case openHeaders = "open.headers"
         case openBody = "open.body"
+        case openHTML = "open.html"
         case syncFlush = "sync.flush"
         case syncFetchAll = "sync.fetchAll"
         case syncBlocklist = "sync.blocklist"
@@ -160,6 +162,7 @@ enum PerfMetrics {
         case .reloadTotal: return signposter.beginInterval("reload.total")
         case .openHeaders: return signposter.beginInterval("open.headers")
         case .openBody: return signposter.beginInterval("open.body")
+        case .openHTML: return signposter.beginInterval("open.html")
         case .syncFlush: return signposter.beginInterval("sync.flush")
         case .syncFetchAll: return signposter.beginInterval("sync.fetchAll")
         case .syncBlocklist: return signposter.beginInterval("sync.blocklist")
@@ -180,6 +183,7 @@ enum PerfMetrics {
         case .reloadTotal: signposter.endInterval("reload.total", state)
         case .openHeaders: signposter.endInterval("open.headers", state)
         case .openBody: signposter.endInterval("open.body", state)
+        case .openHTML: signposter.endInterval("open.html", state)
         case .syncFlush: signposter.endInterval("sync.flush", state)
         case .syncFetchAll: signposter.endInterval("sync.fetchAll", state)
         case .syncBlocklist: signposter.endInterval("sync.blocklist", state)
