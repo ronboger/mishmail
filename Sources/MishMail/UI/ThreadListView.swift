@@ -409,9 +409,13 @@ struct ThreadListView: View {
             store.setRead(thread, read: thread.isUnread)
         }
         Menu("Snooze") {
-            Button("This evening (6 PM)") { store.snooze(thread, until: MailStore.snoozeDate(hour: 18)) }
-            Button("Tomorrow morning (8 AM)") { store.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 1)) }
-            Button("Next week") { store.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 7)) }
+            // Same daypart-aware list as the snooze sheet (includes "This
+            // morning" after midnight; drops anchors already past).
+            ForEach(SnoozePresets.presets(), id: \.title) { preset in
+                Button("\(preset.title) (\(SnoozeDateParser.format(preset.date)))") {
+                    store.snooze(thread, until: preset.date)
+                }
+            }
             Button("Pick date & time…") { store.snoozingThread = thread }
             if thread.snoozeUntil != nil {
                 Button("Unsnooze") { store.snooze(thread, until: nil) }

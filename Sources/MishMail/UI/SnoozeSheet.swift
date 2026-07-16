@@ -153,21 +153,9 @@ struct SnoozeSheet: View {
     let current: Date?
     let snooze: (Date?) -> Void
 
-    private static func nextWeekday(_ weekday: Int, hour: Int) -> Date {
-        let cal = Calendar.current
-        let day = cal.nextDate(after: Date(), matching: DateComponents(weekday: weekday),
-                               matchingPolicy: .nextTime)!
-        return cal.date(bySettingHour: hour, minute: 0, second: 0, of: day)!
-    }
-
+    /// Daypart-aware list (this morning after midnight, drop evening past 6pm, …).
     private var presets: [DatePickSheet.Preset] {
-        var list: [DatePickSheet.Preset] = []
-        let evening = MailStore.snoozeDate(hour: 18)
-        if evening > Date() { list.append(.init(title: "This evening", date: evening)) }
-        list.append(.init(title: "Tomorrow morning", date: MailStore.snoozeDate(hour: 8, addDays: 1)))
-        list.append(.init(title: "This weekend", date: Self.nextWeekday(7, hour: 8)))
-        list.append(.init(title: "Next week", date: Self.nextWeekday(2, hour: 8)))
-        return list
+        SnoozePresets.presets().map { .init(title: $0.title, date: $0.date) }
     }
 
     var body: some View {
