@@ -2,14 +2,13 @@ import XCTest
 
 final class HTMLBodyDarkModeTests: XCTestCase {
     func testPlainMailForcesLightText() {
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false,
-                                               html: "<p style=\"color:#000\">Hi</p>")
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         XCTAssertTrue(css.contains("prefers-color-scheme: dark"))
         XCTAssertTrue(css.contains("#e6e6e6"))
     }
 
     func testLightSurfacesForceDarkText() {
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false, html: "")
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         // White bgcolor panels get dark text (signature cards).
         XCTAssertTrue(css.contains("[bgcolor=\"#ffffff\" i]"))
         XCTAssertTrue(css.contains("color: #222 !important"))
@@ -34,7 +33,7 @@ final class HTMLBodyDarkModeTests: XCTestCase {
     /// Inline light fills paint per-line fragment boxes (highlighter strips);
     /// strip the paint instead of forcing dark text on the white strips.
     func testInlineLightBackgroundsAreStripped() {
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         let strip = HTMLBodyDarkMode.stripInlineBgClass
         XCTAssertTrue(css.contains(".\(strip)") || css.contains(strip),
                       "strip-inline-bg class must be styled")
@@ -57,7 +56,7 @@ final class HTMLBodyDarkModeTests: XCTestCase {
     /// order. A high-specificity :not(span):not(font)… chain would re-break
     /// Google welcome mail (light bgcolor attr + dark computed fill).
     func testAttributeLightRuleDoesNotOutrankJSFgClasses() {
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         // Forbidden: stacked :not(tag) that inflates specificity above (0,1,0).
         let stackedNots = css.range(
             of: #":not\(span\):not\(font\)"#,
@@ -83,7 +82,7 @@ final class HTMLBodyDarkModeTests: XCTestCase {
 
     func testBlockLightSurfacesStillForceDarkText() {
         // Tables/divs with white bg remain designed cards — dark text, keep fill.
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         XCTAssertTrue(css.contains("[bgcolor=\"#ffffff\" i]"))
         XCTAssertTrue(css.contains("color: #222 !important"))
         // Must not nuke every background in the message — only inline + strip class.
@@ -101,7 +100,7 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         </div>
         <blockquote type="cite">earlier</blockquote>
         """
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: true, html: html)
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         XCTAssertTrue(css.contains("#e6e6e6"))
         XCTAssertTrue(css.contains("#222"))
         XCTAssertTrue(HTMLBodyDarkMode.hasOwnBackground(html),
@@ -133,11 +132,6 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         XCTAssertFalse(HTMLBodyDarkMode.hasOwnBackground(html))
     }
 
-    func testCollapseQuoteInjected() {
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: true, html: "<p>x</p>")
-        XCTAssertTrue(css.contains(QuotedReply.hideQuoteCSS) || css.contains("gmail_quote"))
-    }
-
     func testAuthoredHeadStripsAtGmailQuote() {
         let html = "<div>head</div><div class=\"gmail_quote\">tail white bgcolor=#ffffff</div>"
         let head = HTMLBodyDarkMode.authoredHead(of: html)
@@ -145,8 +139,13 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         XCTAssertFalse(head.contains("gmail_quote"))
     }
 
+    func testAuthoredHeadPreservesMarkupOnlyContent() {
+        let html = #"<img src="cid:logo"><div class="gmail_quote">old</div>"#
+        XCTAssertEqual(HTMLBodyDarkMode.authoredHead(of: html), #"<img src="cid:logo">"#)
+    }
+
     func testLinksStayBlueOutsideLightSurfaces() {
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         XCTAssertTrue(css.contains("#6cb2ff"))
         XCTAssertTrue(css.contains("#0b57d0"), "links on light surfaces use darker blue")
     }
@@ -155,7 +154,7 @@ final class HTMLBodyDarkModeTests: XCTestCase {
     /// forced #222 onto nested dark sections inside white wrappers (Google
     /// welcome mail: dark-on-black body + dark text on blue CTAs).
     func testAttributeLightSurfaceIsSelfOnly() {
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         XCTAssertTrue(css.contains(":is("),
                       "attribute light surfaces still wrapped in :is()")
         // Must NOT have the old descendant force that painted dark text on
@@ -172,7 +171,7 @@ final class HTMLBodyDarkModeTests: XCTestCase {
     func testEffectiveBgForegroundClassesInCSS() {
         let onLight = HTMLBodyDarkMode.fgOnLightClass
         let onDark = HTMLBodyDarkMode.fgOnDarkClass
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1, collapseQuote: false)
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         XCTAssertTrue(css.contains(".\(onLight)"), "dark text on light effective bg")
         XCTAssertTrue(css.contains(".\(onDark)"), "light text on dark effective bg")
         XCTAssertTrue(css.contains("a.\(onLight)") || css.contains(".\(onLight):is(a)"),

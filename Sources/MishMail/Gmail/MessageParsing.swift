@@ -601,9 +601,9 @@ enum QuotedReply {
     private static let textMarker = try! NSRegularExpression(
         pattern: #"\n+(On .+(\n.+)? wrote:\s*\n|-{2,} ?Forwarded message ?-{2,})"#)
 
-    /// The quote containers `hideQuoteCSS` hides: Gmail (`gmail_quote` class
-    /// on any element, single- or double-quoted), Outlook's reply-header div,
-    /// Apple Mail's cite blockquotes. Keep in sync with `hideQuoteCSS`.
+    /// Structured quote containers emitted by Gmail (`gmail_quote` class on
+    /// any element, single- or double-quoted), Outlook's reply-header div, and
+    /// Apple Mail's cite blockquotes.
     private static let htmlMarker = try! NSRegularExpression(
         pattern: #"<[^>]+class\s*=\s*["'][^"']*gmail_quote"# + "|"
             + #"<[^>]+id\s*=\s*["']?divRplyFwdMsg"# + "|"
@@ -773,22 +773,59 @@ enum QuotedReply {
         return (newHead, peeled)
     }
 
-    /// True when an HTML body carries a quoted trail that `hideQuoteCSS`
-    /// knows how to hide *and* has authored content above it — same guard
-    /// as the plain-text split.
-    static func hasHTMLQuote(_ html: String) -> Bool {
-        let ns = html as NSString
+    /// Raw markup before the first structured quote container.
+    ///
+    /// A bounded scan includes a small overlap so a marker that starts just
+    /// before the cutoff is not truncated mid-tag. Matches must still begin
+    /// before the requested limit.
+    static func rawHTMLHead(_ html: String, scanCharacterLimit: Int? = nil) -> String? {
+        let sample: String
+        let matchLocationLimit: Int?
+        if let scanCharacterLimit {
+            let limit = max(0, scanCharacterLimit)
+            let cutoff = html.index(
+                html.startIndex, offsetBy: limit, limitedBy: html.endIndex) ?? html.endIndex
+            let scanEnd = html.index(
+                cutoff, offsetBy: 512, limitedBy: html.endIndex) ?? html.endIndex
+            sample = String(html[..<scanEnd])
+            matchLocationLimit = html[..<cutoff].utf16.count
+        } else {
+            sample = html
+            matchLocationLimit = nil
+        }
+        let ns = sample as NSString
         guard let match = htmlMarker.firstMatch(
-            in: html, range: NSRange(location: 0, length: ns.length))
-        else { return false }
-        return !MessageParser.stripHTML(ns.substring(to: match.range.location)).isEmpty
+            in: sample, range: NSRange(location: 0, length: ns.length)),
+              matchLocationLimit.map({ match.range.location < $0 }) ?? true
+        else { return nil }
+        return ns.substring(to: match.range.location)
     }
 
-    /// Stylesheet rule that hides those quoted trails while collapsed.
-    /// Mirrors `htmlMarker`; Outlook's quoted body follows its header div as
-    /// siblings, so everything after `#divRplyFwdMsg` goes too.
-    static let hideQuoteCSS = #"[class*="gmail_quote"], blockquote[type="cite" i], "#
-        + "#divRplyFwdMsg, #divRplyFwdMsg ~ * { display: none; }"
+    /// Authored markup before the first quote container. The reading pane
+    /// loads this smaller fragment so WebKit never parses/layouts recursively
+    /// repeated history.
+    ///
+    /// Returns nil when no marker exists or the body is quote-only; collapsing
+    /// in the latter case would blank the message.
+    static func authoredHTMLHead(_ html: String, scanCharacterLimit: Int? = nil) -> String? {
+        guard let head = rawHTMLHead(html, scanCharacterLimit: scanCharacterLimit) else {
+            return nil
+        }
+        guard !MessageParser.stripHTML(head).isEmpty else { return nil }
+        return head
+    }
+
+    /// True when an HTML body carries a collapsible quoted trail and has
+    /// authored content above it.
+    static func hasHTMLQuote(_ html: String) -> Bool {
+        authoredHTMLHead(html) != nil
+    }
+
+    /// Raw authored HTML above a known quote container, or the original body
+    /// when no safe split exists.
+    static func authoredHTML(_ html: String) -> String {
+        authoredHTMLHead(html) ?? html
+    }
 
     /// User-authored text above any quoted trail — for draft cards and other
     /// compact previews. Prefers the plain-text split (matches compose's

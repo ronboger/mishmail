@@ -244,6 +244,47 @@ final class QuotedReplyTests: XCTestCase {
         XCTAssertTrue(QuotedReply.hasHTMLQuote(html))
     }
 
+    func testAuthoredHTMLHeadReturnsRawMarkupWithoutCopyingTail() {
+        let html = #"<div dir="ltr">Sounds good.</div><div class="gmail_quote"><blockquote>old</blockquote></div>"#
+        let head = QuotedReply.authoredHTMLHead(html)
+        XCTAssertEqual(head, #"<div dir="ltr">Sounds good.</div>"#)
+        XCTAssertEqual(QuotedReply.authoredHTML(html), head)
+    }
+
+    func testSplitHTMLRejectsQuoteOnlyBody() {
+        let html = #"<div>&nbsp;</div><blockquote type="cite">old</blockquote>"#
+        XCTAssertNil(QuotedReply.authoredHTMLHead(html))
+        XCTAssertEqual(QuotedReply.authoredHTML(html), html)
+    }
+
+    func testAuthoredHTMLReturnsOriginalWithoutMarker() {
+        let html = "<div>standalone message</div>"
+        XCTAssertEqual(QuotedReply.authoredHTML(html), html)
+    }
+
+    func testAuthoredHTMLHeadCanBoundOversizedScan() {
+        let html = String(repeating: "a", count: 100)
+            + #"<div class="gmail_quote">old</div>"#
+        XCTAssertNil(QuotedReply.authoredHTMLHead(html, scanCharacterLimit: 50))
+        XCTAssertEqual(
+            QuotedReply.authoredHTMLHead(html, scanCharacterLimit: 150),
+            String(repeating: "a", count: 100))
+    }
+
+    func testAuthoredHTMLHeadFindsMarkerStraddlingScanBoundary() {
+        let head = String(repeating: "a", count: 95)
+        let html = head + #"<div class="gmail_quote">old</div>"#
+        XCTAssertEqual(
+            QuotedReply.authoredHTMLHead(html, scanCharacterLimit: 100),
+            head)
+    }
+
+    func testAuthoredHTMLHeadRejectsMarkerStartingAfterScanBoundary() {
+        let html = String(repeating: "a", count: 101)
+            + #"<div class="gmail_quote">old</div>"#
+        XCTAssertNil(QuotedReply.authoredHTMLHead(html, scanCharacterLimit: 100))
+    }
+
     func testHasHTMLQuoteAppleMailCite() {
         let html = #"<div>New text</div><blockquote type="cite"><div>old</div></blockquote>"#
         XCTAssertTrue(QuotedReply.hasHTMLQuote(html))
@@ -271,16 +312,6 @@ final class QuotedReplyTests: XCTestCase {
         // empty, so nothing would remain visible if the quote collapsed.
         let html = #"<div>&#160; &nbsp;</div><div class="gmail_quote">old</div>"#
         XCTAssertFalse(QuotedReply.hasHTMLQuote(html))
-    }
-
-    func testHideCSSCoversDetectedContainers() {
-        // Detection and hiding are separate encodings of the same marker
-        // list; pin the selectors so they can't silently drift apart.
-        for selector in [#"[class*="gmail_quote"]"#, "#divRplyFwdMsg ~ *",
-                         #"blockquote[type="cite" i]"#] {
-            XCTAssertTrue(QuotedReply.hideQuoteCSS.contains(selector),
-                          "hideQuoteCSS lost selector: \(selector)")
-        }
     }
 
     func testHasHTMLQuoteNoQuote() {

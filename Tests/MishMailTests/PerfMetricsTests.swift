@@ -29,6 +29,16 @@ final class PerfMetricsTests: XCTestCase {
         XCTAssertTrue(samples[0].meta.contains("n=10"))
     }
 
+    func testHTMLRenderIntervalRecordsSizeAndStability() {
+        let interval = PerfMetrics.begin(.openHTML, meta: "bytes=1048576 variant=full")
+        interval.end(extraMeta: "heightUpdates=1 stable")
+
+        let sample = PerfMetrics.recentSamples().last
+        XCTAssertEqual(sample?.event, "open.html")
+        XCTAssertTrue(sample?.meta.contains("bytes=1048576") == true)
+        XCTAssertTrue(sample?.meta.contains("heightUpdates=1 stable") == true)
+    }
+
     func testRingCapsAtCapacity() {
         for i in 0..<80 {
             PerfMetrics.measure(.syncFlush, meta: "i=\(i)") { () }
