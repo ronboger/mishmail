@@ -30,4 +30,22 @@ final class PendingDraftVisibilityTests: XCTestCase {
             PendingDraftVisibility.visibleMessages([first, second], suppressing: []),
             [first, second])
     }
+
+    func testDraftThreadHidesWhenEveryDraftIsSuppressed() {
+        XCTAssertTrue(PendingDraftVisibility.suppressesThread(
+            draftMessageIds: ["draft-1"],
+            suppressing: ["draft-1"]))
+        XCTAssertTrue(PendingDraftVisibility.suppressesThread(
+            draftMessageIds: ["draft-1", "draft-2"],
+            suppressing: ["draft-1", "draft-2"]))
+    }
+
+    func testSiblingDraftKeepsThreadVisible() {
+        XCTAssertFalse(PendingDraftVisibility.suppressesThread(
+            draftMessageIds: ["draft-1", "draft-2"],
+            suppressing: ["draft-1"]))
+        XCTAssertFalse(PendingDraftVisibility.suppressesThread(
+            draftMessageIds: [],
+            suppressing: ["draft-1"]))
+    }
 }

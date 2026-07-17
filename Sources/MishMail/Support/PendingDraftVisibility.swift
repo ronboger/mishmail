@@ -10,4 +10,13 @@ enum PendingDraftVisibility {
         guard !ids.isEmpty else { return messages }
         return messages.filter { !ids.contains($0.id) }
     }
+
+    /// A Drafts-folder thread row disappears only if it contains drafts and
+    /// every draft is currently suppressed by pending send.
+    static func suppressesThread(
+        draftMessageIds: [String],
+        suppressing ids: Set<String>
+    ) -> Bool {
+        !draftMessageIds.isEmpty && draftMessageIds.allSatisfy(ids.contains)
+    }
 }

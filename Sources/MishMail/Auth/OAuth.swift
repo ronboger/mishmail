@@ -28,10 +28,33 @@ struct OAuthConfig {
         set { UserDefaults.standard.set(newValue, forKey: "oauth.clientID") }
     }
     static var clientSecret: String {
-        get { Keychain.get("oauth.clientSecret") ?? "" }
+        get {
+            do {
+                return try resolveClientSecret(
+                    from: Keychain.read("oauth.clientSecret"))
+            } catch {
+                NSLog("MishMail: %@", error.localizedDescription)
+                return ""
+            }
+        }
         set { try? Keychain.set(newValue, forKey: "oauth.clientSecret") }
     }
     static var isConfigured: Bool { !clientID.isEmpty }
+
+    /// Token requests must distinguish an absent optional desktop-client
+    /// secret from a temporarily inaccessible saved secret.
+    static func clientSecretForRequest() throws -> String {
+        try resolveClientSecret(from: Keychain.read("oauth.clientSecret"))
+    }
+
+    /// Pure result mapping for hostless tests.
+    static func resolveClientSecret(from result: KeychainReadResult) throws -> String {
+        switch result {
+        case .value(let value): return value
+        case .notFound: return ""
+        case .unavailable(let status): throw KeychainError.status(status)
+        }
+    }
 
     /// Parses Google's downloaded `client_secret_*.json` (Desktop-app clients
     /// use the `installed` key; `web` is tolerated too). Returns nil for
@@ -137,9 +160,10 @@ final class OAuthService {
 
     /// Refreshes an access token from a stored refresh token.
     static func refreshAccessToken(refreshToken: String) async throws -> (token: String, expiresIn: Int) {
+        let clientSecret = try OAuthConfig.clientSecretForRequest()
         let body = [
             "client_id": OAuthConfig.clientID,
-            "client_secret": OAuthConfig.clientSecret,
+            "client_secret": clientSecret,
             "refresh_token": refreshToken,
             "grant_type": "refresh_token",
         ]
@@ -148,9 +172,10 @@ final class OAuthService {
     }
 
     private func exchange(code: String, verifier: String, redirectURI: String) async throws -> TokenResponse {
+        let clientSecret = try OAuthConfig.clientSecretForRequest()
         let body = [
             "client_id": OAuthConfig.clientID,
-            "client_secret": OAuthConfig.clientSecret,
+            "client_secret": clientSecret,
             "code": code,
             "code_verifier": verifier,
             "grant_type": "authorization_code",

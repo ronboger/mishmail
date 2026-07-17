@@ -1357,7 +1357,9 @@ struct MessageCard: View {
             GridRow {
                 recipientRole("TO")
                 Button {
-                    recipientsExpanded = true
+                    withAnimation(.easeOut(duration: 0.12)) {
+                        recipientsExpanded = true
+                    }
                 } label: {
                     HStack(spacing: 6) {
                         Text(recipientSummary)
@@ -1376,6 +1378,8 @@ struct MessageCard: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .accessibilityLabel("To \(recipientSummary)")
+                .accessibilityHint("Show all senders and recipients")
                 .help("Show all senders and recipients")
             }
         }

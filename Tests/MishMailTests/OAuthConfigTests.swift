@@ -27,6 +27,22 @@ final class OAuthConfigTests: XCTestCase {
         XCTAssertNil(OAuthConfig.parseCredentialsJSON(Data(#"{"installed":{"client_id":""}}"#.utf8)))
     }
 
+    func testClientSecretResolutionDistinguishesMissingFromUnavailable() throws {
+        XCTAssertEqual(
+            try OAuthConfig.resolveClientSecret(from: .value("secret")),
+            "secret")
+        XCTAssertEqual(
+            try OAuthConfig.resolveClientSecret(from: .notFound),
+            "")
+        XCTAssertThrowsError(try OAuthConfig.resolveClientSecret(
+            from: .unavailable(errSecInteractionNotAllowed)
+        )) { error in
+            XCTAssertEqual(
+                error as? KeychainError,
+                .status(errSecInteractionNotAllowed))
+        }
+    }
+
     func testCallbackPathAcceptsRegisteredAndRoot() {
         XCTAssertTrue(OAuthService.isOAuthCallbackPath("/oauth2/callback"))
         XCTAssertTrue(OAuthService.isOAuthCallbackPath("/"))

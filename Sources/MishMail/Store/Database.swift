@@ -448,14 +448,17 @@ final class AppDatabase {
 
     /// Random 256-bit key, hex-encoded, generated once and kept in the Keychain.
     private static func databaseKey() throws -> String {
-        if let existing = Keychain.get("db.key") { return existing }
-        var bytes = [UInt8](repeating: 0, count: 32)
-        guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
-            throw KeychainError.status(errSecParam)
+        try Keychain.existingOrCreate(from: Keychain.read("db.key")) {
+            var bytes = [UInt8](repeating: 0, count: 32)
+            guard SecRandomCopyBytes(
+                kSecRandomDefault, bytes.count, &bytes
+            ) == errSecSuccess else {
+                throw KeychainError.status(errSecParam)
+            }
+            let key = bytes.map { String(format: "%02x", $0) }.joined()
+            try Keychain.set(key, forKey: "db.key")
+            return key
         }
-        let key = bytes.map { String(format: "%02x", $0) }.joined()
-        try Keychain.set(key, forKey: "db.key")
-        return key
     }
 
     /// A plaintext SQLite file starts with the magic "SQLite format 3\0";

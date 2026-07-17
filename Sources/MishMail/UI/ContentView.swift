@@ -52,10 +52,7 @@ struct ContentView: View {
                     }
                 )
         }
-        .onPreferenceChange(ReadingPaneFrameKey.self) { frame in
-            readingPaneFrame = frame
-            store.demoteInlineComposeIfPaneTooShort(paneHeight: frame.height)
-        }
+        .onPreferenceChange(ReadingPaneFrameKey.self) { readingPaneFrame = $0 }
         .onPreferenceChange(ComposeHostFrameKey.self) { composeHostFrame = $0 }
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         // Typing only feeds the dropdown preview; the list follows
@@ -85,9 +82,10 @@ struct ContentView: View {
             }
             guard let selectedId = store.selectedThreadId else { return }
             if keyboardSelection {
-                // Hidden-pane browsing is highlight-only. When a preview is
-                // already visible, coalesce repeats and show the final row.
-                if !readingPaneHidden, openedThreadId != nil {
+                // Hidden-pane browsing is highlight-only. Any visible preview,
+                // including the first keyboard selection in compact mode,
+                // coalesces repeats and opens the final row.
+                if !readingPaneHidden {
                     scheduleDetailSelection(selectedId)
                 }
             } else {

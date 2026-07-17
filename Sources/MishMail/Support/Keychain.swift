@@ -65,6 +65,22 @@ enum Keychain {
         return .value(value)
     }
 
+    /// Reuse an existing secret, create one only for a confirmed missing item,
+    /// and fail closed for locked/access-controlled Keychain reads.
+    static func existingOrCreate(
+        from result: KeychainReadResult,
+        create: () throws -> String
+    ) throws -> String {
+        switch result {
+        case .value(let value):
+            return value
+        case .notFound:
+            return try create()
+        case .unavailable(let status):
+            throw KeychainError.status(status)
+        }
+    }
+
     static func delete(_ key: String) {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
@@ -81,6 +97,13 @@ enum KeychainReadResult: Equatable {
     case unavailable(OSStatus)
 }
 
-enum KeychainError: Error {
+enum KeychainError: Error, Equatable, LocalizedError {
     case status(OSStatus)
+
+    var errorDescription: String? {
+        switch self {
+        case .status(let status):
+            return "Keychain is unavailable (error \(status)). Unlock your Mac and try again."
+        }
+    }
 }

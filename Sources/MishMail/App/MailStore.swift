@@ -1046,18 +1046,6 @@ final class MailStore: ObservableObject {
         composeRequest = req
     }
 
-    /// Keep the editor alive but move it to a floating card if the pane is too
-    /// short to render a useful inline reply.
-    func demoteInlineComposeIfPaneTooShort(paneHeight: CGFloat) {
-        guard var req = composeRequest,
-              req.presentation == .inline,
-              ComposePlacement.resolvedPresentation(
-                .inline, paneHeight: paneHeight
-              ) == .floating else { return }
-        req.presentation = .floating
-        composeRequest = req
-    }
-
     struct UndoAction: Identifiable {
         let id = UUID()
         let label: String
@@ -3649,20 +3637,47 @@ final class MailStore: ObservableObject {
         let changed: Bool
         if suppressed {
             let messageChanged = suppressedDraftMessageIds.insert(draft.id).inserted
-            let threadChanged = suppressedDraftThreadIds.insert(draft.threadId).inserted
             suppressedDraftThreadByMessageId[draft.id] = draft.threadId
+            let threadChanged = refreshDraftThreadSuppression(draft.threadId)
             changed = messageChanged || threadChanged
         } else {
             let messageChanged = suppressedDraftMessageIds.remove(draft.id) != nil
             suppressedDraftThreadByMessageId.removeValue(forKey: draft.id)
-            let stillSuppressedInThread =
-                suppressedDraftThreadByMessageId.values.contains(draft.threadId)
-            let threadChanged = stillSuppressedInThread
-                ? false
-                : suppressedDraftThreadIds.remove(draft.threadId) != nil
+            let threadChanged = refreshDraftThreadSuppression(draft.threadId)
             changed = messageChanged || threadChanged
         }
         if changed { threadContentVersion &+= 1 }
+    }
+
+    /// Drafts is thread-based, but suppression is message-based. Hide a row
+    /// only when the thread has drafts and every one is pending; an unrelated
+    /// sibling draft must remain reachable during another draft's Undo window.
+    private func refreshDraftThreadSuppression(_ threadId: String) -> Bool {
+        let draftIds: [String] = (try? db.read { db in
+            try String.fetchAll(
+                db,
+                sql: """
+                    SELECT id
+                    FROM message
+                    WHERE threadId = ?
+                      AND (' ' || labelIds || ' ') LIKE '% DRAFT %'
+                    """,
+                arguments: [threadId])
+        }) ?? []
+        // Autosave may hand queueSend a fresh draft stand-in before the next
+        // mailbox sync has inserted that row locally. Include pending IDs from
+        // the in-memory map so a lone fresh draft still hides its Drafts row.
+        let pendingDraftIds = suppressedDraftThreadByMessageId.compactMap {
+            $0.value == threadId ? $0.key : nil
+        }
+        let knownDraftIds = Array(Set(draftIds).union(pendingDraftIds))
+        let shouldSuppress = PendingDraftVisibility.suppressesThread(
+            draftMessageIds: knownDraftIds,
+            suppressing: suppressedDraftMessageIds)
+        if shouldSuppress {
+            return suppressedDraftThreadIds.insert(threadId).inserted
+        }
+        return suppressedDraftThreadIds.remove(threadId) != nil
     }
 
     // MARK: - Scheduled sends (send later)

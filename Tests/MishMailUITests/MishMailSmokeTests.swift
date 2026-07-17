@@ -30,6 +30,16 @@ final class MishMailSmokeTests: XCTestCase {
         XCTAssertTrue(compactBack.waitForExistence(timeout: 5))
         compactBack.click()
         XCTAssertTrue(demoThread.waitForExistence(timeout: 5))
+
+        // Regression: the first keyboard selection in compact mode used to
+        // replace the list with an empty "Select a conversation" pane because
+        // openedThreadId had not yet been primed by a click.
+        app.typeKey(XCUIKeyboardKey.downArrow.rawValue, modifierFlags: [])
+        XCTAssertTrue(subject.waitForExistence(timeout: 5))
+        XCTAssertTrue(compactBack.waitForExistence(timeout: 5))
+        compactBack.click()
+        XCTAssertTrue(demoThread.waitForExistence(timeout: 5))
+
         demoThread.click()
         XCTAssertTrue(subject.waitForExistence(timeout: 5))
 

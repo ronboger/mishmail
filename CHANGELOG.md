@@ -9,7 +9,9 @@ minor versions may still change behavior.
 ### Changed
 - **Faster keyboard browsing** — repeated Up/Down and j/k selection updates
   the list immediately while reading-pane hydration and neighbor prefetch
-  coalesce until navigation pauses, avoiding work for intermediate rows.
+  coalesce until navigation pauses, avoiding work for intermediate rows. The
+  first keyboard selection also opens correctly in compact and three-pane
+  layouts instead of requiring a priming click or Enter.
 - **Lower HTML-mail idle memory** — MishMail retains one warm WebView instead
   of three, keeps only one sent message body expanded at a time, uses a smaller
   quote-analysis cache, builds the CSP fallback only when needed, and releases
@@ -22,14 +24,18 @@ minor versions may still change behavior.
 - **Inline reply no longer springs the thread viewport upward** — composer
   motion is scoped to the card, the reading-pane inset changes without
   animation, and short panes continuously resize the card or fall back to a
-  floating composer.
+  floating composer. Growing the pane restores inline presentation rather
+  than leaving a sticky one-way demotion.
 - **Draft cards disappear during Undo Send** — the Gmail draft remains safely
   available for Undo, but its thread card, banner, and Drafts-list row are
-  suppressed until Undo, failure, or successful send resolves.
+  suppressed until Undo, failure, or successful send resolves. A sibling
+  draft in the same conversation keeps the Drafts-folder row visible.
 - **Keychain access failures no longer masquerade as missing authorization** —
   locked or temporarily unavailable Keychain items remain retryable instead
   of marking the account for reauthorization. OAuth setup guidance now
-  correctly explains Google Testing-mode's seven-day token lifetime.
+  correctly explains Google Testing-mode's seven-day token lifetime. Database
+  and OAuth-client secrets also fail closed instead of generating or sending
+  replacement values after a transient read failure.
 - **HTML mail no longer collapses when remote images are blocked** — blocked
   or failed `<img>` tags keep capped authored width/height (max 1200×2000) so
   table-based transactional layouts (e.g. 2FA) keep vertical structure under
