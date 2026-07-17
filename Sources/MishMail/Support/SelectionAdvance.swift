@@ -1,5 +1,24 @@
 import Foundation
 
+/// Why list focus changed. Browsing deliberately coalesces the expensive
+/// reading pane; clicks, explicit opens, and destructive auto-advance must
+/// replace the pane immediately. Quiet is the Superhuman-style pre-highlight
+/// of the top row: selection only, the conversation must never open for it.
+enum ThreadSelectionIntent: String, Equatable {
+    case click
+    case browse
+    case autoAdvance
+    case explicitOpen
+    case quiet
+
+    var opensDetailImmediately: Bool {
+        switch self {
+        case .browse, .quiet: return false
+        case .click, .autoAdvance, .explicitOpen: return true
+        }
+    }
+}
+
 /// Which row should be selected after removing one (or many) from a list —
 /// the row below the focus, or the one above when the focus was last
 /// (Gmail-style auto-advance after archive/trash).

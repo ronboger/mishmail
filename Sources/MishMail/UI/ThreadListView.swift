@@ -46,6 +46,12 @@ struct ThreadListView: View {
     /// Labels view: sections the user folded shut. Keyboard nav skips them.
     @State private var collapsedLabels: Set<String> = []
 
+    private var threadSelection: Binding<String?> {
+        Binding(
+            get: { store.selectedThreadId },
+            set: { store.selectThread($0, intent: .click) })
+    }
+
     private func isCollapsed(_ title: String) -> Bool {
         store.selectedView == .labels && collapsedLabels.contains(title)
     }
@@ -126,7 +132,7 @@ struct ThreadListView: View {
         let tint = title == "No label" ? Color.secondary : store.labelTint(anyAccount: title)
         let folded = collapsedLabels.contains(title)
         return Button {
-            withAnimation(.easeOut(duration: 0.15)) {
+            withAnimation(PMMotion.feedback) {
                 if folded { collapsedLabels.remove(title) }
                 else { collapsedLabels.insert(title) }
             }
@@ -216,7 +222,7 @@ struct ThreadListView: View {
                 multiSelectBar
                 Divider()
             }
-            List(selection: $store.selectedThreadId) {
+            List(selection: threadSelection) {
                 ForEach(grouped, id: \.0) { title, threads in
                     Section {
                         if !isCollapsed(title) {
@@ -299,8 +305,6 @@ struct ThreadListView: View {
             .scrollContentBackground(.hidden)
             // Matching air above the first group.
             .contentMargins(.top, 40 * fontScale, for: .scrollContent)
-            // Archived/trashed rows slide out instead of blinking away.
-            .animation(.easeOut(duration: 0.2), value: store.threads)
             .onAppear { recomputeLayout() }
             .onChange(of: store.threads) { recomputeLayout() }
             .onChange(of: store.vipThreadIds) { recomputeLayout() }

@@ -1,6 +1,14 @@
 import XCTest
 
 final class SelectionAdvanceTests: XCTestCase {
+    func testSelectionIntentOnlyDebouncesBrowsing() {
+        XCTAssertFalse(ThreadSelectionIntent.browse.opensDetailImmediately)
+        XCTAssertTrue(ThreadSelectionIntent.click.opensDetailImmediately)
+        XCTAssertTrue(ThreadSelectionIntent.autoAdvance.opensDetailImmediately)
+        XCTAssertTrue(ThreadSelectionIntent.explicitOpen.opensDetailImmediately)
+        XCTAssertFalse(ThreadSelectionIntent.quiet.opensDetailImmediately)
+    }
+
     func testMiddleRowAdvancesDown() {
         XCTAssertEqual(SelectionAdvance.neighborId(in: ["a", "b", "c"], removing: "b"), "c")
     }

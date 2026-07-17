@@ -54,6 +54,17 @@ final class MishMailSmokeTests: XCTestCase {
         demoThread.click()
         XCTAssertTrue(subject.waitForExistence(timeout: 5))
 
+        // Deleting the open conversation must swap directly to its neighbor.
+        // The reading pane must never briefly render its empty-selection view.
+        let previousSubject = subject.label
+        let trash = app.buttons.matching(
+            NSPredicate(format: "label == 'Trash'")).firstMatch
+        XCTAssertTrue(trash.waitForExistence(timeout: 5))
+        trash.click()
+        XCTAssertFalse(app.staticTexts["Select a conversation"].exists)
+        XCTAssertTrue(subject.waitForExistence(timeout: 5))
+        XCTAssertNotEqual(subject.label, previousSubject)
+
         // Compose lives in the sidebar, which starts hidden — → reveals it.
         app.typeKey(XCUIKeyboardKey.rightArrow.rawValue, modifierFlags: [])
         let compose = app.buttons.matching(identifier: "composeButton").firstMatch

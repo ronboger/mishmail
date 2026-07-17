@@ -55,6 +55,7 @@ struct ThreadDetailView: View {
     let onReply: (Message) -> Void
 
     @State private var messages: [Message] = []
+    @State private var attachmentsByMessageId: [String: [AttachmentRow]] = [:]
     @State private var threadAttachments: [(message: Message, attachment: AttachmentRow)] = []
     @State private var scrolledMessageId: String?
     @State private var aiSummary: String?
@@ -77,6 +78,7 @@ struct ThreadDetailView: View {
     @State private var writingScrollOffset = false
     @State private var pinnedScrollOffsetY: CGFloat?
     @State private var scrollDisarmGate = InlineScrollDisarmGate()
+    @State private var refreshTask: Task<Void, Never>?
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -153,6 +155,7 @@ struct ThreadDetailView: View {
                         } else {
                             MessageCard(message: message,
                                         isLast: message.id == lastNonDraftId,
+                                        attachments: attachmentsByMessageId[message.id] ?? [],
                                         expandedMessageId: $expandedMessageId,
                                         loadImagesForThread: $loadRemoteImagesForThread,
                                         onReply: { onReply(message) },
@@ -161,7 +164,6 @@ struct ThreadDetailView: View {
                                 .id(message.id)
                                 .background { messageHeightReader(id: message.id) }
                         }
-                    }
                 }
                 .scrollTargetLayout()
                 .padding(.vertical)
@@ -227,7 +229,7 @@ struct ThreadDetailView: View {
             // column is decoupled from — hide them there.
             if !splitMode {
                 ToolbarItem(placement: .navigation) {
-                    Button { store.moveSelection(-1) } label: {
+                    Button { store.moveSelection(-1, intent: .explicitOpen) } label: {
                         Label("Previous", systemImage: "chevron.up")
                     }
                     .help("Previous conversation (\(store.keyBindings.key(for: .prev)))")
@@ -236,7 +238,7 @@ struct ThreadDetailView: View {
                 }
                 .pmHideSharedBackground()
                 ToolbarItem(placement: .navigation) {
-                    Button { store.moveSelection(1) } label: {
+                    Button { store.moveSelection(1, intent: .explicitOpen) } label: {
                         Label("Next", systemImage: "chevron.down")
                     }
                     .help("Next conversation (\(store.keyBindings.key(for: .next)))")
@@ -385,31 +387,30 @@ struct ThreadDetailView: View {
             }
         }
             .task(id: thread.id) {
-                // Headers only first — skip pulling every body on open. Hydrate the
-                // expanded sent message and any draft cards (preview needs body).
                 bodyLoadAttempted = []
                 loadRemoteImagesForThread = false
                 expandedMessageId = nil
-                var loaded = store.messageHeaders(inThread: thread.id)
-                // Expand the newest sent message; also pull bodies for draft cards
-                // so the compact preview is ready without a second hop.
-                var hydrateIds: [String] = []
+                let readyInterval = PerfMetrics.begin(.openReady, meta: "thread=\(thread.id)")
+                let load = await store.threadDetailPayload(threadId: thread.id)
+                guard !Task.isCancelled else {
+                    readyInterval.end(extraMeta: "cancelled")
+                    return
+                }
+                let loaded = load.payload.messages
+                // The newest sent message and draft cards arrive hydrated in the
+                // cached payload; mark them attempted so we don't re-query.
                 if let sentId = ForwardComposer.newestSentMessage(in: loaded)?.id {
-                    hydrateIds.append(sentId)
+                    bodyLoadAttempted.insert(sentId)
                 }
                 for draft in loaded where ForwardComposer.hasDraftLabel(draft.labelIds) {
-                    if !hydrateIds.contains(draft.id) { hydrateIds.append(draft.id) }
-                }
-                for id in hydrateIds {
-                    guard let idx = loaded.firstIndex(where: { $0.id == id }),
-                          let full = store.messageBody(id: id) else { continue }
-                    loaded[idx] = full
-                    bodyLoadAttempted.insert(id)
+                    bodyLoadAttempted.insert(draft.id)
                 }
                 messages = loaded
-                // Attachment rows key off messageId; header rows are enough.
+                attachmentsByMessageId = load.payload.attachmentsByMessageId
                 threadAttachments = loaded.flatMap { msg in
-                    store.attachments(for: msg.id).map { (message: msg, attachment: $0) }
+                    (attachmentsByMessageId[msg.id] ?? []).map {
+                        (message: msg, attachment: $0)
+                    }
                 }
                 // Anchor on newest sent when multi-message; draft-only falls back
                 // to the last row so a pure-draft pane still positions.
@@ -420,6 +421,8 @@ struct ThreadDetailView: View {
                     beginInlineComposeScroll(proxy: proxy)
                 }
                 aiSummary = nil; summaryError = nil; summarizing = false
+                readyInterval.end(
+                    extraMeta: "\(load.cacheHit ? "cache_hit" : "cache_miss") n=\(loaded.count)")
                 // Dwell before auto mark-read so j/k / scroll-select through the
                 // inbox does not clear every unread badge. Archive (`e`) marks
                 // read immediately in MailStore.archive; `.task(id:)` cancels
@@ -474,6 +477,8 @@ struct ThreadDetailView: View {
             }
             .onDisappear {
                 scrollDisarmGate.setWheelArmed(false)
+                refreshTask?.cancel()
+                refreshTask = nil
             }
             .onPreferenceChange(ThreadMessageHeightKey.self) { heights in
                 guard inlineComposeActive, autoPinInlineScroll,
@@ -633,14 +638,23 @@ struct ThreadDetailView: View {
     /// already-hydrated bodies so open cards don't collapse back to
     /// "Loading…". No-op when nothing about the thread changed.
     private func refreshMessages() {
-        let fresh = store.messageHeaders(inThread: thread.id)
-        let merged = ThreadRefresh.merge(current: messages, fresh: fresh)
-        guard merged != messages else { return }
-        withAnimation(.easeOut(duration: 0.1)) {
-            messages = merged
-        }
-        threadAttachments = merged.flatMap { msg in
-            store.attachments(for: msg.id).map { (message: msg, attachment: $0) }
+        refreshTask?.cancel()
+        refreshTask = Task {
+            let load = await store.threadDetailPayload(
+                threadId: thread.id, forceReload: true)
+            guard !Task.isCancelled, store.openedThreadId == thread.id else { return }
+            let merged = ThreadRefresh.merge(
+                current: messages, fresh: load.payload.messages)
+            attachmentsByMessageId = load.payload.attachmentsByMessageId
+            threadAttachments = merged.flatMap { msg in
+                (attachmentsByMessageId[msg.id] ?? []).map {
+                    (message: msg, attachment: $0)
+                }
+            }
+            guard merged != messages else { return }
+            withAnimation(PMMotion.interactive) {
+                messages = merged
+            }
         }
     }
 
@@ -673,8 +687,13 @@ struct ThreadDetailView: View {
         guard Self.needsBodyLoad(messages[idx]) else { return }
         guard !bodyLoadAttempted.contains(id) else { return }
         bodyLoadAttempted.insert(id)
-        guard let full = store.messageBody(id: id) else { return }
-        messages[idx] = full
+        Task {
+            guard let full = await store.messageBodyForReadingPane(id: id),
+                  store.openedThreadId == thread.id,
+                  let currentIdx = messages.firstIndex(where: { $0.id == id })
+            else { return }
+            messages[currentIdx] = full
+        }
     }
 
     /// Notion Mail-style meta row under the subject: an attachments menu
@@ -1050,6 +1069,7 @@ struct MessageCard: View {
         RemoteImagePolicy.ask.rawValue
     let message: Message
     let isLast: Bool
+    let attachments: [AttachmentRow]
     @Binding var expandedMessageId: String?
     /// Session-wide opt-in shared by every card in the open thread.
     @Binding var loadImagesForThread: Bool
@@ -1126,12 +1146,14 @@ struct MessageCard: View {
     }
 
     init(message: Message, isLast: Bool,
+         attachments: [AttachmentRow] = [],
          expandedMessageId: Binding<String?>,
          loadImagesForThread: Binding<Bool> = .constant(false),
          onReply: @escaping () -> Void,
          onNeedBody: @escaping () -> Void = {}) {
         self.message = message
         self.isLast = isLast
+        self.attachments = attachments
         self._expandedMessageId = expandedMessageId
         self._loadImagesForThread = loadImagesForThread
         self.onReply = onReply
@@ -1400,7 +1422,6 @@ struct MessageCard: View {
                     .buttonStyle(.plain)
                     .help(showQuoted ? "Hide quoted text" : "Show quoted text")
                 }
-                let attachments = store.attachments(for: message.id)
                 if !attachments.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {

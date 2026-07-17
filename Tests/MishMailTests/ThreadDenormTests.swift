@@ -5,6 +5,32 @@ import GRDB
 /// paths rely on after v16.
 final class ThreadDenormTests: XCTestCase {
 
+    func testOptimisticSidebarMembershipMatchesPrimaryPredicates() {
+        let now = Date()
+        var thread = MailThread(
+            id: "a:t1", accountId: "a", gmailThreadId: "t1",
+            subject: "s", snippet: "sn", fromDisplay: "F",
+            lastDate: now, isUnread: true, isStarred: true,
+            inInbox: true, inTrash: false, labelIds: "INBOX STARRED",
+            snoozeUntil: nil, participants: "F", messageCount: 1,
+            hasAttachment: false, reminderAt: now)
+
+        XCTAssertEqual(
+            SidebarCounts.memberships(of: thread, now: now),
+            ["inbox", "starred", "reminders"])
+
+        thread.inPromotions = true
+        thread.snoozeUntil = now.addingTimeInterval(3600)
+        XCTAssertEqual(
+            SidebarCounts.memberships(of: thread, now: now),
+            ["promotions", "starred", "reminders", "snoozed"])
+
+        thread.inTrash = true
+        XCTAssertEqual(
+            SidebarCounts.memberships(of: thread, now: now),
+            ["reminders"])
+    }
+
     // MARK: - syncFlagsFromLabelIds
 
     func testSyncFlagsFromLabelIdsSetsAllDenormBooleans() {

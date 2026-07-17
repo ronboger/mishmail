@@ -25,6 +25,9 @@ import os
 /// | `reload.total` | Whole reload (compare to list+counts+vip) |
 /// | `open.headers` | Thread open header projection |
 /// | `open.body` | Body hydrate on expand |
+/// | `selection.focus` | List focus publication by click/browse/auto-advance |
+/// | `action.advance` | Destructive action through synchronous neighbor handoff |
+/// | `open.ready` | Opened thread through useful payload (cache hit/miss) |
 /// | `open.html` | HTML document assembly/load through stable WebView height |
 /// | `sync.flush` | Chunked write transaction |
 /// | `sync.fetchAll` | Full backfill pass wall time |
@@ -68,6 +71,12 @@ enum PerfMetrics {
         case listGroup = "list.group"
         /// Load-older page fetch.
         case pageLoadMore = "page.loadMore"
+        /// List-focus publication, split by selection intent.
+        case selectionFocus = "selection.focus"
+        /// Destructive action to synchronous neighbor-detail handoff.
+        case actionAdvance = "action.advance"
+        /// Opened-thread change through first useful reading-pane payload.
+        case openReady = "open.ready"
     }
 
     /// One finished sample (ring buffer for dump / tests).
@@ -170,6 +179,9 @@ enum PerfMetrics {
         case .syncHistoryPartial: return signposter.beginInterval("sync.historyPartial")
         case .listGroup: return signposter.beginInterval("list.group")
         case .pageLoadMore: return signposter.beginInterval("page.loadMore")
+        case .selectionFocus: return signposter.beginInterval("selection.focus")
+        case .actionAdvance: return signposter.beginInterval("action.advance")
+        case .openReady: return signposter.beginInterval("open.ready")
         }
     }
 
@@ -191,6 +203,9 @@ enum PerfMetrics {
         case .syncHistoryPartial: signposter.endInterval("sync.historyPartial", state)
         case .listGroup: signposter.endInterval("list.group", state)
         case .pageLoadMore: signposter.endInterval("page.loadMore", state)
+        case .selectionFocus: signposter.endInterval("selection.focus", state)
+        case .actionAdvance: signposter.endInterval("action.advance", state)
+        case .openReady: signposter.endInterval("open.ready", state)
         }
     }
 

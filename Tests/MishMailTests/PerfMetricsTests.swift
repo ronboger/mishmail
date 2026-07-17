@@ -59,4 +59,14 @@ final class PerfMetricsTests: XCTestCase {
         let samples = PerfMetrics.recentSamples()
         XCTAssertEqual(samples.last?.event, "search.preview")
     }
+
+    func testPerceivedLatencyEventsAreRecorded() {
+        PerfMetrics.measure(.selectionFocus, meta: "intent=browse") { () }
+        PerfMetrics.measure(.actionAdvance, meta: "action=trash") { () }
+        PerfMetrics.measure(.openReady, meta: "cache_hit") { () }
+
+        XCTAssertEqual(
+            PerfMetrics.recentSamples().suffix(3).map(\.event),
+            ["selection.focus", "action.advance", "open.ready"])
+    }
 }

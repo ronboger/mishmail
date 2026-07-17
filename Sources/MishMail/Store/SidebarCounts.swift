@@ -7,6 +7,37 @@ import GRDB
 /// (no AppKit). Prefer per-predicate `COUNT(*)` over a full-table
 /// `SUM(CASE…)` so SQLite can use partial indexes from migration v21.
 enum SidebarCounts {
+    /// In-memory counterpart of the SQL predicates below. Optimistic thread
+    /// actions use this to keep sidebar badges in the same frame as the row;
+    /// the coalesced database reconciliation remains the source of truth.
+    static func memberships(of thread: MailThread, now: Date = Date()) -> Set<String> {
+        var result = Set<String>()
+        if thread.isUnread && !thread.inTrash && !thread.inSpam && thread.inInbox {
+            if thread.inPromotions {
+                result.insert("promotions")
+            }
+            if thread.inSocial {
+                result.insert("social")
+            }
+            if !thread.inPromotions && !thread.inSocial {
+                result.insert("inbox")
+            }
+        }
+        if thread.reminderAt != nil {
+            result.insert("reminders")
+        }
+        if thread.isStarred && !thread.inTrash {
+            result.insert("starred")
+        }
+        if let until = thread.snoozeUntil, until > now, !thread.inTrash {
+            result.insert("snoozed")
+        }
+        if thread.inDrafts && !thread.inTrash {
+            result.insert("drafts")
+        }
+        return result
+    }
+
     /// `activeAccount`/`badgeAccount` nil = every account.
     /// Safe off MainActor. Sole source of truth for sidebar unread — do not
     /// merge Gmail `labelInfo` / CATEGORY_* totals (those include spam +

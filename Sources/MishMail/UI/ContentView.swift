@@ -22,6 +22,7 @@ private struct ComposeHostFrameKey: PreferenceKey {
 struct ContentView: View {
     @EnvironmentObject var store: MailStore
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var keyMonitor: Any?
     @State private var layoutMode: MailLayoutMode = .list
     // Persisted so the layout survives relaunch, like the sidebar state.
@@ -35,9 +36,6 @@ struct ContentView: View {
     /// Measured frames for PreferenceKey-aligned inline compose.
     @State private var readingPaneFrame: CGRect = .zero
     @State private var composeHostFrame: CGRect = .zero
-    /// List focus stays synchronous; the expensive reading pane follows after
-    /// key repeat settles (clicks/Enter still open immediately).
-    @State private var openedThreadId: String?
     @State private var detailSelectionTask: Task<Void, Never>?
 
     private var fullWindowThreads: Bool {
@@ -70,7 +68,7 @@ struct ContentView: View {
             let mode = MailLayout.mode(
                 width: proxy.size.width,
                 readingPaneHidden: readingPaneHidden,
-                hasSelection: openedThreadId != nil,
+                hasSelection: store.openedThreadId != nil,
                 threadFocus: store.threadFocusMode,
                 fullWindowThreads: fullWindowThreads)
             Group {
@@ -95,6 +93,9 @@ struct ContentView: View {
             // Pathological short panes: float compose instead of a 0-height dock.
             store.demoteInlineComposeIfPaneTooShort(paneHeight: frame.height)
         }
+        // One app-level Reduce Motion gate covers legacy and new transitions.
+        // Triage/navigation already use no animation even when motion is on.
+        .transaction { if reduceMotion { $0.disablesAnimations = true } }
         .onPreferenceChange(ComposeHostFrameKey.self) { composeHostFrame = $0 }
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         // Typing only feeds the dropdown preview; the list follows
@@ -109,12 +110,7 @@ struct ContentView: View {
         // Clicking a pure draft skips the pane entirely and hops straight
         // into compose at the bottom (Notion Mail-style).
         .onChange(of: store.selectedThreadId) {
-            let keyboardSelection = store.selectionViaKeyboard
-            let quietSelection = store.selectionQuiet
-            defer {
-                store.selectionViaKeyboard = false
-                store.selectionQuiet = false
-            }
+            let intent = store.consumeSelectionIntent()
             // Leaving a thread (or clearing selection) promotes inline compose
             // to the floating card so the draft stays editable.
             store.promoteInlineComposeIfNeeded(
@@ -123,25 +119,24 @@ struct ContentView: View {
             // Focus mode requires a conversation; drop it when selection clears.
             if store.selectedThreadId == nil {
                 store.threadFocusMode = false
-                openedThreadId = nil
                 detailSelectionTask?.cancel()
             }
             guard let selectedId = store.selectedThreadId else { return }
             // Auto-highlight of the top row (Superhuman default): selection
             // only — never opens the conversation.
-            if quietSelection { return }
-            if keyboardSelection {
+            if intent == .quiet { return }
+            if intent == .browse {
                 // Hidden-pane browsing is highlight-only. Any visible preview,
                 // including the first keyboard selection in compact mode,
                 // coalesces repeats and opens the final row.
                 if !effectivePaneHidden {
                     if DetailOpenPolicy.opensImmediately(
-                        openedThreadId: openedThreadId,
+                        openedThreadId: store.openedThreadId,
                         listedIds: store.threads.lazy.map(\.id)) {
                         // Auto-advance after trash/archive: the opened row is
                         // gone, so debouncing would blank and rebuild the pane.
                         detailSelectionTask?.cancel()
-                        openedThreadId = selectedId
+                        store.openDetail(selectedId)
                     } else {
                         scheduleDetailSelection(selectedId)
                     }
@@ -167,7 +162,7 @@ struct ContentView: View {
             if readingPaneHidden { store.threadFocusMode = false }
             else if let selected = store.selectedThreadId {
                 detailSelectionTask?.cancel()
-                openedThreadId = selected
+                store.openDetail(selected)
             }
         }
         .onChange(of: store.threadFocusMode) {
@@ -180,12 +175,11 @@ struct ContentView: View {
                 readingPaneHidden: !store.threadFocusMode)
             if store.threadFocusMode, let selected = store.selectedThreadId {
                 detailSelectionTask?.cancel()
-                openedThreadId = selected
+                store.openDetail(selected)
             }
         }
         .onChange(of: store.selectedView) {
-            store.selectedThreadId = nil
-            openedThreadId = nil
+            store.clearSelection()
             store.clearCheckedThreads()
             store.resetChips()
             // Sidebar click (or any selectedView write) should land on the
@@ -200,7 +194,7 @@ struct ContentView: View {
         .onChange(of: store.chips) { store.reloadThreadsDebounced() }
         .onAppear {
             store.readingPaneHiddenForCompose = effectivePaneHidden
-            openedThreadId = store.selectedThreadId
+            store.openDetail(store.selectedThreadId)
             installKeyMonitor()
             // Don't let the sidebar search field start with keyboard focus —
             // it would swallow Esc/j/k until clicked away.
@@ -296,8 +290,8 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.easeOut(duration: 0.15), value: store.undoAction?.id)
-        .animation(.easeOut(duration: 0.15), value: store.notice)
+        .animation(PMMotion.feedback, value: store.undoAction?.id)
+        .animation(PMMotion.feedback, value: store.notice)
         .sheet(item: $store.editingView) { view in
             ViewEditor(view: view)
         }
@@ -554,7 +548,7 @@ struct ContentView: View {
     @ViewBuilder
     private func detailPane(compact: Bool) -> some View {
         Group {
-            if let id = openedThreadId,
+            if let id = store.openedThreadId,
                let thread = store.threads.first(where: { $0.id == id }) {
                 ThreadDetailView(
                     thread: thread,
@@ -564,14 +558,14 @@ struct ContentView: View {
                         if store.threadFocusMode {
                             store.threadFocusMode = false
                         } else {
-                            store.selectedThreadId = nil
-                            openedThreadId = nil
+                            store.clearSelection()
                         }
                     },
                     onReply: { msg in
                         store.openCompose(.init(replyTo: msg),
                                           readingPaneHidden: effectivePaneHidden)
                     })
+                    .id(thread.id)
             } else {
                 Text("Select a conversation")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -819,7 +813,7 @@ struct ContentView: View {
                     return nil
                 }
                 if layoutMode == .compactDetail {
-                    store.selectedThreadId = nil
+                    store.clearSelection()
                     return nil
                 }
                 if !fullWindowThreads, !readingPaneHidden {
@@ -860,21 +854,19 @@ struct ContentView: View {
                 withAnimation { sidebarHidden = false }
                 return nil
             case 125:  // down
-                store.selectionViaKeyboard = true
-                store.moveSelection(1)
+                store.moveSelection(1, intent: .browse)
                 return nil
             case 126:  // up
-                store.selectionViaKeyboard = true
-                store.moveSelection(-1)
+                store.moveSelection(-1, intent: .browse)
                 return nil
             case 36:   // return
                 if let thread = store.selectedThread {
                     if store.isDraftOnly(thread) {
                         store.editDraft(inThread: thread)
-                        store.selectedThreadId = nil
+                        store.clearSelection()
                     } else {
                         detailSelectionTask?.cancel()
-                        openedThreadId = thread.id
+                        store.openDetail(thread.id)
                         if fullWindowThreads {
                             store.threadFocusMode = true
                         } else {
@@ -887,9 +879,6 @@ struct ContentView: View {
                 break
             }
             guard let chars = event.charactersIgnoringModifiers else { return event }
-            if let cmd = store.keyBindings.command(for: chars), cmd == .next || cmd == .prev {
-                store.selectionViaKeyboard = true
-            }
             if store.handleKey(chars) { return nil }
             // Unhandled printable keys must not fall through: SwiftUI List
             // type-selects to the first row starting with that letter, which
@@ -909,10 +898,10 @@ struct ContentView: View {
     /// List selection binding never fires.
     private func openClickedThread(_ selectedId: String) {
         detailSelectionTask?.cancel()
-        openedThreadId = selectedId
+        store.openDetail(selectedId)
         if let thread = store.selectedThread, store.isDraftOnly(thread) {
             store.editDraft(inThread: thread)
-            store.selectedThreadId = nil
+            store.clearSelection()
             return
         }
         if fullWindowThreads {
@@ -933,7 +922,7 @@ struct ContentView: View {
                 return
             }
             guard store.selectedThreadId == id else { return }
-            openedThreadId = id
+            store.openDetail(id)
         }
     }
 }

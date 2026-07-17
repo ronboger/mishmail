@@ -28,6 +28,15 @@ minor versions may still change behavior.
   instance moves between placements, so typed text is never lost.
 
 ### Changed
+- **Instant triage handoff** — archive, trash, spam, and snooze now publish
+  their row/count changes before encrypted-database and Gmail work, and replace
+  the reading pane with the next conversation in the same update. Repeated
+  actions share a serial persistence tail and one coalesced reconciliation
+  instead of blocking the UI and fully reloading after every key press.
+- **Faster conversation opening** — reading-pane headers, initial bodies, and
+  attachments load off the main actor in one database snapshot. A bounded LRU
+  retains actual neighbor payloads, so prefetch work is reused instead of
+  discarded and message cards no longer query attachments while rendering.
 - **Faster keyboard browsing** — repeated Up/Down and j/k selection updates
   the list immediately while reading-pane hydration and neighbor prefetch
   coalesce until navigation pauses, avoiding work for intermediate rows. The
