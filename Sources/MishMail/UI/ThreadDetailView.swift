@@ -79,6 +79,7 @@ struct ThreadDetailView: View {
     @State private var pinnedScrollOffsetY: CGFloat?
     @State private var scrollDisarmGate = InlineScrollDisarmGate()
     @State private var refreshTask: Task<Void, Never>?
+    @State private var detailLoadGeneration = 0
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -387,6 +388,8 @@ struct ThreadDetailView: View {
             }
         }
             .task(id: thread.id) {
+                detailLoadGeneration &+= 1
+                let loadGeneration = detailLoadGeneration
                 bodyLoadAttempted = []
                 loadRemoteImagesForThread = false
                 expandedMessageId = nil
@@ -397,32 +400,38 @@ struct ThreadDetailView: View {
                     return
                 }
                 let loaded = load.payload.messages
-                // The newest sent message and draft cards arrive hydrated in the
-                // cached payload; mark them attempted so we don't re-query.
-                if let sentId = ForwardComposer.newestSentMessage(in: loaded)?.id {
-                    bodyLoadAttempted.insert(sentId)
-                }
-                for draft in loaded where ForwardComposer.hasDraftLabel(draft.labelIds) {
-                    bodyLoadAttempted.insert(draft.id)
-                }
-                messages = loaded
-                attachmentsByMessageId = load.payload.attachmentsByMessageId
-                threadAttachments = loaded.flatMap { msg in
-                    (attachmentsByMessageId[msg.id] ?? []).map {
-                        (message: msg, attachment: $0)
+                if loadGeneration == detailLoadGeneration,
+                   splitMode || store.openedThreadId == thread.id {
+                    // The newest sent message and draft cards arrive hydrated in
+                    // the cached payload; mark them attempted so we don't re-query.
+                    if let sentId = ForwardComposer.newestSentMessage(in: loaded)?.id {
+                        bodyLoadAttempted.insert(sentId)
                     }
+                    for draft in loaded where ForwardComposer.hasDraftLabel(draft.labelIds) {
+                        bodyLoadAttempted.insert(draft.id)
+                    }
+                    messages = loaded
+                    attachmentsByMessageId = load.payload.attachmentsByMessageId
+                    threadAttachments = loaded.flatMap { msg in
+                        (attachmentsByMessageId[msg.id] ?? []).map {
+                            (message: msg, attachment: $0)
+                        }
+                    }
+                    // Anchor on newest sent when multi-message; draft-only falls
+                    // back to the last row so a pure-draft pane still positions.
+                    scrolledMessageId = messages.count > 1
+                        ? (ForwardComposer.newestSentMessage(in: messages)?.id
+                           ?? messages.last?.id)
+                        : nil
+                    if inlineComposeActive {
+                        beginInlineComposeScroll(proxy: proxy)
+                    }
+                    aiSummary = nil; summaryError = nil; summarizing = false
+                    readyInterval.end(
+                        extraMeta: "\(load.cacheHit ? "cache_hit" : "cache_miss") n=\(loaded.count)")
+                } else {
+                    readyInterval.end(extraMeta: "superseded")
                 }
-                // Anchor on newest sent when multi-message; draft-only falls back
-                // to the last row so a pure-draft pane still positions.
-                scrolledMessageId = messages.count > 1
-                    ? (ForwardComposer.newestSentMessage(in: messages)?.id ?? messages.last?.id)
-                    : nil
-                if inlineComposeActive {
-                    beginInlineComposeScroll(proxy: proxy)
-                }
-                aiSummary = nil; summaryError = nil; summarizing = false
-                readyInterval.end(
-                    extraMeta: "\(load.cacheHit ? "cache_hit" : "cache_miss") n=\(loaded.count)")
                 // Dwell before auto mark-read so j/k / scroll-select through the
                 // inbox does not clear every unread badge. Archive (`e`) marks
                 // read immediately in MailStore.archive; `.task(id:)` cancels
@@ -477,6 +486,7 @@ struct ThreadDetailView: View {
             }
             .onDisappear {
                 scrollDisarmGate.setWheelArmed(false)
+                detailLoadGeneration &+= 1
                 refreshTask?.cancel()
                 refreshTask = nil
             }
@@ -638,11 +648,15 @@ struct ThreadDetailView: View {
     /// already-hydrated bodies so open cards don't collapse back to
     /// "Loading…". No-op when nothing about the thread changed.
     private func refreshMessages() {
+        detailLoadGeneration &+= 1
+        let loadGeneration = detailLoadGeneration
         refreshTask?.cancel()
         refreshTask = Task {
             let load = await store.threadDetailPayload(
                 threadId: thread.id, forceReload: true)
-            guard !Task.isCancelled, store.openedThreadId == thread.id else { return }
+            guard !Task.isCancelled,
+                  loadGeneration == detailLoadGeneration,
+                  splitMode || store.openedThreadId == thread.id else { return }
             let merged = ThreadRefresh.merge(
                 current: messages, fresh: load.payload.messages)
             attachmentsByMessageId = load.payload.attachmentsByMessageId
@@ -689,7 +703,7 @@ struct ThreadDetailView: View {
         bodyLoadAttempted.insert(id)
         Task {
             guard let full = await store.messageBodyForReadingPane(id: id),
-                  store.openedThreadId == thread.id,
+                  splitMode || store.openedThreadId == thread.id,
                   let currentIdx = messages.firstIndex(where: { $0.id == id })
             else { return }
             messages[currentIdx] = full

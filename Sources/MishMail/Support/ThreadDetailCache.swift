@@ -69,6 +69,11 @@ struct ThreadDetailLoad {
     let cacheHit: Bool
 }
 
+struct ThreadDetailCacheEntry: Equatable {
+    var contentVersion: Int
+    var payload: ThreadDetailPayload
+}
+
 /// Off-main reading-pane repository with a bounded, real neighbor cache.
 ///
 /// The previous prefetch path decoded rows and discarded them. This actor
@@ -76,24 +81,29 @@ struct ThreadDetailLoad {
 /// ownership without putting SQLCipher reads on MainActor.
 actor ThreadDetailRepository {
     private let db: DatabasePool
-    private var cache = ThreadDetailLRU<ThreadDetailPayload>(capacity: 5)
+    private var cache = ThreadDetailLRU<ThreadDetailCacheEntry>(capacity: 5)
 
     init(db: DatabasePool) {
         self.db = db
     }
 
     func payload(threadId: String, suppressingDrafts suppressedIds: Set<String>,
+                 contentVersion: Int,
                  forceReload: Bool = false) -> ThreadDetailLoad {
-        if !forceReload, let cached = cache.value(for: threadId) {
+        if !forceReload,
+           let cached = cache.value(for: threadId),
+           cached.contentVersion == contentVersion {
             return ThreadDetailLoad(
-                payload: cached.suppressingDrafts(suppressedIds),
+                payload: cached.payload.suppressingDrafts(suppressedIds),
                 cacheHit: true)
         }
 
         let loaded = (try? db.read { db in
             try Self.fetchPayload(threadId: threadId, db: db)
         }) ?? ThreadDetailPayload(messages: [], attachmentsByMessageId: [:])
-        cache.insert(loaded, for: threadId)
+        cache.insert(
+            ThreadDetailCacheEntry(contentVersion: contentVersion, payload: loaded),
+            for: threadId)
         return ThreadDetailLoad(
             payload: loaded.suppressingDrafts(suppressedIds),
             cacheHit: false)
@@ -108,20 +118,12 @@ actor ThreadDetailRepository {
             }
             return message
         }) else { return nil }
-        if var payload = cache.value(for: loaded.threadId),
-           let idx = payload.messages.firstIndex(where: { $0.id == id }) {
-            payload.messages[idx] = loaded
-            cache.insert(payload, for: loaded.threadId)
+        if var entry = cache.value(for: loaded.threadId),
+           let idx = entry.payload.messages.firstIndex(where: { $0.id == id }) {
+            entry.payload.messages[idx] = loaded
+            cache.insert(entry, for: loaded.threadId)
         }
         return loaded
-    }
-
-    func invalidate(threadId: String) {
-        cache.removeValue(for: threadId)
-    }
-
-    func invalidateAll() {
-        cache.removeAll()
     }
 
     nonisolated static func fetchPayload(threadId: String,

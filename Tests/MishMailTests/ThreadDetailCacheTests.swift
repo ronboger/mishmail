@@ -1,4 +1,5 @@
 import XCTest
+import GRDB
 
 final class ThreadDetailCacheTests: XCTestCase {
     func testLRUEvictsLeastRecentlyUsed() {
@@ -38,6 +39,51 @@ final class ThreadDetailCacheTests: XCTestCase {
 
         XCTAssertEqual(visible.messages.map(\.id), ["sent"])
         XCTAssertEqual(Set(visible.attachmentsByMessageId.keys), ["sent"])
+    }
+
+    func testContentVersionMismatchReloadsPrefetchedThread() async throws {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("thread-detail-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        let path = directory.appendingPathComponent("mail.sqlite").path
+        let pool = try DatabasePool(path: path)
+        try AppDatabase.migrator.migrate(pool)
+        try await pool.write { db in
+            try Account(
+                id: "me@example.com", displayName: "Me", historyId: nil,
+                lastSyncAt: nil, senderName: "Me").insert(db)
+            _ = try SyncEngine.upsertPending(
+                db, items: [.init(message: self.fixtureMessage(
+                    id: "m1", labels: "INBOX"), attachments: [])])
+        }
+        let repository = ThreadDetailRepository(db: pool)
+
+        let prefetched = await repository.payload(
+            threadId: "thread", suppressingDrafts: [],
+            contentVersion: 1)
+        XCTAssertFalse(prefetched.cacheHit)
+        XCTAssertEqual(prefetched.payload.messages.map(\.id), ["m1"])
+
+        try await pool.write { db in
+            _ = try SyncEngine.upsertPending(
+                db, items: [.init(message: self.fixtureMessage(
+                    id: "m2", labels: "INBOX"), attachments: [])])
+        }
+        let sameVersion = await repository.payload(
+            threadId: "thread", suppressingDrafts: [],
+            contentVersion: 1)
+        XCTAssertTrue(sameVersion.cacheHit)
+        XCTAssertEqual(sameVersion.payload.messages.map(\.id), ["m1"])
+
+        let refreshed = await repository.payload(
+            threadId: "thread", suppressingDrafts: [],
+            contentVersion: 2)
+        XCTAssertFalse(refreshed.cacheHit)
+        XCTAssertEqual(
+            Set(refreshed.payload.messages.map(\.id)),
+            ["m1", "m2"])
     }
 
     private func fixtureMessage(id: String, labels: String) -> Message {

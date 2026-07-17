@@ -10,12 +10,23 @@ enum ThreadSelectionIntent: String, Equatable {
     case autoAdvance
     case explicitOpen
     case quiet
+    case restoreFocus
 
     var opensDetailImmediately: Bool {
         switch self {
         case .browse, .quiet: return false
-        case .click, .autoAdvance, .explicitOpen: return true
+        case .click, .autoAdvance, .explicitOpen, .restoreFocus: return true
         }
+    }
+
+    /// Only direct user gestures may reveal a pane the user deliberately hid.
+    var revealsReadingPane: Bool {
+        self == .click || self == .explicitOpen
+    }
+
+    /// Draft redirection is navigation, not a side effect of triage or Undo.
+    var redirectsDraftToCompose: Bool {
+        self == .click || self == .explicitOpen
     }
 }
 
@@ -23,6 +34,13 @@ enum ThreadSelectionIntent: String, Equatable {
 /// the row below the focus, or the one above when the focus was last
 /// (Gmail-style auto-advance after archive/trash).
 enum SelectionAdvance {
+    struct RemovalDestinations: Equatable {
+        var selectedId: String?
+        var openedId: String?
+        var selectedWasRemoved: Bool
+        var openedWasRemoved: Bool
+    }
+
     static func neighborId(in ids: [String], removing id: String) -> String? {
         // Missing id → nil (caller has nothing to advance from).
         guard ids.contains(id) else { return nil }
@@ -57,6 +75,25 @@ enum SelectionAdvance {
         }
         // focusIdx == -1 and every later id was removed, or list was all removed.
         return nil
+    }
+
+    /// Advance list focus and mounted detail independently. During keyboard
+    /// browsing they can intentionally differ, so removing one must not steal
+    /// or blank the other.
+    static func destinations(in ids: [String], removing removed: Set<String>,
+                             selected: String?, opened: String?)
+        -> RemovalDestinations {
+        let selectedWasRemoved = selected.map(removed.contains) ?? false
+        let openedWasRemoved = opened.map(removed.contains) ?? false
+        return RemovalDestinations(
+            selectedId: selectedWasRemoved
+                ? neighborId(in: ids, removing: removed, focus: selected)
+                : selected,
+            openedId: openedWasRemoved
+                ? neighborId(in: ids, removing: removed, focus: opened)
+                : opened,
+            selectedWasRemoved: selectedWasRemoved,
+            openedWasRemoved: openedWasRemoved)
     }
 
     /// Inclusive range of ids between two anchors in display order (either
@@ -118,5 +155,18 @@ enum ThreadListOptimistic {
             return (.remove, .onRemove)
         }
         return (.updateInPlace, .none)
+    }
+
+    /// Insertion position matching `ORDER BY sortDate DESC, id DESC`.
+    /// Used when Undo restores a row that was optimistically removed.
+    static func insertionIndex(for thread: MailThread, in rows: [MailThread],
+                               inboundSort: Bool) -> Int {
+        let key = ThreadListPaging.activityDate(of: thread, inboundSort: inboundSort)
+        return rows.firstIndex { existing in
+            let existingKey = ThreadListPaging.activityDate(
+                of: existing, inboundSort: inboundSort)
+            if existingKey != key { return existingKey < key }
+            return existing.id < thread.id
+        } ?? rows.endIndex
     }
 }

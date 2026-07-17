@@ -223,15 +223,7 @@ final class MailStore: ObservableObject {
         }
     }
     /// Lightweight list focus. Keyboard repeat updates this immediately.
-    @Published var selectedThreadId: String? {
-        didSet {
-            guard selectedThreadId != oldValue else { return }
-            if selectedThreadId == nil {
-                openedThreadId = nil
-                neighborPrefetchTask?.cancel()
-            }
-        }
-    }
+    @Published var selectedThreadId: String?
     /// Conversation whose content is mounted in the reading pane. This can
     /// intentionally lag list focus while keyboard browsing coalesces repeats.
     @Published private(set) var openedThreadId: String?
@@ -2379,9 +2371,11 @@ struct ComposeRequest: Identifiable {
     func threadDetailPayload(threadId: String,
                              forceReload: Bool = false) async -> ThreadDetailLoad {
         let suppressed = suppressedDraftMessageIds
+        let contentVersion = threadContentVersion
         return await threadDetailRepository.payload(
             threadId: threadId,
             suppressingDrafts: suppressed,
+            contentVersion: contentVersion,
             forceReload: forceReload)
     }
 
@@ -3106,17 +3100,21 @@ struct ComposeRequest: Identifiable {
         let interval = PerfMetrics.begin(
             .selectionFocus,
             meta: "intent=\(intent.rawValue)")
-        pendingSelectionIntent = intent
         if intent.opensDetailImmediately {
             openDetail(id)
         }
+        setSelectionFocus(id, intent: intent)
+        interval.end(extraMeta: id == nil ? "cleared" : "selected")
+    }
+
+    private func setSelectionFocus(_ id: String?, intent: ThreadSelectionIntent) {
         if selectedThreadId == id {
             // No SwiftUI onChange will consume this one-shot intent.
             pendingSelectionIntent = nil
         } else {
+            pendingSelectionIntent = intent
             selectedThreadId = id
         }
-        interval.end(extraMeta: id == nil ? "cleared" : "selected")
     }
 
     /// Direct List bindings / legacy call sites have click semantics.
@@ -3153,6 +3151,7 @@ struct ComposeRequest: Identifiable {
         let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
         let repository = threadDetailRepository
         let suppressed = suppressedDraftMessageIds
+        let contentVersion = threadContentVersion
         neighborPrefetchTask = Task {
             do {
                 try await Task.sleep(nanoseconds: 90_000_000)
@@ -3164,7 +3163,8 @@ struct ComposeRequest: Identifiable {
             for id in ids {
                 guard !Task.isCancelled else { return }
                 _ = await repository.payload(
-                    threadId: id, suppressingDrafts: suppressed)
+                    threadId: id, suppressingDrafts: suppressed,
+                    contentVersion: contentVersion)
             }
         }
     }
@@ -3185,6 +3185,7 @@ struct ComposeRequest: Identifiable {
                               autoAdvanceAction: String? = nil,
                               local: (inout MailThread) -> Void,
                               remote: @escaping (GmailClient, String) async throws -> Void) {
+        guard !isShuttingDown else { return }
         var copy = thread
         local(&copy)
         let updated = copy
@@ -3192,14 +3193,8 @@ struct ComposeRequest: Identifiable {
         // Auto-advance before removing the selected row. `openDetail` changes
         // synchronously for this intent, so there is never a frame where the
         // reading pane points at a row that no longer exists.
-        if let action = autoAdvanceAction,
-           (selectedThreadId == thread.id || openedThreadId == thread.id),
-           threadLeavesCurrentList(updated) {
-            let neighbor = SelectionAdvance.neighborId(
-                in: selectionOrder, removing: thread.id)
-            let interval = PerfMetrics.begin(.actionAdvance, meta: "action=\(action)")
-            selectThread(neighbor, intent: .autoAdvance)
-            interval.end(extraMeta: neighbor == nil ? "empty" : "neighbor")
+        if let action = autoAdvanceAction, threadLeavesCurrentList(updated) {
+            advanceForRemoval([thread.id], action: action)
         }
 
         // True optimistic ordering: publish the user-visible result before
@@ -3303,22 +3298,16 @@ struct ComposeRequest: Identifiable {
                                autoAdvanceAction: String? = nil,
                                local: (inout MailThread) -> Void,
                                remote: @escaping (GmailClient, String) async throws -> Void) {
-        guard !targets.isEmpty else { return }
-        if let action = autoAdvanceAction, let focus = selectedThreadId {
-            let order = selectionOrder
+        guard !isShuttingDown, !targets.isEmpty else { return }
+        if let action = autoAdvanceAction {
             let leaving = Set(targets.compactMap { thread -> String? in
                 var updated = thread
                 local(&updated)
                 return threadLeavesCurrentList(updated) ? thread.id : nil
             })
-            if leaving.contains(focus) {
-                let neighbor = SelectionAdvance.neighborId(
-                    in: order, removing: leaving, focus: focus)
-                let interval = PerfMetrics.begin(
-                    .actionAdvance, meta: "action=\(action) bulk=\(targets.count)")
-                selectThread(neighbor, intent: .autoAdvance)
-                interval.end(extraMeta: neighbor == nil ? "empty" : "neighbor")
-            }
+            advanceForRemoval(
+                leaving, action: action,
+                extraMeta: "bulk=\(targets.count)")
         }
         suppressThreadReload = true
         for thread in targets {
@@ -3341,7 +3330,7 @@ struct ComposeRequest: Identifiable {
 
     private func restoreSelectionFocus(_ id: String?) {
         guard let id else { return }
-        selectThread(id, intent: .explicitOpen)
+        selectThread(id, intent: .restoreFocus)
     }
 
     /// Apply a local mutation to the in-memory list without waiting for the
@@ -3353,8 +3342,19 @@ struct ComposeRequest: Identifiable {
     /// auto-advance (otherwise the row sticks until async reload, advance
     /// sees it still present, and selection ends up empty).
     private func applyOptimisticThreadUpdate(_ updated: MailThread) {
-        guard let idx = threads.firstIndex(where: { $0.id == updated.id }) else { return }
         let plan = ThreadListOptimistic.plan(leavesCurrentList: threadLeavesCurrentList(updated))
+        guard let idx = threads.firstIndex(where: { $0.id == updated.id }) else {
+            if plan.effect == .updateInPlace {
+                let hasSearch = !committedSearch
+                    .trimmingCharacters(in: .whitespaces).isEmpty
+                let inbound = !hasSearch && Self.usesInboundSort(for: selectedView)
+                let insertion = ThreadListOptimistic.insertionIndex(
+                    for: updated, in: threads, inboundSort: inbound)
+                threads.insert(updated, at: insertion)
+                listWindowLimit = max(listWindowLimit, threads.count)
+            }
+            return
+        }
         switch plan.effect {
         case .remove:
             threads.remove(at: idx)
@@ -3363,6 +3363,34 @@ struct ComposeRequest: Identifiable {
         case .updateInPlace:
             threads[idx] = updated
         }
+    }
+
+    /// Move list focus and mounted detail independently before their rows are
+    /// removed. Rapid browsing intentionally lets those ids differ.
+    private func advanceForRemoval(_ removing: Set<String>, action: String,
+                                   extraMeta: String = "") {
+        guard !removing.isEmpty else { return }
+        let destinations = SelectionAdvance.destinations(
+            in: selectionOrder,
+            removing: removing,
+            selected: selectedThreadId,
+            opened: openedThreadId)
+        guard destinations.selectedWasRemoved || destinations.openedWasRemoved
+        else { return }
+
+        let interval = PerfMetrics.begin(
+            .actionAdvance,
+            meta: ["action=\(action)", extraMeta]
+                .filter { !$0.isEmpty }.joined(separator: " "))
+        // Mount the replacement first so optimistic removal cannot expose the
+        // empty-state view, but leave unrelated mounted content untouched.
+        if destinations.openedWasRemoved {
+            openDetail(destinations.openedId)
+        }
+        if destinations.selectedWasRemoved {
+            setSelectionFocus(destinations.selectedId, intent: .autoAdvance)
+        }
+        interval.end(extraMeta: destinations.openedId == nil ? "empty" : "neighbor")
     }
 
     /// Best-effort visibility check for the common leave-list mutations.

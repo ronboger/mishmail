@@ -142,7 +142,7 @@ struct ContentView: View {
                     }
                 }
             } else {
-                openClickedThread(selectedId)
+                openClickedThread(selectedId, intent: intent)
             }
         }
         // A click on the row that is already selected (e.g. the pre-highlighted
@@ -895,15 +895,21 @@ struct ContentView: View {
 
     /// Open from a mouse click — immediately, no debounce. Also serves
     /// re-clicks on the already-selected row (openSelectedToken), where the
-    /// List selection binding never fires.
-    private func openClickedThread(_ selectedId: String) {
+    /// List selection binding never fires. Non-navigation intents
+    /// (auto-advance, restore-focus) swap the mounted detail but never
+    /// redirect drafts to compose or reveal a pane the user hid.
+    private func openClickedThread(_ selectedId: String,
+                                   intent: ThreadSelectionIntent = .click) {
         detailSelectionTask?.cancel()
         store.openDetail(selectedId)
-        if let thread = store.selectedThread, store.isDraftOnly(thread) {
+        if intent.redirectsDraftToCompose,
+           let thread = store.selectedThread,
+           store.isDraftOnly(thread) {
             store.editDraft(inThread: thread)
             store.clearSelection()
             return
         }
+        guard intent.revealsReadingPane else { return }
         if fullWindowThreads {
             store.threadFocusMode = true
         } else {
