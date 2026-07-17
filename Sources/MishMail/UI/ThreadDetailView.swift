@@ -24,6 +24,9 @@ struct ThreadDetailView: View {
     /// Message ids we already tried to hydrate — avoids re-querying forever
     /// for genuinely empty bodies (`needsBodyLoad` stays true).
     @State private var bodyLoadAttempted: Set<String> = []
+    /// Only one sent message owns a live body renderer at a time. This keeps
+    /// HTML-heavy threads from accumulating WKWebViews and helper processes.
+    @State private var expandedMessageId: String?
 
     var body: some View {
         ScrollView {
@@ -97,6 +100,7 @@ struct ThreadDetailView: View {
                     } else {
                         MessageCard(message: message,
                                     isLast: message.id == lastNonDraftId,
+                                    expandedMessageId: $expandedMessageId,
                                     loadImagesForThread: $loadRemoteImagesForThread,
                                     onReply: { onReply(message) },
                                     onNeedBody: { loadBodyIfNeeded(id: message.id) })
@@ -316,6 +320,7 @@ struct ThreadDetailView: View {
             // expanded sent message and any draft cards (preview needs body).
             bodyLoadAttempted = []
             loadRemoteImagesForThread = false
+            expandedMessageId = nil
             var loaded = store.messageHeaders(inThread: thread.id)
             // Expand the newest sent message; also pull bodies for draft cards
             // so the compact preview is ready without a second hop.
@@ -794,12 +799,12 @@ struct MessageCard: View {
         RemoteImagePolicy.ask.rawValue
     let message: Message
     let isLast: Bool
+    @Binding var expandedMessageId: String?
     /// Session-wide opt-in shared by every card in the open thread.
     @Binding var loadImagesForThread: Bool
     let onReply: () -> Void
     /// Parent loads the body when a collapsed header-only card expands.
     let onNeedBody: () -> Void
-    @State private var expanded: Bool
     // Full FROM/TO/CC rows (Notion Mail's "Show more"); compact by default.
     @State private var recipientsExpanded = false
     @State private var htmlHeight: CGFloat = 120
@@ -855,8 +860,8 @@ struct MessageCard: View {
         }
     }
 
-    private static let maximumTrailCacheCost = 8 * 1_024 * 1_024
-    private static let maximumTrailCacheEntries = 512
+    private static let maximumTrailCacheCost = 2 * 1_024 * 1_024
+    private static let maximumTrailCacheEntries = 128
     private static let trailCache: NSCache<NSString, TrailCacheEntry> = {
         let cache = NSCache<NSString, TrailCacheEntry>()
         cache.countLimit = maximumTrailCacheEntries
@@ -870,15 +875,16 @@ struct MessageCard: View {
     }
 
     init(message: Message, isLast: Bool,
+         expandedMessageId: Binding<String?>,
          loadImagesForThread: Binding<Bool> = .constant(false),
          onReply: @escaping () -> Void,
          onNeedBody: @escaping () -> Void = {}) {
         self.message = message
         self.isLast = isLast
+        self._expandedMessageId = expandedMessageId
         self._loadImagesForThread = loadImagesForThread
         self.onReply = onReply
         self.onNeedBody = onNeedBody
-        _expanded = State(initialValue: isLast)
         let hasBody = !ThreadDetailView.needsBodyLoad(message)
         if hasBody, let cached = Self.trailCache.object(forKey: message.id as NSString) {
             textHead = cached.textHead
@@ -937,15 +943,23 @@ struct MessageCard: View {
 
     private func toggleExpanded() {
         let willExpand = !expanded
-        withAnimation { expanded.toggle() }
+        withAnimation(.easeOut(duration: 0.12)) {
+            expandedMessageId = willExpand ? message.id : nil
+        }
         if willExpand { onNeedBody() }
     }
 
     private func expandCard() {
         if !expanded {
-            withAnimation { expanded = true }
+            withAnimation(.easeOut(duration: 0.12)) {
+                expandedMessageId = message.id
+            }
             onNeedBody()
         }
+    }
+
+    private var expanded: Bool {
+        expandedMessageId == message.id
     }
 
     private var remoteImagePolicy: RemoteImagePolicy {
@@ -973,22 +987,7 @@ struct MessageCard: View {
                         if recipientsExpanded {
                             recipientGrid
                         } else {
-                            participantMenu(message.fromHeader, nameSize: 14, nameWeight: .semibold)
-                            Button {
-                                withAnimation(.easeOut(duration: 0.12)) { recipientsExpanded = true }
-                            } label: {
-                                HStack(spacing: 4) {
-                                    Text(recipientSummary)
-                                        .font(.system(size: 12 * fontScale))
-                                        .foregroundStyle(.secondary)
-                                    Image(systemName: "chevron.up.chevron.down")
-                                        .font(.system(size: 7 * fontScale, weight: .semibold))
-                                        .foregroundStyle(.tertiary)
-                                }
-                                .contentShape(Rectangle())
-                            }
-                            .buttonStyle(.plain)
-                            .help("Show all senders and recipients")
+                            compactRecipientGrid
                         }
                     } else {
                         Text(MessageParser.displayName(fromHeader: message.fromHeader))
@@ -1289,7 +1288,12 @@ struct MessageCard: View {
         }
         .onAppear {
             // Last card starts expanded; ask parent to hydrate if still headers-only.
-            if expanded { onNeedBody() }
+            if isLast, expandedMessageId == nil {
+                expandedMessageId = message.id
+                onNeedBody()
+            } else if expanded {
+                onNeedBody()
+            }
         }
     }
 
@@ -1321,7 +1325,7 @@ struct MessageCard: View {
         .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
     }
 
-    /// Compact recipient line: "To me", "To Van Ju +3" (extras include Cc).
+    /// Compact recipient value: "me", "Van Ju +3" (extras include Cc).
     private var recipientSummary: String {
         let own = Set(store.accounts.map { $0.id.lowercased() })
         let recipients = MessageParser.splitAddresses(message.toHeader)
@@ -1329,11 +1333,59 @@ struct MessageCard: View {
             .filter { !$0.isEmpty }
         let ccCount = MessageParser.splitAddresses(message.ccHeader)
             .filter { $0.contains("@") }.count
-        guard let first = recipients.first else { return "To —" }
+        guard let first = recipients.first else { return "—" }
         let firstName = own.contains(MessageParser.emailAddress(first).lowercased())
             ? "me" : MessageParser.displayName(fromHeader: first)
         let extra = recipients.count - 1 + ccCount
-        return extra > 0 ? "To \(firstName) +\(extra)" : "To \(firstName)"
+        return extra > 0 ? "\(firstName) +\(extra)" : firstName
+    }
+
+    /// The compact and expanded headers share the same fixed role column.
+    /// This keeps bare email addresses and the disclosure chevron optically
+    /// aligned instead of centering the glyph against a wrapped text block.
+    private var compactRecipientGrid: some View {
+        Grid(alignment: .leadingFirstTextBaseline,
+             horizontalSpacing: 12,
+             verticalSpacing: 3) {
+            GridRow {
+                recipientRole("FROM")
+                participantMenu(
+                    message.fromHeader,
+                    nameSize: 14,
+                    nameWeight: .semibold)
+            }
+            GridRow {
+                recipientRole("TO")
+                Button {
+                    recipientsExpanded = true
+                } label: {
+                    HStack(spacing: 6) {
+                        Text(recipientSummary)
+                            .font(.system(size: 12.5 * fontScale))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Image(systemName: "chevron.down")
+                            .font(.system(size: 8 * fontScale,
+                                          weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .frame(width: 12, height: 12,
+                                   alignment: .center)
+                    }
+                    .frame(minWidth: 40, minHeight: 40, alignment: .leading)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Show all senders and recipients")
+            }
+        }
+    }
+
+    private func recipientRole(_ role: String) -> some View {
+        Text(role)
+            .font(.system(size: 10 * fontScale, weight: .medium))
+            .foregroundStyle(.tertiary)
+            .gridColumnAlignment(.leading)
     }
 
     /// Full participant details, Notion Mail-style: FROM / TO / CC rows with
@@ -1431,11 +1483,13 @@ struct MessageCard: View {
                     .font(.system(size: nameSize * fontScale, weight: nameWeight))
                     .foregroundStyle(.primary)
                     .lineLimit(1)
+                    .truncationMode(.middle)
                 if name.lowercased() != email.lowercased() {
                     Text(email)
                         .font(.system(size: (nameSize - 1.5) * fontScale))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
+                        .truncationMode(.middle)
                 }
             }
             .contentShape(Rectangle())
@@ -1608,11 +1662,12 @@ struct HTMLBodyView: NSViewRepresentable {
         // head styles and receive CSP/CSS via head injection.
         let document = HTMLBodyDocument.assemble(
             html: html, cspMeta: csp, styleCSS: css)
-        let trustedFallback = HTMLBodyDocument.trustedWrapper(
-            html: html, cspMeta: csp, styleCSS: css)
         context.coordinator.load(
             document: document,
-            trustedFallback: trustedFallback,
+            trustedFallback: {
+                HTMLBodyDocument.trustedWrapper(
+                    html: html, cspMeta: csp, styleCSS: css)
+            },
             allowRemoteImages: allowRemoteImages,
             in: webView)
     }
@@ -1657,7 +1712,7 @@ struct HTMLBodyView: NSViewRepresentable {
         /// Apply/remove the network-level remote-image rule before navigating.
         /// A generation token prevents a late compile callback from mutating a
         /// recycled view or superseding a newer Load-images request.
-        func load(document: String, trustedFallback: String,
+        func load(document: String, trustedFallback: @escaping () -> String,
                   allowRemoteImages: Bool, in webView: WKWebView) {
             let token = UUID()
             loadToken = token
@@ -1679,7 +1734,7 @@ struct HTMLBodyView: NSViewRepresentable {
                 } else {
                     // Compilation is expected to be infallible for the static
                     // rule, but privacy fails closed if WebKit rejects it.
-                    self.startNavigation(webView, document: trustedFallback)
+                    self.startNavigation(webView, document: trustedFallback())
                 }
             }
         }

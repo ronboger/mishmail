@@ -39,10 +39,24 @@ enum ComposePlacement {
         return composeThread == threadId
     }
 
-    /// Expanded inline compose card height (matches ContentView chrome).
+    /// Fall back to floating when the measured pane cannot show both the
+    /// conversation and a usable inline composer.
+    static func resolvedPresentation(_ preferred: ComposePresentation,
+                                     paneHeight: CGFloat) -> ComposePresentation {
+        guard preferred == .inline, paneHeight > 1 else { return preferred }
+        return effectiveInlineCardHeight(paneHeight: paneHeight) > 0
+            ? preferred
+            : .floating
+    }
+
+    /// Preferred expanded inline compose card height (matches ContentView chrome).
     /// Tall enough for From/To/Subject + a usable body while the quote "…"
     /// pill and footer stay on-screen; reading-pane reserve tracks this.
     static let inlineCardHeight: CGFloat = 460
+    /// Smallest comfortable composer, retained as a UX calibration constant.
+    static let minComfortableInlineCardHeight: CGFloat = 320
+    /// Conversation strip kept visible above a resized inline composer.
+    static let minThreadVisibleHeight: CGFloat = 120
     /// Vertical padding under the inline card inside the host overlay.
     static let inlineBottomPadding: CGFloat = 12
     /// Horizontal inset from the reading-pane edges.
@@ -51,6 +65,27 @@ enum ComposePlacement {
     /// covered by the overlay card (`card + bottom padding`).
     static var inlineReservedHeight: CGFloat {
         inlineCardHeight + inlineBottomPadding
+    }
+
+    /// Resize continuously with the pane instead of jumping between fixed
+    /// height modes. A very short pane returns zero so the caller can float.
+    static func effectiveInlineCardHeight(paneHeight: CGFloat) -> CGFloat {
+        guard paneHeight > 1 else { return inlineCardHeight }
+        let available = max(0, paneHeight - inlineBottomPadding)
+        if available >= inlineCardHeight + minThreadVisibleHeight {
+            return inlineCardHeight
+        }
+        guard available >= minThreadVisibleHeight else { return 0 }
+        return available - minThreadVisibleHeight
+    }
+
+    /// Safe-area reserve matching the actual card. It remains zero until the
+    /// pane is measured, avoiding a large first-frame inset that later snaps.
+    static func inlineReservedHeight(paneHeight: CGFloat) -> CGFloat {
+        guard paneHeight > 1 else { return 0 }
+        let cardHeight = effectiveInlineCardHeight(paneHeight: paneHeight)
+        guard cardHeight > 0 else { return 0 }
+        return min(cardHeight + inlineBottomPadding, paneHeight)
     }
 
     /// Layout for pinning the inline card to the measured reading pane.

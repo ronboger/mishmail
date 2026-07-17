@@ -104,6 +104,7 @@ enum GmailError: LocalizedError {
     case http(Int, String)
     case historyExpired
     case noRefreshToken(String)
+    case keychainUnavailable(String, OSStatus)
     /// Some message gets failed after retries (429/5xx/network). Caller must
     /// **not** advance historyId past this sync — replaying history is safe.
     case partialFetch(failedCount: Int)
@@ -113,6 +114,8 @@ enum GmailError: LocalizedError {
         case .http(let code, let body): return "Gmail API error \(code): \(body.prefix(300))"
         case .historyExpired: return "Sync history expired; a full resync is needed."
         case .noRefreshToken(let email): return "No saved sign-in for \(email). Reauthorize the account in Settings → Accounts."
+        case .keychainUnavailable(let email, let status):
+            return "MishMail couldn't read the saved sign-in for \(email) (Keychain error \(status)). Unlock your Mac and try syncing again."
         case .partialFetch(let n):
             return "Sync incomplete (\(n) messages still pending); will retry next pass."
         }
@@ -137,7 +140,7 @@ enum MessageFetchFailureKind: Equatable {
                 if code == 404 { return .notFound }
                 if code == 429 || (500...599).contains(code) { return .retryable }
                 return .fatal
-            case .historyExpired, .noRefreshToken, .partialFetch:
+            case .historyExpired, .noRefreshToken, .keychainUnavailable, .partialFetch:
                 return .fatal
             }
         }
@@ -174,8 +177,14 @@ actor GmailClient {
 
     private func validToken() async throws -> String {
         if let t = accessToken, tokenExpiry > Date().addingTimeInterval(60) { return t }
-        guard let refresh = Keychain.get("refreshToken.\(accountEmail)") else {
+        let refresh: String
+        switch Keychain.read("refreshToken.\(accountEmail)") {
+        case .value(let value):
+            refresh = value
+        case .notFound:
             throw GmailError.noRefreshToken(accountEmail)
+        case .unavailable(let status):
+            throw GmailError.keychainUnavailable(accountEmail, status)
         }
         let (token, expiresIn) = try await OAuthService.refreshAccessToken(refreshToken: refresh)
         accessToken = token

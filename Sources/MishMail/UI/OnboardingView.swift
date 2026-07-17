@@ -33,7 +33,7 @@ struct OnboardingView: View {
                 }
 
                 step(2, "Configure the consent screen") {
-                    Text("User type **External**; add your own Google address under **Test users**. Leave it in **Testing** mode — no Google verification needed. During sign-in you'll see a \u{201C}Google hasn't verified this app\u{201D} screen; that's expected — click **Advanced → Continue**.")
+                    Text("User type **External**; add your own Google address under **Test users**. Testing-mode Gmail sign-ins expire after 7 days, so switch the consent screen to **In production** for daily use when your Google account or Workspace policy permits it. During sign-in you'll see a \u{201C}Google hasn't verified this app\u{201D} screen; that's expected — click **Advanced → Continue**.")
                         .font(PMFont.secondary()).foregroundStyle(.secondary)
                     linkButton("Open consent screen", "https://console.cloud.google.com/apis/credentials/consent")
                 }

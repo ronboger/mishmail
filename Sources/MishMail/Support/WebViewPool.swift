@@ -40,7 +40,9 @@ final class PassthroughWebView: WKWebView {
 /// (JS off) so remote-image cookies/cache do not bleed across messages;
 /// a recycled view reuses its instance store after DOM clear.
 enum HTMLWebViewPool {
-    static let capacity = 3
+    // A single warm spare avoids repeated construction while bounding idle
+    // WebKit DOM/process memory after moving between HTML-heavy threads.
+    static let capacity = 1
 
     private static let lock = NSLock()
     private static var pool: [PassthroughWebView] = []
@@ -99,5 +101,17 @@ enum HTMLWebViewPool {
         defer { lock.unlock() }
         guard pool.count < capacity else { return }
         pool.append(view)
+    }
+
+    /// Release the warm spare under memory pressure or when a caller wants to
+    /// return WebKit memory to the system. Active message views are untouched.
+    static func drain() {
+        lock.lock()
+        let drained = pool
+        pool.removeAll()
+        lock.unlock()
+        // Keep deallocation outside the pool lock; WebKit teardown can do
+        // substantial work even though these views already have empty DOMs.
+        withExtendedLifetime(drained) {}
     }
 }

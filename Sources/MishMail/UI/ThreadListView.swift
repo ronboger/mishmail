@@ -53,9 +53,12 @@ struct ThreadListView: View {
     /// Rebuild Priority + group sections and keyboard `displayOrder`.
     private func recomputeLayout() {
         PerfMetrics.measure(.listGroup, meta: "n=\(store.threads.count)") {
+            let visibleThreads = store.selectedView == .drafts
+                ? store.threads.filter { !store.suppressedDraftThreadIds.contains($0.id) }
+                : store.threads
             let mode = PrioritySplit.Mode(rawValue: priorityModeRaw) ?? .starred
             let (priority, rest) = PrioritySplit.partition(
-                store.threads,
+                visibleThreads,
                 mode: store.selectedView == .inbox ? mode : .off,
                 vipThreadIds: store.vipThreadIds,
                 vipAlwaysPins: vipAlwaysPins)
@@ -307,6 +310,7 @@ struct ThreadListView: View {
             // go stale (aiCategory grouping, Labels view after rename/reorder).
             .onChange(of: store.aiCategories) { recomputeLayout() }
             .onChange(of: store.labelsByAccount) { recomputeLayout() }
+            .onChange(of: store.suppressedDraftThreadIds) { recomputeLayout() }
         }
         .background(Color.notionContent)
         .navigationTitle(store.selectedView.title)

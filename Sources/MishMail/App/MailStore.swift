@@ -225,10 +225,15 @@ final class MailStore: ObservableObject {
     @Published var selectedThreadId: String? {
         didSet {
             if selectedThreadId != oldValue {
-                prefetchNeighborThreads()
+                scheduleNeighborPrefetch()
             }
         }
     }
+    /// Gmail drafts retained remotely during Undo Send but hidden locally so
+    /// the thread never shows both "Draft" and "Sending…".
+    @Published private(set) var suppressedDraftMessageIds: Set<String> = []
+    @Published private(set) var suppressedDraftThreadIds: Set<String> = []
+    private var suppressedDraftThreadByMessageId: [String: String] = [:]
     /// Multi-select checkboxes (Gmail `x` / Notion-style toggle). Bulk
     /// archive/trash/star/read act on this set when non-empty; the focused
     /// `selectedThreadId` still drives the reading pane.
@@ -1037,6 +1042,18 @@ final class MailStore: ObservableObject {
             && req.boundThreadId != nil
             && req.boundThreadId == selectedThreadId
         guard !stillHere else { return }
+        req.presentation = .floating
+        composeRequest = req
+    }
+
+    /// Keep the editor alive but move it to a floating card if the pane is too
+    /// short to render a useful inline reply.
+    func demoteInlineComposeIfPaneTooShort(paneHeight: CGFloat) {
+        guard var req = composeRequest,
+              req.presentation == .inline,
+              ComposePlacement.resolvedPresentation(
+                .inline, paneHeight: paneHeight
+              ) == .floating else { return }
         req.presentation = .floating
         composeRequest = req
     }
@@ -2292,20 +2309,22 @@ final class MailStore: ObservableObject {
 
     /// Full messages including bodies — used by compose / reply / forward.
     func messages(inThread threadId: String) -> [Message] {
-        (try? db.read { db in
+        let fetched: [Message] = (try? db.read { db in
             let headers = try Message
                 .filter(Column("threadId") == threadId)
                 .order(Column("date"))
                 .fetchAll(db)
             return try Self.hydrateBodies(headers, db: db)
         }) ?? []
+        return PendingDraftVisibility.visibleMessages(
+            fetched, suppressing: suppressedDraftMessageIds)
     }
 
     /// Headers + snippet only (empty body fields). Cheap open path for the
     /// reading pane; hydrate bodies with `messageBody(id:)` on expand.
     func messageHeaders(inThread threadId: String) -> [Message] {
         PerfMetrics.measure(.openHeaders) {
-            (try? db.read { db in
+            let fetched = (try? db.read { db in
                 try Message.fetchAll(
                     db,
                     sql: """
@@ -2320,6 +2339,8 @@ final class MailStore: ObservableObject {
                     arguments: [threadId]
                 )
             }) ?? []
+            return PendingDraftVisibility.visibleMessages(
+                fetched, suppressing: suppressedDraftMessageIds)
         }
     }
 
@@ -2991,20 +3012,23 @@ final class MailStore: ObservableObject {
         selectedThreadId = order[next]
     }
 
-    /// Warm headers + last message body for prev/next in `displayOrder`
-    /// (Phase 2). Cap concurrency at 1; cancel when selection changes.
-    /// Detached so arrow-key selection does not hop the MainActor between
-    /// reads; still stored on `neighborPrefetchTask` so termination can
-    /// cancel and await it like any other tracked DB task.
-    private func prefetchNeighborThreads() {
+    /// Warm headers + last message body only after selection settles. Holding
+    /// an arrow key should update the list at native key-repeat speed without
+    /// starting/cancelling a database read for every intermediate row.
+    private func scheduleNeighborPrefetch() {
         guard !isShuttingDown else { return }
         neighborPrefetchTask?.cancel()
         let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
-        let (prev, next) = NeighborPrefetch.neighbors(selected: selectedThreadId, in: order)
-        let ids = [prev, next].compactMap { $0 }
-        guard !ids.isEmpty else { return }
+        let selected = selectedThreadId
         let pool = db
         neighborPrefetchTask = Task.detached {
+            do {
+                try await Task.sleep(nanoseconds: 90_000_000)
+            } catch {
+                return
+            }
+            let (prev, next) = NeighborPrefetch.neighbors(selected: selected, in: order)
+            let ids = [prev, next].compactMap { $0 }
             for id in ids {
                 guard !Task.isCancelled else { return }
                 _ = try? await pool.read { db in
@@ -3566,6 +3590,7 @@ final class MailStore: ObservableObject {
             Task { await self.performSend(previous) }
         }
         pendingSend = pending
+        setPendingDraftSuppressed(pending.replacingDraft, suppressed: true)
         undoTimer?.invalidate()
         undoAction = UndoAction(label: "Sending…") { [weak self] in self?.cancelPendingSend() }
         pendingSendTimer = Timer.scheduledTimer(withTimeInterval: Self.undoSendWindow,
@@ -3578,6 +3603,7 @@ final class MailStore: ObservableObject {
     func cancelPendingSend() {
         guard let p = takePendingSend() else { return }
         undoAction = nil
+        setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
         composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
                                         forwardAll: p.forwardAll,
                                         editDraft: p.replacingDraft, restore: p)
@@ -3604,14 +3630,39 @@ final class MailStore: ObservableObject {
                            subject: p.subject, body: p.body, replyTo: p.replyTo,
                            forward: p.forward,
                            attachments: p.attachments, replacingDraft: p.replacingDraft)
+            setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
             showNotice("Sent")
         } catch {
             // Bring the message back so nothing is lost.
+            setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
             lastError = "Send failed: \(error.localizedDescription)"
             composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
                                             forwardAll: p.forwardAll,
                                             editDraft: p.replacingDraft, restore: p)
         }
+    }
+
+    /// Update the local visibility before compose opens/closes. The underlying
+    /// Gmail draft remains untouched until `send` commits after the Undo window.
+    private func setPendingDraftSuppressed(_ draft: Message?, suppressed: Bool) {
+        guard let draft else { return }
+        let changed: Bool
+        if suppressed {
+            let messageChanged = suppressedDraftMessageIds.insert(draft.id).inserted
+            let threadChanged = suppressedDraftThreadIds.insert(draft.threadId).inserted
+            suppressedDraftThreadByMessageId[draft.id] = draft.threadId
+            changed = messageChanged || threadChanged
+        } else {
+            let messageChanged = suppressedDraftMessageIds.remove(draft.id) != nil
+            suppressedDraftThreadByMessageId.removeValue(forKey: draft.id)
+            let stillSuppressedInThread =
+                suppressedDraftThreadByMessageId.values.contains(draft.threadId)
+            let threadChanged = stillSuppressedInThread
+                ? false
+                : suppressedDraftThreadIds.remove(draft.threadId) != nil
+            changed = messageChanged || threadChanged
+        }
+        if changed { threadContentVersion &+= 1 }
     }
 
     // MARK: - Scheduled sends (send later)

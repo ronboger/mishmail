@@ -29,6 +29,10 @@ struct ContentView: View {
     /// Measured frames for PreferenceKey-aligned inline compose.
     @State private var readingPaneFrame: CGRect = .zero
     @State private var composeHostFrame: CGRect = .zero
+    /// List focus stays synchronous; the expensive reading pane follows after
+    /// key repeat settles (clicks/Enter still open immediately).
+    @State private var openedThreadId: String?
+    @State private var detailSelectionTask: Task<Void, Never>?
 
     var body: some View {
         GeometryReader { proxy in
@@ -48,7 +52,10 @@ struct ContentView: View {
                     }
                 )
         }
-        .onPreferenceChange(ReadingPaneFrameKey.self) { readingPaneFrame = $0 }
+        .onPreferenceChange(ReadingPaneFrameKey.self) { frame in
+            readingPaneFrame = frame
+            store.demoteInlineComposeIfPaneTooShort(paneHeight: frame.height)
+        }
         .onPreferenceChange(ComposeHostFrameKey.self) { composeHostFrame = $0 }
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         // Typing only feeds the dropdown preview; the list follows
@@ -63,6 +70,7 @@ struct ContentView: View {
         // Clicking a pure draft skips the pane entirely and hops straight
         // into compose at the bottom (Notion Mail-style).
         .onChange(of: store.selectedThreadId) {
+            let keyboardSelection = store.selectionViaKeyboard
             defer { store.selectionViaKeyboard = false }
             // Leaving a thread (or clearing selection) promotes inline compose
             // to the floating card so the draft stays editable.
@@ -70,9 +78,21 @@ struct ContentView: View {
                 selectedThreadId: store.selectedThreadId,
                 readingPaneHidden: readingPaneHidden)
             // Focus mode requires a conversation; drop it when selection clears.
-            if store.selectedThreadId == nil { store.threadFocusMode = false }
-            guard store.selectedThreadId != nil else { return }
-            if !store.selectionViaKeyboard {
+            if store.selectedThreadId == nil {
+                store.threadFocusMode = false
+                openedThreadId = nil
+                detailSelectionTask?.cancel()
+            }
+            guard let selectedId = store.selectedThreadId else { return }
+            if keyboardSelection {
+                // Hidden-pane browsing is highlight-only. When a preview is
+                // already visible, coalesce repeats and show the final row.
+                if !readingPaneHidden, openedThreadId != nil {
+                    scheduleDetailSelection(selectedId)
+                }
+            } else {
+                detailSelectionTask?.cancel()
+                openedThreadId = selectedId
                 if let thread = store.selectedThread, store.isDraftOnly(thread) {
                     store.editDraft(inThread: thread)
                     store.selectedThreadId = nil
@@ -87,9 +107,14 @@ struct ContentView: View {
                 selectedThreadId: store.selectedThreadId,
                 readingPaneHidden: readingPaneHidden)
             if readingPaneHidden { store.threadFocusMode = false }
+            else if let selected = store.selectedThreadId {
+                detailSelectionTask?.cancel()
+                openedThreadId = selected
+            }
         }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
+            openedThreadId = nil
             store.clearCheckedThreads()
             store.resetChips()
             // Sidebar click (or any selectedView write) should land on the
@@ -104,6 +129,7 @@ struct ContentView: View {
         .onChange(of: store.chips) { store.reloadThreadsDebounced() }
         .onAppear {
             store.readingPaneHiddenForCompose = readingPaneHidden
+            openedThreadId = store.selectedThreadId
             installKeyMonitor()
             // Don't let the sidebar search field start with keyboard focus —
             // it would swallow Esc/j/k until clicked away.
@@ -112,6 +138,8 @@ struct ContentView: View {
         .onDisappear {
             if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
             keyMonitor = nil
+            detailSelectionTask?.cancel()
+            detailSelectionTask = nil
         }
         .toolbar {
             ToolbarItemGroup {
@@ -147,16 +175,19 @@ struct ContentView: View {
         // flips keep editor state. Floating = bottom-trailing card; inline =
         // bottom of the reading-pane column (leading inset skips sidebar/list).
         .overlay(alignment: .bottomTrailing) {
-            if let request = store.composeRequest {
-                composeChrome(request)
-                    .transition(.move(edge: .bottom).combined(with: .opacity))
+            Group {
+                if let request = store.composeRequest {
+                    composeChrome(request)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                }
             }
+            .animation(.spring(response: 0.3, dampingFraction: 0.8),
+                       value: store.composeRequest?.id)
+            .animation(.spring(response: 0.28, dampingFraction: 0.85),
+                       value: store.composeMinimized)
+            .animation(.spring(response: 0.3, dampingFraction: 0.85),
+                       value: store.composeRequest?.presentation)
         }
-        // A touch of spring makes the draft→compose hop (and minimize) legible.
-        .animation(.spring(response: 0.3, dampingFraction: 0.8), value: store.composeRequest?.id)
-        .animation(.spring(response: 0.28, dampingFraction: 0.85), value: store.composeMinimized)
-        .animation(.spring(response: 0.3, dampingFraction: 0.85),
-                   value: store.composeRequest?.presentation)
         .animation(.easeOut(duration: 0.2), value: store.threadFocusMode)
         // Undo/notice toast: centered on the bottom of the whole window.
         .overlay(alignment: .bottom) {
@@ -325,15 +356,19 @@ struct ContentView: View {
     @ViewBuilder
     private func composeChrome(_ request: MailStore.ComposeRequest) -> some View {
         let minimized = store.composeMinimized
-        let inline = request.presentation == .inline && !minimized
+        let presentation = ComposePlacement.resolvedPresentation(
+            request.presentation, paneHeight: readingPaneFrame.height)
+        let inline = presentation == .inline && !minimized
         let measured = ComposePlacement.inlineMetrics(
             host: composeHostFrame, pane: readingPaneFrame)
         let inlineLeading = measured?.leading
             ?? ComposePlacement.fallbackLeadingInset(layoutMode: layoutMode)
         let inlineWidth = measured?.width
         let cardWidth: CGFloat = minimized ? 300 : (inline ? (inlineWidth ?? 620) : 620)
+        let inlineHeight = ComposePlacement.effectiveInlineCardHeight(
+            paneHeight: readingPaneFrame.height)
         let cardHeight: CGFloat = minimized ? 40
-            : (inline ? ComposePlacement.inlineCardHeight : 500)
+            : (inline ? inlineHeight : 500)
         HStack(spacing: 0) {
             if inline {
                 Spacer()
@@ -360,10 +395,19 @@ struct ContentView: View {
     /// detail pane reserves bottom safe area so the scroll doesn't hide under it.
     private var reservesInlineComposeSpace: Bool {
         guard let req = store.composeRequest,
-              req.presentation == .inline,
               !store.composeMinimized,
               let selected = store.selectedThreadId else { return false }
         return req.boundThreadId == selected
+            && ComposePlacement.resolvedPresentation(
+                req.presentation,
+                paneHeight: readingPaneFrame.height
+            ) == .inline
+    }
+
+    private var inlineComposeReserveHeight: CGFloat {
+        guard reservesInlineComposeSpace else { return 0 }
+        return ComposePlacement.inlineReservedHeight(
+            paneHeight: readingPaneFrame.height)
     }
 
     @ViewBuilder
@@ -378,7 +422,7 @@ struct ContentView: View {
     @ViewBuilder
     private func detailPane(compact: Bool) -> some View {
         Group {
-            if let id = store.selectedThreadId,
+            if let id = openedThreadId,
                let thread = store.threads.first(where: { $0.id == id }) {
                 ThreadDetailView(
                     thread: thread,
@@ -389,6 +433,7 @@ struct ContentView: View {
                             store.threadFocusMode = false
                         } else {
                             store.selectedThreadId = nil
+                            openedThreadId = nil
                         }
                     },
                     onReply: { msg in
@@ -412,12 +457,11 @@ struct ContentView: View {
         )
         // Keep the last messages above the overlay card.
         .safeAreaInset(edge: .bottom, spacing: 0) {
-            if reservesInlineComposeSpace {
-                Color.clear
-                    .frame(height: ComposePlacement.inlineReservedHeight)
-                    .accessibilityHidden(true)
-            }
+            Color.clear
+                .frame(height: inlineComposeReserveHeight)
+                .accessibilityHidden(true)
         }
+        .animation(nil, value: inlineComposeReserveHeight)
     }
 
     /// Gmail-style single-key shortcuts plus Cmd-K. Ignores events when a
@@ -665,6 +709,8 @@ struct ContentView: View {
                         store.editDraft(inThread: thread)
                         store.selectedThreadId = nil
                     } else {
+                        detailSelectionTask?.cancel()
+                        openedThreadId = thread.id
                         readingPaneHidden = false
                     }
                 }
@@ -687,6 +733,21 @@ struct ContentView: View {
                 return nil
             }
             return event
+        }
+    }
+
+    /// Debounce only the detail pane. The List binding and focus publication
+    /// remain synchronous for every repeated keyDown, matching Finder feel.
+    private func scheduleDetailSelection(_ id: String) {
+        detailSelectionTask?.cancel()
+        detailSelectionTask = Task { @MainActor in
+            do {
+                try await Task.sleep(nanoseconds: 75_000_000)
+            } catch {
+                return
+            }
+            guard store.selectedThreadId == id else { return }
+            openedThreadId = id
         }
     }
 }

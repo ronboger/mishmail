@@ -72,9 +72,14 @@ for the reasoning.)
    - Under **Audience / Test users**, add every Google account you want to
      connect. (Testing mode allows up to **100** test users — plenty for
      personal use.)
-   - Leave it in **Testing** mode (no Google verification needed; refresh tokens
-     for desktop clients don't expire in testing for Gmail scopes — if one ever
-     does, just re-sign-in).
+   - **Testing is only for the initial setup.** Google expires refresh tokens
+     after **7 days** for External apps in Testing when Gmail scopes are
+     requested. Accounts connected together will therefore ask to reauthorize
+     together a week later.
+   - For normal daily use, switch **Publishing status → In production** when
+     your Google account or Workspace policy permits it. A personal unverified
+     app may still show the expected “Google hasn't verified this app” warning;
+     if you keep the project in Testing, plan to reauthorize weekly.
 4. **APIs & Services → Credentials → Create Credentials → OAuth client ID**:
    - Application type: **Desktop app**.
    - Copy the **Client ID** and **Client Secret** (or download the

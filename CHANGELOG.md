@@ -6,7 +6,30 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Changed
+- **Faster keyboard browsing** — repeated Up/Down and j/k selection updates
+  the list immediately while reading-pane hydration and neighbor prefetch
+  coalesce until navigation pauses, avoiding work for intermediate rows.
+- **Lower HTML-mail idle memory** — MishMail retains one warm WebView instead
+  of three, keeps only one sent message body expanded at a time, uses a smaller
+  quote-analysis cache, builds the CSP fallback only when needed, and releases
+  idle WebViews under macOS memory pressure.
+- **Aligned participant headers** — compact and expanded message details use
+  the same FROM/TO grid; bare addresses truncate in the middle and the
+  disclosure chevron has a fixed optical frame.
+
 ### Fixed
+- **Inline reply no longer springs the thread viewport upward** — composer
+  motion is scoped to the card, the reading-pane inset changes without
+  animation, and short panes continuously resize the card or fall back to a
+  floating composer.
+- **Draft cards disappear during Undo Send** — the Gmail draft remains safely
+  available for Undo, but its thread card, banner, and Drafts-list row are
+  suppressed until Undo, failure, or successful send resolves.
+- **Keychain access failures no longer masquerade as missing authorization** —
+  locked or temporarily unavailable Keychain items remain retryable instead
+  of marking the account for reauthorization. OAuth setup guidance now
+  correctly explains Google Testing-mode's seven-day token lifetime.
 - **HTML mail no longer collapses when remote images are blocked** — blocked
   or failed `<img>` tags keep capped authored width/height (max 1200×2000) so
   table-based transactional layouts (e.g. 2FA) keep vertical structure under

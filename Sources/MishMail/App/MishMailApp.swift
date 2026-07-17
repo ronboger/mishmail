@@ -7,6 +7,18 @@ import SwiftUI
 @MainActor
 final class AppDelegate: NSObject, NSApplicationDelegate {
     static weak var store: MailStore?
+    private var memoryPressureSource: DispatchSourceMemoryPressure?
+
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        let source = DispatchSource.makeMemoryPressureSource(
+            eventMask: [.warning, .critical],
+            queue: .main)
+        source.setEventHandler {
+            HTMLWebViewPool.drain()
+        }
+        source.resume()
+        memoryPressureSource = source
+    }
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let store = Self.store else { return .terminateNow }

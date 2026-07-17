@@ -111,4 +111,46 @@ final class ComposePlacementTests: XCTestCase {
                        ComposePlacement.inlineCardHeight
                         + ComposePlacement.inlineBottomPadding)
     }
+
+    func testMeasuredInlineHeightKeepsThreadVisible() {
+        let pane: CGFloat = 520
+        let card = ComposePlacement.effectiveInlineCardHeight(paneHeight: pane)
+        let reserve = ComposePlacement.inlineReservedHeight(paneHeight: pane)
+        XCTAssertEqual(card, 388, accuracy: 0.001)
+        XCTAssertEqual(reserve + ComposePlacement.minThreadVisibleHeight,
+                       pane, accuracy: 0.001)
+    }
+
+    func testMeasuredInlineHeightIsMonotonicAndNeverExceedsPane() {
+        var previous: CGFloat = -1
+        for height in stride(from: CGFloat(80), through: 900, by: 1) {
+            let card = ComposePlacement.effectiveInlineCardHeight(
+                paneHeight: height)
+            let reserve = ComposePlacement.inlineReservedHeight(
+                paneHeight: height)
+            XCTAssertGreaterThanOrEqual(card, previous)
+            XCTAssertLessThanOrEqual(reserve, height)
+            previous = card
+        }
+    }
+
+    func testUnknownPaneDoesNotReserveBeforeMeasurement() {
+        XCTAssertEqual(
+            ComposePlacement.effectiveInlineCardHeight(paneHeight: 0),
+            ComposePlacement.inlineCardHeight)
+        XCTAssertEqual(
+            ComposePlacement.inlineReservedHeight(paneHeight: 0), 0)
+    }
+
+    func testTinyPaneFloatsInsteadOfMountingZeroHeightInlineCompose() {
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(.inline, paneHeight: 100),
+            .floating)
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(.inline, paneHeight: 400),
+            .inline)
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(.floating, paneHeight: 100),
+            .floating)
+    }
 }

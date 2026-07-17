@@ -33,7 +33,9 @@ enum Keychain {
         }
     }
 
-    static func get(_ key: String) -> String? {
+    /// Preserves why a read failed. OAuth must not turn a temporarily locked
+    /// or inaccessible Keychain into a destructive "sign-in missing" state.
+    static func read(_ key: String) -> KeychainReadResult {
         let query: [String: Any] = [
             kSecClass as String: kSecClassGenericPassword,
             kSecAttrService as String: service,
@@ -42,9 +44,25 @@ enum Keychain {
             kSecMatchLimit as String: kSecMatchLimitOne,
         ]
         var result: AnyObject?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
-        return String(data: data, encoding: .utf8)
+        let status = SecItemCopyMatching(query as CFDictionary, &result)
+        return classifyRead(status: status, data: result as? Data)
+    }
+
+    /// Compatibility path for non-OAuth secrets whose callers already fail
+    /// closed when a value cannot be read.
+    static func get(_ key: String) -> String? {
+        guard case .value(let value) = read(key) else { return nil }
+        return value
+    }
+
+    /// Pure status classification for hostless tests.
+    static func classifyRead(status: OSStatus, data: Data?) -> KeychainReadResult {
+        if status == errSecItemNotFound { return .notFound }
+        guard status == errSecSuccess else { return .unavailable(status) }
+        guard let data, let value = String(data: data, encoding: .utf8) else {
+            return .unavailable(errSecDecode)
+        }
+        return .value(value)
     }
 
     static func delete(_ key: String) {
@@ -55,6 +73,12 @@ enum Keychain {
         ]
         SecItemDelete(query as CFDictionary)
     }
+}
+
+enum KeychainReadResult: Equatable {
+    case value(String)
+    case notFound
+    case unavailable(OSStatus)
 }
 
 enum KeychainError: Error {
