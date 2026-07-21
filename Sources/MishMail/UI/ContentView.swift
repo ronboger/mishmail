@@ -86,7 +86,16 @@ struct ContentView: View {
                 // including the first keyboard selection in compact mode,
                 // coalesces repeats and opens the final row.
                 if !readingPaneHidden {
-                    scheduleDetailSelection(selectedId)
+                    if DetailOpenPolicy.opensImmediately(
+                        openedThreadId: openedThreadId,
+                        listedIds: store.threads.lazy.map(\.id)) {
+                        // Auto-advance after trash/archive: the opened row is
+                        // gone, so debouncing would blank and rebuild the pane.
+                        detailSelectionTask?.cancel()
+                        openedThreadId = selectedId
+                    } else {
+                        scheduleDetailSelection(selectedId)
+                    }
                 }
             } else {
                 detailSelectionTask?.cancel()

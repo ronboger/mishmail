@@ -51,6 +51,23 @@ enum SelectionAdvance {
     }
 }
 
+/// Whether a keyboard-driven selection change should open the reading pane
+/// immediately or through the j/k debounce.
+///
+/// Browsing with j/k debounces the detail open so held-down keys don't churn
+/// the pane. But when the selection moved because the opened row left the
+/// list (trash/archive/spam auto-advance), the debounce leaves the pane on a
+/// dangling id — it falls to the empty placeholder, tears down the detail
+/// view, and rebuilds it from scratch after the delay. Open immediately so
+/// the pane hands off to the neighbor in the same update.
+enum DetailOpenPolicy {
+    static func opensImmediately(openedThreadId: String?,
+                                 listedIds: some Sequence<String>) -> Bool {
+        guard let openedThreadId else { return false }
+        return !listedIds.contains(openedThreadId)
+    }
+}
+
 /// In-memory list effect of an optimistic thread mutation.
 ///
 /// Leave-list mutations (trash / archive out of inbox / spam) always remove

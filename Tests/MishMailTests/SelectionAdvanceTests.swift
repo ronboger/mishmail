@@ -75,6 +75,26 @@ final class SelectionAdvanceTests: XCTestCase {
         XCTAssertNil(SelectionAdvance.rangeIds(in: [], from: "a", to: "b"))
     }
 
+    // MARK: - Detail open policy
+
+    /// Regression: trash/archive auto-advance must open the neighbor
+    /// immediately — the j/k debounce left the reading pane blank and rebuilt
+    /// it from scratch (the "delete feels slow" lag).
+    func testAdvanceAfterRemovalOpensImmediately() {
+        XCTAssertTrue(DetailOpenPolicy.opensImmediately(
+            openedThreadId: "b", listedIds: ["a", "c"]))
+    }
+
+    func testBrowsingStillListedKeepsDebounce() {
+        XCTAssertFalse(DetailOpenPolicy.opensImmediately(
+            openedThreadId: "b", listedIds: ["a", "b", "c"]))
+    }
+
+    func testNoOpenPaneKeepsDebounce() {
+        XCTAssertFalse(DetailOpenPolicy.opensImmediately(
+            openedThreadId: nil, listedIds: ["a"]))
+    }
+
     // MARK: - Optimistic leave-list vs stickiness
 
     /// Regression: under is:unread, opening a thread pins it via keepIds.
