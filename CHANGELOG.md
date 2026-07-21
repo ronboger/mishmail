@@ -6,6 +6,15 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Added
+- **Side-by-side compose (⇧⌘↩)** — view a draft next to the conversation it
+  answers. Any thread-bound compose (reply, forward, or a reopened reply
+  draft) can expand to a full-window split: the source conversation fills the
+  left column, the draft the right. Toggle with ⇧⌘↩, the split button in the
+  compose header, or the toolbar exit control; Esc steps back to the previous
+  inline/floating placement first, then closes the draft. The same composer
+  instance moves between placements, so typed text is never lost.
+
 ### Changed
 - **Faster keyboard browsing** — repeated Up/Down and j/k selection updates
   the list immediately while reading-pane hydration and neighbor prefetch

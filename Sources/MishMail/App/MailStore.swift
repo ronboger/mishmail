@@ -1033,6 +1033,44 @@ final class MailStore: ObservableObject {
         composeMinimized = false
     }
 
+    /// Full-window side by side: the source conversation left, the draft
+    /// right. Needs a real conversation to show — replies and forwards carry
+    /// one via `replyTo`; a fresh compose or a draft-only thread does not.
+    func enterSplitCompose() {
+        guard var req = composeRequest, req.replyTo != nil else { return }
+        req.presentation = .split
+        composeRequest = req
+        composeMinimized = false
+    }
+
+    /// Leave split without closing the draft — recompute the normal placement
+    /// from the current selection (inline if its thread is still open).
+    func exitSplitCompose() {
+        guard var req = composeRequest, req.presentation == .split else { return }
+        req.presentation = ComposePlacement.preferred(
+            replyTo: req.replyTo,
+            editDraft: req.editDraft,
+            forward: req.forward,
+            selectedThreadId: selectedThreadId,
+            readingPaneHidden: readingPaneHiddenForCompose)
+        composeRequest = req
+    }
+
+    func toggleSplitCompose() {
+        if composeRequest?.presentation == .split {
+            exitSplitCompose()
+        } else {
+            enterSplitCompose()
+        }
+    }
+
+    /// Resolve a thread for the split conversation column even after the
+    /// visible list moved on (view switch, reload) — memory first, then DB.
+    func thread(withId id: String) -> MailThread? {
+        threads.first { $0.id == id }
+            ?? (try? db.read { try MailThread.fetchOne($0, key: id) })
+    }
+
     /// If compose was inline for a thread we left or hid, keep the work as a
     /// floating card instead of tearing it down.
     func promoteInlineComposeIfNeeded(selectedThreadId: String?,

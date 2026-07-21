@@ -142,6 +142,33 @@ final class ComposePlacementTests: XCTestCase {
             ComposePlacement.inlineReservedHeight(paneHeight: 0), 0)
     }
 
+    func testSplitComposeWidthClampsToUsableRange() {
+        // Mid-size window: exactly half.
+        XCTAssertEqual(ComposePlacement.splitComposeWidth(hostWidth: 1_200), 600)
+        // Narrow window: never below a usable composer width.
+        XCTAssertEqual(ComposePlacement.splitComposeWidth(hostWidth: 600),
+                       ComposePlacement.minSplitComposeWidth)
+        // Full-screen: capped so the draft keeps a readable measure.
+        XCTAssertEqual(ComposePlacement.splitComposeWidth(hostWidth: 2_000),
+                       ComposePlacement.maxSplitComposeWidth)
+    }
+
+    func testSplitPassesThroughResolvedPresentationRegardlessOfPane() {
+        // Split ignores the reading-pane height (it owns the whole window) —
+        // a tiny stale pane measurement must not demote it to floating.
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(.split, paneHeight: 50), .split)
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(.split, paneHeight: 0), .split)
+    }
+
+    func testShowsInlineIsFalseForSplit() {
+        let msg = message()
+        XCTAssertFalse(ComposePlacement.showsInline(
+            inThread: msg.threadId, presentation: .split,
+            replyTo: msg, editDraft: nil))
+    }
+
     func testTinyPaneFloatsInsteadOfMountingZeroHeightInlineCompose() {
         XCTAssertEqual(
             ComposePlacement.resolvedPresentation(.inline, paneHeight: 100),

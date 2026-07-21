@@ -104,6 +104,7 @@ struct ComposeView: View {
     }
 
     private var isInline: Bool { request.presentation == .inline }
+    private var isSplit: Bool { request.presentation == .split }
 
     /// Draft id chain for replace / send / discard (autosave may have moved it).
     private var liveDraft: Message? { replacingDraft ?? editingDraft }
@@ -474,7 +475,8 @@ struct ComposeView: View {
         }
         .padding(isMinimized ? EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 8)
                              : EdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14))
-        .accessibilityIdentifier(isInline ? "composeInline" : "composeCard")
+        .accessibilityIdentifier(isSplit ? "composeSplit"
+                                 : isInline ? "composeInline" : "composeCard")
         .onAppear {
             store.composeMinimized = false
             isMinimized = false
@@ -598,7 +600,30 @@ struct ComposeView: View {
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
             Spacer(minLength: 8)
-            if isInline {
+            // Side by side: the source conversation fills the left half while
+            // the draft takes the right (⇧⌘↩). Needs a reply/forward parent.
+            if original != nil {
+                Button {
+                    store.toggleSplitCompose()
+                } label: {
+                    Image(systemName: isSplit
+                          ? "arrow.down.right.and.arrow.up.left"
+                          : "rectangle.split.2x1")
+                        .font(.system(size: 11, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                // Esc exits split first (draft stays open); the next Esc hits
+                // closeButton's cancelAction and saves & closes as usual.
+                .keyboardShortcut(isSplit ? .cancelAction : nil)
+                .help(isSplit ? "Exit side by side (esc or ⇧⌘↩)"
+                              : "View side by side with the conversation (⇧⌘↩)")
+            }
+            if isSplit {
+                // Split owns the full window; exit is the button above.
+            } else if isInline {
                 Button {
                     store.popOutCompose()
                 } label: {
@@ -628,16 +653,17 @@ struct ComposeView: View {
         .padding(.bottom, 6)
         .contentShape(Rectangle())
         .onTapGesture {
-            if !isInline { setMinimized(true) }
+            if !isInline && !isSplit { setMinimized(true) }
         }
-        .help(isInline ? "Reply" : "Minimize compose")
+        .help(isInline || isSplit ? "Reply" : "Minimize compose")
     }
 
     @ViewBuilder
     private var closeButton: some View {
         // Esc closes only while expanded — minimized compose yields Esc to the
-        // mailbox (reading-pane / multi-select ladder in ContentView).
-        if isMinimized {
+        // mailbox (reading-pane / multi-select ladder in ContentView), and
+        // split yields it to the exit-split button (see expandedHeader).
+        if isMinimized || isSplit {
             Button(action: saveAndClose) {
                 closeGlyph
             }

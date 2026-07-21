@@ -7,6 +7,10 @@ enum ComposePresentation: String, Equatable {
     case floating
     /// Docked at the bottom of the reading pane so the thread stays visible.
     case inline
+    /// Full-window side by side: the source conversation fills the left
+    /// column, the draft the right. Entered from a thread-bound compose
+    /// (reply / forward / reopened reply draft) via ⇧⌘↩ or the header button.
+    case split
 }
 
 /// Pure placement rules for compose — kept free of MailStore so tests can
@@ -110,6 +114,22 @@ enum ComposePlacement {
         // never leaks under the card even if host includes them.
         let width = max(minWidth, pane.width - sidePadding * 2)
         return InlineMetrics(leading: leading, width: width)
+    }
+
+    // MARK: Side-by-side (split) compose
+
+    /// Narrowest draft column that still fits From/To/Subject plus toolbar.
+    static let minSplitComposeWidth: CGFloat = 360
+    /// Cap so a full-screen window doesn't stretch the draft past a
+    /// comfortable writing measure; the conversation absorbs the rest.
+    static let maxSplitComposeWidth: CGFloat = 640
+    /// Gutter around the split draft card (matches the inline paddings).
+    static let splitPadding: CGFloat = 12
+
+    /// Draft column width in split view: half the window, clamped to a
+    /// usable range. The conversation column takes whatever remains.
+    static func splitComposeWidth(hostWidth: CGFloat) -> CGFloat {
+        min(max(hostWidth * 0.5, minSplitComposeWidth), maxSplitComposeWidth)
     }
 
     /// Rough leading inset when PreferenceKey frames are not yet available.

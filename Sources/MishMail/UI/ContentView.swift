@@ -41,16 +41,22 @@ struct ContentView: View {
                 readingPaneHidden: readingPaneHidden,
                 hasSelection: store.selectedThreadId != nil,
                 threadFocus: store.threadFocusMode)
-            mailboxLayout(mode)
-                .onAppear { layoutMode = mode }
-                .onChange(of: mode) { layoutMode = mode }
-                .background(
-                    GeometryReader { host in
-                        Color.clear.preference(
-                            key: ComposeHostFrameKey.self,
-                            value: host.frame(in: .global))
-                    }
-                )
+            Group {
+                if splitComposeActive {
+                    splitComposeLayout(hostWidth: proxy.size.width)
+                } else {
+                    mailboxLayout(mode)
+                }
+            }
+            .onAppear { layoutMode = mode }
+            .onChange(of: mode) { layoutMode = mode }
+            .background(
+                GeometryReader { host in
+                    Color.clear.preference(
+                        key: ComposeHostFrameKey.self,
+                        value: host.frame(in: .global))
+                }
+            )
         }
         .onPreferenceChange(ReadingPaneFrameKey.self) { readingPaneFrame = $0 }
         .onPreferenceChange(ComposeHostFrameKey.self) { composeHostFrame = $0 }
@@ -196,6 +202,7 @@ struct ContentView: View {
                        value: store.composeRequest?.presentation)
         }
         .animation(.easeOut(duration: 0.2), value: store.threadFocusMode)
+        .animation(.easeOut(duration: 0.1), value: splitComposeActive)
         // Undo/notice toast: centered on the bottom of the whole window.
         .overlay(alignment: .bottom) {
             if let undo = store.undoAction {
@@ -358,23 +365,71 @@ struct ContentView: View {
         }
     }
 
-    /// Floating card vs inline (reading-pane-width) compose. One ComposeView
-    /// identity so pop-out / promote keep the typed body.
+    /// Side-by-side compose is active: the layout swaps to the split canvas
+    /// and the overlay card fills the right column. Minimizing pauses split
+    /// (mailbox comes back); expanding restores it.
+    private var splitComposeActive: Bool {
+        store.composeRequest?.presentation == .split && !store.composeMinimized
+    }
+
+    /// Left column of split compose: the draft's source conversation,
+    /// full-height. The right column is empty space the overlay-hosted
+    /// ComposeView pins itself to (same view identity as floating/inline,
+    /// so entering/leaving split keeps the typed body).
+    @ViewBuilder
+    private func splitComposeLayout(hostWidth: CGFloat) -> some View {
+        let composeWidth = ComposePlacement.splitComposeWidth(hostWidth: hostWidth)
+        HStack(spacing: 0) {
+            Group {
+                if let id = store.composeRequest?.boundThreadId,
+                   let thread = store.thread(withId: id) {
+                    ThreadDetailView(
+                        thread: thread,
+                        compactMode: false,
+                        focusMode: true,
+                        splitMode: true,
+                        onBack: { store.exitSplitCompose() },
+                        onReply: { msg in
+                            store.openCompose(.init(replyTo: msg))
+                        })
+                } else {
+                    Text("Conversation unavailable")
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+            .background(Color.notionContent)
+            Color.clear
+                .frame(width: composeWidth)
+        }
+    }
+
+    /// Floating card vs inline (reading-pane-width) vs split (right-column)
+    /// compose. One ComposeView identity so pop-out / promote keep the typed
+    /// body.
     @ViewBuilder
     private func composeChrome(_ request: MailStore.ComposeRequest) -> some View {
         let minimized = store.composeMinimized
         let presentation = ComposePlacement.resolvedPresentation(
             request.presentation, paneHeight: readingPaneFrame.height)
         let inline = presentation == .inline && !minimized
+        let split = presentation == .split && !minimized
         let measured = ComposePlacement.inlineMetrics(
             host: composeHostFrame, pane: readingPaneFrame)
         let inlineLeading = measured?.leading
             ?? ComposePlacement.fallbackLeadingInset(layoutMode: layoutMode)
         let inlineWidth = measured?.width
-        let cardWidth: CGFloat = minimized ? 300 : (inline ? (inlineWidth ?? 620) : 620)
+        let splitPad = ComposePlacement.splitPadding
+        let splitWidth = ComposePlacement.splitComposeWidth(
+            hostWidth: composeHostFrame.width)
+        let cardWidth: CGFloat = minimized ? 300
+            : split ? max(splitWidth - splitPad * 2, 320)
+            : (inline ? (inlineWidth ?? 620) : 620)
         let inlineHeight = ComposePlacement.effectiveInlineCardHeight(
             paneHeight: readingPaneFrame.height)
         let cardHeight: CGFloat = minimized ? 40
+            : split ? max(composeHostFrame.height - splitPad * 2, 400)
             : (inline ? inlineHeight : 500)
         HStack(spacing: 0) {
             if inline {
@@ -395,6 +450,9 @@ struct ContentView: View {
         .padding(inline
                  ? EdgeInsets(top: 0, leading: 0,
                               bottom: ComposePlacement.inlineBottomPadding, trailing: 0)
+                 : split
+                 ? EdgeInsets(top: splitPad, leading: 0,
+                              bottom: splitPad, trailing: splitPad)
                  : EdgeInsets(top: 0, leading: 0, bottom: 16, trailing: 16))
     }
 
@@ -482,6 +540,14 @@ struct ContentView: View {
             // The snooze sheet runs its own monitor (↑/↓/Return/Esc while
             // typing a date) — everything must pass through untouched.
             if store.snoozingThread != nil { return event }
+            // ⇧⌘↩ toggles side-by-side compose (conversation | draft). Runs
+            // before the compose-typing passthrough so it works mid-sentence.
+            if event.modifierFlags.intersection([.command, .shift, .option, .control])
+                == [.command, .shift],
+               event.keyCode == 36, store.composeRequest != nil {
+                store.toggleSplitCompose()
+                return nil
+            }
             // Expanded compose + typing: every chord belongs to the text system
             // / compose handlers (⌘K insert-link, ⌃F/⌃K caret motion, …), not
             // app-level shortcuts. Minimized compose resigns focus so inbox
@@ -497,7 +563,10 @@ struct ContentView: View {
             }
             // ⌘↩: Send when expanded compose owns the chord (button shortcut).
             // Otherwise toggle thread focus mode (conversation fills the app).
-            if mods == .command, event.keyCode == 36 {
+            // Plain ⌘ only — ⌘⇧↩ is side-by-side compose (handled above) and
+            // must never fall through to focus when no compose is open.
+            if mods == .command, event.keyCode == 36,
+               !event.modifierFlags.contains(.shift) {
                 let composeClaimsReturn = store.composeRequest != nil
                     && !store.composeMinimized
                 if !composeClaimsReturn, store.selectedThreadId != nil {

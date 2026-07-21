@@ -10,6 +10,9 @@ struct ThreadDetailView: View {
     let compactMode: Bool
     /// Full-app conversation (⌘↩) — back control exits focus, not the thread.
     var focusMode: Bool = false
+    /// Left column of side-by-side compose (⇧⌘↩): back control exits split,
+    /// and prev/next hide (selection is decoupled from this conversation).
+    var splitMode: Bool = false
     let onBack: () -> Void
     let onReply: (Message) -> Void
 
@@ -122,7 +125,16 @@ struct ThreadDetailView: View {
                 ToolbarSpacer(.fixed, placement: .navigation)
             }
             ToolbarItem(placement: .navigation) {
-                if focusMode {
+                if splitMode {
+                    Button(action: onBack) {
+                        Label("Exit Side by Side",
+                              systemImage: "arrow.down.right.and.arrow.up.left")
+                    }
+                    .help("Exit side by side (esc or ⇧⌘↩)")
+                    .accessibilityIdentifier("exitSplitButton")
+                    .focusable(false)
+                    .focusEffectDisabled()
+                } else if focusMode {
                     Button(action: onBack) {
                         Label("Exit Focus",
                               systemImage: "arrow.down.right.and.arrow.up.left")
@@ -154,24 +166,28 @@ struct ThreadDetailView: View {
                 }
             }
             .pmHideSharedBackground()
-            ToolbarItem(placement: .navigation) {
-                Button { store.moveSelection(-1) } label: {
-                    Label("Previous", systemImage: "chevron.up")
+            // Prev/next drive the list selection, which split's conversation
+            // column is decoupled from — hide them there.
+            if !splitMode {
+                ToolbarItem(placement: .navigation) {
+                    Button { store.moveSelection(-1) } label: {
+                        Label("Previous", systemImage: "chevron.up")
+                    }
+                    .help("Previous conversation (\(store.keyBindings.key(for: .prev)))")
+                    .focusable(false)
+                    .focusEffectDisabled()
                 }
-                .help("Previous conversation (\(store.keyBindings.key(for: .prev)))")
-                .focusable(false)
-                .focusEffectDisabled()
-            }
-            .pmHideSharedBackground()
-            ToolbarItem(placement: .navigation) {
-                Button { store.moveSelection(1) } label: {
-                    Label("Next", systemImage: "chevron.down")
+                .pmHideSharedBackground()
+                ToolbarItem(placement: .navigation) {
+                    Button { store.moveSelection(1) } label: {
+                        Label("Next", systemImage: "chevron.down")
+                    }
+                    .help("Next conversation (\(store.keyBindings.key(for: .next)))")
+                    .focusable(false)
+                    .focusEffectDisabled()
                 }
-                .help("Next conversation (\(store.keyBindings.key(for: .next)))")
-                .focusable(false)
-                .focusEffectDisabled()
+                .pmHideSharedBackground()
             }
-            .pmHideSharedBackground()
             if #available(macOS 26.0, *) {
                 ToolbarSpacer(.fixed, placement: .navigation)
             }
