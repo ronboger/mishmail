@@ -7,6 +7,10 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Fixed
+- **`g i` (and other go-to shortcuts) leave full-window conversations** — in
+  Superhuman-style open, same-mailbox go-to used to no-op and leave you stuck
+  inside the thread; it now returns to the list like Esc / the back button
+  (cross-mailbox go-to already did via the view switch).
 - **Reading-pane cache survives triage** — the payload cache and neighbor
   prefetch were keyed on a global content version that `reloadThreads()` bumped
   on every call. Since trash/archive/star/mark-read each schedule a reload, one
@@ -27,9 +31,9 @@ minor versions may still change behavior.
 ### Added
 - **Full-window conversations (Superhuman-style, now the default)** — clicking
   a conversation (or pressing ↩) opens it across the whole window instead of a
-  reading pane beside the list; Esc or the back button returns to the list.
-  Settings → Appearance → "Opening a conversation" switches back to the
-  reading-pane layout.
+  reading pane beside the list; Esc, `g i` (or any go-to), or the back button
+  returns to the list. Settings → Appearance → "Opening a conversation"
+  switches back to the reading-pane layout.
 - **Sidebar on arrow keys** — ← hides the sidebar, → shows it (persisted, and
   now hidden by default). `/` still works with a hidden sidebar: it reveals
   the sidebar and focuses search.

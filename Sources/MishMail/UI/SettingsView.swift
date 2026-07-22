@@ -988,7 +988,7 @@ struct AppearanceSettings: View {
                         Text("Shows in a reading pane").tag(ThreadOpenStyle.readingPane.rawValue)
                     }
                 } footer: {
-                    Text("Fills the window is Superhuman-style: click a conversation (or press ↩) and it takes over the window; Esc goes back to the list. The reading pane shows conversations beside the message list instead.")
+                    Text("Fills the window is Superhuman-style: click a conversation (or press ↩) and it takes over the window; Esc or g i (any go-to) returns to the list. The reading pane shows conversations beside the message list instead.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

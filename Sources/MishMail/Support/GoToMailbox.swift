@@ -3,6 +3,9 @@ import Foundation
 /// Pure decision for Gmail-style "go to mailbox" (g then i/s/t/…) while a
 /// `/` search may be active. The destination must be the unfiltered view —
 /// committed search uses the FTS path and ignores `selectedView`.
+///
+/// Callers always exit full-window thread focus on go-to (even when every
+/// flag below is false): same-mailbox `g i` must still return to the list.
 enum GoToMailbox {
     struct Plan: Equatable {
         /// Clear `searchText` and `committedSearch` before navigating.
@@ -12,6 +15,9 @@ enum GoToMailbox {
         /// Reload immediately: destination already selected, so onChange will
         /// not fire, but search was cleared and the list is stale.
         var reloadImmediately: Bool
+        /// Always true — go-to is a navigation home, never stay inside a
+        /// full-window conversation. Kept on the plan so tests document it.
+        var exitThreadFocus: Bool
     }
 
     static func plan(destinationIsCurrent: Bool,
@@ -21,7 +27,8 @@ enum GoToMailbox {
         return Plan(
             clearSearch: clearSearch,
             changeView: !destinationIsCurrent,
-            reloadImmediately: destinationIsCurrent && clearSearch
+            reloadImmediately: destinationIsCurrent && clearSearch,
+            exitThreadFocus: true
         )
     }
 }

@@ -7,7 +7,8 @@ final class GoToMailboxTests: XCTestCase {
             searchText: "from:alice",
             committedSearch: "from:alice")
         XCTAssertEqual(plan, GoToMailbox.Plan(
-            clearSearch: true, changeView: false, reloadImmediately: true))
+            clearSearch: true, changeView: false, reloadImmediately: true,
+            exitThreadFocus: true))
     }
 
     func testGiFromStarredWithSearchChangesViewAndClears() {
@@ -16,16 +17,20 @@ final class GoToMailboxTests: XCTestCase {
             searchText: "invoice",
             committedSearch: "invoice")
         XCTAssertEqual(plan, GoToMailbox.Plan(
-            clearSearch: true, changeView: true, reloadImmediately: false))
+            clearSearch: true, changeView: true, reloadImmediately: false,
+            exitThreadFocus: true))
     }
 
-    func testGiOnInboxWithoutSearchIsNoop() {
+    func testGiOnInboxWithoutSearchStillExitsThreadFocus() {
+        // Same mailbox + no search: list/search flags are no-ops, but go-to
+        // must still leave full-window conversation focus (g i ≈ back).
         let plan = GoToMailbox.plan(
             destinationIsCurrent: true,
             searchText: "",
             committedSearch: "")
         XCTAssertEqual(plan, GoToMailbox.Plan(
-            clearSearch: false, changeView: false, reloadImmediately: false))
+            clearSearch: false, changeView: false, reloadImmediately: false,
+            exitThreadFocus: true))
     }
 
     func testLiveSearchTextOnlyStillClears() {
@@ -36,6 +41,7 @@ final class GoToMailboxTests: XCTestCase {
             committedSearch: "")
         XCTAssertTrue(plan.clearSearch)
         XCTAssertTrue(plan.reloadImmediately)
+        XCTAssertTrue(plan.exitThreadFocus)
     }
 
     func testCrossViewWithoutSearchOnlyChangesView() {
@@ -44,6 +50,7 @@ final class GoToMailboxTests: XCTestCase {
             searchText: "",
             committedSearch: "")
         XCTAssertEqual(plan, GoToMailbox.Plan(
-            clearSearch: false, changeView: true, reloadImmediately: false))
+            clearSearch: false, changeView: true, reloadImmediately: false,
+            exitThreadFocus: true))
     }
 }

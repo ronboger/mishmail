@@ -9,7 +9,8 @@ struct ShortcutsHelpView: View {
     /// Fixed (non-rebindable) shortcuts, shown for reference.
     private static let fixed: [(section: String, rows: [(key: String, title: String)])] = [
         ("Go to (press g, then…)", [
-            ("g i", "Inbox"), ("g s", "Starred"), ("g t", "Sent"),
+            ("g i", "Inbox (also exits full-window conversation)"),
+            ("g s", "Starred"), ("g t", "Sent"),
             ("g d", "Drafts"), ("g a", "All mail"), ("g p", "Promotions"),
         ]),
         ("Other", [

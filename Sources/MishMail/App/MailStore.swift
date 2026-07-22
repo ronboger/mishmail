@@ -320,6 +320,9 @@ final class MailStore: ObservableObject {
     /// active `/` search. Without clearing search, the list stays on the FTS
     /// path and ignores `selectedView` — so `gi` after a search looked like a
     /// no-op when already on Inbox, and left a filtered overlay otherwise.
+    /// Always exits full-window conversation focus so `g i` works as "back to
+    /// the list" even when already on that mailbox (Esc is the other exit;
+    /// same-view go-to used to no-op and leave focus stuck).
     /// View changes rely on ContentView's `selectedView` onChange to reload;
     /// same-view go-to reloads here after clearing search.
     func goTo(_ view: MailboxView) {
@@ -334,6 +337,10 @@ final class MailStore: ObservableObject {
             searchText = ""
             committedSearch = ""
         }
+        // Exit focus before changing the view so the list is what the user
+        // sees; cross-view onChange also clears selection (which drops focus),
+        // but same-view paths never hit that.
+        threadFocusMode = false
         if plan.changeView {
             selectedView = view
         } else if plan.reloadImmediately {
