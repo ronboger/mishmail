@@ -56,14 +56,25 @@ final class MishMailSmokeTests: XCTestCase {
 
         // Deleting the open conversation must swap directly to its neighbor.
         // The reading pane must never briefly render its empty-selection view.
-        let previousSubject = subject.label
+        // The subject Text has .textSelection(.enabled), which surfaces the
+        // string as the accessibility *value* (label stays empty) — read both.
+        let subjectText = { (subject.value as? String).flatMap { $0.isEmpty ? nil : $0 } ?? subject.label }
+        let previousSubject = subjectText()
+        XCTAssertFalse(previousSubject.isEmpty, "subject text must be readable before trash")
         let trash = app.buttons.matching(
             NSPredicate(format: "label == 'Trash'")).firstMatch
         XCTAssertTrue(trash.waitForExistence(timeout: 5))
         trash.click()
         XCTAssertFalse(app.staticTexts["Select a conversation"].exists)
         XCTAssertTrue(subject.waitForExistence(timeout: 5))
-        XCTAssertNotEqual(subject.label, previousSubject)
+        // Text-independent proof of the swap: the trashed row leaves the list.
+        let deadline = Date().addingTimeInterval(5)
+        while (demoThread.exists || subjectText() == previousSubject),
+              Date() < deadline {
+            RunLoop.current.run(until: Date().addingTimeInterval(0.1))
+        }
+        XCTAssertFalse(demoThread.exists, "trashed thread row must leave the list")
+        XCTAssertNotEqual(subjectText(), previousSubject)
 
         // Compose lives in the sidebar, which starts hidden — → reveals it.
         app.typeKey(XCUIKeyboardKey.rightArrow.rawValue, modifierFlags: [])
