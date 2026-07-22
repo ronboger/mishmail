@@ -81,6 +81,9 @@ ui-test: gen
 	# XCUITest cannot attach deterministically when another Debug build with the
 	# same bundle id is already open (for example from a different worktree).
 	-pkill -f "MishMail Debug" 2>/dev/null || true
+	# The throwaway Debug app persists window frames / prefs between runs;
+	# the smoke test asserts default-launch geometry, so start clean.
+	-defaults delete dev.ronboger.MishMail.debug 2>/dev/null || true
 	xcodebuild test -project $(PROJECT) -scheme MishMailUITests \
 		-destination '$(DESTINATION)' -derivedDataPath $(DD)
 

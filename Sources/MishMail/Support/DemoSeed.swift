@@ -98,7 +98,26 @@ enum DemoSeed {
 
                 var touched = Set<String>()
                 var pending: [SyncEngine.PendingUpsert] = []
-                for msg in messages() {
+                // Perf/repro harness: MISHMAIL_DEMO_AMPLIFY=N replicates the
+                // demo mailbox N times to mimic a large inbox (list perf,
+                // layout-loop hunts) without any real account.
+                var seedMessages = messages()
+                if let amp = ProcessInfo.processInfo
+                    .environment["MISHMAIL_DEMO_AMPLIFY"].flatMap(Int.init), amp > 1 {
+                    var extra: [Message] = []
+                    for i in 1..<amp {
+                        for var m in seedMessages {
+                            m.id += "-x\(i)"
+                            m.gmailId += "-x\(i)"
+                            m.threadId += "-x\(i)"
+                            m.date = m.date.addingTimeInterval(-Double(i) * 7200)
+                            m.messageIdHeader = "<x\(i)-\(m.messageIdHeader.dropFirst())"
+                            extra.append(m)
+                        }
+                    }
+                    seedMessages += extra
+                }
+                for msg in seedMessages {
                     pending.append(.init(message: msg, attachments: []))
                     touched.insert(msg.threadId)
                 }

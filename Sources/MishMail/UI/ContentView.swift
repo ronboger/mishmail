@@ -64,10 +64,13 @@ struct ContentView: View {
 
     var body: some View {
         GeometryReader { proxy in
+            // Compact mode swaps list ↔ detail on whether a conversation is
+            // actually OPEN — the quiet auto-highlight of the top row is a
+            // selection without an open, and must keep showing the list.
             let mode = MailLayout.mode(
                 width: proxy.size.width,
                 readingPaneHidden: readingPaneHidden,
-                hasSelection: store.selectedThreadId != nil,
+                hasSelection: openedThreadId != nil,
                 threadFocus: store.threadFocusMode,
                 fullWindowThreads: fullWindowThreads)
             Group {
@@ -140,19 +143,14 @@ struct ContentView: View {
                     }
                 }
             } else {
-                detailSelectionTask?.cancel()
-                openedThreadId = selectedId
-                if let thread = store.selectedThread, store.isDraftOnly(thread) {
-                    store.editDraft(inThread: thread)
-                    store.selectedThreadId = nil
-                    return
-                }
-                if fullWindowThreads {
-                    store.threadFocusMode = true
-                } else {
-                    readingPaneHidden = false
-                }
+                openClickedThread(selectedId)
             }
+        }
+        // A click on the row that is already selected (e.g. the pre-highlighted
+        // top row) produces no selection change — open it via this token.
+        .onChange(of: store.openSelectedToken) {
+            guard let selectedId = store.selectedThreadId else { return }
+            openClickedThread(selectedId)
         }
         .onChange(of: readingPaneHidden) {
             // Full-window style ignores the reading-pane flag entirely; the
@@ -577,14 +575,6 @@ struct ContentView: View {
             }
         }
         .background(Color.notionContent)
-        // Publish the reading column's global frame for inline compose pin.
-        .background(
-            GeometryReader { geo in
-                Color.clear.preference(
-                    key: ReadingPaneFrameKey.self,
-                    value: geo.frame(in: .global))
-            }
-        )
         // Keep the last messages above the overlay card.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Color.clear
@@ -592,6 +582,19 @@ struct ContentView: View {
                 .accessibilityHidden(true)
         }
         .animation(nil, value: inlineComposeReserveHeight)
+        // Publish the reading column's global frame for inline compose pin.
+        // MUST sit outside the safeAreaInset: the reserve height is computed
+        // from this measurement, so measuring inside the inset feeds the
+        // reserve back into its own input — at window heights below ~1050pt
+        // the two maps have no fixed point and layout livelocks (396↔592
+        // oscillation, 99% CPU, unbounded memory; shipped in 72d6524).
+        .background(
+            GeometryReader { geo in
+                Color.clear.preference(
+                    key: ReadingPaneFrameKey.self,
+                    value: geo.frame(in: .global))
+            }
+        )
     }
 
     /// Gmail-style single-key shortcuts plus Cmd-K. Ignores events when a
@@ -894,6 +897,24 @@ struct ContentView: View {
                 return nil
             }
             return event
+        }
+    }
+
+    /// Open from a mouse click — immediately, no debounce. Also serves
+    /// re-clicks on the already-selected row (openSelectedToken), where the
+    /// List selection binding never fires.
+    private func openClickedThread(_ selectedId: String) {
+        detailSelectionTask?.cancel()
+        openedThreadId = selectedId
+        if let thread = store.selectedThread, store.isDraftOnly(thread) {
+            store.editDraft(inThread: thread)
+            store.selectedThreadId = nil
+            return
+        }
+        if fullWindowThreads {
+            store.threadFocusMode = true
+        } else {
+            readingPaneHidden = false
         }
     }
 
