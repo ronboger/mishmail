@@ -42,6 +42,19 @@ minor versions may still change behavior.
   disclosure chevron has a fixed optical frame.
 
 ### Fixed
+- **Clicking the pre-highlighted top row now opens it** — the auto-selected
+  row produced no selection change, so the very first click in a mailbox did
+  nothing. Rows now request an explicit open when the click lands on the
+  already-selected thread. The quiet highlight also no longer counts as "a
+  conversation is open" for narrow windows, which used to boot the
+  reading-pane layout into the wrong column.
+- **Inline reply no longer livelocks the app** — the reading pane's measured
+  frame fed the inline composer's reserved bottom inset while being measured
+  *inside* that inset, so at window heights under ~1050 pt the two values had
+  no fixed point: layout oscillated ~50×/s, pegging the main thread and
+  growing memory without bound the moment a reply opened. The pane is now
+  measured outside the inset, and a UI regression test drives
+  reply → side-by-side → back and fails on any recurrence.
 - **Inline reply no longer springs the thread viewport upward** — composer
   motion is scoped to the card, the reading-pane inset changes without
   animation, and short panes continuously resize the card or fall back to a

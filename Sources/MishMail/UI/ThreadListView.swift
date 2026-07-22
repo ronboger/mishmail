@@ -1229,38 +1229,51 @@ struct ThreadRow: View {
                 .fill(thread.isUnread ? Color.notionAccent : .clear)
                 .frame(width: 7, height: 7)
 
-            HStack(spacing: 4) {
-                Text(participantsDisplay)
-                    .font(.system(size: 14 * fontScale, weight: thread.isUnread ? .semibold : .regular))
-                    .foregroundStyle(thread.isUnread ? Color.primary : Color.primary.opacity(0.65))
-                    .lineLimit(1)
-                if thread.messageCount > 1 {
-                    Text("\(thread.messageCount)")
-                        .font(.system(size: 11.5 * fontScale).monospacedDigit())
-                        .foregroundStyle(.secondary)
+            // Middle content shares one hit area so a click on the already-
+            // selected row (e.g. the pre-highlighted top row) still opens the
+            // conversation — List(selection:) fires no onChange for it (same
+            // shape as the sidebar's re-click fix). Checkbox and the trailing
+            // hover actions keep their own hits and never trigger an open.
+            HStack(spacing: 8) {
+                HStack(spacing: 4) {
+                    Text(participantsDisplay)
+                        .font(.system(size: 14 * fontScale, weight: thread.isUnread ? .semibold : .regular))
+                        .foregroundStyle(thread.isUnread ? Color.primary : Color.primary.opacity(0.65))
+                        .lineLimit(1)
+                    if thread.messageCount > 1 {
+                        Text("\(thread.messageCount)")
+                            .font(.system(size: 11.5 * fontScale).monospacedDigit())
+                            .foregroundStyle(.secondary)
+                    }
                 }
+                .frame(width: 168 * fontScale, alignment: .leading)
+
+                (Text(thread.subject.isEmpty ? "(no subject)" : thread.subject.decodingHTMLEntities())
+                    .fontWeight(thread.isUnread ? .semibold : .medium)
+                    .foregroundColor(thread.isUnread ? .primary : .primary.opacity(0.65))
+                 + Text("  \(thread.snippet.decodingHTMLEntities())")
+                    .foregroundColor(.secondary))
+                    .font(.system(size: 14 * fontScale))
+                    .lineLimit(1)
+
+                // On-device AI triage bucket, once the thread has been sorted.
+                if let category = store.aiCategories[thread.id] {
+                    Text(category)
+                        .font(.system(size: 10.5 * fontScale, weight: .medium))
+                        .foregroundStyle(Color.aiCategory(category))
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .background(Color.aiCategory(category).opacity(0.14), in: Capsule())
+                        .fixedSize()
+                }
+
+                Spacer(minLength: 8)
             }
-            .frame(width: 168 * fontScale, alignment: .leading)
-
-            (Text(thread.subject.isEmpty ? "(no subject)" : thread.subject.decodingHTMLEntities())
-                .fontWeight(thread.isUnread ? .semibold : .medium)
-                .foregroundColor(thread.isUnread ? .primary : .primary.opacity(0.65))
-             + Text("  \(thread.snippet.decodingHTMLEntities())")
-                .foregroundColor(.secondary))
-                .font(.system(size: 14 * fontScale))
-                .lineLimit(1)
-
-            // On-device AI triage bucket, once the thread has been sorted.
-            if let category = store.aiCategories[thread.id] {
-                Text(category)
-                    .font(.system(size: 10.5 * fontScale, weight: .medium))
-                    .foregroundStyle(Color.aiCategory(category))
-                    .padding(.horizontal, 6).padding(.vertical, 2)
-                    .background(Color.aiCategory(category).opacity(0.14), in: Capsule())
-                    .fixedSize()
-            }
-
-            Spacer(minLength: 8)
+            .contentShape(Rectangle())
+            .simultaneousGesture(TapGesture().onEnded {
+                if store.selectedThreadId == thread.id {
+                    store.requestOpenSelected()
+                }
+            })
 
             // Fixed-height trailing area: icons overlay the timestamp on
             // hover so the row never changes size.

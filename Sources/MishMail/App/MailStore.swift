@@ -934,7 +934,8 @@ final class MailStore: ObservableObject {
         reloadAccounts()
     }
 
-    struct ComposeRequest: Identifiable {
+    
+struct ComposeRequest: Identifiable {
         let id = UUID()
         let replyTo: Message?
         var replyAll = false
@@ -3042,6 +3043,13 @@ final class MailStore: ObservableObject {
         selectionQuiet = true
         selectedThreadId = first
     }
+
+    /// Bumped when a click lands on the already-selected row. List(selection:)
+    /// fires no onChange then — and with the top row pre-highlighted, the very
+    /// first click in a mailbox is exactly that case — so ContentView listens
+    /// to this token and opens the selected conversation explicitly.
+    @Published private(set) var openSelectedToken = 0
+    func requestOpenSelected() { openSelectedToken &+= 1 }
 
     /// Thread ids in the order the list actually displays them (priority
     /// section first, then grouped) — kept in sync by ThreadListView so

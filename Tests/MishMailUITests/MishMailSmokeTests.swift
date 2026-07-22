@@ -7,7 +7,10 @@ final class MishMailSmokeTests: XCTestCase {
         app.launchEnvironment["MISHMAIL_UI_TEST"] = "1"
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES",
                                 "-NSQuitAlwaysKeepsWindows", "NO",
-                                "-readingPaneHidden", "NO"]
+                                "-readingPaneHidden", "NO",
+                                // This test exercises the pane/compact layout;
+                                // full-window open is covered by SplitComposeUITests.
+                                "-threadOpenStyle", "readingPane"]
         app.terminate()
         app.launch()
         addTeardownBlock { app.terminate() }
@@ -51,6 +54,8 @@ final class MishMailSmokeTests: XCTestCase {
         demoThread.click()
         XCTAssertTrue(subject.waitForExistence(timeout: 5))
 
+        // Compose lives in the sidebar, which starts hidden — → reveals it.
+        app.typeKey(XCUIKeyboardKey.rightArrow.rawValue, modifierFlags: [])
         let compose = app.buttons.matching(identifier: "composeButton").firstMatch
         XCTAssertTrue(compose.waitForExistence(timeout: 5))
         compose.click()
