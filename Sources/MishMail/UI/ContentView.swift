@@ -22,9 +22,11 @@ private struct ComposeHostFrameKey: PreferenceKey {
 struct ContentView: View {
     @EnvironmentObject var store: MailStore
     /// List highlight — separate ObservableObject so ↓ / j does not publish
-    /// through MailStore (and re-render detail / sidebar).
+    /// through MailStore (and re-render detail / sidebar). ContentView must
+    /// observe it: the open-policy onChange and toolbar state depend on it.
     @EnvironmentObject var listFocus: ListFocusState
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var keyMonitor: Any?
     @State private var layoutMode: MailLayoutMode = .list
     // Persisted so the layout survives relaunch, like the sidebar state.
@@ -38,9 +40,6 @@ struct ContentView: View {
     /// Measured frames for PreferenceKey-aligned inline compose.
     @State private var readingPaneFrame: CGRect = .zero
     @State private var composeHostFrame: CGRect = .zero
-    /// List focus stays synchronous; the expensive reading pane follows after
-    /// key repeat settles (clicks/Enter still open immediately).
-    @State private var openedThreadId: String?
     @State private var detailSelectionTask: Task<Void, Never>?
 
     private var fullWindowThreads: Bool {
@@ -73,7 +72,7 @@ struct ContentView: View {
             let mode = MailLayout.mode(
                 width: proxy.size.width,
                 readingPaneHidden: readingPaneHidden,
-                hasSelection: openedThreadId != nil,
+                hasSelection: store.openedThreadId != nil,
                 threadFocus: store.threadFocusMode,
                 fullWindowThreads: fullWindowThreads)
             Group {
@@ -98,6 +97,9 @@ struct ContentView: View {
             // Pathological short panes: float compose instead of a 0-height dock.
             store.demoteInlineComposeIfPaneTooShort(paneHeight: frame.height)
         }
+        // One app-level Reduce Motion gate covers legacy and new transitions.
+        // Triage/navigation already use no animation even when motion is on.
+        .transaction { if reduceMotion { $0.disablesAnimations = true } }
         .onPreferenceChange(ComposeHostFrameKey.self) { composeHostFrame = $0 }
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         // Typing only feeds the dropdown preview; the list follows
@@ -111,48 +113,43 @@ struct ContentView: View {
         // A clicked (not keyboard-browsed) selection reopens the reading pane.
         // Clicking a pure draft skips the pane entirely and hops straight
         // into compose at the bottom (Notion Mail-style).
-        // Observe listFocus (not MailStore) so focus moves don't require a
-        // full-store publish.
+        // Observe listFocus (not MailStore) — selection changes publish only
+        // through ListFocusState, so this is the trigger that consumes the
+        // one-shot selection intent.
         .onChange(of: listFocus.id) {
-            let keyboardSelection = store.selectionViaKeyboard
-            let quietSelection = store.selectionQuiet
-            defer {
-                store.selectionViaKeyboard = false
-                store.selectionQuiet = false
-            }
+            let intent = store.consumeSelectionIntent()
             // Leaving a thread (or clearing selection) promotes inline compose
             // to the floating card so the draft stays editable.
             store.promoteInlineComposeIfNeeded(
-                selectedThreadId: listFocus.id,
+                selectedThreadId: store.selectedThreadId,
                 readingPaneHidden: effectivePaneHidden)
             // Focus mode requires a conversation; drop it when selection clears.
-            if listFocus.id == nil {
+            if store.selectedThreadId == nil {
                 store.threadFocusMode = false
-                setOpenedThreadId(nil)
                 detailSelectionTask?.cancel()
             }
-            guard let selectedId = listFocus.id else { return }
+            guard let selectedId = store.selectedThreadId else { return }
             // Auto-highlight of the top row (Superhuman default): selection
             // only — never opens the conversation.
-            if quietSelection { return }
-            if keyboardSelection {
+            if intent == .quiet { return }
+            if intent == .browse {
                 // Hidden-pane browsing is highlight-only. Any visible preview,
                 // including the first keyboard selection in compact mode,
                 // coalesces repeats and opens the final row.
                 if !effectivePaneHidden {
                     if DetailOpenPolicy.opensImmediately(
-                        openedThreadId: openedThreadId,
+                        openedThreadId: store.openedThreadId,
                         listedIds: store.threads.lazy.map(\.id)) {
                         // Auto-advance after trash/archive: the opened row is
                         // gone, so debouncing would blank and rebuild the pane.
                         detailSelectionTask?.cancel()
-                        setOpenedThreadId(selectedId)
+                        store.openDetail(selectedId)
                     } else {
                         scheduleDetailSelection(selectedId)
                     }
                 }
             } else {
-                openClickedThread(selectedId)
+                openClickedThread(selectedId, intent: intent)
             }
         }
         // A click on the row that is already selected (e.g. the pre-highlighted
@@ -170,9 +167,9 @@ struct ContentView: View {
                 selectedThreadId: store.selectedThreadId,
                 readingPaneHidden: readingPaneHidden)
             if readingPaneHidden { store.threadFocusMode = false }
-            else if let selected = listFocus.id {
+            else if let selected = store.selectedThreadId {
                 detailSelectionTask?.cancel()
-                setOpenedThreadId(selected)
+                store.openDetail(selected)
             }
         }
         .onChange(of: store.threadFocusMode) {
@@ -181,16 +178,15 @@ struct ContentView: View {
             // Going back to the list with an inline reply open keeps the
             // draft as a floating card instead of tearing it down.
             store.promoteInlineComposeIfNeeded(
-                selectedThreadId: listFocus.id,
+                selectedThreadId: store.selectedThreadId,
                 readingPaneHidden: !store.threadFocusMode)
-            if store.threadFocusMode, let selected = listFocus.id {
+            if store.threadFocusMode, let selected = store.selectedThreadId {
                 detailSelectionTask?.cancel()
-                setOpenedThreadId(selected)
+                store.openDetail(selected)
             }
         }
         .onChange(of: store.selectedView) {
-            store.selectedThreadId = nil
-            setOpenedThreadId(nil)
+            store.clearSelection()
             store.clearCheckedThreads()
             store.resetChips()
             // Sidebar click (or any selectedView write) should land on the
@@ -205,7 +201,7 @@ struct ContentView: View {
         .onChange(of: store.chips) { store.reloadThreadsDebounced() }
         .onAppear {
             store.readingPaneHiddenForCompose = effectivePaneHidden
-            setOpenedThreadId(listFocus.id)
+            store.openDetail(store.selectedThreadId)
             installKeyMonitor()
             // Don't let the sidebar search field start with keyboard focus —
             // it would swallow Esc/j/k until clicked away.
@@ -301,8 +297,8 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(.easeOut(duration: 0.15), value: store.undoAction?.id)
-        .animation(.easeOut(duration: 0.15), value: store.notice)
+        .animation(PMMotion.feedback, value: store.undoAction?.id)
+        .animation(PMMotion.feedback, value: store.notice)
         .sheet(item: $store.editingView) { view in
             ViewEditor(view: view)
         }
@@ -562,8 +558,8 @@ struct ContentView: View {
         // observes listFocus for open policy / toolbar) but must not rebuild
         // ThreadDetailView until openedThreadId actually changes.
         DetailPaneHost(
-            openedThreadId: openedThreadId,
-            thread: openedThreadId.flatMap { id in
+            openedThreadId: store.openedThreadId,
+            thread: store.openedThreadId.flatMap { id in
                 store.threads.first(where: { $0.id == id })
             },
             compact: compact,
@@ -574,8 +570,7 @@ struct ContentView: View {
                 if store.threadFocusMode {
                     store.threadFocusMode = false
                 } else {
-                    listFocus.id = nil
-                    setOpenedThreadId(nil)
+                    store.clearSelection()
                 }
             },
             onReply: { msg in
@@ -602,8 +597,8 @@ private struct DetailPaneHost: View, Equatable {
     // Closures are deliberately excluded, so a skipped body keeps the OLD
     // captures. Safe only while every environment value a closure captures is
     // mirrored by a compared field (onReply's `effectivePaneHidden` ↔
-    // `paneHidden`; onBack reads store/listFocus live). If you capture a new
-    // value in a closure, add its mirror here or it will go stale.
+    // `paneHidden`; onBack reads store live). If you capture a new value in a
+    // closure, add its mirror here or it will go stale.
     static func == (lhs: DetailPaneHost, rhs: DetailPaneHost) -> Bool {
         lhs.openedThreadId == rhs.openedThreadId
             && lhs.thread == rhs.thread
@@ -622,6 +617,7 @@ private struct DetailPaneHost: View, Equatable {
                     focusMode: focusMode,
                     onBack: onBack,
                     onReply: onReply)
+                    .id(thread.id)
             } else {
                 Text("Select a conversation")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -629,12 +625,19 @@ private struct DetailPaneHost: View, Equatable {
             }
         }
         .background(Color.notionContent)
+        // Keep the last messages above the overlay card.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Color.clear
                 .frame(height: inlineReserve)
                 .accessibilityHidden(true)
         }
         .animation(nil, value: inlineReserve)
+        // Publish the reading column's global frame for inline compose pin.
+        // MUST sit outside the safeAreaInset: the reserve height is computed
+        // from this measurement, so measuring inside the inset feeds the
+        // reserve back into its own input — at window heights below ~1050pt
+        // the two maps have no fixed point and layout livelocks (396↔592
+        // oscillation, 99% CPU, unbounded memory; shipped in 72d6524).
         .background(
             GeometryReader { geo in
                 Color.clear.preference(
@@ -668,10 +671,55 @@ private extension ContentView {
                 store.toggleSplitCompose()
                 return nil
             }
+            // Compose Esc ladder (before NSText passthrough): expanded compose
+            // owns Esc while open, but priority is explicit — never local-
+            // monitor install order (FIFO; an early `return nil` starves later
+            // monitors). Pure policy in ComposeEsc.intent.
+            if event.keyCode == 53 {
+                let isSettings = event.window?.identifier?.rawValue
+                    .contains("Settings") == true
+                let composeExpanded = store.composeRequest != nil
+                    && !store.composeMinimized
+                let isSplit = store.composeRequest?.presentation == .split
+                switch ComposeEsc.intent(
+                    isSettingsWindow: isSettings,
+                    slashPickerVisible: store.slashPickerVisible,
+                    commandPaletteOpen: store.showCommandPalette,
+                    searchActive: store.searchActive,
+                    composeExpanded: composeExpanded,
+                    isSplit: isSplit) {
+                case .passThrough:
+                    // Settings: when compose is nil/minimized the mailbox Esc
+                    // ladder below owns blur-then-close; with expanded compose
+                    // that gate is skipped and AppKit gets the event (pre-existing).
+                    break
+                case .dismissSlashPicker:
+                    store.dismissSlashPicker()
+                    return nil
+                case .closeCommandPalette:
+                    store.showCommandPalette = false
+                    return nil
+                case .dismissSearchFocus:
+                    // Keep the draft; drop search focus/panel (three-pane +
+                    // floating compose + `/` must not save-and-close).
+                    event.window?.makeFirstResponder(nil)
+                    store.dismissSearchPanel()
+                    return nil
+                case .exitSplit:
+                    store.exitSplitCompose()
+                    return nil
+                case .saveAndCloseCompose:
+                    store.requestComposeEsc()
+                    return nil
+                case .fallThrough:
+                    break
+                }
+            }
             // Expanded compose + typing: every chord belongs to the text system
             // / compose handlers (⌘K insert-link, ⌃F/⌃K caret motion, …), not
             // app-level shortcuts. Minimized compose resigns focus so inbox
-            // keys work again (Notion Mail-style).
+            // keys work again (Notion Mail-style). Esc for compose is handled
+            // above so it is not trapped here.
             if store.composeRequest != nil, !store.composeMinimized,
                event.window?.firstResponder is NSText {
                 return event
@@ -867,7 +915,7 @@ private extension ContentView {
                     return nil
                 }
                 if layoutMode == .compactDetail {
-                    listFocus.id = nil
+                    store.clearSelection()
                     return nil
                 }
                 if !fullWindowThreads, !readingPaneHidden {
@@ -908,21 +956,19 @@ private extension ContentView {
                 withAnimation { sidebarHidden = false }
                 return nil
             case 125:  // down
-                store.selectionViaKeyboard = true
-                store.moveSelection(1)
+                store.moveSelection(1, intent: .browse)
                 return nil
             case 126:  // up
-                store.selectionViaKeyboard = true
-                store.moveSelection(-1)
+                store.moveSelection(-1, intent: .browse)
                 return nil
             case 36:   // return
                 if let thread = store.selectedThread {
                     if store.isDraftOnly(thread) {
                         store.editDraft(inThread: thread)
-                        listFocus.id = nil
+                        store.clearSelection()
                     } else {
                         detailSelectionTask?.cancel()
-                        setOpenedThreadId(thread.id)
+                        store.openDetail(thread.id)
                         if fullWindowThreads {
                             store.threadFocusMode = true
                         } else {
@@ -935,9 +981,6 @@ private extension ContentView {
                 break
             }
             guard let chars = event.charactersIgnoringModifiers else { return event }
-            if let cmd = store.keyBindings.command(for: chars), cmd == .next || cmd == .prev {
-                store.selectionViaKeyboard = true
-            }
             if store.handleKey(chars) { return nil }
             // Unhandled printable keys must not fall through: SwiftUI List
             // type-selects to the first row starting with that letter, which
@@ -954,15 +997,21 @@ private extension ContentView {
 
     /// Open from a mouse click — immediately, no debounce. Also serves
     /// re-clicks on the already-selected row (openSelectedToken), where the
-    /// List selection binding never fires.
-    private func openClickedThread(_ selectedId: String) {
+    /// List selection binding never fires. Non-navigation intents
+    /// (auto-advance, restore-focus) swap the mounted detail but never
+    /// redirect drafts to compose or reveal a pane the user hid.
+    private func openClickedThread(_ selectedId: String,
+                                   intent: ThreadSelectionIntent = .click) {
         detailSelectionTask?.cancel()
-        setOpenedThreadId(selectedId)
-        if let thread = store.selectedThread, store.isDraftOnly(thread) {
+        store.openDetail(selectedId)
+        if intent.redirectsDraftToCompose,
+           let thread = store.selectedThread,
+           store.isDraftOnly(thread) {
             store.editDraft(inThread: thread)
-            listFocus.id = nil
+            store.clearSelection()
             return
         }
+        guard intent.revealsReadingPane else { return }
         if fullWindowThreads {
             store.threadFocusMode = true
         } else {
@@ -980,21 +1029,8 @@ private extension ContentView {
             } catch {
                 return
             }
-            guard listFocus.id == id else { return }
-            setOpenedThreadId(id)
-        }
-    }
-
-    /// Single write path for the expensive reading-pane id: also arms neighbor
-    /// prefetch for the *opened* thread (never for intermediate focus rows).
-    private func setOpenedThreadId(_ id: String?) {
-        guard openedThreadId != id else {
-            if id == nil { store.scheduleNeighborPrefetch(around: nil) }
-            return
-        }
-        PerfMetrics.measure(.navDetailOpen, meta: id == nil ? "nil" : "open") {
-            openedThreadId = id
-            store.scheduleNeighborPrefetch(around: id)
+            guard store.selectedThreadId == id else { return }
+            store.openDetail(id)
         }
     }
 }

@@ -15,8 +15,8 @@ enum DefaultMailClient {
             switch self {
             case .didNotChange(let currentHandler):
                 let current = currentHandler.map { " It is still \($0)." } ?? ""
-                return "macOS did not change the default email app.\(current) "
-                    + "Please approve the system confirmation and try again."
+                return "macOS did not change the default email app.\(current)"
+                    + " Please approve the system confirmation and try again."
             }
         }
     }
@@ -57,7 +57,9 @@ enum DefaultMailClient {
                     completion(error)
                     return
                 }
-                verifyDefault(attemptsRemaining: 5, completion: completion)
+                // 8 s window: the change lands only after the user clicks
+                // through the system confirmation dialog, which is user-paced.
+                verifyDefault(attemptsRemaining: 40, completion: completion)
             }
     }
 

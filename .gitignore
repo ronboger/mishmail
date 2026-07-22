@@ -14,3 +14,4 @@ xcuserdata/
 
 # Personal signing overrides (see Config/Signing.xcconfig)
 Config/Local.xcconfig
+__pycache__/

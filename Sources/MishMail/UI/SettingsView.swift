@@ -134,10 +134,24 @@ struct GoogleAPISettings: View {
     private var trimmedID: String { clientID.trimmingCharacters(in: .whitespacesAndNewlines) }
     private var trimmedSecret: String { clientSecret.trimmingCharacters(in: .whitespacesAndNewlines) }
 
+    /// Demo/UI-test processes never touch Keychain, so a pasted secret would
+    /// be silently dropped (and the Client ID would leak into the shared
+    /// Debug preferences). Don't offer the form there at all.
+    private var isFixtureProcess: Bool {
+        !OAuthConfig.usesKeychain(environment: ProcessInfo.processInfo.environment)
+    }
+
     var body: some View {
         PaneScaffold(title: "Google API") {
             Form {
-                if editing {
+                if isFixtureProcess {
+                    Section {
+                        Text("The fictional demo can't store Google API credentials — nothing here syncs or signs in. Quit and run make run DEMO=0 to configure a real inbox.")
+                            .foregroundStyle(.secondary)
+                    } header: {
+                        Text("Google OAuth (Desktop app client)")
+                    }
+                } else if editing {
                     Section {
                         TextField("Client ID", text: $clientID)
                         SecureField("Client Secret", text: $clientSecret)
@@ -199,7 +213,7 @@ struct GoogleAPISettings: View {
         // navigates away mid-paste — keep what they typed instead of
         // silently dropping it (the pane's @State dies with the pane).
         .onDisappear {
-            if editing, !OAuthConfig.isConfigured, !trimmedID.isEmpty {
+            if !isFixtureProcess, editing, !OAuthConfig.isConfigured, !trimmedID.isEmpty {
                 OAuthConfig.clientID = trimmedID
                 OAuthConfig.clientSecret = trimmedSecret
             }

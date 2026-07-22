@@ -116,6 +116,7 @@ targets:
       - Sources/MishMail/Support/Markdown.swift
       - Sources/MishMail/Support/MailLayout.swift
       - Sources/MishMail/Support/ComposePlacement.swift
+      - Sources/MishMail/Support/ComposeEsc.swift
       - Sources/MishMail/Support/DemoSeed.swift
       - Sources/MishMail/Support/ErrorRecovery.swift
       - Sources/MishMail/Support/Ollama.swift
@@ -126,6 +127,7 @@ targets:
       - Sources/MishMail/Support/ThreadListCursor.swift
       - Sources/MishMail/Support/NeighborPrefetch.swift
       - Sources/MishMail/Support/ThreadRefresh.swift
+      - Sources/MishMail/Support/ThreadDetailCache.swift
       - Sources/MishMail/Support/DefaultMailClient.swift
       - Sources/MishMail/Support/MarkReadOnOpen.swift
       - Sources/MishMail/Support/PendingDraftVisibility.swift

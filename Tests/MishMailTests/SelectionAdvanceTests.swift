@@ -1,6 +1,26 @@
 import XCTest
 
 final class SelectionAdvanceTests: XCTestCase {
+    func testSelectionIntentOnlyDebouncesBrowsing() {
+        XCTAssertFalse(ThreadSelectionIntent.browse.opensDetailImmediately)
+        XCTAssertTrue(ThreadSelectionIntent.click.opensDetailImmediately)
+        XCTAssertTrue(ThreadSelectionIntent.autoAdvance.opensDetailImmediately)
+        XCTAssertTrue(ThreadSelectionIntent.explicitOpen.opensDetailImmediately)
+        XCTAssertFalse(ThreadSelectionIntent.quiet.opensDetailImmediately)
+        XCTAssertTrue(ThreadSelectionIntent.restoreFocus.opensDetailImmediately)
+    }
+
+    func testOnlyDirectNavigationMayRevealPaneOrRedirectDraft() {
+        for intent in [ThreadSelectionIntent.browse, .autoAdvance, .restoreFocus, .quiet] {
+            XCTAssertFalse(intent.revealsReadingPane)
+            XCTAssertFalse(intent.redirectsDraftToCompose)
+        }
+        for intent in [ThreadSelectionIntent.click, .explicitOpen] {
+            XCTAssertTrue(intent.revealsReadingPane)
+            XCTAssertTrue(intent.redirectsDraftToCompose)
+        }
+    }
+
     func testMiddleRowAdvancesDown() {
         XCTAssertEqual(SelectionAdvance.neighborId(in: ["a", "b", "c"], removing: "b"), "c")
     }
@@ -57,6 +77,45 @@ final class SelectionAdvanceTests: XCTestCase {
             SelectionAdvance.neighborId(in: ["a", "b", "c"],
                                         removing: ["a"], focus: nil),
             "b")
+    }
+
+    func testRemovalDestinationsAdvanceFocusAndDetailIndependently() {
+        let result = SelectionAdvance.destinations(
+            in: ["a", "b", "c", "d"],
+            removing: ["a", "c"],
+            selected: "c",
+            opened: "a")
+
+        XCTAssertEqual(
+            result,
+            .init(selectedId: "d", openedId: "b",
+                  selectedWasRemoved: true, openedWasRemoved: true))
+    }
+
+    func testRemovingOnlyOpenedThreadPreservesListFocus() {
+        let result = SelectionAdvance.destinations(
+            in: ["a", "b", "c"],
+            removing: ["a"],
+            selected: "c",
+            opened: "a")
+
+        XCTAssertEqual(result.selectedId, "c")
+        XCTAssertEqual(result.openedId, "b")
+        XCTAssertFalse(result.selectedWasRemoved)
+        XCTAssertTrue(result.openedWasRemoved)
+    }
+
+    func testRemovingOnlyFocusedThreadPreservesMountedDetail() {
+        let result = SelectionAdvance.destinations(
+            in: ["a", "b", "c"],
+            removing: ["c"],
+            selected: "c",
+            opened: "a")
+
+        XCTAssertEqual(result.selectedId, "b")
+        XCTAssertEqual(result.openedId, "a")
+        XCTAssertTrue(result.selectedWasRemoved)
+        XCTAssertFalse(result.openedWasRemoved)
     }
 
     // MARK: - Range
@@ -168,5 +227,49 @@ final class SelectionAdvanceTests: XCTestCase {
         let stay = ThreadListOptimistic.plan(leavesCurrentList: false)
         XCTAssertEqual(stay.effect, .updateInPlace)
         XCTAssertEqual(stay.sideEffects, .none)
+    }
+
+    func testUndoInsertionRestoresDescendingListOrder() {
+        let now = Date()
+        let newest = fixtureThread(id: "c", date: now)
+        let restored = fixtureThread(
+            id: "b", date: now.addingTimeInterval(-10))
+        let oldest = fixtureThread(
+            id: "a", date: now.addingTimeInterval(-20))
+
+        XCTAssertEqual(
+            ThreadListOptimistic.insertionIndex(
+                for: restored, in: [newest, oldest], inboundSort: false),
+            1)
+    }
+
+    func testUndoInsertionUsesInboundDateForInboxViews() {
+        let now = Date()
+        let newest = fixtureThread(
+            id: "new", date: now,
+            inboundDate: now.addingTimeInterval(-10))
+        let restored = fixtureThread(
+            id: "restore", date: now.addingTimeInterval(100),
+            inboundDate: now.addingTimeInterval(-20))
+        let oldest = fixtureThread(
+            id: "old", date: now.addingTimeInterval(200),
+            inboundDate: now.addingTimeInterval(-30))
+
+        XCTAssertEqual(
+            ThreadListOptimistic.insertionIndex(
+                for: restored, in: [newest, oldest], inboundSort: true),
+            1)
+    }
+
+    private func fixtureThread(id: String, date: Date,
+                               inboundDate: Date? = nil) -> MailThread {
+        MailThread(
+            id: id, accountId: "a", gmailThreadId: id,
+            subject: id, snippet: "", fromDisplay: "F",
+            lastDate: date, isUnread: false, isStarred: false,
+            inInbox: true, inTrash: false, labelIds: "INBOX",
+            snoozeUntil: nil, participants: "F", messageCount: 1,
+            hasAttachment: false, reminderAt: nil,
+            lastInboundDate: inboundDate)
     }
 }

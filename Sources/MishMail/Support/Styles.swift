@@ -18,6 +18,14 @@ enum PMSpacing {
     static let xl: CGFloat = 24
 }
 
+/// Shared motion vocabulary. Navigation and list triage intentionally use no
+/// animation; these tokens are for small, interruptible disclosure/feedback.
+enum PMMotion {
+    static let quick = Animation.easeOut(duration: 0.08)
+    static let interactive = Animation.easeOut(duration: 0.12)
+    static let feedback = Animation.easeOut(duration: 0.15)
+}
+
 /// Corner radii. Prefer `outer(inner:padding:)` when nesting rounded surfaces
 /// so the outer arc stays concentric with the inner one.
 enum PMRadius {
@@ -41,7 +49,7 @@ struct PressScaleButtonStyle: ButtonStyle {
     func makeBody(configuration: Configuration) -> some View {
         configuration.label
             .scaleEffect(enabled && configuration.isPressed ? 0.96 : 1)
-            .animation(.easeOut(duration: 0.12), value: configuration.isPressed)
+            .animation(PMMotion.interactive, value: configuration.isPressed)
     }
 }
 

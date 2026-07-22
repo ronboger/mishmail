@@ -209,8 +209,8 @@ final class LabelPickerState: ObservableObject {
 
 /// List-row focus (highlight), split out of MailStore so holding ↓ / j only
 /// re-renders views that observe this object — not the whole mailbox tree
-/// (sidebar, detail, compose). The expensive reading-pane id lives separately
-/// as `openedThreadId` in ContentView.
+/// (sidebar, detail, compose). The expensive reading-pane id stays on
+/// MailStore as `openedThreadId` and only changes when a conversation opens.
 @MainActor
 final class ListFocusState: ObservableObject {
     @Published var id: String?
@@ -231,17 +231,22 @@ final class MailStore: ObservableObject {
             resetListWindow()
         }
     }
-    /// List highlight / action target. Backed by `listFocus` so key-repeat
-    /// does not publish through MailStore (which would rebuild the reading
-    /// pane tree, sidebar, and every `ThreadRow` EnvironmentObject client).
-    /// The reading pane follows `openedThreadId` in ContentView after settle.
+    /// Lightweight list focus. Keyboard repeat updates this immediately.
+    /// Backed by `listFocus` so key-repeat does not publish through MailStore
+    /// (which would rebuild the reading-pane tree, sidebar, and every view
+    /// observing the store). Views that read selection in `body` must observe
+    /// `listFocus` — a focus-only change publishes nothing on MailStore.
     var selectedThreadId: String? {
         get { listFocus.id }
         set { listFocus.id = newValue }
     }
     /// Narrow observation surface for list focus — injected as
-    /// `@EnvironmentObject` on ContentView / ThreadListView.
+    /// `@EnvironmentObject` alongside the store in MishMailApp.
     let listFocus = ListFocusState()
+    /// Conversation whose content is mounted in the reading pane. This can
+    /// intentionally lag list focus while keyboard browsing coalesces repeats.
+    @Published private(set) var openedThreadId: String?
+    private var pendingSelectionIntent: ThreadSelectionIntent?
     /// Gmail drafts retained remotely during Undo Send but hidden locally so
     /// the thread never shows both "Draft" and "Sending…".
     @Published private(set) var suppressedDraftMessageIds: Set<String> = []
@@ -253,8 +258,7 @@ final class MailStore: ObservableObject {
     @Published var checkedThreadIds: Set<String> = []
     /// Anchor for shift-click range select on checkboxes.
     private var lastCheckedThreadId: String?
-    /// Cancels in-flight neighbor header/body warm when the *opened* thread
-    /// settles (not on every focus move).
+    /// Cancels in-flight neighbor header/body warm when selection moves.
     private var neighborPrefetchTask: Task<Void, Never>?
     /// In-flight contacts rebuild (full-table `message` scan); must be
     /// cancelled and awaited before the DatabasePool is closed on quit.
@@ -403,6 +407,20 @@ final class MailStore: ObservableObject {
     /// Compose card is collapsed to a title strip (Notion Mail-style). Draft
     /// state stays mounted; inbox shortcuts work again while minimized.
     @Published var composeMinimized = false
+    /// ComposeView publishes whether the `/` snippet picker is showing so the
+    /// ContentView Esc ladder can dismiss it without relying on local-monitor
+    /// install order (monitors fire FIFO; an early `return nil` starves later ones).
+    @Published var slashPickerVisible = false
+    /// Bumped to dismiss the `/` picker (ComposeView sets `slashDismissed`).
+    @Published private(set) var slashPickerDismissToken = 0
+    func dismissSlashPicker() {
+        guard slashPickerVisible else { return }
+        slashPickerDismissToken &+= 1
+    }
+    /// Bumped for expanded-compose Esc (sheet dismiss → save & close). Same
+    /// role as the close button's `.cancelAction`, but works while NSText has focus.
+    @Published private(set) var composeEscToken = 0
+    func requestComposeEsc() { composeEscToken &+= 1 }
     /// Reading pane fills the window (sidebar + list hidden). Toggled with ⌘↩
     /// when a conversation is selected and Send is not claiming the chord.
     @Published var threadFocusMode = false
@@ -1031,6 +1049,7 @@ struct ComposeRequest: Identifiable {
     func clearComposeRequest() {
         composeRequest = nil
         composeMinimized = false
+        slashPickerVisible = false
         guard let mail = pendingMailto else { return }
         pendingMailto = nil
         openMailtoCompose(mail)
@@ -1117,7 +1136,7 @@ struct ComposeRequest: Identifiable {
 
     func setActiveAccount(_ id: String?) {
         activeAccountId = id
-        selectedThreadId = nil
+        clearSelection()
         clearCheckedThreads()
         readStateKeepIds.removeAll()
         reloadThreads()
@@ -1158,12 +1177,20 @@ struct ComposeRequest: Identifiable {
     }
 
     private let db = AppDatabase.shared.dbPool
+    private let threadDetailRepository = ThreadDetailRepository(
+        db: AppDatabase.shared.dbPool)
     private var syncTimer: Timer?
     private var undoTimer: Timer?
     private var engines: [String: SyncEngine] = [:]
     private var clients: [String: GmailClient] = [:]
     private var knownUnreadInboxIds: Set<String> = []
     private var notifiedThreadIds: Set<String> = []
+    /// Serial tail for optimistic thread writes. UI updates happen first; the
+    /// tail preserves mutation order and is awaited before database shutdown.
+    private var threadMutationPersistenceTask: Task<Result<Void, Error>, Never>?
+    /// Rapid triage reconciles once after the user pauses instead of launching
+    /// a full list/count query for every key press.
+    private var threadMutationReconcileTask: Task<Void, Never>?
     // Threads whose read state changed while an unread/read filter was active.
     // They stay listed (so opening an unread thread doesn't yank it out from
     // under the reading pane) until the filter is dropped or the view changes.
@@ -1223,7 +1250,7 @@ struct ComposeRequest: Identifiable {
         lastError = nil
         accountsNeedingReauth.removeAll()
         selectedView = .inbox
-        selectedThreadId = nil
+        clearSelection()
         reloadAccounts()
         reloadSavedViews()
         loadVIPs()
@@ -1245,7 +1272,7 @@ struct ComposeRequest: Identifiable {
         lastError = nil
         accountsNeedingReauth.removeAll()
         selectedView = .inbox
-        selectedThreadId = nil
+        clearSelection()
         // Drop any queued browser mailto: — demo teardown isn't a user close.
         pendingMailto = nil
         composeRequest = nil
@@ -1479,17 +1506,23 @@ struct ComposeRequest: Identifiable {
             loadMoreTask,
             chipReloadTask,
             neighborPrefetchTask,
+            threadMutationReconcileTask,
         ].compactMap { $0 }
         contactsRebuildTask = nil
         threadReloadTask = nil
         loadMoreTask = nil
         chipReloadTask = nil
         neighborPrefetchTask = nil
+        threadMutationReconcileTask = nil
 
         // Flush while the pool is still open (may write / send).
         if pendingSend != nil {
             await flushPendingSend()
         }
+        // UI-first mutations persist on a serial tail. Do not close SQLCipher
+        // while the last optimistic action is still being committed.
+        _ = await threadMutationPersistenceTask?.value
+        threadMutationPersistenceTask = nil
 
         await DatabaseLifecycle.shutDown(
             tasks: tasks,
@@ -1543,7 +1576,7 @@ struct ComposeRequest: Identifiable {
     /// and clear `selectedThreadId` right after we set it).
     func openThread(_ thread: MailThread) {
         threads = OpenFromSearch.ensuringVisible(opening: thread, in: threads)
-        selectedThreadId = thread.id
+        selectThread(thread.id, intent: .explicitOpen)
         // Bind pin to the current reload epoch (commitSearch already bumped
         // this when the panel path commits a query first).
         preserveOpenThreadId = thread.id
@@ -2369,6 +2402,22 @@ struct ComposeRequest: Identifiable {
 
     /// Headers + snippet only (empty body fields). Cheap open path for the
     /// reading pane; hydrate bodies with `messageBody(id:)` on expand.
+    func threadDetailPayload(threadId: String,
+                             forceReload: Bool = false) async -> ThreadDetailLoad {
+        let suppressed = suppressedDraftMessageIds
+        let contentVersion = threadContentVersion
+        return await threadDetailRepository.payload(
+            threadId: threadId,
+            suppressingDrafts: suppressed,
+            contentVersion: contentVersion,
+            forceReload: forceReload)
+    }
+
+    /// Off-main body hydration for an expanded reading-pane card.
+    func messageBodyForReadingPane(id: String) async -> Message? {
+        await threadDetailRepository.messageBody(id: id)
+    }
+
     func messageHeaders(inThread threadId: String) -> [Message] {
         PerfMetrics.measure(.openHeaders) {
             let fetched = (try? db.read { db in
@@ -2497,11 +2546,12 @@ struct ComposeRequest: Identifiable {
     // MARK: - Account lifecycle
 
     func addAccount(reauthorizing hint: String? = nil) {
-        // `make run` is a deliberately Keychain-free, ad-hoc demo process
-        // backed by a known fixture key and isolated database directory. Never
-        // let real OAuth data cross that boundary; relaunching with DEMO=0
-        // requires stable signing before any real account can be connected.
-        guard ProcessInfo.processInfo.environment["MISHMAIL_DEMO"] != "1" else {
+        // `make run` / UI tests are deliberately Keychain-free, ad-hoc fixture
+        // processes backed by a known database key and isolated directory.
+        // Never let real OAuth data cross that boundary; relaunching with
+        // DEMO=0 requires stable signing before any real account connects.
+        guard !AppDatabase.usesFixtureDatabaseKey(
+            environment: ProcessInfo.processInfo.environment) else {
             lastError = "The developer demo cannot connect real accounts. Quit it, configure free Personal Team signing, then run make run DEMO=0."
             return
         }
@@ -3054,27 +3104,16 @@ struct ComposeRequest: Identifiable {
         }
     }
 
-    /// Set right before a keyboard-driven selection change (j/k, arrows) so
-    /// the UI can keep the reading pane closed while browsing; a mouse click
-    /// (which never sets it) reopens the pane. Cleared after each change.
-    var selectionViaKeyboard = false
-
-    /// Set right before a programmatic highlight-only selection (the
-    /// Superhuman-style "top row is pre-selected so ↩ just works" default).
-    /// The UI must never open the conversation for it. Cleared after each
-    /// change.
-    var selectionQuiet = false
-
     /// Superhuman-style default: whenever nothing is selected, highlight the
     /// top visible row (without opening it) so ↩ opens it immediately.
     /// `displayOrder` can be stale while the list is unmounted (thread focus)
-    /// — only trust it when the row is still listed.
+    /// — only trust it when the row is still listed. Routed through the
+    /// selection gateway with `.quiet` so the UI never opens it.
     func autoSelectTopThread() {
         guard selectedThreadId == nil,
               let first = displayOrder.first,
               threads.contains(where: { $0.id == first }) else { return }
-        selectionQuiet = true
-        selectedThreadId = first
+        selectThread(first, intent: .quiet)
     }
 
     /// Bumped when a click lands on the already-selected row. List(selection:)
@@ -3099,29 +3138,71 @@ struct ComposeRequest: Identifiable {
         displayOrderIndex = ThreadListNavigation.indexMap(for: order)
     }
 
-    func moveSelection(_ delta: Int) {
-        PerfMetrics.measure(.navFocus, meta: "δ=\(delta)") {
-            let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
-            let index = displayOrder.isEmpty
-                ? ThreadListNavigation.indexMap(for: order)
-                : displayOrderIndex
-            guard let next = ThreadListNavigation.move(
-                selected: selectedThreadId, delta: delta,
-                order: order, indexById: index) else { return }
-            selectedThreadId = next
+    /// Single selection gateway. Auto-advance changes opened content before
+    /// the removed row leaves `threads`, so the reading pane never renders an
+    /// empty intermediate state.
+    func selectThread(_ id: String?, intent: ThreadSelectionIntent) {
+        let interval = PerfMetrics.begin(
+            .selectionFocus,
+            meta: "intent=\(intent.rawValue)")
+        if intent.opensDetailImmediately {
+            openDetail(id)
+        }
+        setSelectionFocus(id, intent: intent)
+        interval.end(extraMeta: id == nil ? "cleared" : "selected")
+    }
+
+    private func setSelectionFocus(_ id: String?, intent: ThreadSelectionIntent) {
+        if selectedThreadId == id {
+            // No SwiftUI onChange will consume this one-shot intent.
+            pendingSelectionIntent = nil
+        } else {
+            pendingSelectionIntent = intent
+            selectedThreadId = id
         }
     }
 
-    /// Warm headers + last message body for neighbors of the *opened* thread.
-    /// Call only when the reading pane settles — never from list-focus moves,
-    /// so holding ↓ does not start/cancel DB work per intermediate row.
-    func scheduleNeighborPrefetch(around openedId: String?) {
+    /// Direct List bindings / legacy call sites have click semantics.
+    func consumeSelectionIntent() -> ThreadSelectionIntent {
+        defer { pendingSelectionIntent = nil }
+        return pendingSelectionIntent ?? .click
+    }
+
+    /// Mount detail content and schedule useful neighbor payloads. Public to
+    /// ContentView only for the settled end of a browse debounce.
+    func openDetail(_ id: String?) {
+        guard openedThreadId != id else { return }
+        PerfMetrics.measure(.navDetailOpen, meta: id == nil ? "close" : "open") {
+            openedThreadId = id
+            scheduleNeighborPrefetch(openedId: id)
+        }
+    }
+
+    func clearSelection() {
+        selectThread(nil, intent: .explicitOpen)
+    }
+
+    func moveSelection(_ delta: Int, intent: ThreadSelectionIntent = .browse) {
+        PerfMetrics.measure(.navFocus, meta: "δ=\(delta)") {
+            let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
+            let index = displayOrder.isEmpty ? [:] : displayOrderIndex
+            guard let next = ThreadListNavigation.move(
+                selected: selectedThreadId, delta: delta,
+                order: order, indexById: index) else { return }
+            selectThread(next, intent: intent)
+        }
+    }
+
+    /// Cache real reading-pane payloads only after opened content changes.
+    /// Focus-only keyboard repeat no longer creates/cancels database work.
+    private func scheduleNeighborPrefetch(openedId: String?) {
         guard !isShuttingDown else { return }
         neighborPrefetchTask?.cancel()
-        guard let openedId else { return }
         let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
-        let pool = db
-        neighborPrefetchTask = Task.detached {
+        let repository = threadDetailRepository
+        let suppressed = suppressedDraftMessageIds
+        let contentVersion = threadContentVersion
+        neighborPrefetchTask = Task {
             do {
                 try await Task.sleep(nanoseconds: 90_000_000)
             } catch {
@@ -3131,23 +3212,9 @@ struct ComposeRequest: Identifiable {
             let ids = [prev, next].compactMap { $0 }
             for id in ids {
                 guard !Task.isCancelled else { return }
-                _ = try? await pool.read { db in
-                    let headers = try Message.fetchAll(
-                        db,
-                        sql: """
-                            SELECT id, accountId, gmailId, threadId, fromHeader, toHeader, ccHeader,
-                                   bccHeader, subject, date, snippet,
-                                   '' AS bodyText, NULL AS bodyHTML,
-                                   messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment
-                            FROM message
-                            WHERE threadId = ?
-                            ORDER BY date
-                            """,
-                        arguments: [id])
-                    if let last = headers.last {
-                        _ = try MessageBody.fetchOne(db, key: last.id)
-                    }
-                }
+                _ = await repository.payload(
+                    threadId: id, suppressingDrafts: suppressed,
+                    contentVersion: contentVersion)
             }
         }
     }
@@ -3165,32 +3232,112 @@ struct ComposeRequest: Identifiable {
     private var suppressThreadReload = false
 
     private func mutateThread(_ thread: MailThread,
+                              autoAdvanceAction: String? = nil,
                               local: (inout MailThread) -> Void,
                               remote: @escaping (GmailClient, String) async throws -> Void) {
+        guard !isShuttingDown else { return }
         var copy = thread
         local(&copy)
         let updated = copy
-        try? db.write { db in
-            try updated.save(db)
-            try ThreadLabels.rewrite(db, threadId: updated.id, labelIds: updated.labelIds)
+
+        // Auto-advance before removing the selected row. `openDetail` changes
+        // synchronously for this intent, so there is never a frame where the
+        // reading pane points at a row that no longer exists.
+        if let action = autoAdvanceAction, threadLeavesCurrentList(updated) {
+            advanceForRemoval([thread.id], action: action)
         }
-        // Optimistic list update so archive/trash auto-advance still sees the
-        // row leave immediately; async reload reconciles with DB filters next.
+
+        // True optimistic ordering: publish the user-visible result before
+        // SQLCipher or Gmail can delay it.
+        applyOptimisticSidebarCountDelta(from: thread, to: updated)
         applyOptimisticThreadUpdate(updated)
         if !suppressThreadReload {
-            reloadThreads()
+            scheduleThreadMutationReconciliation()
         }
-        // Demo interactions are intentionally local. They should feel real
-        // without attempting Gmail calls for the fictional account.
-        guard !demoMode else { return }
+
+        let persistence = enqueueThreadPersistence(updated)
         let client = client(for: thread.accountId)
         let gmailThreadId = thread.gmailThreadId
+        let isDemo = demoMode
         Task {
-            do { try await remote(client, gmailThreadId) }
-            catch {
+            switch await persistence.value {
+            case .failure(let error):
+                await MainActor.run {
+                    self.lastError = "Couldn't save the local change: \(error.localizedDescription)"
+                    // Roll the optimistic projection back from the database.
+                    // The reconciliation waits for the serial write tail, so
+                    // it cannot race a later user action.
+                    self.scheduleThreadMutationReconciliation()
+                }
+                if !isDemo { await self.sync(accountId: thread.accountId) }
+                return
+            case .success:
+                break
+            }
+            // Demo interactions are intentionally local. They should feel real
+            // without attempting Gmail calls for the fictional account.
+            guard !isDemo else { return }
+            do {
+                try await remote(client, gmailThreadId)
+            } catch {
                 await MainActor.run { self.lastError = error.localizedDescription }
                 await self.sync(accountId: thread.accountId)
             }
+        }
+    }
+
+    private func enqueueThreadPersistence(
+        _ updated: MailThread
+    ) -> Task<Result<Void, Error>, Never> {
+        let predecessor = threadMutationPersistenceTask
+        let pool = db
+        let task: Task<Result<Void, Error>, Never> = Task.detached {
+            () -> Result<Void, Error> in
+            _ = await predecessor?.value
+            do {
+                try await pool.write { db in
+                    try updated.save(db)
+                    try ThreadLabels.rewrite(
+                        db, threadId: updated.id, labelIds: updated.labelIds)
+                }
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }
+        threadMutationPersistenceTask = task
+        return task
+    }
+
+    private func scheduleThreadMutationReconciliation() {
+        guard !isShuttingDown else { return }
+        threadMutationReconcileTask?.cancel()
+        threadMutationReconcileTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(nanoseconds: 140_000_000)
+            } catch {
+                return
+            }
+            guard let self, !self.isShuttingDown else { return }
+            let persistence = self.threadMutationPersistenceTask
+            _ = await persistence?.value
+            guard !Task.isCancelled, !self.isShuttingDown else { return }
+            self.reloadThreads()
+        }
+    }
+
+    private func applyOptimisticSidebarCountDelta(
+        from old: MailThread, to updated: MailThread
+    ) {
+        if let activeAccountId, old.accountId != activeAccountId { return }
+        let now = Date()
+        let before = SidebarCounts.memberships(of: old, now: now)
+        let after = SidebarCounts.memberships(of: updated, now: now)
+        for key in before.subtracting(after) {
+            unreadCounts[key] = max(0, (unreadCounts[key] ?? 0) - 1)
+        }
+        for key in after.subtracting(before) {
+            unreadCounts[key] = (unreadCounts[key] ?? 0) + 1
         }
     }
 
@@ -3198,15 +3345,26 @@ struct ComposeRequest: Identifiable {
     /// Remote calls still fan out (one Task each) but the thread-list query
     /// runs once after all optimistic writes.
     private func mutateThreads(_ targets: [MailThread],
+                               autoAdvanceAction: String? = nil,
                                local: (inout MailThread) -> Void,
                                remote: @escaping (GmailClient, String) async throws -> Void) {
-        guard !targets.isEmpty else { return }
+        guard !isShuttingDown, !targets.isEmpty else { return }
+        if let action = autoAdvanceAction {
+            let leaving = Set(targets.compactMap { thread -> String? in
+                var updated = thread
+                local(&updated)
+                return threadLeavesCurrentList(updated) ? thread.id : nil
+            })
+            advanceForRemoval(
+                leaving, action: action,
+                extraMeta: "bulk=\(targets.count)")
+        }
         suppressThreadReload = true
         for thread in targets {
             mutateThread(thread, local: local, remote: remote)
         }
         suppressThreadReload = false
-        reloadThreads()
+        scheduleThreadMutationReconciliation()
     }
 
     /// Re-pin threads under an active unread/read filter so a previously
@@ -3222,8 +3380,7 @@ struct ComposeRequest: Identifiable {
 
     private func restoreSelectionFocus(_ id: String?) {
         guard let id else { return }
-        selectionViaKeyboard = true
-        selectedThreadId = id
+        selectThread(id, intent: .restoreFocus)
     }
 
     /// Apply a local mutation to the in-memory list without waiting for the
@@ -3235,8 +3392,19 @@ struct ComposeRequest: Identifiable {
     /// auto-advance (otherwise the row sticks until async reload, advance
     /// sees it still present, and selection ends up empty).
     private func applyOptimisticThreadUpdate(_ updated: MailThread) {
-        guard let idx = threads.firstIndex(where: { $0.id == updated.id }) else { return }
         let plan = ThreadListOptimistic.plan(leavesCurrentList: threadLeavesCurrentList(updated))
+        guard let idx = threads.firstIndex(where: { $0.id == updated.id }) else {
+            if plan.effect == .updateInPlace {
+                let hasSearch = !committedSearch
+                    .trimmingCharacters(in: .whitespaces).isEmpty
+                let inbound = !hasSearch && Self.usesInboundSort(for: selectedView)
+                let insertion = ThreadListOptimistic.insertionIndex(
+                    for: updated, in: threads, inboundSort: inbound)
+                threads.insert(updated, at: insertion)
+                listWindowLimit = max(listWindowLimit, threads.count)
+            }
+            return
+        }
         switch plan.effect {
         case .remove:
             threads.remove(at: idx)
@@ -3245,6 +3413,34 @@ struct ComposeRequest: Identifiable {
         case .updateInPlace:
             threads[idx] = updated
         }
+    }
+
+    /// Move list focus and mounted detail independently before their rows are
+    /// removed. Rapid browsing intentionally lets those ids differ.
+    private func advanceForRemoval(_ removing: Set<String>, action: String,
+                                   extraMeta: String = "") {
+        guard !removing.isEmpty else { return }
+        let destinations = SelectionAdvance.destinations(
+            in: selectionOrder,
+            removing: removing,
+            selected: selectedThreadId,
+            opened: openedThreadId)
+        guard destinations.selectedWasRemoved || destinations.openedWasRemoved
+        else { return }
+
+        let interval = PerfMetrics.begin(
+            .actionAdvance,
+            meta: ["action=\(action)", extraMeta]
+                .filter { !$0.isEmpty }.joined(separator: " "))
+        // Mount the replacement first so optimistic removal cannot expose the
+        // empty-state view, but leave unrelated mounted content untouched.
+        if destinations.openedWasRemoved {
+            openDetail(destinations.openedId)
+        }
+        if destinations.selectedWasRemoved {
+            setSelectionFocus(destinations.selectedId, intent: .autoAdvance)
+        }
+        interval.end(extraMeta: destinations.openedId == nil ? "empty" : "neighbor")
     }
 
     /// Best-effort visibility check for the common leave-list mutations.
@@ -3299,18 +3495,6 @@ struct ComposeRequest: Identifiable {
         }
     }
 
-    /// Gmail-style auto-advance: after archiving/trashing/spamming the
-    /// selected thread, land on the neighbor computed before the mutation —
-    /// but only if the row actually left the list (e.g. not when a "show
-    /// archived" chip keeps it visible).
-    private func advanceSelection(after thread: MailThread, wasSelected: Bool, neighbor: String?) {
-        guard wasSelected, let neighbor,
-              !threads.contains(where: { $0.id == thread.id }),
-              threads.contains(where: { $0.id == neighbor }) else { return }
-        selectionViaKeyboard = true
-        selectedThreadId = neighbor
-    }
-
     /// Display order used for neighbor / multi-select range (list layout when
     /// known, otherwise current `threads` order).
     private var selectionOrder: [String] {
@@ -3327,36 +3511,16 @@ struct ComposeRequest: Identifiable {
         }
     }
 
-    /// After bulk remove: land on the first survivor past `focus` using the
-    /// pre-mutation order. No-op when focus was not among the removed ids, or
-    /// when the focused row is still listed (e.g. archive under a search that
-    /// includes archived mail).
-    private func advanceAfterRemoving(_ removed: Set<String>, fromOrder order: [String],
-                                      focus: String?) {
-        guard let focus, removed.contains(focus) else { return }
-        guard !threads.contains(where: { $0.id == focus }) else { return }
-        selectionViaKeyboard = true
-        if let neighbor = SelectionAdvance.neighborId(in: order, removing: removed, focus: focus),
-           threads.contains(where: { $0.id == neighbor }) {
-            selectedThreadId = neighbor
-        } else {
-            selectedThreadId = threads.first?.id
-        }
-    }
-
     func archive(_ thread: MailThread) {
-        let wasSelected = selectedThreadId == thread.id
-        let neighbor = SelectionAdvance.neighborId(in: selectionOrder, removing: thread.id)
+        let priorFocus = selectedThreadId
         // Archive always marks read: selection advance cancels the reading-pane
         // dwell timer, and Gmail's own archive treats the conversation as seen.
-        mutateThread(thread) {
+        mutateThread(thread, autoAdvanceAction: "archive") {
             $0.inInbox = false
             $0.isUnread = false
         } remote: { client, id in
             try await client.modifyThread(id: id, remove: ["INBOX", "UNREAD"])
         }
-        advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
-        let priorFocus = wasSelected ? thread.id : selectedThreadId
         offerUndo("Archived") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep([thread.id])
@@ -3377,19 +3541,16 @@ struct ComposeRequest: Identifiable {
     func archiveChecked() {
         let targets = checkedThreadsInOrder
         guard !targets.isEmpty else { return }
-        let order = selectionOrder
-        let removed = Set(targets.map(\.id))
         let focus = selectedThreadId
         // Same as single archive: drop UNREAD so a fast multi-select `e`
         // does not leave archived mail unread (dwell is cancelled by advance).
-        mutateThreads(targets, local: {
+        mutateThreads(targets, autoAdvanceAction: "archive", local: {
             $0.inInbox = false
             $0.isUnread = false
         }, remote: { client, id in
             try await client.modifyThread(id: id, remove: ["INBOX", "UNREAD"])
         })
         clearCheckedThreads()
-        advanceAfterRemoving(removed, fromOrder: order, focus: focus)
         let n = targets.count
         let ids = targets.map(\.id)
         offerUndo(n == 1 ? "Archived" : "Archived \(n) conversations") { [weak self] in
@@ -3411,15 +3572,12 @@ struct ComposeRequest: Identifiable {
     /// `inSpam`). Matches blocklist's labelIds/denorm update so optimistic
     /// UI and the next sync agree.
     func markSpam(_ thread: MailThread) {
-        let wasSelected = selectedThreadId == thread.id
-        let neighbor = SelectionAdvance.neighborId(in: selectionOrder, removing: thread.id)
-        mutateThread(thread) { t in
+        let priorFocus = selectedThreadId
+        mutateThread(thread, autoAdvanceAction: "spam") { t in
             t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
         } remote: { client, id in
             try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
         }
-        advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
-        let priorFocus = wasSelected ? thread.id : selectedThreadId
         offerUndo("Marked as spam") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep([thread.id])
@@ -3436,15 +3594,12 @@ struct ComposeRequest: Identifiable {
     /// Inverse of `markSpam`: remove SPAM, restore INBOX. Used from the
     /// overflow menu when the thread is already in Spam (and as spam-undo).
     func markNotSpam(_ thread: MailThread) {
-        let wasSelected = selectedThreadId == thread.id
-        let neighbor = SelectionAdvance.neighborId(in: selectionOrder, removing: thread.id)
-        mutateThread(thread) { t in
+        let priorFocus = selectedThreadId
+        mutateThread(thread, autoAdvanceAction: "not-spam") { t in
             t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
         } remote: { client, id in
             try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
         }
-        advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
-        let priorFocus = wasSelected ? thread.id : selectedThreadId
         offerUndo("Marked as not spam") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep([thread.id])
@@ -3463,26 +3618,22 @@ struct ComposeRequest: Identifiable {
     func markSpamChecked() {
         let targets = checkedThreadsInOrder
         guard !targets.isEmpty else { return }
-        let order = selectionOrder
         let focus = selectedThreadId
         let markAsSpam = targets.contains { !$0.inSpam }
         if markAsSpam {
-            mutateThreads(targets, local: { t in
+            mutateThreads(targets, autoAdvanceAction: "spam", local: { t in
                 t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
             }, remote: { client, id in
                 try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
             })
         } else {
-            mutateThreads(targets, local: { t in
+            mutateThreads(targets, autoAdvanceAction: "not-spam", local: { t in
                 t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
             }, remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
             })
         }
-        let removed = Set(targets.map(\.id))
         clearCheckedThreads()
-        // Not-spam usually keeps/restores rows; advance only when focus left.
-        advanceAfterRemoving(removed, fromOrder: order, focus: focus)
         let n = targets.count
         let ids = targets.map(\.id)
         let undoLabel = markAsSpam
@@ -3514,17 +3665,14 @@ struct ComposeRequest: Identifiable {
         // on the next conversation down (or the one above if it was last)
         // instead of leaving nothing selected. Computed before the mutation
         // removes the row from `threads`.
-        let wasSelected = selectedThreadId == thread.id
-        let neighbor = SelectionAdvance.neighborId(in: selectionOrder, removing: thread.id)
+        let priorFocus = selectedThreadId
         // Keep labelIds + denorm flags coherent (same pattern as markSpam) so
         // search filters on inTrash and any labelIds-based UI agree.
-        mutateThread(thread) { t in
+        mutateThread(thread, autoAdvanceAction: "trash") { t in
             t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
         } remote: { client, id in
             try await client.trashThread(id: id)
         }
-        advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
-        let priorFocus = wasSelected ? thread.id : selectedThreadId
         offerUndo("Moved to Trash") { [weak self] in
             guard let self else { return }
             // Pin before mutate so reloadThreads snapshots keepIds (opened-
@@ -3545,16 +3693,13 @@ struct ComposeRequest: Identifiable {
     func trashChecked() {
         let targets = checkedThreadsInOrder
         guard !targets.isEmpty else { return }
-        let order = selectionOrder
-        let removed = Set(targets.map(\.id))
         let focus = selectedThreadId
-        mutateThreads(targets, local: { t in
+        mutateThreads(targets, autoAdvanceAction: "trash", local: { t in
             t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
         }, remote: { client, id in
             try await client.trashThread(id: id)
         })
         clearCheckedThreads()
-        advanceAfterRemoving(removed, fromOrder: order, focus: focus)
         let n = targets.count
         let ids = targets.map(\.id)
         offerUndo(n == 1 ? "Moved to Trash" : "Moved \(n) to Trash") { [weak self] in
@@ -3620,12 +3765,12 @@ struct ComposeRequest: Identifiable {
             }
             return
         }
-        let wasSelected = selectedThreadId == thread.id
-        let neighbor = SelectionAdvance.neighborId(in: threads.map(\.id), removing: thread.id)
-        mutateThread(thread) { $0.snoozeUntil = date; $0.inInbox = false } remote: { client, id in
+        mutateThread(thread, autoAdvanceAction: "snooze") {
+            $0.snoozeUntil = date
+            $0.inInbox = false
+        } remote: { client, id in
             try await client.modifyThread(id: id, remove: ["INBOX"])
         }
-        advanceSelection(after: thread, wasSelected: wasSelected, neighbor: neighbor)
         let formatter = DateFormatter()
         formatter.dateFormat = Calendar.current.isDateInTomorrow(date) ? "'tomorrow' h a" : "MMM d, h a"
         offerUndo("Snoozed until \(formatter.string(from: date))") { [weak self] in

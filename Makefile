@@ -36,12 +36,14 @@ DEBUG_APP = $(DD)/Build/Products/Debug/MishMail Debug.app
 RELEASE_APP = $(DD)/Build/Products/Release/MishMail.app
 RELEASE_DIR = $(DD)/Build/Products/Release
 ZIP_NAME = MishMail-$(VERSION).zip
+# notarytool keychain profile used by `make release` (see release recipe).
+NOTARY_PROFILE ?= MishMail-notary
 # Real-account builds need a stable identity. Apple's free Personal Team is
 # sufficient; the paid Developer Program is only needed for distribution.
 # Ad-hoc builds are deliberately limited to compilation and the fictional demo:
 # their designated requirement changes on every rebuild, which makes macOS ask
 # for Keychain access again.
-TEAM = $(shell awk -F' *= *' '/^DEVELOPMENT_TEAM/ {print $$2; exit}' Config/Local.xcconfig 2>/dev/null)
+TEAM = $(strip $(shell awk -F' *= *' '/^DEVELOPMENT_TEAM/ {print $$2; exit}' Config/Local.xcconfig 2>/dev/null | tr -d '\r'))
 VALID_SIGNING_IDENTITY = $(if $(strip $(TEAM)),$(shell python3 scripts/check_signing.py $(TEAM) any 2>/dev/null))
 VALID_DEVELOPER_IDENTITY = $(if $(strip $(TEAM)),$(shell python3 scripts/check_signing.py $(TEAM) developer_id 2>/dev/null))
 ifeq ($(VALID_SIGNING_IDENTITY),yes)
@@ -53,7 +55,7 @@ INSTALL_SIGN_FLAGS = CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEA
 	CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.entitlements
 endif
 
-.PHONY: test ui-test build run demo install gen hooks release clean signing-doctor require-stable-signing
+.PHONY: test ui-test build run demo install gen hooks release clean signing-doctor require-stable-signing require-run-signing
 
 gen:
 	@# Worktrees lack the git-ignored Config/Local.xcconfig (personal signing
@@ -108,13 +110,16 @@ DEMO ?= 1
 # Perf harness console logs: PERF=1 make run DEMO=0
 # (signposts always emit; Console.app subsystem dev.ronboger.MishMail.perf)
 PERF ?= 0
-run: build
+# Check signing before the build so a refusal doesn't cost a full compile.
+require-run-signing:
 	@if [ "$(DEMO)" != "1" ] && [ "$(VALID_SIGNING_IDENTITY)" != "yes" ]; then \
 		echo "Refusing to launch a real inbox with an ad-hoc signature."; \
 		echo "Ad-hoc rebuilds repeatedly ask for Keychain access."; \
 		echo "Run 'make signing-doctor' for the free Personal Team setup."; \
 		exit 1; \
 	fi
+
+run: require-run-signing build
 	-pkill -f "MishMail Debug" 2>/dev/null || true
 	open -n "$(DEBUG_APP)" --env MISHMAIL_DEMO=$(DEMO) --env MISHMAIL_PERF=$(PERF)
 
@@ -174,6 +179,16 @@ release: test
 		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet \
 		CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" DEVELOPMENT_TEAM=$(TEAM) \
 		CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements
+	# Notarize and staple: the in-app updater and Gatekeeper both reject
+	# un-notarized Developer ID builds. One-time setup:
+	#   xcrun notarytool store-credentials $(NOTARY_PROFILE) \
+	#     --apple-id <appleid> --team-id $(TEAM) --password <app-specific-pw>
+	cd $(RELEASE_DIR) && \
+		ditto -c -k --keepParent MishMail.app notarize-upload.zip && \
+		xcrun notarytool submit notarize-upload.zip \
+			--keychain-profile $(NOTARY_PROFILE) --wait && \
+		rm notarize-upload.zip && \
+		xcrun stapler staple MishMail.app
 	cd $(RELEASE_DIR) && \
 		ditto -c -k --keepParent MishMail.app $(ZIP_NAME) && \
 		shasum -a 256 $(ZIP_NAME) > SHA256SUMS && \

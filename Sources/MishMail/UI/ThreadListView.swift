@@ -49,6 +49,12 @@ struct ThreadListView: View {
     /// Labels view: sections the user folded shut. Keyboard nav skips them.
     @State private var collapsedLabels: Set<String> = []
 
+    private var threadSelection: Binding<String?> {
+        Binding(
+            get: { store.selectedThreadId },
+            set: { store.selectThread($0, intent: .click) })
+    }
+
     private func isCollapsed(_ title: String) -> Bool {
         store.selectedView == .labels && collapsedLabels.contains(title)
     }
@@ -152,7 +158,7 @@ struct ThreadListView: View {
         let tint = title == "No label" ? Color.secondary : store.labelTint(anyAccount: title)
         let folded = collapsedLabels.contains(title)
         return Button {
-            withAnimation(.easeOut(duration: 0.15)) {
+            withAnimation(PMMotion.feedback) {
                 if folded { collapsedLabels.remove(title) }
                 else { collapsedLabels.insert(title) }
             }
@@ -242,7 +248,7 @@ struct ThreadListView: View {
                 multiSelectBar
                 Divider()
             }
-            List(selection: $listFocus.id) {
+            List(selection: threadSelection) {
                 ForEach(grouped, id: \.0) { title, threads in
                     Section {
                         if !isCollapsed(title) {
@@ -337,8 +343,6 @@ struct ThreadListView: View {
             .scrollContentBackground(.hidden)
             // Matching air above the first group.
             .contentMargins(.top, 40 * fontScale, for: .scrollContent)
-            // Archived/trashed rows slide out instead of blinking away.
-            .animation(.easeOut(duration: 0.2), value: store.threads)
             .onAppear { recomputeLayout() }
             .onChange(of: store.threads) { recomputeLayout() }
             .onChange(of: store.vipThreadIds) { recomputeLayout() }
@@ -1303,11 +1307,13 @@ struct ThreadRow: View, Equatable {
                 .fill(thread.isUnread ? Color.notionAccent : .clear)
                 .frame(width: 7, height: 7)
 
-            // Middle content shares one hit area so a click on the already-
-            // selected row (e.g. the pre-highlighted top row) still opens the
-            // conversation — List(selection:) fires no onChange for it (same
-            // shape as the sidebar's re-click fix). Checkbox and the trailing
-            // hover actions keep their own hits and never trigger an open.
+            // Middle content: when this row is already selected (e.g. the
+            // Superhuman-style pre-highlighted top row), List(selection:)
+            // fires no onChange — a clear overlay requests an explicit open.
+            // The overlay is mounted only while selected so it never steals
+            // hits from unselected rows (a permanent contentShape + gesture
+            // on this HStack hijacks List selection on macOS). Checkbox and
+            // trailing hover actions stay outside and keep their own hits.
             HStack(spacing: 8) {
                 HStack(spacing: 4) {
                     Text(participantsDisplay)
@@ -1342,12 +1348,13 @@ struct ThreadRow: View, Equatable {
 
                 Spacer(minLength: 8)
             }
-            .contentShape(Rectangle())
-            .simultaneousGesture(TapGesture().onEnded {
+            .overlay {
                 if model.isFocused {
-                    onOpenIfFocused()
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { onOpenIfFocused() }
                 }
-            })
+            }
 
             // Fixed-height trailing area: icons overlay the timestamp on
             // hover so the row never changes size.

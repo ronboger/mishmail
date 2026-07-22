@@ -28,6 +28,15 @@ minor versions may still change behavior.
   instance moves between placements, so typed text is never lost.
 
 ### Changed
+- **Instant triage handoff** — archive, trash, spam, and snooze now publish
+  their row/count changes before encrypted-database and Gmail work, and replace
+  the reading pane with the next conversation in the same update. Repeated
+  actions share a serial persistence tail and one coalesced reconciliation
+  instead of blocking the UI and fully reloading after every key press.
+- **Faster conversation opening** — reading-pane headers, initial bodies, and
+  attachments load off the main actor in one database snapshot. A bounded LRU
+  retains actual neighbor payloads, so prefetch work is reused instead of
+  discarded and message cards no longer query attachments while rendering.
 - **Finder-speed keyboard browsing** — list focus lives on a dedicated
   `ListFocusState` (not a MailStore `@Published`), so holding ↓ / j no longer
   re-renders the reading pane, sidebar, or every thread row. The expensive
@@ -47,6 +56,26 @@ minor versions may still change behavior.
   disclosure chevron has a fixed optical frame.
 
 ### Fixed
+- **Signing / demo hardening follow-ups** — the signing check only accepts
+  certificates backing a currently valid identity (expired/revoked certs no
+  longer count); `make release` notarizes and staples before publishing;
+  `make run DEMO=0` refuses ad-hoc signing before building instead of after;
+  UI-test fixture processes can no longer connect real accounts (same guard
+  as the demo); the Settings Google API pane explains instead of silently
+  dropping credentials in demo/UI-test processes; and "make default mail app"
+  waits out the user-paced system confirmation before reporting failure.
+- **Thread list clicks work again after the pre-select open fix** — the
+  already-selected-row open affordance no longer mounts a permanent
+  `contentShape` + gesture on every row (that hijacked `List` selection on
+  macOS). Unselected rows select/open normally; the pre-highlighted top row
+  still opens on click via a selected-only overlay.
+- **Esc exits side-by-side compose while drafting** — ContentView owns an
+  explicit Esc priority ladder (slash picker → command palette → search focus →
+  exit split → save & close draft) that runs before the compose-typing
+  passthrough, so Esc works with the body editor focused and never relies on
+  local-monitor install order. Search focus blurs the sidebar field without
+  closing a floating/inline draft; second Esc still saves & closes after
+  leaving split.
 - **Inline reply scroll no longer fights the thread** — opening Reply keeps a
   stable top `scrollPosition` and one-shot bottom-scrolls the reply target
   above the reserved compose card (re-sticks on late WKWebView growth, disarms
