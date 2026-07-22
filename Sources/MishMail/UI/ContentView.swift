@@ -90,7 +90,11 @@ struct ContentView: View {
                 }
             )
         }
-        .onPreferenceChange(ReadingPaneFrameKey.self) { readingPaneFrame = $0 }
+        .onPreferenceChange(ReadingPaneFrameKey.self) { frame in
+            readingPaneFrame = frame
+            // Pathological short panes: float compose instead of a 0-height dock.
+            store.demoteInlineComposeIfPaneTooShort(paneHeight: frame.height)
+        }
         .onPreferenceChange(ComposeHostFrameKey.self) { composeHostFrame = $0 }
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         // Typing only feeds the dropdown preview; the list follows

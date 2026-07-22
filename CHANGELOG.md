@@ -42,6 +42,13 @@ minor versions may still change behavior.
   disclosure chevron has a fixed optical frame.
 
 ### Fixed
+- **Inline reply scroll no longer fights the thread** — opening Reply keeps a
+  stable top `scrollPosition` and one-shot bottom-scrolls the reply target
+  above the reserved compose card (re-sticks on late WKWebView growth, disarms
+  if you scroll away via content-offset / trackpad). Dismiss restores the
+  pre-compose position, including single-message threads via the subject
+  scroll id. Pathologically short panes float compose instead of a zero-height
+  dock.
 - **Personal replies re-surface archived promo threads in Primary** — tab
   placement (`inPromotions` / `inSocial`) now follows the newest *INBOX-bearing*
   message instead of the union of every historical label. A human reply on an

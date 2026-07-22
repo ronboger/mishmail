@@ -1081,6 +1081,16 @@ struct ComposeRequest: Identifiable {
         composeRequest = req
     }
 
+    /// Reading pane too short for any inline card — float so we never keep a
+    /// zero-height dock that steals focus (same request id / editor state).
+    func demoteInlineComposeIfPaneTooShort(paneHeight: CGFloat) {
+        guard var req = composeRequest, req.presentation == .inline else { return }
+        guard ComposePlacement.resolvedPresentation(
+            .inline, paneHeight: paneHeight) == .floating else { return }
+        req.presentation = .floating
+        composeRequest = req
+    }
+
     struct UndoAction: Identifiable {
         let id = UUID()
         let label: String

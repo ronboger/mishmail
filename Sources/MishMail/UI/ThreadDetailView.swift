@@ -1,6 +1,44 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
+
+/// Per-message card heights — re-scroll when WKWebView grows after a bottom pin.
+private struct ThreadMessageHeightKey: PreferenceKey {
+    static var defaultValue: [String: CGFloat] = [:]
+    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
+        value.merge(nextValue(), uniquingKeysWith: { $1 })
+    }
+}
+
+/// Disarms auto-pin on trackpad scroll. Offset observation (macOS 15+) is
+/// preferred; scroll-wheel monitor covers macOS 14 and single-message threads
+/// where `scrollPosition` id never changes.
+private final class InlineScrollDisarmGate {
+    var onUserScroll: (() -> Void)?
+    private var wheelMonitor: Any?
+
+    func setWheelArmed(_ armed: Bool) {
+        if armed {
+            guard wheelMonitor == nil else { return }
+            wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                if abs(event.scrollingDeltaY) > 0.5 || abs(event.scrollingDeltaX) > 0.5 {
+                    DispatchQueue.main.async { self?.onUserScroll?() }
+                }
+                return event
+            }
+        } else if let monitor = wheelMonitor {
+            NSEvent.removeMonitor(monitor)
+            wheelMonitor = nil
+        }
+    }
+
+    deinit {
+        if let monitor = wheelMonitor {
+            NSEvent.removeMonitor(monitor)
+        }
+    }
+}
 
 struct ThreadDetailView: View {
     @EnvironmentObject var store: MailStore
@@ -30,93 +68,112 @@ struct ThreadDetailView: View {
     /// Only one sent message owns a live body renderer at a time. This keeps
     /// HTML-heavy threads from accumulating WKWebViews and helper processes.
     @State private var expandedMessageId: String?
+    /// Reading position to restore when inline compose closes.
+    @State private var inlineScrollRestore: InlineScrollRestore = .unset
+    @State private var inlineScrollTargetId: String?
+    @State private var lastPinnedTargetHeight: CGFloat = 0
+    @State private var autoPinInlineScroll = false
+    @State private var pinnedComposeRequestId: UUID?
+    @State private var writingScrollOffset = false
+    @State private var pinnedScrollOffsetY: CGFloat?
+    @State private var scrollDisarmGate = InlineScrollDisarmGate()
 
     var body: some View {
-        ScrollView {
-            // Message cards are cheap while collapsed and only expanded cards
-            // mount WKWebView. An eager stack avoids LazyVStack's geometry
-            // cache repeatedly invalidating around dynamically sized WebViews.
-            VStack(alignment: .leading, spacing: 12) {
-                Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
-                    .font(.system(size: 19 * fontScale, weight: .semibold))
-                    .textSelection(.enabled)
-                    .padding(.horizontal)
-                    .accessibilityIdentifier("threadSubject")
+        ScrollViewReader { proxy in
+            ScrollView {
+                // Message cards are cheap while collapsed and only expanded cards
+                // mount WKWebView. An eager stack avoids LazyVStack's geometry
+                // cache repeatedly invalidating around dynamically sized WebViews.
+                VStack(alignment: .leading, spacing: 12) {
+                    Text(thread.subject.isEmpty ? "(no subject)" : thread.subject)
+                        .font(.system(size: 19 * fontScale, weight: .semibold))
+                        .textSelection(.enabled)
+                        .padding(.horizontal)
+                        .accessibilityIdentifier("threadSubject")
+                        .id(ComposePlacement.threadTopScrollId)
 
-                threadMetaRow
+                    threadMetaRow
 
-                summarySection
+                    summarySection
 
-                // Slim cue for long threads only: on short threads the draft
-                // card is already in the first viewport, so a second orange
-                // affordance is noise. Continues the newest draft.
-                if showDraftBanner {
-                    Button {
-                        store.editDraft(inThread: thread)
-                    } label: {
-                        HStack(spacing: 8) {
-                            Text("Draft")
-                                .font(.system(size: 11 * fontScale, weight: .semibold))
-                                .foregroundStyle(.white)
-                                .padding(.horizontal, 7)
-                                .padding(.vertical, 2)
-                                .background(Color.orange, in: Capsule())
-                            Text("Unsent reply in this conversation")
-                                .font(.system(size: 12.5 * fontScale))
-                                .foregroundStyle(.primary)
-                                .lineLimit(1)
-                            Spacer(minLength: 8)
-                            Text("Continue")
-                                .font(.system(size: 12.5 * fontScale, weight: .medium))
-                                .foregroundStyle(Color.notionAccent)
-                            Image(systemName: "chevron.right")
-                                .font(.system(size: 10 * fontScale, weight: .semibold))
-                                .foregroundStyle(Color.notionAccent)
+                    // Slim cue for long threads only: on short threads the draft
+                    // card is already in the first viewport, so a second orange
+                    // affordance is noise. Continues the newest draft.
+                    if showDraftBanner {
+                        Button {
+                            store.editDraft(inThread: thread)
+                        } label: {
+                            HStack(spacing: 8) {
+                                Text("Draft")
+                                    .font(.system(size: 11 * fontScale, weight: .semibold))
+                                    .foregroundStyle(.white)
+                                    .padding(.horizontal, 7)
+                                    .padding(.vertical, 2)
+                                    .background(Color.orange, in: Capsule())
+                                Text("Unsent reply in this conversation")
+                                    .font(.system(size: 12.5 * fontScale))
+                                    .foregroundStyle(.primary)
+                                    .lineLimit(1)
+                                Spacer(minLength: 8)
+                                Text("Continue")
+                                    .font(.system(size: 12.5 * fontScale, weight: .medium))
+                                    .foregroundStyle(Color.notionAccent)
+                                Image(systemName: "chevron.right")
+                                    .font(.system(size: 10 * fontScale, weight: .semibold))
+                                    .foregroundStyle(Color.notionAccent)
+                            }
+                            .padding(.horizontal, 12)
+                            .padding(.vertical, 9)
+                            .background(
+                                RoundedRectangle(cornerRadius: PMRadius.md)
+                                    .fill(Color.orange.opacity(0.10))
+                            )
+                            .overlay {
+                                RoundedRectangle(cornerRadius: PMRadius.md)
+                                    .strokeBorder(Color.orange.opacity(0.28), lineWidth: 1)
+                            }
+                            .contentShape(RoundedRectangle(cornerRadius: PMRadius.md))
                         }
-                        .padding(.horizontal, 12)
-                        .padding(.vertical, 9)
-                        .background(
-                            RoundedRectangle(cornerRadius: PMRadius.md)
-                                .fill(Color.orange.opacity(0.10))
-                        )
-                        .overlay {
-                            RoundedRectangle(cornerRadius: PMRadius.md)
-                                .strokeBorder(Color.orange.opacity(0.28), lineWidth: 1)
-                        }
-                        .contentShape(RoundedRectangle(cornerRadius: PMRadius.md))
+                        .buttonStyle(.plain)
+                        .help("Continue editing the unsent draft")
+                        .padding(.horizontal)
                     }
-                    .buttonStyle(.plain)
-                    .help("Continue editing the unsent draft")
-                    .padding(.horizontal)
-                }
 
-                ForEach(messages) { message in
-                    if ForwardComposer.hasDraftLabel(message.labelIds) {
-                        // Drafts are not ordinary messages: no quote trail, no
-                        // Reply/Forward, clear "not sent" chrome. Edit lives on
-                        // the card so you don't have to scroll to the top.
-                        DraftMessageCard(
-                            message: message,
-                            onNeedBody: { loadBodyIfNeeded(id: message.id) })
-                            .padding(.horizontal)
-                            .id(message.id)
-                    } else {
-                        MessageCard(message: message,
-                                    isLast: message.id == lastNonDraftId,
-                                    expandedMessageId: $expandedMessageId,
-                                    loadImagesForThread: $loadRemoteImagesForThread,
-                                    onReply: { onReply(message) },
-                                    onNeedBody: { loadBodyIfNeeded(id: message.id) })
-                            .padding(.horizontal)
-                            .id(message.id)
+                    ForEach(messages) { message in
+                        if ForwardComposer.hasDraftLabel(message.labelIds) {
+                            // Drafts are not ordinary messages: no quote trail, no
+                            // Reply/Forward, clear "not sent" chrome. Edit lives on
+                            // the card so you don't have to scroll to the top.
+                            DraftMessageCard(
+                                message: message,
+                                onNeedBody: { loadBodyIfNeeded(id: message.id) })
+                                .padding(.horizontal)
+                                .id(message.id)
+                                .background { messageHeightReader(id: message.id) }
+                        } else {
+                            MessageCard(message: message,
+                                        isLast: message.id == lastNonDraftId,
+                                        expandedMessageId: $expandedMessageId,
+                                        loadImagesForThread: $loadRemoteImagesForThread,
+                                        onReply: { onReply(message) },
+                                        onNeedBody: { loadBodyIfNeeded(id: message.id) })
+                                .padding(.horizontal)
+                                .id(message.id)
+                                .background { messageHeightReader(id: message.id) }
+                        }
                     }
                 }
+                .scrollTargetLayout()
+                .padding(.vertical)
             }
-            .scrollTargetLayout()
-            .padding(.vertical)
-        }
-        .navigationTitle(store.selectedView.title)
-        .toolbar {
+            // Stable top anchor for reading; inline reply uses one-shot bottom
+            // scrollTo so dismiss does not flip anchors and jump the thread.
+            .scrollPosition(id: $scrolledMessageId, anchor: .top)
+            .modifier(ScrollOffsetDisarmModifier { oldY, newY in
+                noteScrollOffsetChange(from: oldY, to: newY)
+            })
+            .navigationTitle(store.selectedView.title)
+            .toolbar {
             // Notion Mail-style left cluster: close the pane, prev/next thread.
             // Separate ToolbarItems (not a group) + hidden shared glass on
             // macOS 26 so they don't merge into one capsule that lights up
@@ -327,70 +384,248 @@ struct ThreadDetailView: View {
                 .help("More actions")
             }
         }
-        // Long threads open with the top of the newest *sent* message at the
-        // top of the pane (matches which card is expanded). Drafts sit below
-        // and stay visible without stealing the scroll anchor.
-        .scrollPosition(id: $scrolledMessageId, anchor: .top)
-        .task(id: thread.id) {
-            // Headers only first — skip pulling every body on open. Hydrate the
-            // expanded sent message and any draft cards (preview needs body).
-            bodyLoadAttempted = []
-            loadRemoteImagesForThread = false
-            expandedMessageId = nil
-            var loaded = store.messageHeaders(inThread: thread.id)
-            // Expand the newest sent message; also pull bodies for draft cards
-            // so the compact preview is ready without a second hop.
-            var hydrateIds: [String] = []
-            if let sentId = ForwardComposer.newestSentMessage(in: loaded)?.id {
-                hydrateIds.append(sentId)
+            .task(id: thread.id) {
+                // Headers only first — skip pulling every body on open. Hydrate the
+                // expanded sent message and any draft cards (preview needs body).
+                bodyLoadAttempted = []
+                loadRemoteImagesForThread = false
+                expandedMessageId = nil
+                var loaded = store.messageHeaders(inThread: thread.id)
+                // Expand the newest sent message; also pull bodies for draft cards
+                // so the compact preview is ready without a second hop.
+                var hydrateIds: [String] = []
+                if let sentId = ForwardComposer.newestSentMessage(in: loaded)?.id {
+                    hydrateIds.append(sentId)
+                }
+                for draft in loaded where ForwardComposer.hasDraftLabel(draft.labelIds) {
+                    if !hydrateIds.contains(draft.id) { hydrateIds.append(draft.id) }
+                }
+                for id in hydrateIds {
+                    guard let idx = loaded.firstIndex(where: { $0.id == id }),
+                          let full = store.messageBody(id: id) else { continue }
+                    loaded[idx] = full
+                    bodyLoadAttempted.insert(id)
+                }
+                messages = loaded
+                // Attachment rows key off messageId; header rows are enough.
+                threadAttachments = loaded.flatMap { msg in
+                    store.attachments(for: msg.id).map { (message: msg, attachment: $0) }
+                }
+                // Anchor on newest sent when multi-message; draft-only falls back
+                // to the last row so a pure-draft pane still positions.
+                scrolledMessageId = messages.count > 1
+                    ? (ForwardComposer.newestSentMessage(in: messages)?.id ?? messages.last?.id)
+                    : nil
+                if inlineComposeActive {
+                    beginInlineComposeScroll(proxy: proxy)
+                }
+                aiSummary = nil; summaryError = nil; summarizing = false
+                // Dwell before auto mark-read so j/k / scroll-select through the
+                // inbox does not clear every unread badge. Archive (`e`) marks
+                // read immediately in MailStore.archive; `.task(id:)` cancels
+                // this sleep when selection leaves.
+                guard thread.isUnread else { return }
+                do {
+                    try await Task.sleep(nanoseconds: MarkReadOnOpen.dwellNanoseconds)
+                } catch {
+                    return
+                }
+                // Require a live list row — never fall back to the captured
+                // `thread` snapshot. After archive of the last visible row,
+                // selection can still point here while the row is gone; using
+                // the stale model would re-save inInbox=true via setRead.
+                let liveThread = store.threads.first(where: { $0.id == thread.id })
+                guard MarkReadOnOpen.shouldMarkRead(
+                    selectedId: store.selectedThreadId,
+                    threadId: thread.id,
+                    liveIsUnread: liveThread?.isUnread),
+                      let liveThread else { return }
+                store.setRead(liveThread, read: true)
             }
-            for draft in loaded where ForwardComposer.hasDraftLabel(draft.labelIds) {
-                if !hydrateIds.contains(draft.id) { hydrateIds.append(draft.id) }
+            // The store reloaded from the DB (sync, draft discard, send…): refresh
+            // the open thread in place so e.g. a discarded draft's card disappears
+            // without navigating away. Scroll anchor and summary stay put.
+            .onChange(of: store.threadContentVersion) {
+                refreshMessages()
             }
-            for id in hydrateIds {
-                guard let idx = loaded.firstIndex(where: { $0.id == id }),
-                      let full = store.messageBody(id: id) else { continue }
-                loaded[idx] = full
-                bodyLoadAttempted.insert(id)
+            .onChange(of: inlineComposeActive) { _, active in
+                if active {
+                    beginInlineComposeScroll(proxy: proxy)
+                } else {
+                    endInlineComposeScroll(proxy: proxy)
+                }
             }
-            messages = loaded
-            // Attachment rows key off messageId; header rows are enough.
-            threadAttachments = loaded.flatMap { msg in
-                store.attachments(for: msg.id).map { (message: msg, attachment: $0) }
+            .onChange(of: store.composeRequest?.id) { oldId, newId in
+                guard inlineComposeActive, let newId, oldId != nil else { return }
+                guard autoPinInlineScroll else { return }
+                guard newId != pinnedComposeRequestId else { return }
+                pinnedComposeRequestId = newId
+                lastPinnedTargetHeight = 0
+                scrollInlineComposeTarget(proxy, releaseTopPin: false)
             }
-            // Anchor on newest sent when multi-message; draft-only falls back
-            // to the last row so a pure-draft pane still positions.
-            scrolledMessageId = messages.count > 1
-                ? (ForwardComposer.newestSentMessage(in: messages)?.id ?? messages.last?.id)
-                : nil
-            aiSummary = nil; summaryError = nil; summarizing = false
-            // Dwell before auto mark-read so j/k / scroll-select through the
-            // inbox does not clear every unread badge. Archive (`e`) marks
-            // read immediately in MailStore.archive; `.task(id:)` cancels
-            // this sleep when selection leaves.
-            guard thread.isUnread else { return }
-            do {
-                try await Task.sleep(nanoseconds: MarkReadOnOpen.dwellNanoseconds)
-            } catch {
-                return
+            .onChange(of: scrolledMessageId) { _, _ in
+                guard inlineComposeActive, autoPinInlineScroll,
+                      !writingScrollOffset else { return }
+                disarmAutoPin()
             }
-            // Require a live list row — never fall back to the captured
-            // `thread` snapshot. After archive of the last visible row,
-            // selection can still point here while the row is gone; using
-            // the stale model would re-save inInbox=true via setRead.
-            let liveThread = store.threads.first(where: { $0.id == thread.id })
-            guard MarkReadOnOpen.shouldMarkRead(
-                selectedId: store.selectedThreadId,
-                threadId: thread.id,
-                liveIsUnread: liveThread?.isUnread),
-                  let liveThread else { return }
-            store.setRead(liveThread, read: true)
+            .onChange(of: autoPinInlineScroll) { _, armed in
+                scrollDisarmGate.onUserScroll = { disarmAutoPin() }
+                scrollDisarmGate.setWheelArmed(armed && inlineComposeActive)
+            }
+            .onDisappear {
+                scrollDisarmGate.setWheelArmed(false)
+            }
+            .onPreferenceChange(ThreadMessageHeightKey.self) { heights in
+                guard inlineComposeActive, autoPinInlineScroll,
+                      let target = inlineScrollTargetId,
+                      let height = heights[target] else { return }
+                if height > lastPinnedTargetHeight + 8 {
+                    lastPinnedTargetHeight = height
+                    scrollInlineComposeTarget(proxy, releaseTopPin: false)
+                } else if lastPinnedTargetHeight == 0 {
+                    lastPinnedTargetHeight = height
+                }
+            }
         }
-        // The store reloaded from the DB (sync, draft discard, send…): refresh
-        // the open thread in place so e.g. a discarded draft's card disappears
-        // without navigating away. Scroll anchor and summary stay put.
-        .onChange(of: store.threadContentVersion) {
-            refreshMessages()
+    }
+
+    private enum InlineScrollRestore: Equatable {
+        case unset
+        case threadTop
+        case message(String)
+    }
+
+    private struct ScrollOffsetDisarmModifier: ViewModifier {
+        let onOffset: (CGFloat, CGFloat) -> Void
+
+        func body(content: Content) -> some View {
+            if #available(macOS 15.0, *) {
+                content.onScrollGeometryChange(for: CGFloat.self) { geo in
+                    geo.contentOffset.y
+                } action: { oldY, newY in
+                    onOffset(oldY, newY)
+                }
+            } else {
+                content
+            }
+        }
+    }
+
+    private func messageHeightReader(id: String) -> some View {
+        GeometryReader { geo in
+            Color.clear.preference(
+                key: ThreadMessageHeightKey.self,
+                value: [id: geo.size.height])
+        }
+    }
+
+    private var inlineComposeActive: Bool {
+        guard let req = store.composeRequest,
+              req.presentation == .inline,
+              !store.composeMinimized,
+              req.boundThreadId == thread.id else { return false }
+        return true
+    }
+
+    private func disarmAutoPin() {
+        guard autoPinInlineScroll else { return }
+        autoPinInlineScroll = false
+        pinnedScrollOffsetY = nil
+    }
+
+    private func noteScrollOffsetChange(from oldY: CGFloat, to newY: CGFloat) {
+        if writingScrollOffset {
+            pinnedScrollOffsetY = newY
+            return
+        }
+        guard inlineComposeActive, autoPinInlineScroll else { return }
+        if let pinned = pinnedScrollOffsetY, abs(newY - pinned) < 2 {
+            return
+        }
+        if abs(newY - oldY) < 0.5 { return }
+        disarmAutoPin()
+    }
+
+    private func beginInlineComposeScroll(proxy: ScrollViewProxy) {
+        if pinnedComposeRequestId == store.composeRequest?.id {
+            return
+        }
+        if inlineScrollRestore == .unset {
+            if let id = scrolledMessageId {
+                inlineScrollRestore = .message(id)
+            } else {
+                inlineScrollRestore = .threadTop
+            }
+        }
+        autoPinInlineScroll = true
+        pinnedComposeRequestId = store.composeRequest?.id
+        pinnedScrollOffsetY = nil
+        lastPinnedTargetHeight = 0
+        scrollInlineComposeTarget(proxy, releaseTopPin: true)
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
+            guard inlineComposeActive, autoPinInlineScroll else { return }
+            scrollInlineComposeTarget(proxy, releaseTopPin: false)
+        }
+    }
+
+    private func endInlineComposeScroll(proxy: ScrollViewProxy) {
+        let restore = inlineScrollRestore
+        inlineScrollRestore = .unset
+        inlineScrollTargetId = nil
+        lastPinnedTargetHeight = 0
+        autoPinInlineScroll = false
+        pinnedComposeRequestId = nil
+        pinnedScrollOffsetY = nil
+        writingScrollOffset = true
+        var t = Transaction()
+        t.animation = nil
+        withTransaction(t) {
+            switch restore {
+            case .unset:
+                writingScrollOffset = false
+            case .threadTop:
+                scrolledMessageId = nil
+                DispatchQueue.main.async {
+                    var inner = Transaction()
+                    inner.animation = nil
+                    withTransaction(inner) {
+                        proxy.scrollTo(ComposePlacement.threadTopScrollId, anchor: .top)
+                    }
+                    DispatchQueue.main.async { writingScrollOffset = false }
+                }
+            case .message(let id):
+                scrolledMessageId = id
+                DispatchQueue.main.async { writingScrollOffset = false }
+            }
+        }
+    }
+
+    private func scrollInlineComposeTarget(_ proxy: ScrollViewProxy,
+                                           releaseTopPin: Bool) {
+        guard autoPinInlineScroll || releaseTopPin else { return }
+        let target = ComposePlacement.scrollTargetId(
+            replyTo: store.composeRequest?.replyTo,
+            messages: messages)
+        guard let target else { return }
+        if target != inlineScrollTargetId {
+            inlineScrollTargetId = target
+            lastPinnedTargetHeight = 0
+        }
+        writingScrollOffset = true
+        var t = Transaction()
+        t.animation = nil
+        withTransaction(t) {
+            if releaseTopPin { scrolledMessageId = nil }
+            DispatchQueue.main.async {
+                var inner = Transaction()
+                inner.animation = nil
+                withTransaction(inner) {
+                    proxy.scrollTo(target, anchor: .bottom)
+                }
+                DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                    writingScrollOffset = false
+                }
+            }
         }
     }
 
