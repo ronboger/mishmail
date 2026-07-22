@@ -11,6 +11,8 @@
 #
 #   make test      is the gate: run it before every commit (the pre-commit
 #                  hook from `make hooks` does it, and CI runs it on push/PR).
+#   make ui-test   is CI-only: XCUITest hijacks the desktop, so CI runs it on
+#                  every push/PR instead. Locally it refuses unless UI_TEST_LOCAL=1.
 #   make build     just compile the test (Debug) app; don't launch it.
 #   make release   build Release, zip the app, publish a GitHub release
 #                  (the in-app update checker looks at these releases).
@@ -64,7 +66,18 @@ test: gen
 
 # Small end-to-end pass over the fictional inbox. No Google account or network
 # is involved; this catches launch, navigation, compose, and Settings regressions.
+#
+# CI-ONLY: XCUITest cannot run headless on macOS — it launches the app, takes
+# focus, and injects keyboard/mouse events into the live desktop, so a local
+# run hijacks the machine for its duration. CI (.github/workflows/ci.yml) runs
+# this on every push/PR; locally the gate is `make test`. To run it here anyway
+# (and surrender the desktop while it runs): UI_TEST_LOCAL=1 make ui-test
 ui-test: gen
+	@if [ "$$CI" != "true" ] && [ "$(UI_TEST_LOCAL)" != "1" ]; then \
+		echo "ui-test is CI-only: XCUITest takes over the desktop while it runs."; \
+		echo "CI runs it on every push/PR. To run locally anyway: UI_TEST_LOCAL=1 make ui-test"; \
+		exit 1; \
+	fi
 	# XCUITest cannot attach deterministically when another Debug build with the
 	# same bundle id is already open (for example from a different worktree).
 	-pkill -f "MishMail Debug" 2>/dev/null || true
