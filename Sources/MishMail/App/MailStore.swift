@@ -3088,7 +3088,8 @@ struct ComposeRequest: Identifiable {
     /// section first, then grouped) — kept in sync by ThreadListView so
     /// keyboard navigation matches what's on screen.
     private(set) var displayOrder: [String] = []
-    /// O(1) id→row for `moveSelection` / range select. Rebuilt with displayOrder.
+    /// O(1) id→row for `moveSelection` (the key-repeat hot path). Rebuilt with
+    /// displayOrder. Shift-click range select still scans linearly — it's cold.
     private var displayOrderIndex: [String: Int] = [:]
 
     /// Called by ThreadListView after regrouping. Rebuilds the index map so

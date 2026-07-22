@@ -13,6 +13,11 @@ import SwiftUI
 /// monitor, which sees the event first regardless of focus.)
 struct LabelPicker: View {
     @EnvironmentObject var store: MailStore
+    // `store.selectedThread` reads selection, which no longer publishes
+    // through MailStore (it lives on ListFocusState). Observe listFocus so a
+    // focus-only change can't leave this body stale. Cheap: the picker is
+    // mounted only while open.
+    @EnvironmentObject var listFocus: ListFocusState
     // Observed separately from MailStore so per-keystroke query/highlight
     // changes re-render only this view, not the whole window.
     @ObservedObject var picker: LabelPickerState

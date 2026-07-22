@@ -1265,6 +1265,12 @@ struct ThreadRow: View, Equatable {
     let onTrash: () -> Void
     @State private var hovering = false
 
+    // Closures are deliberately excluded: a skipped body keeps the OLD
+    // captures, which is safe only because they capture `store` (stable
+    // reference) and `thread` — and `model.thread` is compared, so an equal
+    // model implies an equal capture. Anything new a closure captures must be
+    // mirrored in `model` or it will go stale. (@AppStorage/@State invalidate
+    // through the dynamic-property path and are not gated by ==.)
     static func == (lhs: ThreadRow, rhs: ThreadRow) -> Bool {
         lhs.model == rhs.model
     }

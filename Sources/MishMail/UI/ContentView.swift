@@ -599,6 +599,11 @@ private struct DetailPaneHost: View, Equatable {
     let onBack: () -> Void
     let onReply: (Message) -> Void
 
+    // Closures are deliberately excluded, so a skipped body keeps the OLD
+    // captures. Safe only while every environment value a closure captures is
+    // mirrored by a compared field (onReply's `effectivePaneHidden` ↔
+    // `paneHidden`; onBack reads store/listFocus live). If you capture a new
+    // value in a closure, add its mirror here or it will go stale.
     static func == (lhs: DetailPaneHost, rhs: DetailPaneHost) -> Bool {
         lhs.openedThreadId == rhs.openedThreadId
             && lhs.thread == rhs.thread

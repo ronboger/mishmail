@@ -3,6 +3,10 @@ import SwiftUI
 /// Cmd-K palette: jump to views, compose, sync.
 struct CommandPalette: View {
     @EnvironmentObject var store: MailStore
+    // `commands` reads `store.selectedThread`; selection publishes through
+    // ListFocusState (not MailStore), so observe it to keep the context
+    // actions fresh. Cheap: the palette is mounted only while open.
+    @EnvironmentObject var listFocus: ListFocusState
     @State private var query = ""
     @State private var highlighted = 0
     @FocusState private var focused: Bool
