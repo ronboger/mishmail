@@ -92,6 +92,22 @@ enum ComposePlacement {
         return min(cardHeight + inlineBottomPadding, paneHeight)
     }
 
+    /// Stable scroll id for the reading-pane top (subject). Used when a
+    /// single-message thread has no `scrollPosition` id yet so dismiss can
+    /// restore "start of conversation" after a bottom reply scroll.
+    static let threadTopScrollId = "thread.scroll.top"
+
+    /// Message id to pin above inline compose (reply parent, else newest sent).
+    static func scrollTargetId(replyTo: Message?,
+                               messages: [Message]) -> String? {
+        if let id = replyTo?.id,
+           messages.contains(where: { $0.id == id }) {
+            return id
+        }
+        return ForwardComposer.newestSentMessage(in: messages)?.id
+            ?? messages.last?.id
+    }
+
     /// Layout for pinning the inline card to the measured reading pane.
     /// Frames must share a coordinate space (typically `.global`).
     struct InlineMetrics: Equatable {

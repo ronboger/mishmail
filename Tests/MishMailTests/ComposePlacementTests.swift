@@ -180,4 +180,35 @@ final class ComposePlacementTests: XCTestCase {
             ComposePlacement.resolvedPresentation(.floating, paneHeight: 100),
             .floating)
     }
+
+    private func message(id: String, threadId: String = "a:t1",
+                         date: Date = Date()) -> Message {
+        Message(
+            id: id, accountId: "a", gmailId: id, threadId: threadId,
+            fromHeader: "x@y.com", toHeader: "me@a.com", ccHeader: "",
+            subject: "Hi", date: date, snippet: "", bodyText: "body",
+            bodyHTML: nil, messageIdHeader: "<\(id)>", referencesHeader: "",
+            labelIds: "INBOX", isUnread: false, hasAttachment: false)
+    }
+
+    func testScrollTargetPrefersReplyParentWhenPresent() {
+        let a = message(id: "a:m1")
+        let b = message(id: "a:m2", date: Date().addingTimeInterval(60))
+        let msgs = [a, b]
+        XCTAssertEqual(
+            ComposePlacement.scrollTargetId(replyTo: a, messages: msgs), a.id)
+        XCTAssertEqual(
+            ComposePlacement.scrollTargetId(replyTo: nil, messages: msgs), b.id)
+    }
+
+    func testScrollTargetFallsBackWhenReplyMissingFromList() {
+        let a = message(id: "a:m1")
+        let orphan = message(id: "a:gone")
+        XCTAssertEqual(
+            ComposePlacement.scrollTargetId(replyTo: orphan, messages: [a]), a.id)
+    }
+
+    func testThreadTopScrollIdIsStable() {
+        XCTAssertEqual(ComposePlacement.threadTopScrollId, "thread.scroll.top")
+    }
 }
