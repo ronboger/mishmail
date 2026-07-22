@@ -614,6 +614,22 @@ struct ContentView: View {
                 store.toggleSplitCompose()
                 return nil
             }
+            // Esc exits side-by-side first (draft stays open → inline/floating).
+            // Must run here — not only as the split button's .cancelAction —
+            // because expanded compose owns NSText focus and the general Esc
+            // ladder below is gated on compose being nil/minimized. Slash
+            // picker's local monitor is registered later so it still sees Esc
+            // first while the `/` menu is up. Settings keeps its own Esc path.
+            if event.keyCode == 53,
+               store.composeRequest?.presentation == .split,
+               !store.composeMinimized {
+                if let window = event.window,
+                   window.identifier?.rawValue.contains("Settings") == true {
+                    return event
+                }
+                store.exitSplitCompose()
+                return nil
+            }
             // Expanded compose + typing: every chord belongs to the text system
             // / compose handlers (⌘K insert-link, ⌃F/⌃K caret motion, …), not
             // app-level shortcuts. Minimized compose resigns focus so inbox

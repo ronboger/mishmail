@@ -59,6 +59,16 @@ minor versions may still change behavior.
   as the demo); the Settings Google API pane explains instead of silently
   dropping credentials in demo/UI-test processes; and "make default mail app"
   waits out the user-paced system confirmation before reporting failure.
+- **Thread list clicks work again after the pre-select open fix** — the
+  already-selected-row open affordance no longer mounts a permanent
+  `contentShape` + gesture on every row (that hijacked `List` selection on
+  macOS). Unselected rows select/open normally; the pre-highlighted top row
+  still opens on click via a selected-only overlay.
+- **Esc exits side-by-side compose while drafting** — the global key monitor
+  now handles Esc before the compose-typing passthrough and before the
+  "compose open → skip Esc ladder" gate, so Esc leaves split for the normal
+  thread/inline/floating placement even with the body editor focused (⇧⌘↩
+  and the toolbar exit control already worked).
 - **Inline reply scroll no longer fights the thread** — opening Reply keeps a
   stable top `scrollPosition` and one-shot bottom-scrolls the reply target
   above the reserved compose card (re-sticks on late WKWebView growth, disarms

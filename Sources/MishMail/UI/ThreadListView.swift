@@ -1233,11 +1233,14 @@ struct ThreadRow: View {
                 .fill(thread.isUnread ? Color.notionAccent : .clear)
                 .frame(width: 7, height: 7)
 
-            // Middle content shares one hit area so a click on the already-
-            // selected row (e.g. the pre-highlighted top row) still opens the
-            // conversation — List(selection:) fires no onChange for it (same
-            // shape as the sidebar's re-click fix). Checkbox and the trailing
-            // hover actions keep their own hits and never trigger an open.
+            // Middle content: when this row is already selected (e.g. the
+            // Superhuman-style pre-highlighted top row), List(selection:)
+            // fires no onChange — a clear overlay requests an explicit open.
+            // The overlay is mounted only while selected so it never steals
+            // hits from unselected rows (a permanent contentShape + gesture
+            // on this HStack hijacks List selection on macOS; see the
+            // whole-row comment below). Checkbox and trailing hover actions
+            // stay outside this stack and keep their own hits.
             HStack(spacing: 8) {
                 HStack(spacing: 4) {
                     Text(participantsDisplay)
@@ -1272,12 +1275,13 @@ struct ThreadRow: View {
 
                 Spacer(minLength: 8)
             }
-            .contentShape(Rectangle())
-            .simultaneousGesture(TapGesture().onEnded {
+            .overlay {
                 if store.selectedThreadId == thread.id {
-                    store.requestOpenSelected()
+                    Color.clear
+                        .contentShape(Rectangle())
+                        .onTapGesture { store.requestOpenSelected() }
                 }
-            })
+            }
 
             // Fixed-height trailing area: icons overlay the timestamp on
             // hover so the row never changes size.

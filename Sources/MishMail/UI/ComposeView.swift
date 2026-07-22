@@ -615,7 +615,9 @@ struct ComposeView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                // Esc exits split first (draft stays open); the next Esc hits
+                // Esc exits split first (draft stays open). ContentView's key
+                // monitor owns this while the body has NSText focus; the
+                // shortcut is a backup when focus is elsewhere. Next Esc hits
                 // closeButton's cancelAction and saves & closes as usual.
                 .keyboardShortcut(isSplit ? .cancelAction : nil)
                 .help(isSplit ? "Exit side by side (esc or ⇧⌘↩)"
