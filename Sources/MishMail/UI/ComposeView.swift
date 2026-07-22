@@ -1487,8 +1487,8 @@ struct ComposeView: View {
             }
             guard mods.isEmpty else { return event }
             guard slashActive else { return event }
-            // Esc drops the picker even when nothing matches (so the trigger
-            // is escapable); the rest only act when there's a snippet to pick.
+            // Esc: ContentView owns dismiss via slashPickerVisible (installs
+            // first, FIFO). This branch is a backup if that gate is stale.
             if event.keyCode == 53 {  // Esc — keep the typed text
                 slashDismissed = true
                 return nil

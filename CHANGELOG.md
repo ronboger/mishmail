@@ -65,10 +65,12 @@ minor versions may still change behavior.
   macOS). Unselected rows select/open normally; the pre-highlighted top row
   still opens on click via a selected-only overlay.
 - **Esc exits side-by-side compose while drafting** — ContentView owns an
-  explicit Esc priority ladder (slash picker → command palette → exit split →
-  save & close draft) that runs before the compose-typing passthrough, so Esc
-  works with the body editor focused and never relies on local-monitor install
-  order. Second Esc still saves & closes the draft after leaving split.
+  explicit Esc priority ladder (slash picker → command palette → search focus →
+  exit split → save & close draft) that runs before the compose-typing
+  passthrough, so Esc works with the body editor focused and never relies on
+  local-monitor install order. Search focus blurs the sidebar field without
+  closing a floating/inline draft; second Esc still saves & closes after
+  leaving split.
 - **Inline reply scroll no longer fights the thread** — opening Reply keeps a
   stable top `scrollPosition` and one-shot bottom-scrolls the reply target
   above the reserved compose card (re-sticks on late WKWebView growth, disarms

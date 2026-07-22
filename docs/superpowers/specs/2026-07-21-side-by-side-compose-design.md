@@ -50,10 +50,10 @@ conversation real estate at once, and no full-window drafting surface.
   a `rectangle.split.2x1` button in the compose header, and the left
   column's toolbar exit button. Esc ladder (ContentView key monitor via
   `ComposeEsc.intent`, not monitor install order): dismiss `/` picker → close
-  command palette → exit split first (draft stays open) → next Esc saves &
-  closes the draft. The split header's `.cancelAction` remains a backup when
-  focus is not in NSText. Minimizing pauses split (mailbox returns); expanding
-  the strip restores it.
+  command palette → blur sidebar search (keep draft) → exit split first
+  (draft stays open) → next Esc saves & closes the draft. The split header's
+  `.cancelAction` remains a backup when focus is not in NSText. Minimizing
+  pauses split (mailbox returns); expanding the strip restores it.
 
 ## Testing
 

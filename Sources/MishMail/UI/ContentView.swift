@@ -628,17 +628,25 @@ struct ContentView: View {
                     isSettingsWindow: isSettings,
                     slashPickerVisible: store.slashPickerVisible,
                     commandPaletteOpen: store.showCommandPalette,
+                    searchActive: store.searchActive,
                     composeExpanded: composeExpanded,
                     isSplit: isSplit) {
                 case .passThrough:
-                    // Settings: leave the event for the Settings-specific block
-                    // in the mailbox Esc ladder below (blur field → close window).
+                    // Settings: when compose is nil/minimized the mailbox Esc
+                    // ladder below owns blur-then-close; with expanded compose
+                    // that gate is skipped and AppKit gets the event (pre-existing).
                     break
                 case .dismissSlashPicker:
                     store.dismissSlashPicker()
                     return nil
                 case .closeCommandPalette:
                     store.showCommandPalette = false
+                    return nil
+                case .dismissSearchFocus:
+                    // Keep the draft; drop search focus/panel (three-pane +
+                    // floating compose + `/` must not save-and-close).
+                    event.window?.makeFirstResponder(nil)
+                    store.dismissSearchPanel()
                     return nil
                 case .exitSplit:
                     store.exitSplitCompose()
