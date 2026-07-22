@@ -42,6 +42,7 @@ minor versions may still change behavior.
   disclosure chevron has a fixed optical frame.
 
 ### Fixed
+<<<<<<< Updated upstream
 - **Clicking the pre-highlighted top row now opens it** — the auto-selected
   row produced no selection change, so the very first click in a mailbox did
   nothing. Rows now request an explicit open when the click lands on the
@@ -55,6 +56,13 @@ minor versions may still change behavior.
   growing memory without bound the moment a reply opened. The pane is now
   measured outside the inset, and a UI regression test drives
   reply → side-by-side → back and fails on any recurrence.
+=======
+- **Source rebuilds no longer trigger recurring Keychain prompts by default** —
+  the fictional developer demo uses an isolated, non-secret database key and
+  never touches Keychain. Real-inbox launch/install commands now refuse an
+  unstable ad-hoc signature and point to Apple's free Personal Team signing
+  path; no paid Developer Program membership is required for personal use.
+>>>>>>> Stashed changes
 - **Inline reply no longer springs the thread viewport upward** — composer
   motion is scoped to the card, the reading-pane inset changes without
   animation, and short panes continuously resize the card or fall back to a

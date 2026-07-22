@@ -9,5 +9,12 @@ final class DatabaseLocationTests: XCTestCase {
         XCTAssertEqual(
             AppDatabase.storageDirectory(root: root, isUITest: false).lastPathComponent,
             "MishMail")
+        XCTAssertEqual(
+            AppDatabase.storageDirectory(
+                root: root,
+                isUITest: false,
+                isDeveloperDemo: true
+            ).lastPathComponent,
+            "MishMailDemo")
     }
 }

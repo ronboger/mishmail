@@ -358,8 +358,14 @@ final class AppDatabase {
     init() throws {
         let root = try FileManager.default.url(for: .applicationSupportDirectory,
                                                in: .userDomainMask, appropriateFor: nil, create: true)
-        let isUITest = ProcessInfo.processInfo.environment["MISHMAIL_UI_TEST"] == "1"
-        let dir = Self.storageDirectory(root: root, isUITest: isUITest)
+        let environment = ProcessInfo.processInfo.environment
+        let isUITest = environment["MISHMAIL_UI_TEST"] == "1"
+        let isDeveloperDemo = environment["MISHMAIL_DEMO"] == "1"
+        let dir = Self.storageDirectory(
+            root: root,
+            isUITest: isUITest,
+            isDeveloperDemo: isDeveloperDemo
+        )
         // UI automation gets a dedicated, disposable database. A developer's
         // signed-in Debug mailbox is never inspected, seeded, or removed.
         if isUITest, FileManager.default.fileExists(atPath: dir.path) {
@@ -368,8 +374,9 @@ final class AppDatabase {
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let path = dir.appendingPathComponent("mail.sqlite").path
 
-        // The mail cache is encrypted with SQLCipher; the key never leaves
-        // the Keychain. A pre-encryption database is migrated in place.
+        // Real mail is encrypted with a Keychain-held key. The fictional demo
+        // uses a fixed non-secret fixture key so an ad-hoc source build never
+        // asks for Keychain access (and can be rebuilt freely).
         let passphrase = try Self.databaseKey()
         if FileManager.default.fileExists(atPath: path), Self.isPlaintext(path) {
             try Self.encryptInPlace(path: path, passphrase: passphrase)
@@ -387,9 +394,20 @@ final class AppDatabase {
         }
     }
 
-    static func storageDirectory(root: URL, isUITest: Bool) -> URL {
-        root.appendingPathComponent(isUITest ? "MishMailUITests" : "MishMail",
-                                    isDirectory: true)
+    static func storageDirectory(
+        root: URL,
+        isUITest: Bool,
+        isDeveloperDemo: Bool = false
+    ) -> URL {
+        let name: String
+        if isUITest {
+            name = "MishMailUITests"
+        } else if isDeveloperDemo {
+            name = "MishMailDemo"
+        } else {
+            name = "MishMail"
+        }
+        return root.appendingPathComponent(name, isDirectory: true)
     }
 
     /// Abort in-flight statements so cancelled tasks can finish promptly
@@ -446,9 +464,21 @@ final class AppDatabase {
         }
     }
 
+    /// True for disposable, non-secret databases that must not touch a
+    /// developer's Keychain. Pure and visible to the hostless test target.
+    static func usesFixtureDatabaseKey(environment: [String: String]) -> Bool {
+        environment["MISHMAIL_DEMO"] == "1"
+            || environment["MISHMAIL_UI_TEST"] == "1"
+    }
+
     /// Random 256-bit key, hex-encoded, generated once and kept in the Keychain.
+    /// Demo/UI-test mail is fictional, so it deliberately uses a fixed key and
+    /// avoids creating a Keychain item under an unstable ad-hoc signature.
     private static func databaseKey() throws -> String {
-        try Keychain.existingOrCreate(from: Keychain.read("db.key")) {
+        if usesFixtureDatabaseKey(environment: ProcessInfo.processInfo.environment) {
+            return String(repeating: "00", count: 32)
+        }
+        return try Keychain.existingOrCreate(from: Keychain.read("db.key")) {
             var bytes = [UInt8](repeating: 0, count: 32)
             guard SecRandomCopyBytes(
                 kSecRandomDefault, bytes.count, &bytes

@@ -43,6 +43,16 @@ final class OAuthConfigTests: XCTestCase {
         }
     }
 
+    func testFixtureProcessesNeverUseKeychain() {
+        XCTAssertFalse(OAuthConfig.usesKeychain(
+            environment: ["MISHMAIL_DEMO": "1"]
+        ))
+        XCTAssertFalse(OAuthConfig.usesKeychain(
+            environment: ["MISHMAIL_UI_TEST": "1"]
+        ))
+        XCTAssertTrue(OAuthConfig.usesKeychain(environment: [:]))
+    }
+
     func testCallbackPathAcceptsRegisteredAndRoot() {
         XCTAssertTrue(OAuthService.isOAuthCallbackPath("/oauth2/callback"))
         XCTAssertTrue(OAuthService.isOAuthCallbackPath("/"))

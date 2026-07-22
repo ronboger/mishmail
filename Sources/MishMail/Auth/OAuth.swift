@@ -27,8 +27,19 @@ struct OAuthConfig {
         get { UserDefaults.standard.string(forKey: "oauth.clientID") ?? "" }
         set { UserDefaults.standard.set(newValue, forKey: "oauth.clientID") }
     }
+
+    /// Fixture processes contain no real credentials and must remain entirely
+    /// Keychain-free even if someone opens Settings or exits the demo inbox.
+    static func usesKeychain(environment: [String: String]) -> Bool {
+        environment["MISHMAIL_DEMO"] != "1"
+            && environment["MISHMAIL_UI_TEST"] != "1"
+    }
+
     static var clientSecret: String {
         get {
+            guard usesKeychain(environment: ProcessInfo.processInfo.environment) else {
+                return ""
+            }
             do {
                 return try resolveClientSecret(
                     from: Keychain.read("oauth.clientSecret"))
@@ -37,14 +48,22 @@ struct OAuthConfig {
                 return ""
             }
         }
-        set { try? Keychain.set(newValue, forKey: "oauth.clientSecret") }
+        set {
+            guard usesKeychain(environment: ProcessInfo.processInfo.environment) else {
+                return
+            }
+            try? Keychain.set(newValue, forKey: "oauth.clientSecret")
+        }
     }
     static var isConfigured: Bool { !clientID.isEmpty }
 
     /// Token requests must distinguish an absent optional desktop-client
     /// secret from a temporarily inaccessible saved secret.
     static func clientSecretForRequest() throws -> String {
-        try resolveClientSecret(from: Keychain.read("oauth.clientSecret"))
+        guard usesKeychain(environment: ProcessInfo.processInfo.environment) else {
+            return ""
+        }
+        return try resolveClientSecret(from: Keychain.read("oauth.clientSecret"))
     }
 
     /// Pure result mapping for hostless tests.

@@ -124,27 +124,46 @@ make ui-test  # run the demo-inbox UI smoke test
 make hooks    # install a pre-commit hook that runs unit tests
 ```
 
-Or open `MishMail.xcodeproj` in Xcode and hit Run.
+You can also open `MishMail.xcodeproj` in Xcode. Configure the free Personal
+Team signing described below before running a real inbox; use `make run` for
+the no-signing, Keychain-free demo.
 
 ### Signing
 
-By default the app is **ad-hoc signed** ("Sign to Run Locally"), so it builds
-and runs on any Mac with no Apple Developer account. Signing settings live in
+By default the app is **ad-hoc signed** ("Sign to Run Locally"), so it compiles
+and runs the fictional demo on any Mac with no Apple account. The demo never
+touches Keychain. Signing settings live in
 [`Config/Signing.xcconfig`](Config/Signing.xcconfig).
 
-Ad-hoc signatures do not establish publisher identity. For that reason, an
-ad-hoc/source installation will only accept in-app executable updates that are
-Developer ID signed and notarized; otherwise it opens the GitHub release page.
+Do not use an ad-hoc build with a real inbox. Apple ties an ad-hoc app's
+identity to that exact build, so macOS asks for Keychain access again after the
+code changes. `make install` and `make run DEMO=0` therefore require a stable
+local signing identity instead of silently installing an app that will
+re-prompt. Run `make signing-doctor` if the identity is missing.
 
-To sign with your own Apple Developer team — required for **notarization**, and
-handy for a stable identity that stops the Keychain re-prompting on every
-rebuild — create `Config/Local.xcconfig` (git-ignored):
+**The $99 Apple Developer Program is not required for personal use.** Sign in
+with any Apple Account under **Xcode → Settings → Apple Accounts**. Xcode gives
+unpaid accounts a free **Personal Team**. Select it, open **Manage
+Certificates**, and create an **Apple Development** certificate. Then create
+`Config/Local.xcconfig` (git-ignored) using the Team ID shown in the
+certificate's name:
 
 ```
 CODE_SIGN_STYLE = Automatic
 DEVELOPMENT_TEAM = XXXXXXXXXX
 CODE_SIGN_IDENTITY = Apple Development
 ```
+
+The first stable build may ask once for each item created by an older ad-hoc
+build; choose **Always Allow**. Subsequent rebuilds keep the same identity and
+do not ask again.
+
+Paid membership is only needed to distribute a Developer ID signed and
+notarized build to other Macs. An ad-hoc/source installation will only accept
+in-app executable updates that are Developer ID signed and notarized;
+otherwise it opens the GitHub release page. `make release` explicitly rejects
+free Personal Team and ad-hoc identities so they cannot accidentally be
+published as updates for other users.
 
 ### Releases & updates
 

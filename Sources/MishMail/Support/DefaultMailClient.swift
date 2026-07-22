@@ -8,6 +8,19 @@ enum DefaultMailClient {
 
     static let mailtoScheme = "mailto"
 
+    enum SelectionError: LocalizedError {
+        case didNotChange(currentHandler: String?)
+
+        var errorDescription: String? {
+            switch self {
+            case .didNotChange(let currentHandler):
+                let current = currentHandler.map { " It is still \($0)." } ?? ""
+                return "macOS did not change the default email app.\(current) "
+                    + "Please approve the system confirmation and try again."
+            }
+        }
+    }
+
     /// Display name for Settings copy (Debug builds say "MishMail Debug").
     static var appDisplayName: String {
         (Bundle.main.object(forInfoDictionaryKey: "CFBundleDisplayName") as? String)
@@ -30,16 +43,40 @@ enum DefaultMailClient {
         return handler.caseInsensitiveCompare(mine) == .orderedSame
     }
 
-    /// Ask LaunchServices to route `mailto:` to this app. macOS may still
-    /// show a system confirmation; failures surface via the completion error.
+    /// Ask LaunchServices to route `mailto:` to this app. macOS may still show
+    /// a system confirmation. Verify the resulting handler because a successful
+    /// request callback does not guarantee LaunchServices has published the
+    /// selection by the time Settings redraws.
     static func makeDefault(completion: @escaping (Error?) -> Void) {
         // Prefer trailing-closure form — the labeled `completionHandler:`
         // argument is not accepted by the current AppKit Swift overlay.
         NSWorkspace.shared.setDefaultApplication(
             at: Bundle.main.bundleURL,
             toOpenURLsWithScheme: mailtoScheme) { error in
-                completion(error)
+                if let error {
+                    completion(error)
+                    return
+                }
+                verifyDefault(attemptsRemaining: 5, completion: completion)
             }
+    }
+
+    private static func verifyDefault(
+        attemptsRemaining: Int,
+        completion: @escaping (Error?) -> Void
+    ) {
+        if isDefault {
+            completion(nil)
+        } else if attemptsRemaining > 1 {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {
+                verifyDefault(
+                    attemptsRemaining: attemptsRemaining - 1,
+                    completion: completion)
+            }
+        } else {
+            completion(SelectionError.didNotChange(
+                currentHandler: currentHandlerBundleID()))
+        }
     }
 
     // MARK: - mailto: parse

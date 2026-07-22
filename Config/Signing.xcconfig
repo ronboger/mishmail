@@ -4,17 +4,18 @@
 // any Mac with no Apple Developer account (so `make build`, CI, and strangers
 // cloning the repo all work out of the box).
 //
-// To sign with your own Apple Developer team — required for notarization, and
-// nice for a stable identity that stops the Keychain re-prompting on every
-// rebuild — create Config/Local.xcconfig (git-ignored) with, e.g.:
+// To sign with a free Apple Account Personal Team — enough for a stable local
+// identity that stops Keychain re-prompting on every rebuild — create
+// Config/Local.xcconfig (git-ignored) with, e.g.:
 //
 //     CODE_SIGN_STYLE = Automatic
 //     DEVELOPMENT_TEAM = XXXXXXXXXX
 //     CODE_SIGN_IDENTITY = Apple Development
 //
-// For Developer ID / notarized shipping builds, also switch to the distribution
-// entitlements (library validation stays ON — the embedded GRDB framework is
-// re-signed with your team, so the ad-hoc-only disable is unnecessary):
+// No paid Apple Developer membership is required for that personal-use setup.
+// Paid membership is required for Developer ID / notarized shipping builds;
+// those also switch to the distribution entitlements (library validation stays
+// ON — the embedded GRDB framework is re-signed with your team):
 //
 //     CODE_SIGN_ENTITLEMENTS = Sources/MishMail/MishMail.Distribution.entitlements
 //

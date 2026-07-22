@@ -2477,6 +2477,14 @@ struct ComposeRequest: Identifiable {
     // MARK: - Account lifecycle
 
     func addAccount(reauthorizing hint: String? = nil) {
+        // `make run` is a deliberately Keychain-free, ad-hoc demo process
+        // backed by a known fixture key and isolated database directory. Never
+        // let real OAuth data cross that boundary; relaunching with DEMO=0
+        // requires stable signing before any real account can be connected.
+        guard ProcessInfo.processInfo.environment["MISHMAIL_DEMO"] != "1" else {
+            lastError = "The developer demo cannot connect real accounts. Quit it, configure free Personal Team signing, then run make run DEMO=0."
+            return
+        }
         Task {
             do {
                 let (refresh, access) = try await OAuthService().signIn(loginHint: hint)

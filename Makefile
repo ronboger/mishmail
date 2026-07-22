@@ -36,16 +36,24 @@ DEBUG_APP = $(DD)/Build/Products/Debug/MishMail Debug.app
 RELEASE_APP = $(DD)/Build/Products/Release/MishMail.app
 RELEASE_DIR = $(DD)/Build/Products/Release
 ZIP_NAME = MishMail-$(VERSION).zip
-# When Config/Local.xcconfig sets a DEVELOPMENT_TEAM, ship with Distribution
-# entitlements (library validation ON). Ad-hoc default keeps the looser file.
+# Real-account builds need a stable identity. Apple's free Personal Team is
+# sufficient; the paid Developer Program is only needed for distribution.
+# Ad-hoc builds are deliberately limited to compilation and the fictional demo:
+# their designated requirement changes on every rebuild, which makes macOS ask
+# for Keychain access again.
 TEAM = $(shell awk -F' *= *' '/^DEVELOPMENT_TEAM/ {print $$2; exit}' Config/Local.xcconfig 2>/dev/null)
-ifneq ($(strip $(TEAM)),)
-RELEASE_SIGN_FLAGS = CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements
+VALID_SIGNING_IDENTITY = $(if $(strip $(TEAM)),$(shell python3 scripts/check_signing.py $(TEAM) any 2>/dev/null))
+VALID_DEVELOPER_IDENTITY = $(if $(strip $(TEAM)),$(shell python3 scripts/check_signing.py $(TEAM) developer_id 2>/dev/null))
+ifeq ($(VALID_SIGNING_IDENTITY),yes)
+DEBUG_SIGN_FLAGS =
+INSTALL_SIGN_FLAGS = CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements
 else
-RELEASE_SIGN_FLAGS =
+DEBUG_SIGN_FLAGS = CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=
+INSTALL_SIGN_FLAGS = CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
+	CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.entitlements
 endif
 
-.PHONY: test ui-test build run demo install gen hooks release clean
+.PHONY: test ui-test build run demo install gen hooks release clean signing-doctor require-stable-signing
 
 gen:
 	@# Worktrees lack the git-ignored Config/Local.xcconfig (personal signing
@@ -90,7 +98,7 @@ ui-test: gen
 # The throwaway test app (Debug identity, isolated data).
 build: gen
 	xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Debug \
-		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet
+		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet $(DEBUG_SIGN_FLAGS)
 
 # Build the test app and launch it in place — the "let me look at my change"
 # verb. Launches with the fictional demo inbox by default (see DemoSeed.swift)
@@ -101,6 +109,12 @@ DEMO ?= 1
 # (signposts always emit; Console.app subsystem dev.ronboger.MishMail.perf)
 PERF ?= 0
 run: build
+	@if [ "$(DEMO)" != "1" ] && [ "$(VALID_SIGNING_IDENTITY)" != "yes" ]; then \
+		echo "Refusing to launch a real inbox with an ad-hoc signature."; \
+		echo "Ad-hoc rebuilds repeatedly ask for Keychain access."; \
+		echo "Run 'make signing-doctor' for the free Personal Team setup."; \
+		exit 1; \
+	fi
 	-pkill -f "MishMail Debug" 2>/dev/null || true
 	open -n "$(DEBUG_APP)" --env MISHMAIL_DEMO=$(DEMO) --env MISHMAIL_PERF=$(PERF)
 
@@ -110,13 +124,38 @@ demo: build
 	open -n "$(DEBUG_APP)" --env MISHMAIL_DEMO=1
 
 # Build Release and install it as your real /Applications app — the "ship it to
-# my machine" verb. Replaces whatever MishMail.app is there.
-install: gen
+# my machine" verb. Replaces whatever MishMail.app is there. Never silently
+# install ad-hoc: doing so changes MishMail's identity on the next rebuild and
+# causes recurring Keychain prompts.
+install: gen require-stable-signing
 	xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
-		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet $(RELEASE_SIGN_FLAGS)
+		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet $(INSTALL_SIGN_FLAGS)
 	rm -rf /Applications/MishMail.app
 	ditto "$(RELEASE_APP)" /Applications/MishMail.app
 	@echo "Installed MishMail.app → /Applications (your daily driver)."
+
+signing-doctor:
+	@if [ "$(VALID_SIGNING_IDENTITY)" = "yes" ]; then \
+		echo "Ready: team $(TEAM) has a valid local code-signing identity."; \
+	else \
+		echo "MishMail needs stable signing before it can use a real inbox."; \
+		echo ""; \
+		echo "No paid Apple Developer membership is required:"; \
+		echo "  1. Xcode → Settings → Apple Accounts → Add Apple Account"; \
+		echo "  2. Select your free Personal Team → Manage Certificates"; \
+		echo "  3. Click + → Apple Development"; \
+		echo "  4. Put that Team ID in Config/Local.xcconfig (see README)"; \
+		echo ""; \
+		echo "The fictional demo remains available with: make run"; \
+		exit 1; \
+	fi
+
+require-stable-signing:
+	@if [ "$(VALID_SIGNING_IDENTITY)" != "yes" ]; then \
+		echo "Refusing an ad-hoc MishMail install: it would repeatedly ask for Keychain access after rebuilds."; \
+		echo "Run 'make signing-doctor' for the free Personal Team setup."; \
+		exit 1; \
+	fi
 
 # Build Release, zip the app bundle, write SHA256SUMS, and publish a GitHub
 # release tagged v<MARKETING_VERSION>. The in-app updater verifies the zip
@@ -125,14 +164,16 @@ install: gen
 # When Config/Local.xcconfig has DEVELOPMENT_TEAM, builds with Distribution
 # entitlements (full library validation).
 release: test
-	@if [ -n "$(TEAM)" ]; then \
+	@if [ -n "$(TEAM)" ] && [ "$(VALID_DEVELOPER_IDENTITY)" = "yes" ]; then \
 		echo "Release signing team $(TEAM) — using MishMail.Distribution.entitlements"; \
 	else \
-		echo "Refusing public release: configure a Developer ID DEVELOPMENT_TEAM and notarization first"; \
+		echo "Refusing public release: a paid-program Developer ID Application identity and notarization are required for distribution to other Macs."; \
 		exit 1; \
 	fi
 	xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
-		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet $(RELEASE_SIGN_FLAGS)
+		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet \
+		CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" DEVELOPMENT_TEAM=$(TEAM) \
+		CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements
 	cd $(RELEASE_DIR) && \
 		ditto -c -k --keepParent MishMail.app $(ZIP_NAME) && \
 		shasum -a 256 $(ZIP_NAME) > SHA256SUMS && \
