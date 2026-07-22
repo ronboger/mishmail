@@ -64,11 +64,11 @@ minor versions may still change behavior.
   `contentShape` + gesture on every row (that hijacked `List` selection on
   macOS). Unselected rows select/open normally; the pre-highlighted top row
   still opens on click via a selected-only overlay.
-- **Esc exits side-by-side compose while drafting** — the global key monitor
-  now handles Esc before the compose-typing passthrough and before the
-  "compose open → skip Esc ladder" gate, so Esc leaves split for the normal
-  thread/inline/floating placement even with the body editor focused (⇧⌘↩
-  and the toolbar exit control already worked).
+- **Esc exits side-by-side compose while drafting** — ContentView owns an
+  explicit Esc priority ladder (slash picker → command palette → exit split →
+  save & close draft) that runs before the compose-typing passthrough, so Esc
+  works with the body editor focused and never relies on local-monitor install
+  order. Second Esc still saves & closes the draft after leaving split.
 - **Inline reply scroll no longer fights the thread** — opening Reply keeps a
   stable top `scrollPosition` and one-shot bottom-scrolls the reply target
   above the reserved compose card (re-sticks on late WKWebView growth, disarms

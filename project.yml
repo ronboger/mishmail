@@ -116,6 +116,7 @@ targets:
       - Sources/MishMail/Support/Markdown.swift
       - Sources/MishMail/Support/MailLayout.swift
       - Sources/MishMail/Support/ComposePlacement.swift
+      - Sources/MishMail/Support/ComposeEsc.swift
       - Sources/MishMail/Support/DemoSeed.swift
       - Sources/MishMail/Support/ErrorRecovery.swift
       - Sources/MishMail/Support/Ollama.swift

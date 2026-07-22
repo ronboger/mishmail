@@ -614,26 +614,47 @@ struct ContentView: View {
                 store.toggleSplitCompose()
                 return nil
             }
-            // Esc exits side-by-side first (draft stays open → inline/floating).
-            // Must run here — not only as the split button's .cancelAction —
-            // because expanded compose owns NSText focus and the general Esc
-            // ladder below is gated on compose being nil/minimized. Slash
-            // picker's local monitor is registered later so it still sees Esc
-            // first while the `/` menu is up. Settings keeps its own Esc path.
-            if event.keyCode == 53,
-               store.composeRequest?.presentation == .split,
-               !store.composeMinimized {
-                if let window = event.window,
-                   window.identifier?.rawValue.contains("Settings") == true {
-                    return event
+            // Compose Esc ladder (before NSText passthrough): expanded compose
+            // owns Esc while open, but priority is explicit — never local-
+            // monitor install order (FIFO; an early `return nil` starves later
+            // monitors). Pure policy in ComposeEsc.intent.
+            if event.keyCode == 53 {
+                let isSettings = event.window?.identifier?.rawValue
+                    .contains("Settings") == true
+                let composeExpanded = store.composeRequest != nil
+                    && !store.composeMinimized
+                let isSplit = store.composeRequest?.presentation == .split
+                switch ComposeEsc.intent(
+                    isSettingsWindow: isSettings,
+                    slashPickerVisible: store.slashPickerVisible,
+                    commandPaletteOpen: store.showCommandPalette,
+                    composeExpanded: composeExpanded,
+                    isSplit: isSplit) {
+                case .passThrough:
+                    // Settings: leave the event for the Settings-specific block
+                    // in the mailbox Esc ladder below (blur field → close window).
+                    break
+                case .dismissSlashPicker:
+                    store.dismissSlashPicker()
+                    return nil
+                case .closeCommandPalette:
+                    store.showCommandPalette = false
+                    return nil
+                case .exitSplit:
+                    store.exitSplitCompose()
+                    return nil
+                case .saveAndCloseCompose:
+                    store.requestComposeEsc()
+                    return nil
+                case .fallThrough:
+                    break
                 }
-                store.exitSplitCompose()
-                return nil
             }
             // Expanded compose + typing: every chord belongs to the text system
             // / compose handlers (⌘K insert-link, ⌃F/⌃K caret motion, …), not
             // app-level shortcuts. Minimized compose resigns focus so inbox
-            // keys work again (Notion Mail-style).
+            // keys work again (Notion Mail-style). Esc for compose is handled
+            // above so it is not trapped here.
             if store.composeRequest != nil, !store.composeMinimized,
                event.window?.firstResponder is NSText {
                 return event

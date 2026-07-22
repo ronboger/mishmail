@@ -436,6 +436,17 @@ struct ComposeView: View {
         }
     }
 
+    /// Esc from ContentView while this card is expanded: dismiss compose
+    /// sheets first, then the same path as the header ✕ / `.cancelAction`.
+    private func handleComposeEsc() {
+        if showLinkSheet { showLinkSheet = false; return }
+        if showScheduleSheet { showScheduleSheet = false; return }
+        if showSnippets { showSnippets = false; return }
+        if showFilePicker { showFilePicker = false; return }
+        if isMinimized { return }
+        saveAndClose()
+    }
+
     /// Discard without keeping a Gmail draft — deletes the live autosave chain.
     private func discardAndClose() {
         guard beginFinish() else { return }
@@ -503,6 +514,7 @@ struct ComposeView: View {
                 draftStatus = .idle
             }
             installSlashKeyMonitor()
+            store.slashPickerVisible = slashActive
         }
         .onDisappear {
             // Unmounted without an explicit exit: a new compose/reply request
@@ -510,12 +522,23 @@ struct ComposeView: View {
             // minimized). Keep the work as a draft instead of dropping it.
             if !didFinish { saveDraftIfNeeded() }
             store.composeMinimized = false
+            store.slashPickerVisible = false
             autosaveTask?.cancel()
             if let monitor = slashKeyMonitor {
                 NSEvent.removeMonitor(monitor)
                 slashKeyMonitor = nil
             }
         }
+        // Publish `/` picker visibility for ContentView's Esc ladder (explicit
+        // gate — local monitors fire FIFO and must not rely on order).
+        .onChange(of: slashActive) { store.slashPickerVisible = slashActive }
+        .onChange(of: store.slashPickerDismissToken) {
+            slashDismissed = true
+            store.slashPickerVisible = false
+        }
+        // ContentView Esc while expanded compose has NSText focus (close button
+        // `.cancelAction` does not fire then). Sheets first, then save & close.
+        .onChange(of: store.composeEscToken) { handleComposeEsc() }
         .onChange(of: body_) { scheduleAutosave() }
         .onChange(of: subject) { scheduleAutosave() }
         .onChange(of: toTokens) { scheduleAutosave() }
@@ -615,10 +638,8 @@ struct ComposeView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                // Esc exits split first (draft stays open). ContentView's key
-                // monitor owns this while the body has NSText focus; the
-                // shortcut is a backup when focus is elsewhere. Next Esc hits
-                // closeButton's cancelAction and saves & closes as usual.
+                // Esc ladder lives in ContentView via ComposeEsc (works while
+                // NSText has focus). Shortcut is a backup when focus is elsewhere.
                 .keyboardShortcut(isSplit ? .cancelAction : nil)
                 .help(isSplit ? "Exit side by side (esc or ⇧⌘↩)"
                               : "View side by side with the conversation (⇧⌘↩)")

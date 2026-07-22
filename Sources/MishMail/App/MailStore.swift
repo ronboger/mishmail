@@ -388,6 +388,20 @@ final class MailStore: ObservableObject {
     /// Compose card is collapsed to a title strip (Notion Mail-style). Draft
     /// state stays mounted; inbox shortcuts work again while minimized.
     @Published var composeMinimized = false
+    /// ComposeView publishes whether the `/` snippet picker is showing so the
+    /// ContentView Esc ladder can dismiss it without relying on local-monitor
+    /// install order (monitors fire FIFO; an early `return nil` starves later ones).
+    @Published var slashPickerVisible = false
+    /// Bumped to dismiss the `/` picker (ComposeView sets `slashDismissed`).
+    @Published private(set) var slashPickerDismissToken = 0
+    func dismissSlashPicker() {
+        guard slashPickerVisible else { return }
+        slashPickerDismissToken &+= 1
+    }
+    /// Bumped for expanded-compose Esc (sheet dismiss → save & close). Same
+    /// role as the close button's `.cancelAction`, but works while NSText has focus.
+    @Published private(set) var composeEscToken = 0
+    func requestComposeEsc() { composeEscToken &+= 1 }
     /// Reading pane fills the window (sidebar + list hidden). Toggled with ⌘↩
     /// when a conversation is selected and Send is not claiming the chord.
     @Published var threadFocusMode = false
@@ -1016,6 +1030,7 @@ struct ComposeRequest: Identifiable {
     func clearComposeRequest() {
         composeRequest = nil
         composeMinimized = false
+        slashPickerVisible = false
         guard let mail = pendingMailto else { return }
         pendingMailto = nil
         openMailtoCompose(mail)
