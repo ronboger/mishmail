@@ -1270,6 +1270,9 @@ struct MessageCard: View {
                 // Notion Mail-style header: sender name + address, with a
                 // compact "To me ⌄" summary that expands into full FROM/TO/CC
                 // rows. Every participant is clickable (draft/search/copy).
+                // Claim remaining width so long From names/emails can use the
+                // space left of the action cluster instead of middle-truncating
+                // into "Ale…sque abda…y.edu" while Spacer steals the free room.
                 VStack(alignment: .leading, spacing: 3) {
                     if expanded {
                         if recipientsExpanded {
@@ -1280,10 +1283,13 @@ struct MessageCard: View {
                     } else {
                         Text(MessageParser.displayName(fromHeader: message.fromHeader))
                             .font(.system(size: 14 * fontScale, weight: .semibold))
+                            .lineLimit(1)
+                            .truncationMode(.tail)
                             .textSelection(.enabled)
                     }
                 }
-                Spacer()
+                .frame(maxWidth: .infinity, alignment: .leading)
+                Spacer(minLength: 8)
                 if expanded, message.bodyHTML != nil, !message.bodyText.isEmpty {
                     Button {
                         showPlainText.toggle()
@@ -1640,6 +1646,7 @@ struct MessageCard: View {
                     message.fromHeader,
                     nameSize: 14,
                     nameWeight: .semibold)
+                .frame(maxWidth: .infinity, alignment: .leading)
             }
             GridRow {
                 recipientRole("TO")
@@ -1653,7 +1660,8 @@ struct MessageCard: View {
                             .font(.system(size: 12.5 * fontScale))
                             .foregroundStyle(.secondary)
                             .lineLimit(1)
-                            .truncationMode(.middle)
+                            .truncationMode(.tail)
+                            .layoutPriority(1)
                         Image(systemName: "chevron.down")
                             .font(.system(size: 8 * fontScale,
                                           weight: .semibold))
@@ -1661,15 +1669,17 @@ struct MessageCard: View {
                             .frame(width: 12, height: 12,
                                    alignment: .center)
                     }
-                    .frame(minWidth: 40, minHeight: 40, alignment: .leading)
+                    .frame(maxWidth: .infinity, minHeight: 40, alignment: .leading)
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .frame(maxWidth: .infinity, alignment: .leading)
                 .accessibilityLabel("To \(recipientSummary)")
                 .accessibilityHint("Show all senders and recipients")
                 .help("Show all senders and recipients")
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private func recipientRole(_ role: String) -> some View {
@@ -1696,6 +1706,7 @@ struct MessageCard: View {
                 .foregroundStyle(.secondary)
             }
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     @ViewBuilder
@@ -1710,6 +1721,7 @@ struct MessageCard: View {
                     .foregroundStyle(.tertiary)
                     .gridColumnAlignment(.leading)
                 participantMenu(address)
+                    .frame(maxWidth: .infinity, alignment: .leading)
             }
         }
     }
@@ -1721,6 +1733,7 @@ struct MessageCard: View {
                                  nameWeight: Font.Weight = .regular) -> some View {
         let email = MessageParser.emailAddress(raw)
         let name = MessageParser.displayName(fromHeader: raw)
+        let showEmail = name.lowercased() != email.lowercased()
         Menu {
             Button {
                 store.openCompose(.init(replyTo: nil, prefillTo: email))
@@ -1734,7 +1747,7 @@ struct MessageCard: View {
             }
             Divider()
             Button("Copy \"\(email)\"") { copyToPasteboard(email) }
-            if name.lowercased() != email.lowercased() {
+            if showEmail {
                 Button("Copy \"\(name)\"") { copyToPasteboard(name) }
             }
             // Split/block only make sense for other people's addresses.
@@ -1769,27 +1782,59 @@ struct MessageCard: View {
                 }
             }
         } label: {
-            HStack(spacing: 6) {
-                Text(name)
-                    .font(.system(size: nameSize * fontScale, weight: nameWeight))
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .truncationMode(.middle)
-                if name.lowercased() != email.lowercased() {
-                    Text(email)
-                        .font(.system(size: (nameSize - 1.5) * fontScale))
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-            }
-            .contentShape(Rectangle())
+            participantLabel(name: name, email: email, showEmail: showEmail,
+                             nameSize: nameSize, nameWeight: nameWeight)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .contentShape(Rectangle())
         }
         .menuStyle(.button)
         .buttonStyle(.plain)
         .menuIndicator(.hidden)
-        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .help(email)
+    }
+
+    /// Progressive disclosure for the participant chip: full name+email when
+    /// it fits, then name only (email stays in `.help` / menu), then a
+    /// tail-truncated name. Avoids dual middle-truncation that produced
+    /// unreadable fragments like "Ale…sque abda…y.edu".
+    @ViewBuilder
+    private func participantLabel(name: String, email: String, showEmail: Bool,
+                                  nameSize: CGFloat, nameWeight: Font.Weight) -> some View {
+        let nameFont = Font.system(size: nameSize * fontScale, weight: nameWeight)
+        let emailFont = Font.system(size: (nameSize - 1.5) * fontScale)
+        if showEmail {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: 6) {
+                    Text(name)
+                        .font(nameFont)
+                        .foregroundStyle(.primary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                    Text(email)
+                        .font(emailFont)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .fixedSize(horizontal: true, vertical: false)
+                }
+                Text(name)
+                    .font(nameFont)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .fixedSize(horizontal: true, vertical: false)
+                Text(name)
+                    .font(nameFont)
+                    .foregroundStyle(.primary)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+        } else {
+            Text(name)
+                .font(nameFont)
+                .foregroundStyle(.primary)
+                .lineLimit(1)
+                .truncationMode(.tail)
+        }
     }
 
     private func copyToPasteboard(_ string: String) {
