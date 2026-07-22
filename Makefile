@@ -46,6 +46,15 @@ endif
 .PHONY: test ui-test build run demo install gen hooks release clean
 
 gen:
+	@# Worktrees lack the git-ignored Config/Local.xcconfig (personal signing
+	@# identity), so their Debug builds fall back to ad-hoc signing — and every
+	@# ad-hoc rebuild is a "new app" to the Keychain, which re-prompts for the
+	@# stored OAuth tokens. Link the main checkout's copy in when one exists.
+	@main_root=$$(dirname "$$(git rev-parse --path-format=absolute --git-common-dir)"); \
+	if [ ! -e Config/Local.xcconfig ] && [ -f "$$main_root/Config/Local.xcconfig" ]; then \
+		ln -s "$$main_root/Config/Local.xcconfig" Config/Local.xcconfig; \
+		echo "Linked Config/Local.xcconfig from $$main_root (stable signing identity)"; \
+	fi
 	xcodegen generate
 
 test: gen
