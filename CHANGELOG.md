@@ -7,6 +7,18 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Added
+- **Full-window conversations (Superhuman-style, now the default)** — clicking
+  a conversation (or pressing ↩) opens it across the whole window instead of a
+  reading pane beside the list; Esc or the back button returns to the list.
+  Settings → Appearance → "Opening a conversation" switches back to the
+  reading-pane layout.
+- **Sidebar on arrow keys** — ← hides the sidebar, → shows it (persisted, and
+  now hidden by default). `/` still works with a hidden sidebar: it reveals
+  the sidebar and focuses search.
+- **Top row pre-selected** — on launch, when switching mailboxes, and when
+  refocusing the app, the top conversation is highlighted automatically
+  (without opening or marking it read), so ↩ opens it immediately — no
+  priming ↑/↓ or click needed.
 - **Side-by-side compose (⇧⌘↩)** — view a draft next to the conversation it
   answers. Any thread-bound compose (reply, forward, or a reopened reply
   draft) can expand to a full-window split: the source conversation fills the

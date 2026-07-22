@@ -3025,6 +3025,24 @@ final class MailStore: ObservableObject {
     /// (which never sets it) reopens the pane. Cleared after each change.
     var selectionViaKeyboard = false
 
+    /// Set right before a programmatic highlight-only selection (the
+    /// Superhuman-style "top row is pre-selected so ↩ just works" default).
+    /// The UI must never open the conversation for it. Cleared after each
+    /// change.
+    var selectionQuiet = false
+
+    /// Superhuman-style default: whenever nothing is selected, highlight the
+    /// top visible row (without opening it) so ↩ opens it immediately.
+    /// `displayOrder` can be stale while the list is unmounted (thread focus)
+    /// — only trust it when the row is still listed.
+    func autoSelectTopThread() {
+        guard selectedThreadId == nil,
+              let first = displayOrder.first,
+              threads.contains(where: { $0.id == first }) else { return }
+        selectionQuiet = true
+        selectedThreadId = first
+    }
+
     /// Thread ids in the order the list actually displays them (priority
     /// section first, then grouped) — kept in sync by ThreadListView so
     /// keyboard navigation matches what's on screen.

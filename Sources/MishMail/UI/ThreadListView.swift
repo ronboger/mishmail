@@ -68,6 +68,9 @@ struct ThreadListView: View {
             grouped = out
             flatDisplayOrder = out.flatMap { isCollapsed($0.0) ? [] : $0.1.map(\.id) }
             store.displayOrder = flatDisplayOrder
+            // Superhuman-style: land with the top row already selected
+            // (highlight only — never opens) so ↩ opens it right away.
+            store.autoSelectTopThread()
         }
     }
 

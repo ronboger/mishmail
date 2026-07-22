@@ -14,6 +14,7 @@ struct ShortcutsHelpView: View {
         ]),
         ("Other", [
             ("↑ / ↓", "Browse conversations"),
+            ("← / →", "Hide / show sidebar"),
             ("Return", "Open conversation"),
             ("⌘↩", "Focus conversation full-app (Send while composing)"),
             ("⇧⌘↩", "Compose side by side with the conversation"),

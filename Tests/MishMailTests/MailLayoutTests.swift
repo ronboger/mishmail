@@ -27,6 +27,33 @@ final class MailLayoutTests: XCTestCase {
                        .threadFocus)
     }
 
+    func testFullWindowStyleOpensConversationAsFocus() {
+        XCTAssertEqual(MailLayout.mode(width: 1_400, readingPaneHidden: false,
+                                       hasSelection: true, threadFocus: true,
+                                       fullWindowThreads: true),
+                       .threadFocus)
+    }
+
+    func testFullWindowStyleNeverShowsAReadingPane() {
+        // A selection without an explicit open stays on the list — wide
+        // windows must not sneak back to three panes.
+        XCTAssertEqual(MailLayout.mode(width: 1_400, readingPaneHidden: false,
+                                       hasSelection: true,
+                                       fullWindowThreads: true),
+                       .list)
+        XCTAssertEqual(MailLayout.mode(width: 900, readingPaneHidden: true,
+                                       hasSelection: true,
+                                       fullWindowThreads: true),
+                       .list)
+    }
+
+    func testFullWindowStyleWithoutSelectionFallsBackToList() {
+        XCTAssertEqual(MailLayout.mode(width: 1_200, readingPaneHidden: false,
+                                       hasSelection: false, threadFocus: true,
+                                       fullWindowThreads: true),
+                       .list)
+    }
+
     func testThreadFocusWithoutSelectionFallsBack() {
         XCTAssertEqual(MailLayout.mode(width: 1_200, readingPaneHidden: false,
                                        hasSelection: false, threadFocus: true),

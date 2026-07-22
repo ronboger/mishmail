@@ -954,6 +954,8 @@ struct AppearanceSettings: View {
     @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
     @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
     @AppStorage("vipAlwaysPins") private var vipAlwaysPins = true
+    @AppStorage(ThreadOpenStyle.storageKey) private var threadOpenStyleRaw =
+        ThreadOpenStyle.fullWindow.rawValue
     /// Default `.ask` preserves privacy (no open-tracking until opt-in).
     @AppStorage(RemoteImagePolicy.defaultsKey) private var remoteImagePolicyRaw =
         RemoteImagePolicy.ask.rawValue
@@ -966,6 +968,16 @@ struct AppearanceSettings: View {
     var body: some View {
         PaneScaffold(title: "Appearance") {
             Form {
+                Section {
+                    Picker("Opening a conversation", selection: $threadOpenStyleRaw) {
+                        Text("Fills the window").tag(ThreadOpenStyle.fullWindow.rawValue)
+                        Text("Shows in a reading pane").tag(ThreadOpenStyle.readingPane.rawValue)
+                    }
+                } footer: {
+                    Text("Fills the window is Superhuman-style: click a conversation (or press ↩) and it takes over the window; Esc goes back to the list. The reading pane shows conversations beside the message list instead.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 Section {
                     Picker("Priority section in Inbox", selection: $priorityModeRaw) {
                         ForEach(PrioritySplit.Mode.allCases, id: \.rawValue) { mode in

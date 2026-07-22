@@ -26,6 +26,12 @@ struct ContentView: View {
     @State private var layoutMode: MailLayoutMode = .list
     // Persisted so the layout survives relaunch, like the sidebar state.
     @AppStorage("readingPaneHidden") private var readingPaneHidden = false
+    // Superhuman-style (default): opening a conversation fills the window.
+    // Settings → Appearance can switch back to the reading-pane layout.
+    @AppStorage(ThreadOpenStyle.storageKey) private var threadOpenStyleRaw =
+        ThreadOpenStyle.fullWindow.rawValue
+    // Sidebar starts collapsed; ← hides it, → brings it back (persisted).
+    @AppStorage("sidebarHidden") private var sidebarHidden = true
     /// Measured frames for PreferenceKey-aligned inline compose.
     @State private var readingPaneFrame: CGRect = .zero
     @State private var composeHostFrame: CGRect = .zero
@@ -34,13 +40,36 @@ struct ContentView: View {
     @State private var openedThreadId: String?
     @State private var detailSelectionTask: Task<Void, Never>?
 
+    private var fullWindowThreads: Bool {
+        ThreadOpenStyle(rawValue: threadOpenStyleRaw) != .readingPane
+    }
+
+    /// What "the reading pane is hidden" means for compose placement and
+    /// inline-compose promotion. In full-window style the pane is the focus
+    /// view itself: visible while a conversation is open, hidden on the list.
+    private var effectivePaneHidden: Bool {
+        fullWindowThreads ? !store.threadFocusMode : readingPaneHidden
+    }
+
+    /// Sidebar collapse driven by ←/→ (and the native toolbar toggle).
+    /// `hidden` is the split view's "sidebar collapsed" value for the
+    /// current column count (.detailOnly for 2, .doubleColumn for 3).
+    private func splitVisibility(whenHidden hidden: NavigationSplitViewVisibility)
+        -> Binding<NavigationSplitViewVisibility> {
+        Binding(
+            get: { sidebarHidden ? hidden : .all },
+            set: { sidebarHidden = ($0 != .all) }
+        )
+    }
+
     var body: some View {
         GeometryReader { proxy in
             let mode = MailLayout.mode(
                 width: proxy.size.width,
                 readingPaneHidden: readingPaneHidden,
                 hasSelection: store.selectedThreadId != nil,
-                threadFocus: store.threadFocusMode)
+                threadFocus: store.threadFocusMode,
+                fullWindowThreads: fullWindowThreads)
             Group {
                 if splitComposeActive {
                     splitComposeLayout(hostWidth: proxy.size.width)
@@ -74,12 +103,16 @@ struct ContentView: View {
         // into compose at the bottom (Notion Mail-style).
         .onChange(of: store.selectedThreadId) {
             let keyboardSelection = store.selectionViaKeyboard
-            defer { store.selectionViaKeyboard = false }
+            let quietSelection = store.selectionQuiet
+            defer {
+                store.selectionViaKeyboard = false
+                store.selectionQuiet = false
+            }
             // Leaving a thread (or clearing selection) promotes inline compose
             // to the floating card so the draft stays editable.
             store.promoteInlineComposeIfNeeded(
                 selectedThreadId: store.selectedThreadId,
-                readingPaneHidden: readingPaneHidden)
+                readingPaneHidden: effectivePaneHidden)
             // Focus mode requires a conversation; drop it when selection clears.
             if store.selectedThreadId == nil {
                 store.threadFocusMode = false
@@ -87,11 +120,14 @@ struct ContentView: View {
                 detailSelectionTask?.cancel()
             }
             guard let selectedId = store.selectedThreadId else { return }
+            // Auto-highlight of the top row (Superhuman default): selection
+            // only — never opens the conversation.
+            if quietSelection { return }
             if keyboardSelection {
                 // Hidden-pane browsing is highlight-only. Any visible preview,
                 // including the first keyboard selection in compact mode,
                 // coalesces repeats and opens the final row.
-                if !readingPaneHidden {
+                if !effectivePaneHidden {
                     if DetailOpenPolicy.opensImmediately(
                         openedThreadId: openedThreadId,
                         listedIds: store.threads.lazy.map(\.id)) {
@@ -111,16 +147,36 @@ struct ContentView: View {
                     store.selectedThreadId = nil
                     return
                 }
-                readingPaneHidden = false
+                if fullWindowThreads {
+                    store.threadFocusMode = true
+                } else {
+                    readingPaneHidden = false
+                }
             }
         }
         .onChange(of: readingPaneHidden) {
+            // Full-window style ignores the reading-pane flag entirely; the
+            // focus-mode onChange below owns compose placement there.
+            guard !fullWindowThreads else { return }
             store.readingPaneHiddenForCompose = readingPaneHidden
             store.promoteInlineComposeIfNeeded(
                 selectedThreadId: store.selectedThreadId,
                 readingPaneHidden: readingPaneHidden)
             if readingPaneHidden { store.threadFocusMode = false }
             else if let selected = store.selectedThreadId {
+                detailSelectionTask?.cancel()
+                openedThreadId = selected
+            }
+        }
+        .onChange(of: store.threadFocusMode) {
+            guard fullWindowThreads else { return }
+            store.readingPaneHiddenForCompose = !store.threadFocusMode
+            // Going back to the list with an inline reply open keeps the
+            // draft as a floating card instead of tearing it down.
+            store.promoteInlineComposeIfNeeded(
+                selectedThreadId: store.selectedThreadId,
+                readingPaneHidden: !store.threadFocusMode)
+            if store.threadFocusMode, let selected = store.selectedThreadId {
                 detailSelectionTask?.cancel()
                 openedThreadId = selected
             }
@@ -141,7 +197,7 @@ struct ContentView: View {
         }
         .onChange(of: store.chips) { store.reloadThreadsDebounced() }
         .onAppear {
-            store.readingPaneHiddenForCompose = readingPaneHidden
+            store.readingPaneHiddenForCompose = effectivePaneHidden
             openedThreadId = store.selectedThreadId
             installKeyMonitor()
             // Don't let the sidebar search field start with keyboard focus —
@@ -154,21 +210,30 @@ struct ContentView: View {
             detailSelectionTask?.cancel()
             detailSelectionTask = nil
         }
+        // Refocusing the app lands with the top row selected (Superhuman-
+        // style) when nothing else is — ↩ opens it without touching arrows.
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification)) { _ in
+            store.autoSelectTopThread()
+        }
         .toolbar {
             ToolbarItemGroup {
-                Button {
-                    readingPaneHidden.toggle()
-                } label: {
-                    Label(readingPaneHidden ? "Show Reading Pane" : "Hide Reading Pane",
-                          systemImage: "sidebar.trailing")
+                // Full-window style has no reading pane to toggle.
+                if !fullWindowThreads {
+                    Button {
+                        readingPaneHidden.toggle()
+                    } label: {
+                        Label(readingPaneHidden ? "Show Reading Pane" : "Hide Reading Pane",
+                              systemImage: "sidebar.trailing")
+                    }
+                    .keyboardShortcut("0", modifiers: [.command, .option])
+                    .help(readingPaneHidden ? "Show the reading pane (⌥⌘0)"
+                                            : "Hide the reading pane (⌥⌘0)")
                 }
-                .keyboardShortcut("0", modifiers: [.command, .option])
-                .help(readingPaneHidden ? "Show the reading pane (⌥⌘0)"
-                                        : "Hide the reading pane (⌥⌘0)")
                 Button {
                     guard store.selectedThreadId != nil else { return }
                     store.threadFocusMode.toggle()
-                    if store.threadFocusMode {
+                    if store.threadFocusMode, !fullWindowThreads {
                         readingPaneHidden = false
                         store.readingPaneHiddenForCompose = false
                     }
@@ -336,21 +401,21 @@ struct ContentView: View {
     private func mailboxLayout(_ mode: MailLayoutMode) -> some View {
         switch mode {
         case .list:
-            NavigationSplitView {
+            NavigationSplitView(columnVisibility: splitVisibility(whenHidden: .detailOnly)) {
                 Sidebar()
                     .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 400)
             } detail: {
                 listColumn
             }
         case .compactDetail:
-            NavigationSplitView {
+            NavigationSplitView(columnVisibility: splitVisibility(whenHidden: .detailOnly)) {
                 Sidebar()
                     .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 400)
             } detail: {
                 detailPane(compact: true)
             }
         case .threePane:
-            NavigationSplitView {
+            NavigationSplitView(columnVisibility: splitVisibility(whenHidden: .doubleColumn)) {
                 Sidebar()
                     .navigationSplitViewColumnWidth(min: 200, ideal: 240, max: 400)
             } content: {
@@ -503,7 +568,7 @@ struct ContentView: View {
                     },
                     onReply: { msg in
                         store.openCompose(.init(replyTo: msg),
-                                          readingPaneHidden: readingPaneHidden)
+                                          readingPaneHidden: effectivePaneHidden)
                     })
             } else {
                 Text("Select a conversation")
@@ -571,7 +636,7 @@ struct ContentView: View {
                     && !store.composeMinimized
                 if !composeClaimsReturn, store.selectedThreadId != nil {
                     store.threadFocusMode.toggle()
-                    if store.threadFocusMode {
+                    if store.threadFocusMode, !fullWindowThreads {
                         readingPaneHidden = false
                         store.readingPaneHiddenForCompose = false
                     }
@@ -750,7 +815,7 @@ struct ContentView: View {
                     store.selectedThreadId = nil
                     return nil
                 }
-                if !readingPaneHidden {
+                if !fullWindowThreads, !readingPaneHidden {
                     readingPaneHidden = true
                     return nil
                 }
@@ -763,14 +828,30 @@ struct ContentView: View {
                   !(event.window?.firstResponder is NSTextView),
                   !(event.window?.firstResponder is NSTextField)
             else { return event }
-            // Gmail's `/`: jump focus to the sidebar search field.
+            // Gmail's `/`: jump focus to the sidebar search field. A
+            // collapsed sidebar has no field to focus — reveal it first and
+            // focus once the column is installed.
             if event.charactersIgnoringModifiers == "/" {
-                store.focusSearch()
+                if sidebarHidden {
+                    withAnimation { sidebarHidden = false }
+                    DispatchQueue.main.asyncAfter(deadline: .now() + 0.25) {
+                        store.focusSearch()
+                    }
+                } else {
+                    store.focusSearch()
+                }
                 return nil
             }
-            // Arrow keys browse the list without opening the pane; Enter
-            // (or a click) opens the selected thread.
+            // Arrow keys: ↑/↓ browse the list without opening the pane
+            // (Enter or a click opens the selected thread); ←/→ hide/show
+            // the sidebar.
             switch event.keyCode {
+            case 123:  // left — collapse the sidebar
+                withAnimation { sidebarHidden = true }
+                return nil
+            case 124:  // right — reveal the sidebar
+                withAnimation { sidebarHidden = false }
+                return nil
             case 125:  // down
                 store.selectionViaKeyboard = true
                 store.moveSelection(1)
@@ -787,7 +868,11 @@ struct ContentView: View {
                     } else {
                         detailSelectionTask?.cancel()
                         openedThreadId = thread.id
-                        readingPaneHidden = false
+                        if fullWindowThreads {
+                            store.threadFocusMode = true
+                        } else {
+                            readingPaneHidden = false
+                        }
                     }
                 }
                 return nil
