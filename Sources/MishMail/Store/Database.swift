@@ -36,7 +36,11 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     // for common mailbox filters (Sent, Drafts, Promotions, Social).
     var inSent: Bool = false
     var inDrafts: Bool = false
+    /// Tab placement for Promotions (Primary inbox hides this). Set from the
+    /// newest *INBOX-bearing* message at derive time — not from the union of
+    /// `labelIds`, which keeps historical CATEGORY_PROMOTIONS on old invites.
     var inPromotions: Bool = false
+    /// Same placement rule as `inPromotions`, for CATEGORY_SOCIAL.
     var inSocial: Bool = false
     /// True when any message still carries Gmail's SPAM label. Promotions/
     /// Social lists exclude these so they match gmail.com (spam is not a tab).
@@ -67,6 +71,12 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     /// Re-derive boolean flags from the space-separated `labelIds` string so
     /// local label mutations stay coherent with list/badge filters that use
     /// the denormalized columns.
+    ///
+    /// Does **not** touch `inPromotions` / `inSocial`: those are tab-placement
+    /// flags from the newest INBOX-bearing message (`SyncEngine.tabCategoryFlags`),
+    /// and `labelIds` is the historical union (still useful for search). Clobbering
+    /// them from the union would hide personal replies under Promotions again
+    /// after any optimistic mutation.
     mutating func syncFlagsFromLabelIds() {
         let set = Set(labels)
         isStarred = set.contains("STARRED")
@@ -74,8 +84,6 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         inTrash = set.contains("TRASH")
         inSent = set.contains("SENT")
         inDrafts = set.contains("DRAFT")
-        inPromotions = set.contains("CATEGORY_PROMOTIONS")
-        inSocial = set.contains("CATEGORY_SOCIAL")
         inSpam = set.contains("SPAM")
     }
 
@@ -83,6 +91,8 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     /// Seeds STARRED/INBOX from `isStarred`/`inInbox` first: those flags can
     /// be optimistically ahead of `labelIds` (star/archive/snooze mutate only
     /// the flag), and syncFlagsFromLabelIds would otherwise clobber them.
+    /// Explicit CATEGORY_PROMOTIONS / CATEGORY_SOCIAL add/remove update tab
+    /// placement; other mutations leave `inPromotions` / `inSocial` alone.
     mutating func applyLabelMutation(add: Set<String> = [], remove: Set<String> = []) {
         var set = Set(labels)
         if isStarred { set.insert("STARRED") } else { set.remove("STARRED") }
@@ -91,6 +101,10 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         set.formUnion(add)
         labelIds = set.sorted().joined(separator: " ")
         syncFlagsFromLabelIds()
+        if add.contains("CATEGORY_PROMOTIONS") { inPromotions = true }
+        if remove.contains("CATEGORY_PROMOTIONS") { inPromotions = false }
+        if add.contains("CATEGORY_SOCIAL") { inSocial = true }
+        if remove.contains("CATEGORY_SOCIAL") { inSocial = false }
     }
 }
 
@@ -1021,6 +1035,25 @@ final class AppDatabase {
         m.registerMigration("v26") { db in
             try db.alter(table: "snippet") { t in
                 t.add(column: "accountIdsJSON", .text)
+            }
+        }
+        // v27: tab-category denorm from newest INBOX-bearing message (not the
+        // historical labelIds union). Existing caches would otherwise keep
+        // personal-reply threads stuck under Promotions/Social forever.
+        // Raw SQL only — do not decode the live `Message` record here; a
+        // future non-optional message column would break upgrades from ≤v26.
+        m.registerMigration("v27") { db in
+            let threadIds = try String.fetchAll(db, sql: "SELECT id FROM thread")
+            for threadKey in threadIds {
+                let labelStrings = try String.fetchAll(db, sql: """
+                    SELECT labelIds FROM message
+                    WHERE threadId = ?
+                    ORDER BY date DESC
+                    """, arguments: [threadKey])
+                let tabs = SyncEngine.tabCategoryFlags(labelIdStrings: labelStrings)
+                try db.execute(sql: """
+                    UPDATE thread SET inPromotions = ?, inSocial = ? WHERE id = ?
+                    """, arguments: [tabs.promotions, tabs.social, threadKey])
             }
         }
         return m

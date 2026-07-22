@@ -898,13 +898,9 @@ final class MailStore: ObservableObject {
         }
         for thread in hits {
             mutateThread(thread) { t in
-                t.inInbox = false
-                // Keep labelIds / denorm coherent with the SPAM move.
-                var labels = Set(t.labels)
-                labels.remove("INBOX")
-                labels.insert("SPAM")
-                t.labelIds = labels.sorted().joined(separator: " ")
-                t.syncFlagsFromLabelIds()
+                // Same path as markSpam — preserves tab-category denorm and
+                // keeps labelIds / inSpam / inInbox coherent.
+                t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
             } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
             }
@@ -3019,10 +3015,15 @@ struct ComposeRequest: Identifiable {
     func toggleLabel(_ thread: MailThread, labelId: String) {
         let has = thread.labels.contains(labelId)
         mutateThread(thread) { t in
-            var labels = Set(t.labelIds.split(separator: " ").map(String.init))
-            if has { labels.remove(labelId) } else { labels.insert(labelId) }
-            t.labelIds = labels.sorted().joined(separator: " ")
-            t.syncFlagsFromLabelIds()
+            // applyLabelMutation seeds INBOX/STARRED from denorm flags and only
+            // rewrites tab categories when CATEGORY_* is the toggled id — so
+            // flipping a user label cannot re-hide a Primary thread under
+            // Promotions via the historical labelIds union.
+            if has {
+                t.applyLabelMutation(remove: [labelId])
+            } else {
+                t.applyLabelMutation(add: [labelId])
+            }
         } remote: { client, id in
             try await client.modifyThread(id: id, add: has ? [] : [labelId],
                                           remove: has ? [labelId] : [])

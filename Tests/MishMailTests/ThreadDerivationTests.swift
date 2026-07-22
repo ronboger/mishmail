@@ -56,6 +56,7 @@ final class ThreadDerivationTests: XCTestCase {
     }
 
     func testLabelDenormFlagsAndFromEmail() throws {
+        // No INBOX → tab categories fall back to newest message.
         let newest = msg(id: "m2", from: "Promo Bot <PROMO@Shop.COM>", daysAgo: 0,
                          labels: "CATEGORY_PROMOTIONS CATEGORY_SOCIAL")
         let oldest = msg(id: "m1", from: account, daysAgo: 1, labels: "DRAFT")
@@ -70,12 +71,93 @@ final class ThreadDerivationTests: XCTestCase {
 
     func testSpamLabelSetsInSpamEvenWithPromotions() throws {
         // Gmail often keeps CATEGORY_PROMOTIONS when moving mail to Spam.
+        // No INBOX → fall back to newest message for tab flags.
         let newest = msg(id: "m1", from: "Casino <spam@x.com>", daysAgo: 0,
                          labels: "SPAM CATEGORY_PROMOTIONS")
         let t = try XCTUnwrap(derive([newest]))
         XCTAssertTrue(t.inSpam)
         XCTAssertTrue(t.inPromotions)
         XCTAssertFalse(t.inInbox)
+    }
+
+    // MARK: - Tab category placement (Primary vs Promotions/Social)
+
+    func testPersonalReplyOnArchivedPromoSurfacesInPrimary() throws {
+        // Windsurf-style: archived no-reply invite keeps CATEGORY_PROMOTIONS
+        // (no INBOX); a human reply re-adds INBOX without the promo category.
+        // Primary must show the thread — not stay hidden under Promotions.
+        let reply = msg(id: "m4", from: "Ryan <ryan@cognition.ai>", daysAgo: 0,
+                        labels: "IMPORTANT CATEGORY_PERSONAL INBOX", unread: true)
+        let earlier = msg(id: "m3", from: "Ryan <ryan@cognition.ai>", daysAgo: 1,
+                          labels: "CATEGORY_PERSONAL IMPORTANT INBOX")
+        let mine = msg(id: "m2", from: account, daysAgo: 2, labels: "SENT")
+        let invite = msg(id: "m1", from: "Windsurf <no-reply@windsurf.com>", daysAgo: 3,
+                         labels: "CATEGORY_PROMOTIONS")
+        let t = try XCTUnwrap(derive([reply, earlier, mine, invite]))
+        XCTAssertTrue(t.inInbox)
+        XCTAssertFalse(t.inPromotions, "historical promo on archived invite must not pin tab")
+        XCTAssertFalse(t.inSocial)
+        // Union labelIds still records the promo label for search / chips.
+        XCTAssertTrue(t.labelIds.split(separator: " ").map(String.init)
+                        .contains("CATEGORY_PROMOTIONS"))
+        XCTAssertTrue(t.isUnread)
+    }
+
+    func testPersonalReplyOnArchivedSocialSurfacesInPrimary() throws {
+        let reply = msg(id: "m2", from: "Friend <f@x.com>", daysAgo: 0,
+                        labels: "INBOX CATEGORY_PERSONAL")
+        let social = msg(id: "m1", from: "Network <n@social.com>", daysAgo: 1,
+                         labels: "CATEGORY_SOCIAL")
+        let t = try XCTUnwrap(derive([reply, social]))
+        XCTAssertTrue(t.inInbox)
+        XCTAssertFalse(t.inSocial)
+        XCTAssertFalse(t.inPromotions)
+        XCTAssertTrue(t.labelIds.split(separator: " ").map(String.init)
+                        .contains("CATEGORY_SOCIAL"))
+    }
+
+    func testPromoStillInInboxStaysInPromotionsTab() throws {
+        let promo = msg(id: "m1", from: "Deals <deals@shop.com>", daysAgo: 0,
+                        labels: "INBOX CATEGORY_PROMOTIONS UNREAD", unread: true)
+        let t = try XCTUnwrap(derive([promo]))
+        XCTAssertTrue(t.inInbox)
+        XCTAssertTrue(t.inPromotions)
+    }
+
+    func testNewestInboxBearingWinsOverOlderInboxPromo() throws {
+        // Both still in inbox; newest is personal → Primary.
+        let personal = msg(id: "m2", from: "Jane <jane@y.com>", daysAgo: 0,
+                           labels: "INBOX CATEGORY_PERSONAL")
+        let promo = msg(id: "m1", from: "Bot <bot@shop.com>", daysAgo: 1,
+                        labels: "INBOX CATEGORY_PROMOTIONS")
+        let t = try XCTUnwrap(derive([personal, promo]))
+        XCTAssertTrue(t.inInbox)
+        XCTAssertFalse(t.inPromotions)
+    }
+
+    func testTabCategoryFlagsHelper() {
+        let reply = msg(id: "m2", from: "a@b.com", daysAgo: 0,
+                        labels: "INBOX CATEGORY_PERSONAL")
+        let invite = msg(id: "m1", from: "bot@x.com", daysAgo: 1,
+                         labels: "CATEGORY_PROMOTIONS")
+        let tabs = SyncEngine.tabCategoryFlags(messages: [reply, invite])
+        XCTAssertFalse(tabs.promotions)
+        XCTAssertFalse(tabs.social)
+        // String overload must match (migration + derive share this path).
+        let fromStrings = SyncEngine.tabCategoryFlags(
+            labelIdStrings: [reply.labelIds, invite.labelIds])
+        XCTAssertEqual(fromStrings.promotions, tabs.promotions)
+        XCTAssertEqual(fromStrings.social, tabs.social)
+
+        let purePromo = SyncEngine.tabCategoryFlags(messages: [
+            msg(id: "p", from: "bot@x.com", daysAgo: 0,
+                labels: "INBOX CATEGORY_PROMOTIONS CATEGORY_SOCIAL")
+        ])
+        XCTAssertTrue(purePromo.promotions)
+        XCTAssertTrue(purePromo.social)
+
+        XCTAssertEqual(SyncEngine.tabCategoryFlags(messages: []).promotions, false)
+        XCTAssertEqual(SyncEngine.tabCategoryFlags(labelIdStrings: []).promotions, false)
     }
 
     func testParticipantsChronologicalDedupedAndMe() throws {

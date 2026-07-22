@@ -585,6 +585,11 @@ actor SyncEngine {
                              messages: [Message], existing: MailThread?) -> MailThread? {
         guard let newest = messages.first else { return nil }
         let allLabels = Set(messages.flatMap { $0.labelIds.split(separator: " ").map(String.init) })
+        // Primary vs Promotions/Social tabs: newest INBOX-bearing message wins.
+        // Union of all historical labels would pin a personal reply under
+        // Promotions forever when an older archived invite still carries
+        // CATEGORY_PROMOTIONS (Gmail Primary surfaces the conversation).
+        let tabs = tabCategoryFlags(messages: messages)
 
         // Participants in chronological order, deduped, own account as "me".
         var seen = Set<String>()
@@ -609,6 +614,7 @@ actor SyncEngine {
             isStarred: allLabels.contains("STARRED"),
             inInbox: allLabels.contains("INBOX"),
             inTrash: allLabels.contains("TRASH"),
+            // Full union still powers search / label chips; tab denorm is separate.
             labelIds: allLabels.sorted().joined(separator: " "),
             snoozeUntil: existing?.snoozeUntil,
             participants: participants.joined(separator: " .. "),
@@ -618,8 +624,8 @@ actor SyncEngine {
             reminderSetAt: existing?.reminderSetAt,
             inSent: allLabels.contains("SENT"),
             inDrafts: allLabels.contains("DRAFT"),
-            inPromotions: allLabels.contains("CATEGORY_PROMOTIONS"),
-            inSocial: allLabels.contains("CATEGORY_SOCIAL"),
+            inPromotions: tabs.promotions,
+            inSocial: tabs.social,
             inSpam: allLabels.contains("SPAM"),
             fromEmail: MessageParser.emailAddress(newest.fromHeader).lowercased(),
             allFromEmails: ThreadLabels.allFromEmails(from: messages),
@@ -627,6 +633,40 @@ actor SyncEngine {
             // own follow-ups never look like "they replied."
             lastInboundDate: lastInboundDate(messages: messages, accountId: accountId)
         )
+    }
+
+    /// Tab placement for Promotions / Social (Primary inbox hides both).
+    ///
+    /// Uses the **newest message that currently has INBOX**. Gmail keeps
+    /// `CATEGORY_PROMOTIONS` on old no-reply invites after a human reply
+    /// re-adds INBOX only on the new messages; Primary should follow the live
+    /// inbox-bearing classification, not the historical union.
+    ///
+    /// When nothing has INBOX (fully archived / trash-only / spam-only), falls
+    /// back to the newest message so All Mail and category chips stay coherent.
+    /// `messages` must be newest-first (same order as `deriveThread`).
+    /// Pure — unit-tested.
+    static func tabCategoryFlags(messages: [Message]) -> (promotions: Bool, social: Bool) {
+        tabCategoryFlags(labelIdStrings: messages.map(\.labelIds))
+    }
+
+    /// Same rule as `tabCategoryFlags(messages:)`, taking space-separated
+    /// `labelIds` strings newest-first. Used by migration v27 so it never
+    /// decodes the live `Message` record against a frozen schema.
+    /// Pure — unit-tested.
+    static func tabCategoryFlags(labelIdStrings: [String]) -> (promotions: Bool, social: Bool) {
+        guard !labelIdStrings.isEmpty else { return (false, false) }
+        let source = labelIdStrings.first(where: { labelIdsContain($0, "INBOX") })
+            ?? labelIdStrings[0]
+        return (
+            promotions: labelIdsContain(source, "CATEGORY_PROMOTIONS"),
+            social: labelIdsContain(source, "CATEGORY_SOCIAL")
+        )
+    }
+
+    /// Token match on a space-separated `labelIds` string (not substring).
+    static func labelIdsContain(_ labelIds: String, _ label: String) -> Bool {
+        labelIds.split(whereSeparator: \.isWhitespace).contains { $0 == label }
     }
 
     /// Newest non-outbound message date, or nil when the thread is pure

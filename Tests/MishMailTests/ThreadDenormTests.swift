@@ -22,8 +22,9 @@ final class ThreadDenormTests: XCTestCase {
         XCTAssertFalse(t.inTrash)
         XCTAssertTrue(t.inSent)
         XCTAssertTrue(t.inDrafts)
-        XCTAssertTrue(t.inPromotions)
-        XCTAssertTrue(t.inSocial)
+        // Tab categories are NOT derived from the labelIds union.
+        XCTAssertFalse(t.inPromotions)
+        XCTAssertFalse(t.inSocial)
         XCTAssertTrue(t.inSpam)
     }
 
@@ -37,16 +38,35 @@ final class ThreadDenormTests: XCTestCase {
             snoozeUntil: nil, participants: "F", messageCount: 1,
             hasAttachment: false, reminderAt: nil,
             inSent: true, inDrafts: false, inPromotions: true, inSocial: false)
-        // Drop promo + star + sent; leave inbox.
+        // Drop promo + star + sent; leave inbox. Tab flags stay as they were —
+        // only deriveThread / explicit CATEGORY_* mutations rewrite them.
         t.labelIds = "INBOX"
         t.syncFlagsFromLabelIds()
         XCTAssertFalse(t.isStarred)
         XCTAssertTrue(t.inInbox)
         XCTAssertFalse(t.inSent)
-        XCTAssertFalse(t.inPromotions)
+        XCTAssertTrue(t.inPromotions, "syncFlags must not clear tab placement from union")
         XCTAssertFalse(t.inDrafts)
         XCTAssertFalse(t.inSocial)
         XCTAssertFalse(t.inSpam)
+    }
+
+    func testSyncFlagsLeavesTabCategoriesUntouched() {
+        var t = MailThread(
+            id: "a:t1", accountId: "a", gmailThreadId: "t1",
+            subject: "s", snippet: "sn", fromDisplay: "F",
+            lastDate: Date(), isUnread: false, isStarred: false,
+            inInbox: true, inTrash: false,
+            // Historical promo still in the union after a personal reply.
+            labelIds: "CATEGORY_PERSONAL CATEGORY_PROMOTIONS IMPORTANT INBOX SENT",
+            snoozeUntil: nil, participants: "F", messageCount: 4,
+            hasAttachment: false, reminderAt: nil,
+            inPromotions: false, inSocial: false)
+        t.syncFlagsFromLabelIds()
+        XCTAssertFalse(t.inPromotions)
+        XCTAssertFalse(t.inSocial)
+        XCTAssertTrue(t.inInbox)
+        XCTAssertTrue(t.inSent)
     }
 
     func testSyncFlagsFromLabelIdsDoesNotFalseMatchPartialTokens() {
@@ -460,24 +480,39 @@ final class ThreadDenormTests: XCTestCase {
             snoozeUntil: nil, participants: "F", messageCount: 1,
             hasAttachment: false, reminderAt: nil)
         t.syncFlagsFromLabelIds()
-        // Toggle CATEGORY_PROMOTIONS on (mirrors toggleLabel).
-        var labels = Set(t.labels)
-        labels.insert("CATEGORY_PROMOTIONS")
-        labels.insert("SENT")
-        t.labelIds = labels.sorted().joined(separator: " ")
-        t.syncFlagsFromLabelIds()
+        // Explicit CATEGORY_PROMOTIONS add (mirrors toggleLabel via applyLabelMutation).
+        t.applyLabelMutation(add: ["CATEGORY_PROMOTIONS", "SENT"])
         XCTAssertTrue(t.inPromotions)
         XCTAssertTrue(t.inSent)
         XCTAssertTrue(t.inInbox)
-        // Blocklist / markSpam-style SPAM move: promotions label stays, but
+        // Blocklist / markSpam-style SPAM move: promotions tab placement stays,
         // inSpam flips so Promotions/Social list queries can exclude it.
-        labels.remove("INBOX")
-        labels.insert("SPAM")
-        t.labelIds = labels.sorted().joined(separator: " ")
-        t.syncFlagsFromLabelIds()
+        t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
         XCTAssertFalse(t.inInbox)
-        XCTAssertTrue(t.inPromotions)
+        XCTAssertTrue(t.inPromotions, "non-category mutation must not clear tab flag")
         XCTAssertTrue(t.inSpam)
         XCTAssertTrue(t.inSent)
+    }
+
+    func testApplyLabelMutationDoesNotRehidePrimaryFromHistoricalPromoUnion() {
+        // After derive: Primary (inPromotions=false) but labelIds still lists
+        // CATEGORY_PROMOTIONS from an archived invite. Star/trash must not
+        // re-hide the thread under Promotions.
+        var t = MailThread(
+            id: "a:t1", accountId: "a", gmailThreadId: "t1",
+            subject: "s", snippet: "sn", fromDisplay: "Ryan",
+            lastDate: Date(), isUnread: true, isStarred: false,
+            inInbox: true, inTrash: false,
+            labelIds: "CATEGORY_PERSONAL CATEGORY_PROMOTIONS IMPORTANT INBOX SENT",
+            snoozeUntil: nil, participants: "Ryan", messageCount: 4,
+            hasAttachment: false, reminderAt: nil,
+            inPromotions: false, inSocial: false)
+        t.applyLabelMutation(add: ["STARRED"])
+        XCTAssertTrue(t.isStarred)
+        XCTAssertFalse(t.inPromotions)
+        t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
+        XCTAssertTrue(t.inTrash)
+        XCTAssertFalse(t.inInbox)
+        XCTAssertFalse(t.inPromotions)
     }
 }

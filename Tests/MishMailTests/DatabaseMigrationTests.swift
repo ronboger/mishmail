@@ -324,12 +324,14 @@ final class DatabaseMigrationTests: XCTestCase {
                 ('ron@x.com:m1', 'ron@x.com', 'm1', 'ron@x.com:t1', 'Old <old@y.com>', '',
                  '', '', 's', '2026-01-01 00:00:00', '', '', '', '', 'INBOX', 0, 0),
                 ('ron@x.com:m2', 'ron@x.com', 'm2', 'ron@x.com:t1', 'Jane Doe <Jane@Y.com>', '',
-                 '', '', 's', '2026-01-02 00:00:00', '', '', '', '', 'INBOX SENT', 0, 0),
+                 '', '', 's', '2026-01-02 00:00:00', '', '', '', '',
+                 'INBOX SENT CATEGORY_PROMOTIONS', 0, 0),
                 ('ron@x.com:m3', 'ron@x.com', 'm3', 'ron@x.com:t2', 'bare@z.com', '',
-                 '', '', 'd', '2026-01-02 00:00:00', '', '', '', '', 'DRAFT', 0, 0)
+                 '', '', 'd', '2026-01-02 00:00:00', '', '', '', '',
+                 'DRAFT CATEGORY_SOCIAL', 0, 0)
                 """)
         }
-        try AppDatabase.migrator.migrate(q)  // through v16/v17
+        try AppDatabase.migrator.migrate(q)  // through latest (incl. v27 tab recompute)
 
         let cols = try q.read { try $0.columns(in: "thread").map(\.name) }
         for name in ["inSent", "inDrafts", "inPromotions", "inSocial", "fromEmail"] {
@@ -342,6 +344,7 @@ final class DatabaseMigrationTests: XCTestCase {
         }
         XCTAssertEqual(t1?.inSent, true)
         XCTAssertEqual(t1?.inDrafts, false)
+        // v27: tab flags from newest INBOX-bearing message labels.
         XCTAssertEqual(t1?.inPromotions, true)
         XCTAssertEqual(t1?.inSocial, false)
         XCTAssertEqual(t1?.fromEmail, "jane@y.com", "newest message From, lowercased")
@@ -351,6 +354,50 @@ final class DatabaseMigrationTests: XCTestCase {
         XCTAssertEqual(t2?.inPromotions, false)
         XCTAssertEqual(t2?.inSocial, true)
         XCTAssertEqual(t2?.fromEmail, "bare@z.com")
+    }
+
+    /// v27 recomputes Promotions/Social tab placement from the newest
+    /// INBOX-bearing message so personal replies leave Primary.
+    func testUpgradeToV27RecomputesTabCategoriesFromInboxBearing() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v26")
+        try q.write { db in
+            try db.execute(sql: """
+                INSERT INTO account (id, displayName, senderName)
+                VALUES ('ron@x.com', 'P', '')
+                """)
+            // Stale denorm: union-style inPromotions=1 while the live reply is Primary.
+            try db.execute(sql: """
+                INSERT INTO thread (id, accountId, gmailThreadId, subject, snippet, fromDisplay,
+                    lastDate, isUnread, isStarred, inInbox, inTrash, labelIds, participants,
+                    messageCount, hasAttachment, inSent, inDrafts, inPromotions, inSocial, fromEmail)
+                VALUES (
+                    'ron@x.com:t1', 'ron@x.com', 't1', 'Windsurf invite', 'new link', 'Ryan',
+                    '2026-07-22 00:00:00', 1, 0, 1, 0,
+                    'CATEGORY_PERSONAL CATEGORY_PROMOTIONS IMPORTANT INBOX SENT',
+                    'Ryan', 2, 0, 1, 0, 1, 0, 'ryan@cognition.ai')
+                """)
+            try db.execute(sql: """
+                INSERT INTO message (id, accountId, gmailId, threadId, fromHeader, toHeader,
+                    ccHeader, bccHeader, subject, date, snippet, bodyText, messageIdHeader,
+                    referencesHeader, labelIds, isUnread, hasAttachment)
+                VALUES
+                ('ron@x.com:invite', 'ron@x.com', 'invite', 'ron@x.com:t1',
+                 'Windsurf <no-reply@windsurf.com>', '', '', '', 'Windsurf invite',
+                 '2026-07-19 00:00:00', '', '', '', '', 'CATEGORY_PROMOTIONS', 0, 0),
+                ('ron@x.com:reply', 'ron@x.com', 'reply', 'ron@x.com:t1',
+                 'Ryan <ryan@cognition.ai>', '', '', '', 'Windsurf invite',
+                 '2026-07-22 00:00:00', '', '', '', '',
+                 'IMPORTANT CATEGORY_PERSONAL INBOX', 1, 0)
+                """)
+        }
+        try AppDatabase.migrator.migrate(q)
+
+        let t = try q.read { db in try MailThread.fetchOne(db, key: "ron@x.com:t1") }
+        XCTAssertEqual(t?.inInbox, true)
+        XCTAssertEqual(t?.inPromotions, false,
+                       "v27 must clear Promotions when newest INBOX message is personal")
+        XCTAssertEqual(t?.inSocial, false)
     }
 
     /// v17 rebuilds message_fts without bodyText (subject + fromHeader only).
@@ -458,6 +505,22 @@ final class DatabaseMigrationTests: XCTestCase {
                 ('ron@x.com:t3', 'ron@x.com', 't3', 's', 'sn', 'Only',
                  '2026-01-02 00:00:00', 0, 0, 0, 0, 'SPAM', 'Only', 1, 0,
                  0, 0, 0, 0, 'only@x.com')
+                """)
+            // Messages so v27 tab recompute has a source for CATEGORY_PROMOTIONS.
+            try db.execute(sql: """
+                INSERT INTO message (id, accountId, gmailId, threadId, fromHeader, toHeader,
+                    ccHeader, bccHeader, subject, date, snippet, bodyText, messageIdHeader,
+                    referencesHeader, labelIds, isUnread, hasAttachment)
+                VALUES
+                ('ron@x.com:m1', 'ron@x.com', 'm1', 'ron@x.com:t1', 'spam@x.com', '',
+                 '', '', 's', '2026-01-02 00:00:00', '', '', '', '',
+                 'SPAM CATEGORY_PROMOTIONS', 1, 0),
+                ('ron@x.com:m2', 'ron@x.com', 'm2', 'ron@x.com:t2', 'ok@x.com', '',
+                 '', '', 's', '2026-01-02 00:00:00', '', '', '', '',
+                 'INBOX CATEGORY_PROMOTIONS', 1, 0),
+                ('ron@x.com:m3', 'ron@x.com', 'm3', 'ron@x.com:t3', 'only@x.com', '',
+                 '', '', 's', '2026-01-02 00:00:00', '', '', '', '',
+                 'SPAM', 0, 0)
                 """)
         }
         try AppDatabase.migrator.migrate(q)
