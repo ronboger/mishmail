@@ -30,6 +30,9 @@ enum GroupBy: String, CaseIterable {
 
 struct ThreadListView: View {
     @EnvironmentObject var store: MailStore
+    /// Separate from MailStore so ↓ / j focus moves don't re-render sidebar /
+    /// detail — only the list (and ContentView's open policy) observe this.
+    @EnvironmentObject var listFocus: ListFocusState
     @AppStorage("groupBy") private var groupByRaw = GroupBy.date.rawValue
     @AppStorage("fontScale") private var fontScale = 1.0
     @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
@@ -50,6 +53,29 @@ struct ThreadListView: View {
         store.selectedView == .labels && collapsedLabels.contains(title)
     }
 
+    /// Snapshot everything a row needs so `ThreadRow` can skip body work when
+    /// only another row's focus changed (Equatable + no EnvironmentObject).
+    private func threadRowModel(_ thread: MailThread, isChecked: Bool) -> ThreadRowModel {
+        let labels: [ThreadRowLabelChip] = thread.labels
+            .compactMap { id -> ThreadRowLabelChip? in
+                guard let name = store.labelName(id, account: thread.accountId) else {
+                    return nil
+                }
+                let hex = store.labelsByAccount[thread.accountId]?
+                    .first { $0.name == name }?.color
+                return ThreadRowLabelChip(name: name, colorHex: hex)
+            }
+            .sorted { $0.name < $1.name }
+        return ThreadRowModel(
+            thread: thread,
+            isFocused: listFocus.id == thread.id,
+            isChecked: isChecked,
+            multiSelectActive: !store.checkedThreadIds.isEmpty,
+            category: store.aiCategories[thread.id],
+            userLabels: labels
+        )
+    }
+
     /// Rebuild Priority + group sections and keyboard `displayOrder`.
     private func recomputeLayout() {
         PerfMetrics.measure(.listGroup, meta: "n=\(store.threads.count)") {
@@ -67,7 +93,7 @@ struct ThreadListView: View {
             out += groups(rest)
             grouped = out
             flatDisplayOrder = out.flatMap { isCollapsed($0.0) ? [] : $0.1.map(\.id) }
-            store.displayOrder = flatDisplayOrder
+            store.updateDisplayOrder(flatDisplayOrder)
             // Superhuman-style: land with the top row already selected
             // (highlight only — never opens) so ↩ opens it right away.
             store.autoSelectTopThread()
@@ -216,19 +242,31 @@ struct ThreadListView: View {
                 multiSelectBar
                 Divider()
             }
-            List(selection: $store.selectedThreadId) {
+            List(selection: $listFocus.id) {
                 ForEach(grouped, id: \.0) { title, threads in
                     Section {
                         if !isCollapsed(title) {
                         ForEach(threads) { thread in
-                            ThreadRow(thread: thread)
+                            let checked = store.checkedThreadIds.contains(thread.id)
+                            ThreadRow(
+                                model: threadRowModel(thread, isChecked: checked),
+                                onToggleCheck: { shift in
+                                    store.toggleChecked(thread.id, extendRange: shift)
+                                },
+                                onOpenIfFocused: { store.requestOpenSelected() },
+                                onStar: { store.toggleStar(thread) },
+                                onArchive: { store.archive(thread) },
+                                onSnooze: { store.snoozingThread = thread },
+                                onTrash: { store.trash(thread) }
+                            )
+                                .equatable()
                                 .tag(thread.id)
                                 .accessibilityIdentifier("threadRow.\(thread.id)")
                                 // Notion Mail-style: READ rows recede on a
                                 // grey wash (adapts to dark mode); unread rows
                                 // sit on the plain background and pop.
                                 .listRowBackground(
-                                    store.checkedThreadIds.contains(thread.id)
+                                    checked
                                         ? Color.notionAccent.opacity(0.10)
                                         : (thread.isUnread
                                             ? Color.clear : Color.primary.opacity(0.05)))
@@ -1194,18 +1232,48 @@ struct FaviconView: View {
     }
 }
 
+/// Pre-resolved label chip so rows don't hit `MailStore` during body eval.
+struct ThreadRowLabelChip: Equatable {
+    let name: String
+    let colorHex: String?
+}
+
+/// Display + focus snapshot for one list row. Equatable so key-repeat can
+/// skip body rebuilds for rows whose focus/check/content did not change.
+struct ThreadRowModel: Equatable {
+    let thread: MailThread
+    let isFocused: Bool
+    let isChecked: Bool
+    let multiSelectActive: Bool
+    let category: String?
+    let userLabels: [ThreadRowLabelChip]
+}
+
 /// Dense Notion Mail-style single-line row:
 /// [check] [dot] participants   subject  snippet…………  [ai] [icons] time
-struct ThreadRow: View {
-    @EnvironmentObject var store: MailStore
+///
+/// No `@EnvironmentObject` — observing MailStore made every ↓ re-render every
+/// visible row. Actions arrive as closures; body skips when `model` is equal.
+struct ThreadRow: View, Equatable {
     @AppStorage("fontScale") private var fontScale = 1.0
-    let thread: MailThread
+    let model: ThreadRowModel
+    let onToggleCheck: (Bool) -> Void
+    let onOpenIfFocused: () -> Void
+    let onStar: () -> Void
+    let onArchive: () -> Void
+    let onSnooze: () -> Void
+    let onTrash: () -> Void
     @State private var hovering = false
 
-    private var isChecked: Bool { store.checkedThreadIds.contains(thread.id) }
+    static func == (lhs: ThreadRow, rhs: ThreadRow) -> Bool {
+        lhs.model == rhs.model
+    }
+
+    private var thread: MailThread { model.thread }
+    private var isChecked: Bool { model.isChecked }
     /// Show checkboxes when hovering, checked, or any multi-select is active.
     private var showCheckbox: Bool {
-        hovering || isChecked || !store.checkedThreadIds.isEmpty
+        hovering || isChecked || model.multiSelectActive
     }
 
     var body: some View {
@@ -1213,7 +1281,7 @@ struct ThreadRow: View {
             // Notion Mail-style select toggle; shift-click selects a range.
             Button {
                 let shift = NSEvent.modifierFlags.contains(.shift)
-                store.toggleChecked(thread.id, extendRange: shift)
+                onToggleCheck(shift)
             } label: {
                 Image(systemName: isChecked ? "checkmark.circle.fill" : "circle")
                     .font(.system(size: 14 * fontScale))
@@ -1257,7 +1325,7 @@ struct ThreadRow: View {
                     .lineLimit(1)
 
                 // On-device AI triage bucket, once the thread has been sorted.
-                if let category = store.aiCategories[thread.id] {
+                if let category = model.category {
                     Text(category)
                         .font(.system(size: 10.5 * fontScale, weight: .medium))
                         .foregroundStyle(Color.aiCategory(category))
@@ -1270,8 +1338,8 @@ struct ThreadRow: View {
             }
             .contentShape(Rectangle())
             .simultaneousGesture(TapGesture().onEnded {
-                if store.selectedThreadId == thread.id {
-                    store.requestOpenSelected()
+                if model.isFocused {
+                    onOpenIfFocused()
                 }
             })
 
@@ -1281,11 +1349,11 @@ struct ThreadRow: View {
                 HStack(spacing: 5) {
                     // User labels as colored pills right before the date,
                     // Notion Mail-style.
-                    ForEach(userLabels.prefix(2), id: \.self) { name in
-                        labelPill(name)
+                    ForEach(model.userLabels.prefix(2), id: \.name) { chip in
+                        labelPill(chip)
                     }
-                    if userLabels.count > 2 {
-                        Text("+\(userLabels.count - 2)")
+                    if model.userLabels.count > 2 {
+                        Text("+\(model.userLabels.count - 2)")
                             .font(.system(size: 11 * fontScale).monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
@@ -1309,10 +1377,10 @@ struct ThreadRow: View {
                 .opacity(hovering ? 0 : 1)
 
                 HStack(spacing: 2) {
-                    hoverButton("star", filled: thread.isStarred) { store.toggleStar(thread) }
-                    hoverButton("archivebox") { store.archive(thread) }
-                    hoverButton("clock") { store.snoozingThread = thread }
-                    hoverButton("trash") { store.trash(thread) }
+                    hoverButton("star", filled: thread.isStarred, action: onStar)
+                    hoverButton("archivebox", action: onArchive)
+                    hoverButton("clock", action: onSnooze)
+                    hoverButton("trash", action: onTrash)
                 }
                 .opacity(hovering ? 1 : 0)
                 .scaleEffect(hovering ? 1 : 0.96)
@@ -1339,18 +1407,10 @@ struct ThreadRow: View {
         thread.participants.isEmpty ? thread.fromDisplay : thread.participants
     }
 
-    /// User-defined label names on this thread (system labels filtered out
-    /// by the store, which only tracks type == "user" labels).
-    private var userLabels: [String] {
-        thread.labels
-            .compactMap { store.labelName($0, account: thread.accountId) }
-            .sorted()
-    }
-
     /// Notion-style label pill: tinted text on a soft capsule of its color.
-    private func labelPill(_ name: String) -> some View {
-        let tint = store.labelTint(name, account: thread.accountId)
-        return Text(name)
+    private func labelPill(_ chip: ThreadRowLabelChip) -> some View {
+        let tint = chip.colorHex.flatMap(Color.hexString) ?? Color.stable(for: chip.name)
+        return Text(chip.name)
             .font(.system(size: 10.5 * fontScale, weight: .medium))
             .lineLimit(1)
             .foregroundStyle(tint)

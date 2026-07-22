@@ -28,10 +28,15 @@ minor versions may still change behavior.
   instance moves between placements, so typed text is never lost.
 
 ### Changed
-- **Faster keyboard browsing** — repeated Up/Down and j/k selection updates
-  the list immediately while reading-pane hydration and neighbor prefetch
-  coalesce until navigation pauses, avoiding work for intermediate rows. The
-  first keyboard selection also opens correctly in compact and three-pane
+- **Finder-speed keyboard browsing** — list focus lives on a dedicated
+  `ListFocusState` (not a MailStore `@Published`), so holding ↓ / j no longer
+  re-renders the reading pane, sidebar, or every thread row. The expensive
+  `openedThreadId` still follows after a 150 ms settle (longer under load so
+  key-repeat does not hydrate intermediate conversations). Neighbor header/body
+  prefetch arms only when a conversation actually opens. Display-order moves
+  use an O(1) id→index map. `ThreadRow` takes an equatable model (no
+  `EnvironmentObject`) so unfocused rows skip body work on each repeat. The
+  first keyboard selection still opens correctly in compact and three-pane
   layouts instead of requiring a priming click or Enter.
 - **Lower HTML-mail idle memory** — MishMail retains one warm WebView instead
   of three, keeps only one sent message body expanded at a time, uses a smaller

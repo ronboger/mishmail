@@ -51,6 +51,37 @@ enum SelectionAdvance {
     }
 }
 
+/// Pure list-focus navigation: move highlight without I/O.
+///
+/// `indexById` is the O(1) map rebuilt whenever `displayOrder` changes. When
+/// empty (or missing an id), falls back to a linear scan of `order`.
+enum ThreadListNavigation {
+    /// Next focused id after moving `delta` steps (-1 / +1, or larger jumps).
+    /// Returns nil only when `order` is empty.
+    static func move(selected: String?, delta: Int, order: [String],
+                     indexById: [String: Int] = [:]) -> String? {
+        guard !order.isEmpty else { return nil }
+        let idx: Int = {
+            guard let selected else {
+                return delta > 0 ? -1 : 0
+            }
+            if let i = indexById[selected] { return i }
+            if let i = order.firstIndex(of: selected) { return i }
+            return delta > 0 ? -1 : 0
+        }()
+        let next = min(max(idx + delta, 0), order.count - 1)
+        return order[next]
+    }
+
+    /// Build the id→index map used by `move` and multi-select range.
+    static func indexMap(for order: [String]) -> [String: Int] {
+        var map: [String: Int] = [:]
+        map.reserveCapacity(order.count)
+        for (i, id) in order.enumerated() { map[id] = i }
+        return map
+    }
+}
+
 /// Whether a keyboard-driven selection change should open the reading pane
 /// immediately or through the j/k debounce.
 ///
@@ -61,6 +92,12 @@ enum SelectionAdvance {
 /// view, and rebuilds it from scratch after the delay. Open immediately so
 /// the pane hands off to the neighbor in the same update.
 enum DetailOpenPolicy {
+    /// Quiet period before hydrating the reading pane for keyboard focus.
+    /// Long enough that key-repeat (and a busy main thread stretching inter-key
+    /// gaps past ~30 ms) still coalesces to one open; short enough that a
+    /// deliberate pause still feels like live preview.
+    static let settleNanoseconds: UInt64 = 150_000_000  // 150 ms
+
     static func opensImmediately(openedThreadId: String?,
                                  listedIds: some Sequence<String>) -> Bool {
         guard let openedThreadId else { return false }

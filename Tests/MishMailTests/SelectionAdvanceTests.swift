@@ -95,6 +95,64 @@ final class SelectionAdvanceTests: XCTestCase {
             openedThreadId: nil, listedIds: ["a"]))
     }
 
+    func testSettleWindowIsLongerThanKeyRepeat() {
+        // Key-repeat is ~30–50 ms; settle must outlast a stretched main-thread
+        // gap so intermediate opens do not fire while holding ↓.
+        XCTAssertGreaterThanOrEqual(DetailOpenPolicy.settleNanoseconds, 100_000_000)
+        XCTAssertLessThanOrEqual(DetailOpenPolicy.settleNanoseconds, 250_000_000)
+    }
+
+    // MARK: - Thread list navigation (focus only)
+
+    func testMoveDownFromNilSelectsFirst() {
+        let order = ["a", "b", "c"]
+        let map = ThreadListNavigation.indexMap(for: order)
+        XCTAssertEqual(
+            ThreadListNavigation.move(selected: nil, delta: 1, order: order, indexById: map),
+            "a")
+    }
+
+    func testMoveUpFromNilSelectsFirst() {
+        let order = ["a", "b", "c"]
+        XCTAssertEqual(
+            ThreadListNavigation.move(selected: nil, delta: -1, order: order),
+            "a")
+    }
+
+    func testMoveClampsAtEnds() {
+        let order = ["a", "b", "c"]
+        let map = ThreadListNavigation.indexMap(for: order)
+        XCTAssertEqual(
+            ThreadListNavigation.move(selected: "c", delta: 1, order: order, indexById: map),
+            "c")
+        XCTAssertEqual(
+            ThreadListNavigation.move(selected: "a", delta: -1, order: order, indexById: map),
+            "a")
+    }
+
+    func testMoveUsesIndexMapWithoutLinearScan() {
+        let order = (0..<500).map(String.init)
+        let map = ThreadListNavigation.indexMap(for: order)
+        XCTAssertEqual(map["250"], 250)
+        XCTAssertEqual(
+            ThreadListNavigation.move(selected: "250", delta: 1, order: order, indexById: map),
+            "251")
+        XCTAssertEqual(
+            ThreadListNavigation.move(selected: "250", delta: -3, order: order, indexById: map),
+            "247")
+    }
+
+    func testMoveEmptyOrderReturnsNil() {
+        XCTAssertNil(ThreadListNavigation.move(selected: "a", delta: 1, order: []))
+    }
+
+    func testMoveMissingSelectionTreatsAsBeforeFirstOnDown() {
+        let order = ["a", "b", "c"]
+        XCTAssertEqual(
+            ThreadListNavigation.move(selected: "zz", delta: 1, order: order),
+            "a")
+    }
+
     // MARK: - Optimistic leave-list vs stickiness
 
     /// Regression: under is:unread, opening a thread pins it via keepIds.

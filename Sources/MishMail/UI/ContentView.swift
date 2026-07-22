@@ -21,6 +21,9 @@ private struct ComposeHostFrameKey: PreferenceKey {
 
 struct ContentView: View {
     @EnvironmentObject var store: MailStore
+    /// List highlight — separate ObservableObject so ↓ / j does not publish
+    /// through MailStore (and re-render detail / sidebar).
+    @EnvironmentObject var listFocus: ListFocusState
     @Environment(\.openSettings) private var openSettings
     @State private var keyMonitor: Any?
     @State private var layoutMode: MailLayoutMode = .list
@@ -108,7 +111,9 @@ struct ContentView: View {
         // A clicked (not keyboard-browsed) selection reopens the reading pane.
         // Clicking a pure draft skips the pane entirely and hops straight
         // into compose at the bottom (Notion Mail-style).
-        .onChange(of: store.selectedThreadId) {
+        // Observe listFocus (not MailStore) so focus moves don't require a
+        // full-store publish.
+        .onChange(of: listFocus.id) {
             let keyboardSelection = store.selectionViaKeyboard
             let quietSelection = store.selectionQuiet
             defer {
@@ -118,15 +123,15 @@ struct ContentView: View {
             // Leaving a thread (or clearing selection) promotes inline compose
             // to the floating card so the draft stays editable.
             store.promoteInlineComposeIfNeeded(
-                selectedThreadId: store.selectedThreadId,
+                selectedThreadId: listFocus.id,
                 readingPaneHidden: effectivePaneHidden)
             // Focus mode requires a conversation; drop it when selection clears.
-            if store.selectedThreadId == nil {
+            if listFocus.id == nil {
                 store.threadFocusMode = false
-                openedThreadId = nil
+                setOpenedThreadId(nil)
                 detailSelectionTask?.cancel()
             }
-            guard let selectedId = store.selectedThreadId else { return }
+            guard let selectedId = listFocus.id else { return }
             // Auto-highlight of the top row (Superhuman default): selection
             // only — never opens the conversation.
             if quietSelection { return }
@@ -141,7 +146,7 @@ struct ContentView: View {
                         // Auto-advance after trash/archive: the opened row is
                         // gone, so debouncing would blank and rebuild the pane.
                         detailSelectionTask?.cancel()
-                        openedThreadId = selectedId
+                        setOpenedThreadId(selectedId)
                     } else {
                         scheduleDetailSelection(selectedId)
                     }
@@ -165,9 +170,9 @@ struct ContentView: View {
                 selectedThreadId: store.selectedThreadId,
                 readingPaneHidden: readingPaneHidden)
             if readingPaneHidden { store.threadFocusMode = false }
-            else if let selected = store.selectedThreadId {
+            else if let selected = listFocus.id {
                 detailSelectionTask?.cancel()
-                openedThreadId = selected
+                setOpenedThreadId(selected)
             }
         }
         .onChange(of: store.threadFocusMode) {
@@ -176,16 +181,16 @@ struct ContentView: View {
             // Going back to the list with an inline reply open keeps the
             // draft as a floating card instead of tearing it down.
             store.promoteInlineComposeIfNeeded(
-                selectedThreadId: store.selectedThreadId,
+                selectedThreadId: listFocus.id,
                 readingPaneHidden: !store.threadFocusMode)
-            if store.threadFocusMode, let selected = store.selectedThreadId {
+            if store.threadFocusMode, let selected = listFocus.id {
                 detailSelectionTask?.cancel()
-                openedThreadId = selected
+                setOpenedThreadId(selected)
             }
         }
         .onChange(of: store.selectedView) {
             store.selectedThreadId = nil
-            openedThreadId = nil
+            setOpenedThreadId(nil)
             store.clearCheckedThreads()
             store.resetChips()
             // Sidebar click (or any selectedView write) should land on the
@@ -200,7 +205,7 @@ struct ContentView: View {
         .onChange(of: store.chips) { store.reloadThreadsDebounced() }
         .onAppear {
             store.readingPaneHiddenForCompose = effectivePaneHidden
-            openedThreadId = store.selectedThreadId
+            setOpenedThreadId(listFocus.id)
             installKeyMonitor()
             // Don't let the sidebar search field start with keyboard focus —
             // it would swallow Esc/j/k until clicked away.
@@ -553,25 +558,65 @@ struct ContentView: View {
 
     @ViewBuilder
     private func detailPane(compact: Bool) -> some View {
+        // Equatable host: list-focus key-repeat re-renders ContentView (it
+        // observes listFocus for open policy / toolbar) but must not rebuild
+        // ThreadDetailView until openedThreadId actually changes.
+        DetailPaneHost(
+            openedThreadId: openedThreadId,
+            thread: openedThreadId.flatMap { id in
+                store.threads.first(where: { $0.id == id })
+            },
+            compact: compact,
+            focusMode: store.threadFocusMode,
+            paneHidden: effectivePaneHidden,
+            inlineReserve: inlineComposeReserveHeight,
+            onBack: {
+                if store.threadFocusMode {
+                    store.threadFocusMode = false
+                } else {
+                    listFocus.id = nil
+                    setOpenedThreadId(nil)
+                }
+            },
+            onReply: { msg in
+                store.openCompose(.init(replyTo: msg),
+                                  readingPaneHidden: effectivePaneHidden)
+            }
+        )
+        .equatable()
+    }
+}
+
+/// Isolates reading-pane identity from list-focus churn. Compared only on the
+/// fields that should remount or reconfigure the conversation UI.
+private struct DetailPaneHost: View, Equatable {
+    let openedThreadId: String?
+    let thread: MailThread?
+    let compact: Bool
+    let focusMode: Bool
+    let paneHidden: Bool
+    let inlineReserve: CGFloat
+    let onBack: () -> Void
+    let onReply: (Message) -> Void
+
+    static func == (lhs: DetailPaneHost, rhs: DetailPaneHost) -> Bool {
+        lhs.openedThreadId == rhs.openedThreadId
+            && lhs.thread == rhs.thread
+            && lhs.compact == rhs.compact
+            && lhs.focusMode == rhs.focusMode
+            && lhs.paneHidden == rhs.paneHidden
+            && lhs.inlineReserve == rhs.inlineReserve
+    }
+
+    var body: some View {
         Group {
-            if let id = openedThreadId,
-               let thread = store.threads.first(where: { $0.id == id }) {
+            if let thread {
                 ThreadDetailView(
                     thread: thread,
                     compactMode: compact,
-                    focusMode: store.threadFocusMode,
-                    onBack: {
-                        if store.threadFocusMode {
-                            store.threadFocusMode = false
-                        } else {
-                            store.selectedThreadId = nil
-                            openedThreadId = nil
-                        }
-                    },
-                    onReply: { msg in
-                        store.openCompose(.init(replyTo: msg),
-                                          readingPaneHidden: effectivePaneHidden)
-                    })
+                    focusMode: focusMode,
+                    onBack: onBack,
+                    onReply: onReply)
             } else {
                 Text("Select a conversation")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -579,19 +624,12 @@ struct ContentView: View {
             }
         }
         .background(Color.notionContent)
-        // Keep the last messages above the overlay card.
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Color.clear
-                .frame(height: inlineComposeReserveHeight)
+                .frame(height: inlineReserve)
                 .accessibilityHidden(true)
         }
-        .animation(nil, value: inlineComposeReserveHeight)
-        // Publish the reading column's global frame for inline compose pin.
-        // MUST sit outside the safeAreaInset: the reserve height is computed
-        // from this measurement, so measuring inside the inset feeds the
-        // reserve back into its own input — at window heights below ~1050pt
-        // the two maps have no fixed point and layout livelocks (396↔592
-        // oscillation, 99% CPU, unbounded memory; shipped in 72d6524).
+        .animation(nil, value: inlineReserve)
         .background(
             GeometryReader { geo in
                 Color.clear.preference(
@@ -600,6 +638,11 @@ struct ContentView: View {
             }
         )
     }
+}
+
+// MARK: - ContentView keyboard helpers (extension keeps main struct smaller)
+
+private extension ContentView {
 
     /// Gmail-style single-key shortcuts plus Cmd-K. Ignores events when a
     /// text field, the search bar, or a sheet has focus.
@@ -819,7 +862,7 @@ struct ContentView: View {
                     return nil
                 }
                 if layoutMode == .compactDetail {
-                    store.selectedThreadId = nil
+                    listFocus.id = nil
                     return nil
                 }
                 if !fullWindowThreads, !readingPaneHidden {
@@ -871,10 +914,10 @@ struct ContentView: View {
                 if let thread = store.selectedThread {
                     if store.isDraftOnly(thread) {
                         store.editDraft(inThread: thread)
-                        store.selectedThreadId = nil
+                        listFocus.id = nil
                     } else {
                         detailSelectionTask?.cancel()
-                        openedThreadId = thread.id
+                        setOpenedThreadId(thread.id)
                         if fullWindowThreads {
                             store.threadFocusMode = true
                         } else {
@@ -909,10 +952,10 @@ struct ContentView: View {
     /// List selection binding never fires.
     private func openClickedThread(_ selectedId: String) {
         detailSelectionTask?.cancel()
-        openedThreadId = selectedId
+        setOpenedThreadId(selectedId)
         if let thread = store.selectedThread, store.isDraftOnly(thread) {
             store.editDraft(inThread: thread)
-            store.selectedThreadId = nil
+            listFocus.id = nil
             return
         }
         if fullWindowThreads {
@@ -928,12 +971,25 @@ struct ContentView: View {
         detailSelectionTask?.cancel()
         detailSelectionTask = Task { @MainActor in
             do {
-                try await Task.sleep(nanoseconds: 75_000_000)
+                try await Task.sleep(nanoseconds: DetailOpenPolicy.settleNanoseconds)
             } catch {
                 return
             }
-            guard store.selectedThreadId == id else { return }
+            guard listFocus.id == id else { return }
+            setOpenedThreadId(id)
+        }
+    }
+
+    /// Single write path for the expensive reading-pane id: also arms neighbor
+    /// prefetch for the *opened* thread (never for intermediate focus rows).
+    private func setOpenedThreadId(_ id: String?) {
+        guard openedThreadId != id else {
+            if id == nil { store.scheduleNeighborPrefetch(around: nil) }
+            return
+        }
+        PerfMetrics.measure(.navDetailOpen, meta: id == nil ? "nil" : "open") {
             openedThreadId = id
+            store.scheduleNeighborPrefetch(around: id)
         }
     }
 }

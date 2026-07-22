@@ -207,6 +207,15 @@ final class LabelPickerState: ObservableObject {
     var navigated = false
 }
 
+/// List-row focus (highlight), split out of MailStore so holding ↓ / j only
+/// re-renders views that observe this object — not the whole mailbox tree
+/// (sidebar, detail, compose). The expensive reading-pane id lives separately
+/// as `openedThreadId` in ContentView.
+@MainActor
+final class ListFocusState: ObservableObject {
+    @Published var id: String?
+}
+
 @MainActor
 final class MailStore: ObservableObject {
     @Published var accounts: [Account] = []
@@ -222,13 +231,17 @@ final class MailStore: ObservableObject {
             resetListWindow()
         }
     }
-    @Published var selectedThreadId: String? {
-        didSet {
-            if selectedThreadId != oldValue {
-                scheduleNeighborPrefetch()
-            }
-        }
+    /// List highlight / action target. Backed by `listFocus` so key-repeat
+    /// does not publish through MailStore (which would rebuild the reading
+    /// pane tree, sidebar, and every `ThreadRow` EnvironmentObject client).
+    /// The reading pane follows `openedThreadId` in ContentView after settle.
+    var selectedThreadId: String? {
+        get { listFocus.id }
+        set { listFocus.id = newValue }
     }
+    /// Narrow observation surface for list focus — injected as
+    /// `@EnvironmentObject` on ContentView / ThreadListView.
+    let listFocus = ListFocusState()
     /// Gmail drafts retained remotely during Undo Send but hidden locally so
     /// the thread never shows both "Draft" and "Sending…".
     @Published private(set) var suppressedDraftMessageIds: Set<String> = []
@@ -240,7 +253,8 @@ final class MailStore: ObservableObject {
     @Published var checkedThreadIds: Set<String> = []
     /// Anchor for shift-click range select on checkboxes.
     private var lastCheckedThreadId: String?
-    /// Cancels in-flight neighbor header/body warm when selection moves.
+    /// Cancels in-flight neighbor header/body warm when the *opened* thread
+    /// settles (not on every focus move).
     private var neighborPrefetchTask: Task<Void, Never>?
     /// In-flight contacts rebuild (full-table `message` scan); must be
     /// cancelled and awaited before the DatabasePool is closed on quit.
@@ -3073,24 +3087,38 @@ struct ComposeRequest: Identifiable {
     /// Thread ids in the order the list actually displays them (priority
     /// section first, then grouped) — kept in sync by ThreadListView so
     /// keyboard navigation matches what's on screen.
-    var displayOrder: [String] = []
+    private(set) var displayOrder: [String] = []
+    /// O(1) id→row for `moveSelection` / range select. Rebuilt with displayOrder.
+    private var displayOrderIndex: [String: Int] = [:]
 
-    func moveSelection(_ delta: Int) {
-        let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
-        guard !order.isEmpty else { return }
-        let idx = order.firstIndex { $0 == selectedThreadId } ?? (delta > 0 ? -1 : 0)
-        let next = min(max(idx + delta, 0), order.count - 1)
-        selectedThreadId = order[next]
+    /// Called by ThreadListView after regrouping. Rebuilds the index map so
+    /// key-repeat does not scan the array on every step.
+    func updateDisplayOrder(_ order: [String]) {
+        displayOrder = order
+        displayOrderIndex = ThreadListNavigation.indexMap(for: order)
     }
 
-    /// Warm headers + last message body only after selection settles. Holding
-    /// an arrow key should update the list at native key-repeat speed without
-    /// starting/cancelling a database read for every intermediate row.
-    private func scheduleNeighborPrefetch() {
+    func moveSelection(_ delta: Int) {
+        PerfMetrics.measure(.navFocus, meta: "δ=\(delta)") {
+            let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
+            let index = displayOrder.isEmpty
+                ? ThreadListNavigation.indexMap(for: order)
+                : displayOrderIndex
+            guard let next = ThreadListNavigation.move(
+                selected: selectedThreadId, delta: delta,
+                order: order, indexById: index) else { return }
+            selectedThreadId = next
+        }
+    }
+
+    /// Warm headers + last message body for neighbors of the *opened* thread.
+    /// Call only when the reading pane settles — never from list-focus moves,
+    /// so holding ↓ does not start/cancel DB work per intermediate row.
+    func scheduleNeighborPrefetch(around openedId: String?) {
         guard !isShuttingDown else { return }
         neighborPrefetchTask?.cancel()
+        guard let openedId else { return }
         let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
-        let selected = selectedThreadId
         let pool = db
         neighborPrefetchTask = Task.detached {
             do {
@@ -3098,7 +3126,7 @@ struct ComposeRequest: Identifiable {
             } catch {
                 return
             }
-            let (prev, next) = NeighborPrefetch.neighbors(selected: selected, in: order)
+            let (prev, next) = NeighborPrefetch.neighbors(selected: openedId, in: order)
             let ids = [prev, next].compactMap { $0 }
             for id in ids {
                 guard !Task.isCancelled else { return }

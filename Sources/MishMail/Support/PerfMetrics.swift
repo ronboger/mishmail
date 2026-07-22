@@ -68,6 +68,10 @@ enum PerfMetrics {
         case listGroup = "list.group"
         /// Load-older page fetch.
         case pageLoadMore = "page.loadMore"
+        /// List focus move (↓ / j) — should stay under one frame.
+        case navFocus = "nav.focus"
+        /// Reading-pane open after keyboard settle.
+        case navDetailOpen = "nav.detailOpen"
     }
 
     /// One finished sample (ring buffer for dump / tests).
@@ -170,6 +174,8 @@ enum PerfMetrics {
         case .syncHistoryPartial: return signposter.beginInterval("sync.historyPartial")
         case .listGroup: return signposter.beginInterval("list.group")
         case .pageLoadMore: return signposter.beginInterval("page.loadMore")
+        case .navFocus: return signposter.beginInterval("nav.focus")
+        case .navDetailOpen: return signposter.beginInterval("nav.detailOpen")
         }
     }
 
@@ -191,6 +197,8 @@ enum PerfMetrics {
         case .syncHistoryPartial: signposter.endInterval("sync.historyPartial", state)
         case .listGroup: signposter.endInterval("list.group", state)
         case .pageLoadMore: signposter.endInterval("page.loadMore", state)
+        case .navFocus: signposter.endInterval("nav.focus", state)
+        case .navDetailOpen: signposter.endInterval("nav.detailOpen", state)
         }
     }
 

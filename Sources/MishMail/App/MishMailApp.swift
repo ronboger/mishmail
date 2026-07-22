@@ -72,6 +72,7 @@ struct MishMailApp: App {
         WindowGroup {
             ContentView()
                 .environmentObject(store)
+                .environmentObject(store.listFocus)
                 .tint(.notionAccent)
                 .frame(minWidth: 900, minHeight: 560)
                 .onAppear {
