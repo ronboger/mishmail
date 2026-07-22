@@ -165,6 +165,7 @@ struct ThreadDetailView: View {
                                 .id(message.id)
                                 .background { messageHeightReader(id: message.id) }
                         }
+                    }
                 }
                 .scrollTargetLayout()
                 .padding(.vertical)
