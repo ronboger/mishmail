@@ -2512,11 +2512,12 @@ struct ComposeRequest: Identifiable {
     // MARK: - Account lifecycle
 
     func addAccount(reauthorizing hint: String? = nil) {
-        // `make run` is a deliberately Keychain-free, ad-hoc demo process
-        // backed by a known fixture key and isolated database directory. Never
-        // let real OAuth data cross that boundary; relaunching with DEMO=0
-        // requires stable signing before any real account can be connected.
-        guard ProcessInfo.processInfo.environment["MISHMAIL_DEMO"] != "1" else {
+        // `make run` / UI tests are deliberately Keychain-free, ad-hoc fixture
+        // processes backed by a known database key and isolated directory.
+        // Never let real OAuth data cross that boundary; relaunching with
+        // DEMO=0 requires stable signing before any real account connects.
+        guard !AppDatabase.usesFixtureDatabaseKey(
+            environment: ProcessInfo.processInfo.environment) else {
             lastError = "The developer demo cannot connect real accounts. Quit it, configure free Personal Team signing, then run make run DEMO=0."
             return
         }

@@ -91,7 +91,24 @@ def _cn_is_developer_id(subject: str) -> bool:
     return "Developer ID Application" in subject
 
 
-def cert_matches(pem: str, team: str, mode: str) -> bool:
+def _cn(subject: str) -> str:
+    # Apple codesigning CNs ("Apple Development: … (ID)") have no commas/slashes.
+    m = re.search(r"CN\s*=\s*([^,/]+)", subject)
+    return m.group(1).strip() if m else ""
+
+
+def _valid_identity_names() -> list[str]:
+    """CNs of identities `security` considers currently valid (not expired
+    or revoked). A cert with the right OU but no valid identity must not
+    count — signing with it would fail."""
+    try:
+        out = _run(["security", "find-identity", "-v", "-p", "codesigning"]).stdout
+    except Exception:
+        return []
+    return re.findall(r'"([^"]+)"', out)
+
+
+def cert_matches(pem: str, team: str, mode: str, valid_names: list[str]) -> bool:
     subject = _subject_cryptography(pem)
     if subject is None:
         subject = _subject_openssl(pem)
@@ -99,14 +116,16 @@ def cert_matches(pem: str, team: str, mode: str) -> bool:
         return False
     if mode == "developer_id" and not _cn_is_developer_id(subject):
         return False
-    return True
+    cn = _cn(subject)
+    return bool(cn) and cn in valid_names
 
 
 def has_identity(team: str, mode: str = "any") -> bool:
     if not team:
         return False
+    valid_names = _valid_identity_names()
     for pem in _pem_certs():
-        if cert_matches(pem, team, mode):
+        if cert_matches(pem, team, mode, valid_names):
             return True
     # Last resort: some setups put Team ID in identity text (rare).
     try:

@@ -51,6 +51,14 @@ minor versions may still change behavior.
   disclosure chevron has a fixed optical frame.
 
 ### Fixed
+- **Signing / demo hardening follow-ups** — the signing check only accepts
+  certificates backing a currently valid identity (expired/revoked certs no
+  longer count); `make release` notarizes and staples before publishing;
+  `make run DEMO=0` refuses ad-hoc signing before building instead of after;
+  UI-test fixture processes can no longer connect real accounts (same guard
+  as the demo); the Settings Google API pane explains instead of silently
+  dropping credentials in demo/UI-test processes; and "make default mail app"
+  waits out the user-paced system confirmation before reporting failure.
 - **Inline reply scroll no longer fights the thread** — opening Reply keeps a
   stable top `scrollPosition` and one-shot bottom-scrolls the reply target
   above the reserved compose card (re-sticks on late WKWebView growth, disarms
