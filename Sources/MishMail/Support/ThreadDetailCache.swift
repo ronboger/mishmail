@@ -77,11 +77,11 @@ struct ThreadDetailCacheEntry: Equatable {
 /// Off-main reading-pane repository with a bounded, real neighbor cache.
 ///
 /// The previous prefetch path decoded rows and discarded them. This actor
-/// retains five payloads (current + nearby navigation) and serializes cache
-/// ownership without putting SQLCipher reads on MainActor.
+/// retains ten payloads (current + nearby navigation / re-open) and serializes
+/// cache ownership without putting SQLCipher reads on MainActor.
 actor ThreadDetailRepository {
     private let db: DatabasePool
-    private var cache = ThreadDetailLRU<ThreadDetailCacheEntry>(capacity: 5)
+    private var cache = ThreadDetailLRU<ThreadDetailCacheEntry>(capacity: 10)
 
     init(db: DatabasePool) {
         self.db = db

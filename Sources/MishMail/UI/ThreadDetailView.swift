@@ -80,6 +80,8 @@ struct ThreadDetailView: View {
     @State private var scrollDisarmGate = InlineScrollDisarmGate()
     @State private var refreshTask: Task<Void, Never>?
     @State private var detailLoadGeneration = 0
+    /// Arm neighbor HTML pre-render once per open after the body first settles.
+    @State private var neighborPrerenderArmed = false
 
     var body: some View {
         ScrollViewReader { proxy in
@@ -160,7 +162,8 @@ struct ThreadDetailView: View {
                                         expandedMessageId: $expandedMessageId,
                                         loadImagesForThread: $loadRemoteImagesForThread,
                                         onReply: { onReply(message) },
-                                        onNeedBody: { loadBodyIfNeeded(id: message.id) })
+                                        onNeedBody: { loadBodyIfNeeded(id: message.id) },
+                                        onBodySettled: { armNeighborPrerenderIfNeeded() })
                                 .padding(.horizontal)
                                 .id(message.id)
                                 .background { messageHeightReader(id: message.id) }
@@ -394,6 +397,9 @@ struct ThreadDetailView: View {
                 bodyLoadAttempted = []
                 loadRemoteImagesForThread = false
                 expandedMessageId = nil
+                neighborPrerenderArmed = false
+                // Cancel any in-flight neighbor paints from the previous open.
+                HTMLBodyNeighborPrerender.cancel()
                 let readyInterval = PerfMetrics.begin(.openReady, meta: "thread=\(thread.id)")
                 let load = await store.threadDetailPayload(threadId: thread.id)
                 guard !Task.isCancelled else {
@@ -490,6 +496,8 @@ struct ThreadDetailView: View {
                 detailLoadGeneration &+= 1
                 refreshTask?.cancel()
                 refreshTask = nil
+                neighborPrerenderArmed = false
+                HTMLBodyNeighborPrerender.cancel()
             }
             .onPreferenceChange(ThreadMessageHeightKey.self) { heights in
                 guard inlineComposeActive, autoPinInlineScroll,
@@ -709,6 +717,39 @@ struct ThreadDetailView: View {
             else { return }
             messages[currentIdx] = full
         }
+    }
+
+    /// After the open body's first stable paint, warm prev/next newest-message
+    /// HTML into pooled WebViews (using payloads already in the detail LRU
+    /// when neighbor prefetch has finished).
+    private func armNeighborPrerenderIfNeeded() {
+        guard !neighborPrerenderArmed else { return }
+        guard splitMode || store.openedThreadId == thread.id else { return }
+        neighborPrerenderArmed = true
+        let order = store.displayOrder.isEmpty
+            ? store.threads.map(\.id)
+            : store.displayOrder
+        let scale = fontScale
+        let vip = store.vipEmails
+        let policyRaw = UserDefaults.standard.string(
+            forKey: RemoteImagePolicy.defaultsKey)
+            ?? RemoteImagePolicy.ask.rawValue
+        let policy = RemoteImagePolicy(rawValue: policyRaw) ?? .ask
+        HTMLBodyNeighborPrerender.schedule(
+            openedThreadId: thread.id,
+            displayOrder: order,
+            fontScale: scale,
+            allowRemoteImages: { message in
+                RemoteImagePolicy.allows(
+                    policy: policy,
+                    senderEmail: MessageParser.emailAddress(message.fromHeader),
+                    vipEmails: vip,
+                    messageOptIn: false,
+                    threadOptIn: false)
+            },
+            loadPayload: { [store] threadId in
+                await store.threadDetailPayload(threadId: threadId).payload
+            })
     }
 
     /// Notion Mail-style meta row under the subject: an attachments menu
@@ -1091,6 +1132,8 @@ struct MessageCard: View {
     let onReply: () -> Void
     /// Parent loads the body when a collapsed header-only card expands.
     let onNeedBody: () -> Void
+    /// Parent arms neighbor HTML pre-render after this card's body settles.
+    let onBodySettled: () -> Void
     // Full FROM/TO/CC rows (Notion Mail's "Show more"); compact by default.
     @State private var recipientsExpanded = false
     @State private var htmlHeight: CGFloat = 120
@@ -1165,7 +1208,8 @@ struct MessageCard: View {
          expandedMessageId: Binding<String?>,
          loadImagesForThread: Binding<Bool> = .constant(false),
          onReply: @escaping () -> Void,
-         onNeedBody: @escaping () -> Void = {}) {
+         onNeedBody: @escaping () -> Void = {},
+         onBodySettled: @escaping () -> Void = {}) {
         self.message = message
         self.isLast = isLast
         self.attachments = attachments
@@ -1173,6 +1217,7 @@ struct MessageCard: View {
         self._loadImagesForThread = loadImagesForThread
         self.onReply = onReply
         self.onNeedBody = onNeedBody
+        self.onBodySettled = onBodySettled
         let hasBody = !ThreadDetailView.needsBodyLoad(message)
         if hasBody, let cached = Self.trailCache.object(forKey: message.id as NSString) {
             textHead = cached.textHead
@@ -1399,13 +1444,22 @@ struct MessageCard: View {
                         userApproved: approvedOversizedHTML) {
                         oversizedHTMLPlaceholder(byteCount: renderedBytes)
                     } else {
+                        let bodyContentID = message.id
+                            + (useAuthoredHTML ? ":authored" : ":full")
                         HTMLBodyView(
-                            contentID: message.id + (useAuthoredHTML ? ":authored" : ":full"),
+                            contentID: bodyContentID,
                             html: renderedHTML,
                             allowRemoteImages: allowRemoteImages,
                             fontScale: fontScale,
-                            height: $htmlHeight)
+                            height: $htmlHeight,
+                            onSettled: onBodySettled)
                             .frame(height: htmlHeight)
+                            .onAppear {
+                                if let cached = HTMLBodyHeightCacheStore
+                                    .height(for: bodyContentID) {
+                                    htmlHeight = cached
+                                }
+                            }
                     }
                 } else if !message.bodyText.isEmpty {
                     // Collapsed plain-text heads are handled above; this branch
@@ -1952,8 +2006,14 @@ private struct MatchingFiltersSection: View {
 /// Settings → Appearance default).
 /// Sizes itself to its content. External links open in the default browser.
 ///
-/// Web views are drawn from `HTMLWebViewPool` (recycle + per-view ephemeral
-/// store) so expanding/collapsing cards does not thrash WKWebView creation.
+/// Web views are drawn from `HTMLWebViewPool` (recycle + shared ephemeral
+/// store + optional pre-rendered neighbors) so expanding/collapsing cards and
+/// up/down thread browses do not thrash WKWebView creation.
+///
+/// Content swaps keep the outgoing painted view visible until the incoming
+/// view has painted (or is a pre-rendered claim). Settled heights are cached
+/// per `contentID` so re-open does not reflow after paint. Transitions are a
+/// short opacity fade (≤0.1s) or none — never a slide.
 ///
 /// Height updates come from a `ResizeObserver` + image load/error handlers
 /// (`HTMLBodyLayout`) posting to a `WKScriptMessageHandler`, not a fixed
@@ -1967,17 +2027,62 @@ struct HTMLBodyView: NSViewRepresentable {
     let allowRemoteImages: Bool
     var fontScale: Double = 1.0
     @Binding var height: CGFloat
+    /// Fired once the first stable height for the current document is known
+    /// (ResizeObserver settle). Used to arm neighbor pre-renders.
+    var onSettled: (() -> Void)? = nil
 
-    func makeNSView(context: Context) -> WKWebView {
-        let webView = HTMLWebViewPool.dequeue()
-        webView.navigationDelegate = context.coordinator
-        // Flag-guarded: recycled views never double-add the handler name.
-        webView.installHeightHandler(context.coordinator)
-        webView.setValue(false, forKey: "drawsBackground")
-        return webView
+    /// Cross-fade when swapping painted WebViews. Project style: fade only,
+    /// never a slide; keep well under 100ms.
+    private static let swapFadeDuration: TimeInterval = 0.08
+
+    func makeNSView(context: Context) -> NSView {
+        let container = NSView(frame: .zero)
+        container.wantsLayer = true
+        context.coordinator.container = container
+        context.coordinator.contentID = contentID
+        context.coordinator.onSettled = onSettled
+
+        let heightBinding = _height
+        context.coordinator.setHeight = { heightBinding.wrappedValue = $0 }
+        // Cached height keeps the card frame stable before the first paint.
+        if let cached = HTMLBodyHeightCacheStore.height(for: contentID) {
+            DispatchQueue.main.async { heightBinding.wrappedValue = cached }
+        }
+
+        let key = HTMLBodyLoadKey(
+            contentID: contentID,
+            allowRemoteImages: allowRemoteImages,
+            fontScale: fontScale)
+        context.coordinator.loadedKey = key
+
+        if let ready = HTMLWebViewPool.claimPrerendered(for: key) {
+            context.coordinator.attach(
+                ready, in: container, alreadyPainted: true, fade: false)
+            context.coordinator.beginRender(
+                byteCount: html.utf8.count,
+                variant: contentID.hasSuffix(":authored") ? "authored" : "full",
+                prerenderHit: true)
+            context.coordinator.acceptsHeightReports = true
+            context.coordinator.installLayoutAndMeasure(ready)
+        } else {
+            let webView = HTMLWebViewPool.dequeue()
+            context.coordinator.attach(
+                webView, in: container, alreadyPainted: false, fade: false)
+            context.coordinator.beginRender(
+                byteCount: html.utf8.count,
+                variant: contentID.hasSuffix(":authored") ? "authored" : "full",
+                prerenderHit: false)
+            context.coordinator.loadDocument(
+                html: html, allowRemoteImages: allowRemoteImages,
+                fontScale: fontScale, in: webView)
+        }
+        return container
     }
 
-    func updateNSView(_ webView: WKWebView, context: Context) {
+    func updateNSView(_ container: NSView, context: Context) {
+        context.coordinator.container = container
+        context.coordinator.contentID = contentID
+        context.coordinator.onSettled = onSettled
         // Refresh the binding callback even when the document identity did not
         // change. Capture the Binding only — capturing `self` retains `html`.
         let heightBinding = _height
@@ -1988,32 +2093,31 @@ struct HTMLBodyView: NSViewRepresentable {
             allowRemoteImages: allowRemoteImages,
             fontScale: fontScale)
         guard context.coordinator.loadedKey != key else { return }
+
+        if let cached = HTMLBodyHeightCacheStore.height(for: contentID) {
+            heightBinding.wrappedValue = cached
+        }
+
         context.coordinator.loadedKey = key
         context.coordinator.beginRender(
             byteCount: html.utf8.count,
-            variant: contentID.hasSuffix(":authored") ? "authored" : "full")
-        let csp = HTMLBodyCSP.metaTag(allowRemoteImages: allowRemoteImages)
-        // Force light text over dark chrome; per-element contrast from
-        // effective background (attribute fast path + applyContrastJS).
-        // Includes HTMLBodyLayout.imageCSS for blocked-image placeholders.
-        let css = HTMLBodyDarkMode.injectedCSS(fontScale: fontScale)
-        // Fragments get a synthetic shell; complete documents keep author
-        // head styles and receive CSP/CSS via head injection.
-        let document = HTMLBodyDocument.assemble(
-            html: html, cspMeta: csp, styleCSS: css)
-        context.coordinator.load(
-            document: document,
-            trustedFallback: {
-                HTMLBodyDocument.trustedWrapper(
-                    html: html, cspMeta: csp, styleCSS: css)
-            },
-            allowRemoteImages: allowRemoteImages,
-            in: webView)
+            variant: contentID.hasSuffix(":authored") ? "authored" : "full",
+            prerenderHit: false)
+
+        if let ready = HTMLWebViewPool.claimPrerendered(for: key) {
+            context.coordinator.swap(
+                to: ready, alreadyPainted: true, html: html,
+                allowRemoteImages: allowRemoteImages, fontScale: fontScale)
+        } else {
+            let incoming = HTMLWebViewPool.dequeue()
+            context.coordinator.swap(
+                to: incoming, alreadyPainted: false, html: html,
+                allowRemoteImages: allowRemoteImages, fontScale: fontScale)
+        }
     }
 
-    static func dismantleNSView(_ nsView: WKWebView, coordinator: Coordinator) {
-        coordinator.detach(from: nsView)
-        HTMLWebViewPool.recycle(nsView)
+    static func dismantleNSView(_ container: NSView, coordinator: Coordinator) {
+        coordinator.dismantle()
     }
 
     func makeCoordinator() -> Coordinator { Coordinator() }
@@ -2021,23 +2125,84 @@ struct HTMLBodyView: NSViewRepresentable {
     final class Coordinator: NSObject, WKNavigationDelegate, WKScriptMessageHandler {
         var loadedKey: HTMLBodyLoadKey?
         var setHeight: ((CGFloat) -> Void)?
+        var onSettled: (() -> Void)?
+        var contentID: String = ""
+        weak var container: NSView?
+        private(set) var current: PassthroughWebView?
+        private var incoming: PassthroughWebView?
         private var loadToken = UUID()
         private var heightStability = HTMLHeightStability()
         private var heightUpdateCount = 0
         private var renderInterval: PerfMetrics.Interval?
         private var renderTimeout: DispatchWorkItem?
-        private var acceptsHeightReports = false
+        var acceptsHeightReports = false
         private var navigationGate = HTMLNavigationIdentityGate()
+        private var pendingReveal = false
+        private var settledNotified = false
 
-        func beginRender(byteCount: Int, variant: String) {
+        func attach(_ webView: PassthroughWebView, in container: NSView,
+                    alreadyPainted: Bool, fade: Bool) {
+            webView.navigationDelegate = self
+            webView.installHeightHandler(self)
+            webView.setValue(false, forKey: "drawsBackground")
+            webView.frame = container.bounds
+            webView.autoresizingMask = [.width, .height]
+            if fade, current != nil {
+                webView.alphaValue = 0
+            } else {
+                webView.alphaValue = 1
+            }
+            container.addSubview(webView)
+            current = webView
+            pendingReveal = !alreadyPainted
+        }
+
+        /// Keep outgoing content visible until `next` is painted (or already is).
+        func swap(to next: PassthroughWebView, alreadyPainted: Bool,
+                  html: String, allowRemoteImages: Bool, fontScale: Double) {
+            guard let container else {
+                HTMLWebViewPool.recycle(next)
+                return
+            }
+            // Abandon any in-flight incoming load.
+            if let abandoned = incoming, abandoned !== current {
+                abandoned.navigationDelegate = nil
+                abandoned.removeHeightHandlerIfNeeded()
+                HTMLWebViewPool.recycle(abandoned)
+            }
+            incoming = next
+            next.navigationDelegate = self
+            next.installHeightHandler(self)
+            next.setValue(false, forKey: "drawsBackground")
+            next.frame = container.bounds
+            next.autoresizingMask = [.width, .height]
+            // Stay invisible until first paint so the outgoing body never blanks.
+            next.alphaValue = 0
+            container.addSubview(next, positioned: .above, relativeTo: current)
+            pendingReveal = true
+            settledNotified = false
+
+            if alreadyPainted {
+                acceptsHeightReports = true
+                installLayoutAndMeasure(next)
+                revealIncoming(animated: true)
+            } else {
+                loadDocument(
+                    html: html, allowRemoteImages: allowRemoteImages,
+                    fontScale: fontScale, in: next)
+            }
+        }
+
+        func beginRender(byteCount: Int, variant: String, prerenderHit: Bool) {
             finishRender(reason: "superseded")
             acceptsHeightReports = false
             navigationGate.reset()
             heightStability.reset()
             heightUpdateCount = 0
+            settledNotified = false
             renderInterval = PerfMetrics.begin(
                 .openHTML,
-                meta: "bytes=\(byteCount) variant=\(variant)")
+                meta: "bytes=\(byteCount) variant=\(variant) prerender=\(prerenderHit ? 1 : 0)")
 
             // ResizeObserver normally produces a confirming height quickly.
             // End diagnostics even for malformed documents that never settle.
@@ -2046,6 +2211,22 @@ struct HTMLBodyView: NSViewRepresentable {
             }
             renderTimeout = timeout
             DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
+        }
+
+        func loadDocument(html: String, allowRemoteImages: Bool,
+                          fontScale: Double, in webView: WKWebView) {
+            let csp = HTMLBodyCSP.metaTag(allowRemoteImages: allowRemoteImages)
+            let css = HTMLBodyDarkMode.injectedCSS(fontScale: fontScale)
+            let document = HTMLBodyDocument.assemble(
+                html: html, cspMeta: csp, styleCSS: css)
+            load(
+                document: document,
+                trustedFallback: {
+                    HTMLBodyDocument.trustedWrapper(
+                        html: html, cspMeta: csp, styleCSS: css)
+                },
+                allowRemoteImages: allowRemoteImages,
+                in: webView)
         }
 
         /// Apply/remove the network-level remote-image rule before navigating.
@@ -2083,39 +2264,58 @@ struct HTMLBodyView: NSViewRepresentable {
             navigationGate.didStart(navigation)
         }
 
-        /// Drop height callbacks before the view is recycled so a late
-        /// ResizeObserver tick cannot write into a new card. Handler removal
-        /// and observer teardown live in `HTMLWebViewPool.recycle` (single
-        /// owner — double-remove of a script handler raises).
-        func detach(from webView: WKWebView) {
+        /// Drop height callbacks and recycle live views when the representable
+        /// leaves the hierarchy.
+        func dismantle() {
             loadToken = UUID()
             loadedKey = nil
             setHeight = nil
+            onSettled = nil
             acceptsHeightReports = false
             navigationGate.reset()
             finishRender(reason: "detached")
             heightStability.reset()
-            webView.evaluateJavaScript(HTMLBodyLayout.teardownJS, completionHandler: nil)
+            pendingReveal = false
+
+            if let incoming, incoming !== current {
+                incoming.navigationDelegate = nil
+                incoming.removeHeightHandlerIfNeeded()
+                HTMLWebViewPool.recycle(incoming)
+            }
+            incoming = nil
+            if let current {
+                current.navigationDelegate = nil
+                current.evaluateJavaScript(
+                    HTMLBodyLayout.teardownJS, completionHandler: nil)
+                current.removeHeightHandlerIfNeeded()
+                HTMLWebViewPool.recycle(current)
+            }
+            self.current = nil
+            container = nil
         }
 
         func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
             guard navigationGate.accepts(navigation) else { return }
+            // Only the active incoming (or sole current) navigation counts.
+            guard webView === incoming || (incoming == nil && webView === current)
+            else { return }
             // Primary contrast pass runs as WKUserScript at document-end
             // (WebViewPool) for every navigation, including recycled views.
-            // Run the expensive DOM/getComputedStyle walk once, then install
-            // layout preservation + continuous measurement.
             acceptsHeightReports = true
             installLayoutAndMeasure(webView)
         }
 
-        private func installLayoutAndMeasure(_ webView: WKWebView) {
+        func installLayoutAndMeasure(_ webView: WKWebView) {
             webView.evaluateJavaScript(HTMLBodyLayout.installLayoutAndMeasureJS) { [weak self] result, _ in
-                self?.applyMeasuredHeight(result)
+                self?.applyMeasuredHeight(result, from: webView)
             }
         }
 
-        private func applyMeasuredHeight(_ result: Any?) {
+        private func applyMeasuredHeight(_ result: Any?, from webView: WKWebView? = nil) {
             guard acceptsHeightReports else { return }
+            if let webView, let incoming, webView !== incoming, webView !== current {
+                return
+            }
             let floor = CGFloat(HTMLBodyLayout.minContentHeight)
             let rawHeight: CGFloat?
             if let h = result as? CGFloat {
@@ -2135,11 +2335,68 @@ struct HTMLBodyView: NSViewRepresentable {
             let observation = heightStability.observe(height)
             if observation.shouldPublish {
                 heightUpdateCount += 1
+                if !contentID.isEmpty {
+                    HTMLBodyHeightCacheStore.store(height, for: contentID)
+                }
                 DispatchQueue.main.async { [weak self] in self?.setHeight?(height) }
+            }
+            if pendingReveal, webView === incoming || (incoming == nil && webView === current) {
+                // First positive height is enough to reveal; stability can follow.
+                revealIncoming(animated: current != nil && incoming != nil)
             }
             if observation.isStable {
                 finishRender(reason: "stable")
+                notifySettledIfNeeded()
             }
+        }
+
+        private func revealIncoming(animated: Bool) {
+            guard pendingReveal else { return }
+            guard let container else { return }
+            let next = incoming ?? current
+            guard let next else { return }
+            pendingReveal = false
+
+            let previous = (next === incoming) ? current : nil
+            if next.superview == nil {
+                next.frame = container.bounds
+                next.autoresizingMask = [.width, .height]
+                container.addSubview(next, positioned: .above, relativeTo: previous)
+            }
+
+            let finishSwap = { [weak self] in
+                guard let self else { return }
+                if let previous, previous !== next {
+                    previous.navigationDelegate = nil
+                    previous.removeHeightHandlerIfNeeded()
+                    previous.removeFromSuperview()
+                    HTMLWebViewPool.recycle(previous)
+                }
+                next.alphaValue = 1
+                self.current = next
+                if self.incoming === next {
+                    self.incoming = nil
+                }
+            }
+
+            if animated, previous != nil {
+                next.alphaValue = 0
+                NSAnimationContext.runAnimationGroup({ ctx in
+                    ctx.duration = HTMLBodyView.swapFadeDuration
+                    ctx.allowsImplicitAnimation = true
+                    next.animator().alphaValue = 1
+                }, completionHandler: finishSwap)
+            } else {
+                next.alphaValue = 1
+                finishSwap()
+            }
+        }
+
+        private func notifySettledIfNeeded() {
+            guard !settledNotified else { return }
+            settledNotified = true
+            let callback = onSettled
+            DispatchQueue.main.async { callback?() }
         }
 
         private func finishRender(reason: String) {
@@ -2153,21 +2410,41 @@ struct HTMLBodyView: NSViewRepresentable {
         func webView(_ webView: WKWebView, didFail navigation: WKNavigation!,
                      withError error: Error) {
             guard navigationGate.accepts(navigation) else { return }
+            guard webView === incoming || (incoming == nil && webView === current) else { return }
             acceptsHeightReports = false
+            // Don't leave a blank new view on top of good content.
+            if let incoming, incoming === webView, current != nil {
+                incoming.navigationDelegate = nil
+                incoming.removeHeightHandlerIfNeeded()
+                incoming.removeFromSuperview()
+                HTMLWebViewPool.recycle(incoming)
+                self.incoming = nil
+                pendingReveal = false
+            }
             finishRender(reason: "navigationError")
         }
 
         func webView(_ webView: WKWebView, didFailProvisionalNavigation navigation: WKNavigation!,
                      withError error: Error) {
             guard navigationGate.accepts(navigation) else { return }
+            guard webView === incoming || (incoming == nil && webView === current) else { return }
             acceptsHeightReports = false
+            if let incoming, incoming === webView, current != nil {
+                incoming.navigationDelegate = nil
+                incoming.removeHeightHandlerIfNeeded()
+                incoming.removeFromSuperview()
+                HTMLWebViewPool.recycle(incoming)
+                self.incoming = nil
+                pendingReveal = false
+            }
             finishRender(reason: "provisionalError")
         }
 
         func userContentController(_ userContentController: WKUserContentController,
                                    didReceive message: WKScriptMessage) {
             guard message.name == HTMLBodyLayout.heightHandlerName else { return }
-            applyMeasuredHeight(message.body)
+            let webView = message.webView
+            applyMeasuredHeight(message.body, from: webView)
         }
 
         func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
