@@ -10,6 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var memoryPressureSource: DispatchSourceMemoryPressure?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Compile the remote-image content rule once so the first message open
+        // never pays the WKContentRuleList async hop.
+        HTMLRemoteImageBlocker.prepareAtLaunch()
         let source = DispatchSource.makeMemoryPressureSource(
             eventMask: [.warning, .critical],
             queue: .main)

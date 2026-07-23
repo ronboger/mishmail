@@ -139,20 +139,27 @@ enum ThreadListNavigation {
 }
 
 /// Whether a keyboard-driven selection change should open the reading pane
-/// immediately or through the j/k debounce.
+/// immediately or through a short key-repeat coalesce.
 ///
-/// Browsing with j/k debounces the detail open so held-down keys don't churn
-/// the pane. But when the selection moved because the opened row left the
-/// list (trash/archive/spam auto-advance), the debounce leaves the pane on a
-/// dangling id — it falls to the empty placeholder, tears down the detail
-/// view, and rebuilds it from scratch after the delay. Open immediately so
-/// the pane hands off to the neighbor in the same update.
+/// Single j/k / ↑/↓ presses open the detail with no artificial delay
+/// (Notion Mail–style live preview). Auto-repeating keys still coalesce so a
+/// held arrow does not thrash the pane on every keyDown. When the selection
+/// moved because the opened row left the list (trash/archive/spam
+/// auto-advance), open immediately so the pane hands off to the neighbor in
+/// the same update instead of blanking and rebuilding after a settle.
 enum DetailOpenPolicy {
-    /// Quiet period before hydrating the reading pane for keyboard focus.
-    /// Long enough that key-repeat (and a busy main thread stretching inter-key
-    /// gaps past ~30 ms) still coalesces to one open; short enough that a
-    /// deliberate pause still feels like live preview.
-    static let settleNanoseconds: UInt64 = 150_000_000  // 150 ms
+    /// Held key-repeat quiet period before hydrating the reading pane.
+    /// Long enough that ~30–50 ms system key-repeat still coalesces to one
+    /// open; short enough that releasing still feels like live preview.
+    static let keyRepeatSettleNanoseconds: UInt64 = 50_000_000  // 50 ms
+
+    /// Deliberate single presses open with no artificial delay.
+    static let singlePressSettleNanoseconds: UInt64 = 0
+
+    /// Settle before `openDetail` for a keyboard browse step.
+    static func settleNanoseconds(isKeyRepeat: Bool) -> UInt64 {
+        isKeyRepeat ? keyRepeatSettleNanoseconds : singlePressSettleNanoseconds
+    }
 
     static func opensImmediately(openedThreadId: String?,
                                  listedIds: some Sequence<String>) -> Bool {

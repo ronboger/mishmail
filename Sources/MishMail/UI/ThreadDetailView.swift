@@ -56,6 +56,8 @@ struct ThreadDetailView: View {
 
     @State private var messages: [Message] = []
     @State private var attachmentsByMessageId: [String: [AttachmentRow]] = [:]
+    /// Off-main quote-trail + assembled HTML from `ThreadDetailRepository`.
+    @State private var bodyPrepByMessageId: [String: MessageHTMLPrep] = [:]
     @State private var threadAttachments: [(message: Message, attachment: AttachmentRow)] = []
     @State private var scrolledMessageId: String?
     @State private var aiSummary: String?
@@ -157,6 +159,7 @@ struct ThreadDetailView: View {
                             MessageCard(message: message,
                                         isLast: message.id == lastNonDraftId,
                                         attachments: attachmentsByMessageId[message.id] ?? [],
+                                        bodyPrep: bodyPrepByMessageId[message.id],
                                         expandedMessageId: $expandedMessageId,
                                         loadImagesForThread: $loadRemoteImagesForThread,
                                         onReply: { onReply(message) },
@@ -413,6 +416,7 @@ struct ThreadDetailView: View {
                     }
                     messages = loaded
                     attachmentsByMessageId = load.payload.attachmentsByMessageId
+                    bodyPrepByMessageId = load.payload.bodyPrepByMessageId
                     threadAttachments = loaded.flatMap { msg in
                         (attachmentsByMessageId[msg.id] ?? []).map {
                             (message: msg, attachment: $0)
@@ -661,6 +665,13 @@ struct ThreadDetailView: View {
             let merged = ThreadRefresh.merge(
                 current: messages, fresh: load.payload.messages)
             attachmentsByMessageId = load.payload.attachmentsByMessageId
+            // Keep prep for bodies we already hydrated that the fresh payload
+            // may have as header-only; overlay with any newly computed prep.
+            var mergedPrep = bodyPrepByMessageId
+            for (id, prep) in load.payload.bodyPrepByMessageId {
+                mergedPrep[id] = prep
+            }
+            bodyPrepByMessageId = mergedPrep
             threadAttachments = merged.flatMap { msg in
                 (attachmentsByMessageId[msg.id] ?? []).map {
                     (message: msg, attachment: $0)
@@ -703,11 +714,12 @@ struct ThreadDetailView: View {
         guard !bodyLoadAttempted.contains(id) else { return }
         bodyLoadAttempted.insert(id)
         Task {
-            guard let full = await store.messageBodyForReadingPane(id: id),
+            guard let loaded = await store.messageBodyForReadingPane(id: id),
                   splitMode || store.openedThreadId == thread.id,
                   let currentIdx = messages.firstIndex(where: { $0.id == id })
             else { return }
-            messages[currentIdx] = full
+            messages[currentIdx] = loaded.message
+            bodyPrepByMessageId[id] = loaded.prep
         }
     }
 
@@ -1085,6 +1097,8 @@ struct MessageCard: View {
     let message: Message
     let isLast: Bool
     let attachments: [AttachmentRow]
+    /// Off-main precomputed trail + assembled documents from the repository.
+    let bodyPrep: MessageHTMLPrep?
     @Binding var expandedMessageId: String?
     /// Session-wide opt-in shared by every card in the open thread.
     @Binding var loadImagesForThread: Bool
@@ -1119,12 +1133,11 @@ struct MessageCard: View {
     /// Whether this message carries a collapsible quoted trail — HTML bodies
     /// load only `htmlHead`, plain text renders `textHead`.
     private let hasQuotedTrail: Bool
+    /// Pre-assembled WebKit documents (nil when scale mismatched or absent).
+    private let htmlDocuments: MessageHTMLDocuments?
 
-    /// The trail scans are whole-body regexes and the parent ForEach re-inits
-    /// every card whenever the store publishes, so results are cached per
-    /// message — bodies are immutable. Count and byte budgets keep cached raw
-    /// HTML heads bounded. Only cache when a body is present so lazy-loaded
-    /// headers don't poison the entry with an empty-body result.
+    /// Fallback NSCache for cards opened without a repository prep (e.g. rare
+    /// main-thread-only paths). Primary path is `bodyPrep` from the actor.
     private final class TrailCacheEntry {
         let textHead: String?
         let htmlHead: String?
@@ -1162,6 +1175,7 @@ struct MessageCard: View {
 
     init(message: Message, isLast: Bool,
          attachments: [AttachmentRow] = [],
+         bodyPrep: MessageHTMLPrep? = nil,
          expandedMessageId: Binding<String?>,
          loadImagesForThread: Binding<Bool> = .constant(false),
          onReply: @escaping () -> Void,
@@ -1169,17 +1183,28 @@ struct MessageCard: View {
         self.message = message
         self.isLast = isLast
         self.attachments = attachments
+        self.bodyPrep = bodyPrep
         self._expandedMessageId = expandedMessageId
         self._loadImagesForThread = loadImagesForThread
         self.onReply = onReply
         self.onNeedBody = onNeedBody
         let hasBody = !ThreadDetailView.needsBodyLoad(message)
-        if hasBody, let cached = Self.trailCache.object(forKey: message.id as NSString) {
+        // Prefer repository prep (built off the main actor). Fall back to the
+        // legacy NSCache / main-thread scan only when prep is missing.
+        if hasBody, let prep = bodyPrep {
+            textHead = prep.textHead
+            htmlHead = prep.htmlHead
+            hasQuotedTrail = prep.hasQuotedTrail
+            htmlBytes = prep.htmlBytes
+            htmlHeadBytes = prep.htmlHeadBytes
+            htmlDocuments = prep.documents
+        } else if hasBody, let cached = Self.trailCache.object(forKey: message.id as NSString) {
             textHead = cached.textHead
             htmlHead = cached.htmlHead
             hasQuotedTrail = cached.hasTrail
             htmlBytes = cached.htmlBytes
             htmlHeadBytes = cached.htmlHeadBytes
+            htmlDocuments = nil
         } else if hasBody {
             let fullHTMLBytes = message.bodyHTML?.utf8.count ?? 0
             // Prefer structured HTML collapse (gmail_quote / cite). When HTML
@@ -1214,6 +1239,7 @@ struct MessageCard: View {
             }
             htmlBytes = fullHTMLBytes
             htmlHeadBytes = htmlHead?.utf8.count ?? 0
+            htmlDocuments = nil
             Self.cacheTrail(TrailCacheEntry(
                 textHead: textHead,
                 htmlHead: htmlHead,
@@ -1226,6 +1252,7 @@ struct MessageCard: View {
             hasQuotedTrail = false
             htmlBytes = 0
             htmlHeadBytes = 0
+            htmlDocuments = nil
         }
     }
 
@@ -1399,9 +1426,18 @@ struct MessageCard: View {
                         userApproved: approvedOversizedHTML) {
                         oversizedHTMLPlaceholder(byteCount: renderedBytes)
                     } else {
+                        let preassembled: String? = {
+                            guard let docs = htmlDocuments,
+                                  abs(docs.fontScale - fontScale) < 0.001
+                            else { return nil }
+                            return docs.document(
+                                authored: useAuthoredHTML,
+                                allowRemoteImages: allowRemoteImages)
+                        }()
                         HTMLBodyView(
                             contentID: message.id + (useAuthoredHTML ? ":authored" : ":full"),
                             html: renderedHTML,
+                            preassembledDocument: preassembled,
                             allowRemoteImages: allowRemoteImages,
                             fontScale: fontScale,
                             height: $htmlHeight)
@@ -1964,6 +2000,9 @@ struct HTMLBodyView: NSViewRepresentable {
     /// this by hashing the untrusted, potentially multi-megabyte HTML string.
     let contentID: String
     let html: String
+    /// Pre-assembled document from `ThreadDetailRepository` (CSP + CSS already
+    /// injected). When present, main-thread render skips `HTMLBodyDocument.assemble`.
+    var preassembledDocument: String? = nil
     let allowRemoteImages: Bool
     var fontScale: Double = 1.0
     @Binding var height: CGFloat
@@ -1997,9 +2036,10 @@ struct HTMLBodyView: NSViewRepresentable {
         // effective background (attribute fast path + applyContrastJS).
         // Includes HTMLBodyLayout.imageCSS for blocked-image placeholders.
         let css = HTMLBodyDarkMode.injectedCSS(fontScale: fontScale)
-        // Fragments get a synthetic shell; complete documents keep author
-        // head styles and receive CSP/CSS via head injection.
-        let document = HTMLBodyDocument.assemble(
+        // Prefer the off-main preassembled document; fall back to main-thread
+        // assembly only when prep is missing (font-scale mismatch, oversized
+        // after explicit approve, or legacy paths without a repository prep).
+        let document = preassembledDocument ?? HTMLBodyDocument.assemble(
             html: html, cspMeta: csp, styleCSS: css)
         context.coordinator.load(
             document: document,
@@ -2051,6 +2091,10 @@ struct HTMLBodyView: NSViewRepresentable {
         /// Apply/remove the network-level remote-image rule before navigating.
         /// A generation token prevents a late compile callback from mutating a
         /// recycled view or superseding a newer Load-images request.
+        ///
+        /// The rule list is compiled once at app launch (`prepareAtLaunch`);
+        /// the common path installs the cached list synchronously so message
+        /// opens never wait on WebKit compilation.
         func load(document: String, trustedFallback: @escaping () -> String,
                   allowRemoteImages: Bool, in webView: WKWebView) {
             let token = UUID()
@@ -2059,6 +2103,12 @@ struct HTMLBodyView: NSViewRepresentable {
             controller.removeAllContentRuleLists()
 
             if allowRemoteImages {
+                startNavigation(webView, document: document)
+                return
+            }
+
+            if let ready = HTMLRemoteImageBlocker.preparedRuleList {
+                controller.add(ready)
                 startNavigation(webView, document: document)
                 return
             }
