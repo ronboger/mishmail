@@ -77,11 +77,19 @@ final class KeyBindings: ObservableObject {
 
     init(defaults: UserDefaults = .standard) {
         store = defaults
+        // Normalize letter overrides on load so a pre-normalize rebind of
+        // "Q" (Shift/Caps Lock capture) still matches command(for: "q").
+        var needsNormalizePersist = false
         if let data = defaults.data(forKey: Self.defaultsKey),
            let raw = try? JSONDecoder().decode([String: String].self, from: data) {
-            overrides = raw.reduce(into: [:]) { map, entry in
-                if let cmd = ShortcutCommand(rawValue: entry.key) { map[cmd] = entry.value }
+            var loaded: [ShortcutCommand: String] = [:]
+            for (key, value) in raw {
+                guard let cmd = ShortcutCommand(rawValue: key) else { continue }
+                let normalized = Self.normalizeKey(value)
+                if normalized != value { needsNormalizePersist = true }
+                loaded[cmd] = normalized
             }
+            overrides = loaded
         } else {
             overrides = [:]
         }
@@ -89,7 +97,7 @@ final class KeyBindings: ObservableObject {
         // existing user rebind of that key. Prefer the override at lookup,
         // and park the un-overridden command on a free key so Settings and
         // command(for:) agree.
-        if migrateCollidingDefaults() {
+        if migrateCollidingDefaults() || needsNormalizePersist {
             persist()
         }
     }

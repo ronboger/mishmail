@@ -987,6 +987,9 @@ private extension ContentView {
             let shiftOnly = event.modifierFlags
                 .intersection([.command, .option, .control, .shift]) == [.shift]
             if let markRead = GmailMarkReadKeys.markAsRead(key: chars, shiftOnly: shiftOnly) {
+                // Don't leave an armed `g` prefix: Shift+I after `g` must not
+                // keep the next key as a go-to chord target for 1.5s.
+                store.clearPendingGoKey()
                 store.setReadSelected(read: markRead)
                 return nil
             }

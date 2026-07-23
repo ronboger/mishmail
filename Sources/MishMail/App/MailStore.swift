@@ -2881,6 +2881,11 @@ struct ComposeRequest: Identifiable {
 
     private var pendingGoKey: Date?
 
+    /// Drop an armed `g`-prefix so a later key isn't stolen as a go-to chord.
+    func clearPendingGoKey() {
+        pendingGoKey = nil
+    }
+
     /// Returns true if the key was handled. Gmail-style single keys,
     /// including "g then …" navigation (g-i inbox, g-t sent, g-d drafts…).
     func handleKey(_ chars: String) -> Bool {

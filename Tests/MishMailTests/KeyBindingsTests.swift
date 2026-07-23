@@ -125,4 +125,20 @@ final class KeyBindingsTests: XCTestCase {
         XCTAssertEqual(kb.command(for: "!"), .markSpam)
         XCTAssertEqual(kb.command(for: "#"), .trash)
     }
+
+    /// Pre-normalize rebinds could persist uppercase letters (Shift/Caps Lock
+    /// during capture). Load must lowercase them so lookups and Settings agree.
+    func testLegacyUppercaseOverrideIsNormalizedOnLoad() {
+        let raw = ["archive": "Q"]
+        let data = try! JSONEncoder().encode(raw)
+        defaults.set(data, forKey: "keyBindings")
+
+        let kb = KeyBindings(defaults: defaults)
+        XCTAssertEqual(kb.key(for: .archive), "q")
+        XCTAssertEqual(kb.command(for: "q"), .archive)
+        XCTAssertEqual(kb.command(for: "Q"), .archive)
+        // Rewritten so the next launch doesn't re-normalize every time.
+        let kb2 = KeyBindings(defaults: defaults)
+        XCTAssertEqual(kb2.key(for: .archive), "q")
+    }
 }
