@@ -154,11 +154,20 @@ final class SelectionAdvanceTests: XCTestCase {
             openedThreadId: nil, listedIds: ["a"]))
     }
 
-    func testSettleWindowIsLongerThanKeyRepeat() {
-        // Key-repeat is ~30–50 ms; settle must outlast a stretched main-thread
-        // gap so intermediate opens do not fire while holding ↓.
-        XCTAssertGreaterThanOrEqual(DetailOpenPolicy.settleNanoseconds, 100_000_000)
-        XCTAssertLessThanOrEqual(DetailOpenPolicy.settleNanoseconds, 250_000_000)
+    func testSinglePressOpensWithNoSettle() {
+        // Notion Mail–style: a deliberate j/k or ↑/↓ opens immediately.
+        XCTAssertEqual(
+            DetailOpenPolicy.settleNanoseconds(isKeyRepeat: false), 0)
+        XCTAssertEqual(DetailOpenPolicy.singlePressSettleNanoseconds, 0)
+    }
+
+    func testKeyRepeatSettleCoalescesHeldKeys() {
+        // System key-repeat is ~30–50 ms; settle must outlast a stretched
+        // main-thread gap so intermediate opens do not fire while holding ↓.
+        let settle = DetailOpenPolicy.settleNanoseconds(isKeyRepeat: true)
+        XCTAssertEqual(settle, DetailOpenPolicy.keyRepeatSettleNanoseconds)
+        XCTAssertGreaterThanOrEqual(settle, 30_000_000)
+        XCTAssertLessThanOrEqual(settle, 100_000_000)
     }
 
     // MARK: - Thread list navigation (focus only)

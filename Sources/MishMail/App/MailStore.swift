@@ -2402,20 +2402,26 @@ struct ComposeRequest: Identifiable {
 
     /// Headers + snippet only (empty body fields). Cheap open path for the
     /// reading pane; hydrate bodies with `messageBody(id:)` on expand.
+    /// Quote-trail scans and HTML document assembly run inside the repository
+    /// actor so main-thread render only hands ready strings to WebKit.
     func threadDetailPayload(threadId: String,
                              forceReload: Bool = false) async -> ThreadDetailLoad {
         let suppressed = suppressedDraftMessageIds
         let contentVersion = threadContentVersion
+        let fontScale = Self.readingPaneFontScale()
         return await threadDetailRepository.payload(
             threadId: threadId,
             suppressingDrafts: suppressed,
             contentVersion: contentVersion,
+            fontScale: fontScale,
             forceReload: forceReload)
     }
 
-    /// Off-main body hydration for an expanded reading-pane card.
-    func messageBodyForReadingPane(id: String) async -> Message? {
-        await threadDetailRepository.messageBody(id: id)
+    /// Off-main body hydration for an expanded reading-pane card, including
+    /// precomputed quote-trail + assembled HTML for the current font scale.
+    func messageBodyForReadingPane(id: String) async -> MessageBodyLoad? {
+        await threadDetailRepository.messageBody(
+            id: id, fontScale: Self.readingPaneFontScale())
     }
 
     func messageHeaders(inThread threadId: String) -> [Message] {
@@ -3152,6 +3158,11 @@ struct ComposeRequest: Identifiable {
             meta: "intent=\(intent.rawValue)")
         if intent.opensDetailImmediately {
             openDetail(id)
+        } else if intent == .browse {
+            // Warm prev/next while the user is still browsing so the eventual
+            // open lands on a cached payload. Same 90 ms cancel-on-next timer
+            // as openDetail — holding j/k does not thrash the DB.
+            scheduleNeighborPrefetch(openedId: id)
         }
         setSelectionFocus(id, intent: intent)
         interval.end(extraMeta: id == nil ? "cleared" : "selected")
@@ -3198,8 +3209,10 @@ struct ComposeRequest: Identifiable {
         }
     }
 
-    /// Cache real reading-pane payloads only after opened content changes.
-    /// Focus-only keyboard repeat no longer creates/cancels database work.
+    /// Cache real reading-pane payloads for the focus row's neighbors.
+    /// Armed from both `openDetail` and browse-intent focus moves so prev/next
+    /// are warm before the user lands. The short delay + cancel-on-next keeps
+    /// held key-repeat from thrashing the repository.
     private func scheduleNeighborPrefetch(openedId: String?) {
         guard !isShuttingDown else { return }
         neighborPrefetchTask?.cancel()
@@ -3207,6 +3220,7 @@ struct ComposeRequest: Identifiable {
         let repository = threadDetailRepository
         let suppressed = suppressedDraftMessageIds
         let contentVersion = threadContentVersion
+        let fontScale = Self.readingPaneFontScale()
         neighborPrefetchTask = Task {
             do {
                 try await Task.sleep(nanoseconds: 90_000_000)
@@ -3219,9 +3233,16 @@ struct ComposeRequest: Identifiable {
                 guard !Task.isCancelled else { return }
                 _ = await repository.payload(
                     threadId: id, suppressingDrafts: suppressed,
-                    contentVersion: contentVersion)
+                    contentVersion: contentVersion,
+                    fontScale: fontScale)
             }
         }
+    }
+
+    /// `AppStorage("fontScale")` default is 1.0; UserDefaults yields 0 when unset.
+    nonisolated static func readingPaneFontScale() -> Double {
+        let stored = UserDefaults.standard.double(forKey: "fontScale")
+        return stored == 0 ? 1.0 : stored
     }
 
     static func snoozeDate(hour: Int, addDays: Int = 0) -> Date {

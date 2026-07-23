@@ -33,12 +33,71 @@ final class ThreadDetailCacheTests: XCTestCase {
             attachmentsByMessageId: [
                 "sent": [fixtureAttachment(messageId: "sent")],
                 "draft": [fixtureAttachment(messageId: "draft")],
+            ],
+            bodyPrepByMessageId: [
+                "sent": .empty,
+                "draft": .empty,
             ])
 
         let visible = payload.suppressingDrafts(["draft"])
 
         XCTAssertEqual(visible.messages.map(\.id), ["sent"])
         XCTAssertEqual(Set(visible.attachmentsByMessageId.keys), ["sent"])
+        XCTAssertEqual(Set(visible.bodyPrepByMessageId.keys), ["sent"])
+    }
+
+    func testMessageHTMLPrepDetectsQuotedTrailAndAssemblesDocuments() throws {
+        let html = """
+        <div>New reply</div>
+        <div class="gmail_quote">On Mon, Alice wrote:<br>Earlier</div>
+        """
+        let prep = MessageHTMLPrepBuilder.prep(
+            bodyText: "New reply\n\nOn Mon, Alice wrote:\n> Earlier",
+            bodyHTML: html,
+            fontScale: 1.0)
+
+        XCTAssertTrue(prep.hasQuotedTrail)
+        XCTAssertNotNil(prep.htmlHead)
+        XCTAssertFalse(prep.htmlHead?.contains("gmail_quote") ?? true)
+        XCTAssertEqual(prep.htmlBytes, html.utf8.count)
+        let docs = try XCTUnwrap(prep.documents)
+        XCTAssertEqual(docs.fontScale, 1.0)
+        // Authored + full for both image policies.
+        XCTAssertNotNil(docs.authoredBlocked)
+        XCTAssertNotNil(docs.authoredAllowed)
+        XCTAssertNotNil(docs.fullBlocked)
+        XCTAssertNotNil(docs.fullAllowed)
+        // Assembled documents inject CSP + CSS.
+        XCTAssertTrue(docs.fullBlocked?.contains("Content-Security-Policy") ?? false)
+        XCTAssertTrue(docs.authoredBlocked?.contains("New reply") ?? false)
+        XCTAssertFalse(docs.authoredBlocked?.contains("gmail_quote") ?? true)
+    }
+
+    func testMessageHTMLPrepSkipsAssemblyAboveAutomaticByteBudget() {
+        // Oversized body: trail scan is bounded; no auto-render documents.
+        let big = String(repeating: "x", count: HTMLBodyRenderPolicy.maximumAutomaticBytes + 1)
+        let html = "<div>\(big)</div>"
+        let prep = MessageHTMLPrepBuilder.prep(
+            bodyText: "", bodyHTML: html, fontScale: 1.0)
+        XCTAssertEqual(prep.htmlBytes, html.utf8.count)
+        // Full assembly is skipped — nothing under the 2 MB auto budget.
+        XCTAssertNil(prep.documents?.fullBlocked)
+        XCTAssertNil(prep.documents?.fullAllowed)
+    }
+
+    func testMessageHTMLPrepReassembleKeepsTrail() {
+        let html = """
+        <div>Hi</div>
+        <div class="gmail_quote">quoted</div>
+        """
+        let prep = MessageHTMLPrepBuilder.prep(
+            bodyText: "Hi", bodyHTML: html, fontScale: 1.0)
+        let rebuilt = MessageHTMLPrepBuilder.reassembleDocuments(
+            prep, fullHTML: html, fontScale: 1.2)
+        XCTAssertEqual(rebuilt.htmlHead, prep.htmlHead)
+        XCTAssertEqual(rebuilt.hasQuotedTrail, prep.hasQuotedTrail)
+        XCTAssertEqual(rebuilt.documents?.fontScale, 1.2)
+        XCTAssertNotNil(rebuilt.documents?.fullBlocked)
     }
 
     func testContentVersionMismatchReloadsPrefetchedThread() async throws {
@@ -86,12 +145,14 @@ final class ThreadDetailCacheTests: XCTestCase {
             ["m1", "m2"])
     }
 
-    private func fixtureMessage(id: String, labels: String) -> Message {
+    private func fixtureMessage(id: String, labels: String,
+                                bodyText: String = "",
+                                bodyHTML: String? = nil) -> Message {
         Message(
             id: id, accountId: "me@example.com", gmailId: id, threadId: "thread",
             fromHeader: "A <a@example.com>", toHeader: "me@example.com",
             ccHeader: "", subject: "Subject", date: Date(), snippet: "",
-            bodyText: "", bodyHTML: nil, messageIdHeader: "<\(id)>",
+            bodyText: bodyText, bodyHTML: bodyHTML, messageIdHeader: "<\(id)>",
             referencesHeader: "", labelIds: labels, isUnread: false,
             hasAttachment: false)
     }

@@ -41,6 +41,9 @@ struct ContentView: View {
     @State private var readingPaneFrame: CGRect = .zero
     @State private var composeHostFrame: CGRect = .zero
     @State private var detailSelectionTask: Task<Void, Never>?
+    /// Last browse keyDown's auto-repeat flag — single presses open at 0 ms;
+    /// held-key repeats coalesce via `DetailOpenPolicy.keyRepeatSettleNanoseconds`.
+    @State private var browseKeyIsRepeat = false
 
     private var fullWindowThreads: Bool {
         ThreadOpenStyle(rawValue: threadOpenStyleRaw) != .readingPane
@@ -956,9 +959,11 @@ private extension ContentView {
                 withAnimation { sidebarHidden = false }
                 return nil
             case 125:  // down
+                browseKeyIsRepeat = event.isARepeat
                 store.moveSelection(1, intent: .browse)
                 return nil
             case 126:  // up
+                browseKeyIsRepeat = event.isARepeat
                 store.moveSelection(-1, intent: .browse)
                 return nil
             case 36:   // return
@@ -993,6 +998,9 @@ private extension ContentView {
                 store.setReadSelected(read: markRead)
                 return nil
             }
+            // j/k (and other rebindable browse keys) also auto-repeat; pass
+            // through so held navigation coalesces like ↑/↓.
+            browseKeyIsRepeat = event.isARepeat
             if store.handleKey(chars) { return nil }
             // Unhandled printable keys must not fall through: SwiftUI List
             // type-selects to the first row starting with that letter, which
@@ -1031,16 +1039,21 @@ private extension ContentView {
         }
     }
 
-    /// Debounce only the detail pane. The List binding and focus publication
-    /// remain synchronous for every repeated keyDown, matching Finder feel.
+    /// Open the detail pane for a browse selection. Single keypresses open with
+    /// no delay; auto-repeating keys coalesce through a short settle. A newer
+    /// selection cancels in-flight work so only the latest id opens.
     private func scheduleDetailSelection(_ id: String) {
         detailSelectionTask?.cancel()
+        let settle = DetailOpenPolicy.settleNanoseconds(isKeyRepeat: browseKeyIsRepeat)
         detailSelectionTask = Task { @MainActor in
-            do {
-                try await Task.sleep(nanoseconds: DetailOpenPolicy.settleNanoseconds)
-            } catch {
-                return
+            if settle > 0 {
+                do {
+                    try await Task.sleep(nanoseconds: settle)
+                } catch {
+                    return
+                }
             }
+            guard !Task.isCancelled else { return }
             guard store.selectedThreadId == id else { return }
             store.openDetail(id)
         }

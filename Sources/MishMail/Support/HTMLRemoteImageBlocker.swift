@@ -22,6 +22,21 @@ enum HTMLRemoteImageBlocker {
     private static var compiling = false
     private static var waiters: [(WKContentRuleList?) -> Void] = []
 
+    /// Synchronous cache hit after `prepareAtLaunch` (or a prior open) finished.
+    /// Callers on the main queue use this to avoid an async hop on every
+    /// first navigation.
+    static var preparedRuleList: WKContentRuleList? {
+        dispatchPrecondition(condition: .onQueue(.main))
+        return cachedRuleList
+    }
+
+    /// Kick off compilation at app launch so message opens never wait on it.
+    /// Safe to call repeatedly; concurrent waiters coalesce.
+    static func prepareAtLaunch() {
+        dispatchPrecondition(condition: .onQueue(.main))
+        ruleList { _ in }
+    }
+
     /// Resolve the compiled rule list, coalescing concurrent message loads.
     /// Completion is always delivered on the main queue.
     static func ruleList(completion: @escaping (WKContentRuleList?) -> Void) {
