@@ -26,4 +26,25 @@ enum ThreadRefresh {
             return merged
         }
     }
+
+    /// Initial reading-pane scroll id: newest sent when multi-message; nil for
+    /// a single card (default top). Draft-only multi falls back to last row.
+    static func initialScrolledMessageId(in messages: [Message]) -> String? {
+        guard messages.count > 1 else { return nil }
+        return ForwardComposer.newestSentMessage(in: messages)?.id
+            ?? messages.last?.id
+    }
+
+    /// Message ids that arrive hydrated on open and must not re-trigger a body
+    /// fetch (newest sent + any draft cards).
+    static func initialBodyLoadSeedIds(in messages: [Message]) -> [String] {
+        var ids: [String] = []
+        if let sentId = ForwardComposer.newestSentMessage(in: messages)?.id {
+            ids.append(sentId)
+        }
+        for draft in messages where ForwardComposer.hasDraftLabel(draft.labelIds) {
+            ids.append(draft.id)
+        }
+        return ids
+    }
 }

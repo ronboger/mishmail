@@ -206,4 +206,18 @@ enum ThreadListOptimistic {
             return existing.id < thread.id
         } ?? rows.endIndex
     }
+
+    /// Whether Undo should re-insert an absent `updateInPlace` thread into the
+    /// current in-memory list. Skip when the list cannot own this row: a
+    /// filtered account that isn't the thread's, or a committed `/` search
+    /// (search SQL is the source of truth). Reconciliation restores correctly.
+    static func shouldReinsertAbsent(
+        threadAccountId: String,
+        activeAccountId: String?,
+        committedSearchActive: Bool
+    ) -> Bool {
+        if let activeAccountId, threadAccountId != activeAccountId { return false }
+        if committedSearchActive { return false }
+        return true
+    }
 }

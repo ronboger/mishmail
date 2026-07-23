@@ -60,4 +60,43 @@ final class ThreadRefreshMergeTests: XCTestCase {
         let merged = ThreadRefresh.merge(current: current, fresh: fresh)
         XCTAssertEqual(merged[0].bodyText, "new")
     }
+
+    // MARK: - Initial open / empty→full refresh anchor
+
+    /// When a superseded initial load lands via refreshMessages on an empty
+    /// pane, scroll/body-seed must match the .task open path.
+    func testInitialScrolledMessageIdAnchorsNewestSent() {
+        let older = msg(id: "1", bodyText: "hi")
+        let newer = msg(id: "2", bodyText: "re")
+        let draft = msg(id: "d1", labels: "DRAFT", bodyText: "draft")
+        // Single card: no explicit scroll (default top).
+        XCTAssertNil(ThreadRefresh.initialScrolledMessageId(in: [newer]))
+        // Multi: newest non-draft.
+        XCTAssertEqual(
+            ThreadRefresh.initialScrolledMessageId(in: [older, newer, draft]),
+            newer.id)
+        // Draft-only multi falls back to last row.
+        let d1 = msg(id: "d1", labels: "DRAFT", bodyText: "a")
+        let d2 = msg(id: "d2", labels: "DRAFT", bodyText: "b")
+        XCTAssertEqual(
+            ThreadRefresh.initialScrolledMessageId(in: [d1, d2]),
+            d2.id)
+    }
+
+    func testInitialBodyLoadSeedIdsCoversNewestSentAndDrafts() {
+        let older = msg(id: "1", bodyText: "hi")
+        let newer = msg(id: "2", bodyText: "re")
+        let draft = msg(id: "d1", labels: "DRAFT", bodyText: "draft")
+        XCTAssertEqual(
+            ThreadRefresh.initialBodyLoadSeedIds(in: [older, newer, draft]),
+            [newer.id, draft.id])
+        // Single sent: seed that id only.
+        XCTAssertEqual(
+            ThreadRefresh.initialBodyLoadSeedIds(in: [newer]),
+            [newer.id])
+        // Draft-only: every draft id, no sent.
+        XCTAssertEqual(
+            ThreadRefresh.initialBodyLoadSeedIds(in: [draft]),
+            [draft.id])
+    }
 }

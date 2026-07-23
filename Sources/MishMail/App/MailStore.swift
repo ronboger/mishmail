@@ -3400,9 +3400,16 @@ struct ComposeRequest: Identifiable {
         let plan = ThreadListOptimistic.plan(leavesCurrentList: threadLeavesCurrentList(updated))
         guard let idx = threads.firstIndex(where: { $0.id == updated.id }) else {
             if plan.effect == .updateInPlace {
+                // Undo restore path: only insert when this list can own the
+                // row. Wrong-account filter or a committed search would flash
+                // the row until ~140ms reconciliation reloads the right list.
                 let hasSearch = !committedSearch
                     .trimmingCharacters(in: .whitespaces).isEmpty
-                let inbound = !hasSearch && Self.usesInboundSort(for: selectedView)
+                guard ThreadListOptimistic.shouldReinsertAbsent(
+                    threadAccountId: updated.accountId,
+                    activeAccountId: activeAccountId,
+                    committedSearchActive: hasSearch) else { return }
+                let inbound = Self.usesInboundSort(for: selectedView)
                 let insertion = ThreadListOptimistic.insertionIndex(
                     for: updated, in: threads, inboundSort: inbound)
                 threads.insert(updated, at: insertion)

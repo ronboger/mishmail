@@ -261,6 +261,36 @@ final class SelectionAdvanceTests: XCTestCase {
             1)
     }
 
+    /// Regression: Undo must not flash a restored row into the wrong list.
+    /// Active-account filter and committed search both scope ownership;
+    /// reconciliation reloads the correct context (~140ms).
+    func testUndoReinsertSkipsWrongAccountAndActiveSearch() {
+        // Unified inbox (nil active) always owns any account.
+        XCTAssertTrue(ThreadListOptimistic.shouldReinsertAbsent(
+            threadAccountId: "a@x.com",
+            activeAccountId: nil,
+            committedSearchActive: false))
+        // Matching account filter: insert OK.
+        XCTAssertTrue(ThreadListOptimistic.shouldReinsertAbsent(
+            threadAccountId: "a@x.com",
+            activeAccountId: "a@x.com",
+            committedSearchActive: false))
+        // Wrong account: skip (would flash into account B's list).
+        XCTAssertFalse(ThreadListOptimistic.shouldReinsertAbsent(
+            threadAccountId: "a@x.com",
+            activeAccountId: "b@x.com",
+            committedSearchActive: false))
+        // Committed search: skip even for matching / unified account.
+        XCTAssertFalse(ThreadListOptimistic.shouldReinsertAbsent(
+            threadAccountId: "a@x.com",
+            activeAccountId: "a@x.com",
+            committedSearchActive: true))
+        XCTAssertFalse(ThreadListOptimistic.shouldReinsertAbsent(
+            threadAccountId: "a@x.com",
+            activeAccountId: nil,
+            committedSearchActive: true))
+    }
+
     private func fixtureThread(id: String, date: Date,
                                inboundDate: Date? = nil) -> MailThread {
         MailThread(

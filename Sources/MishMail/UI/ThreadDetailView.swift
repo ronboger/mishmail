@@ -403,14 +403,10 @@ struct ThreadDetailView: View {
                 let loaded = load.payload.messages
                 if loadGeneration == detailLoadGeneration,
                    splitMode || store.openedThreadId == thread.id {
-                    // The newest sent message and draft cards arrive hydrated in
-                    // the cached payload; mark them attempted so we don't re-query.
-                    if let sentId = ForwardComposer.newestSentMessage(in: loaded)?.id {
-                        bodyLoadAttempted.insert(sentId)
-                    }
-                    for draft in loaded where ForwardComposer.hasDraftLabel(draft.labelIds) {
-                        bodyLoadAttempted.insert(draft.id)
-                    }
+                    // Newest sent + draft cards arrive hydrated; seed so we
+                    // don't re-query. Shared with refreshMessages' empty→full path.
+                    bodyLoadAttempted.formUnion(
+                        ThreadRefresh.initialBodyLoadSeedIds(in: loaded))
                     messages = loaded
                     attachmentsByMessageId = load.payload.attachmentsByMessageId
                     threadAttachments = loaded.flatMap { msg in
@@ -420,10 +416,7 @@ struct ThreadDetailView: View {
                     }
                     // Anchor on newest sent when multi-message; draft-only falls
                     // back to the last row so a pure-draft pane still positions.
-                    scrolledMessageId = messages.count > 1
-                        ? (ForwardComposer.newestSentMessage(in: messages)?.id
-                           ?? messages.last?.id)
-                        : nil
+                    scrolledMessageId = ThreadRefresh.initialScrolledMessageId(in: messages)
                     if inlineComposeActive {
                         beginInlineComposeScroll(proxy: proxy)
                     }
@@ -658,6 +651,9 @@ struct ThreadDetailView: View {
             guard !Task.isCancelled,
                   loadGeneration == detailLoadGeneration,
                   splitMode || store.openedThreadId == thread.id else { return }
+            // Superseded initial .task leaves messages empty; when merge is
+            // the first population, apply the same anchor/seed as open.
+            let wasEmpty = messages.isEmpty
             let merged = ThreadRefresh.merge(
                 current: messages, fresh: load.payload.messages)
             attachmentsByMessageId = load.payload.attachmentsByMessageId
@@ -669,6 +665,11 @@ struct ThreadDetailView: View {
             guard merged != messages else { return }
             withAnimation(PMMotion.interactive) {
                 messages = merged
+            }
+            if wasEmpty {
+                bodyLoadAttempted.formUnion(
+                    ThreadRefresh.initialBodyLoadSeedIds(in: merged))
+                scrolledMessageId = ThreadRefresh.initialScrolledMessageId(in: merged)
             }
         }
     }
