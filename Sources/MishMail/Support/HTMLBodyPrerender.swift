@@ -35,7 +35,7 @@ enum HTMLBodyNeighborPrerender {
         openedThreadId: String,
         displayOrder: [String],
         fontScale: Double,
-        allowRemoteImages: (Message) -> Bool,
+        allowRemoteImages: @escaping (Message) -> Bool,
         loadPayload: @escaping (String) async -> ThreadDetailPayload
     ) {
         generation &+= 1
