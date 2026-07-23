@@ -26,11 +26,33 @@ struct MessageHTMLPrep: Equatable {
         htmlBytes: 0, htmlHeadBytes: 0, documents: nil)
 }
 
+/// Memo for the on-demand allowed-CSP documents.
+///
+/// Reference type so the assembled string survives struct copies: `document`
+/// is read from `MessageCard`'s SwiftUI body, which re-evaluates on every
+/// height change, and re-assembling a multi-hundred-KB body there would stall
+/// the main actor. Locked because payload copies cross the repository actor.
+private final class AllowedDocumentMemo: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cached: [Bool: String?] = [:]
+
+    /// `build` runs at most once per key; nil results are memoized too.
+    func value(authored: Bool, build: () -> String?) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let hit = cached[authored] { return hit }
+        let made = build()
+        cached[authored] = made
+        return made
+    }
+}
+
 /// Pre-assembled HTML for (authored|full) × (blocked|allowed).
 ///
 /// Blocked CSP variants are built eagerly (Ask-policy default). Allowed
-/// variants are assembled on demand from retained sources so the detail LRU
-/// does not retain four full copies of every body (~2 MB each).
+/// variants are assembled on first request and memoized, so the detail LRU
+/// does not retain four full copies of every body (~2 MB each) while a thread
+/// that does allow images still pays the assembly only once.
 struct MessageHTMLDocuments: Equatable {
     var fontScale: Double
     var authoredBlocked: String?
@@ -38,17 +60,23 @@ struct MessageHTMLDocuments: Equatable {
     /// Source fragments for on-demand allowed assembly (not expanded docs).
     fileprivate var authoredSource: String?
     fileprivate var fullSource: String?
+    /// Excluded from `==`: pure derived state, shared across struct copies.
+    private let allowedMemo = AllowedDocumentMemo()
 
-    /// Allowed variant for the authored head, built lazily when first requested.
+    /// Allowed variant for the authored head, assembled once on first request.
     var authoredAllowed: String? {
-        guard let source = authoredSource, !source.isEmpty else { return nil }
-        return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+        allowedMemo.value(authored: true) {
+            guard let source = authoredSource, !source.isEmpty else { return nil }
+            return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+        }
     }
 
-    /// Allowed variant for the full body, built lazily when first requested.
+    /// Allowed variant for the full body, assembled once on first request.
     var fullAllowed: String? {
-        guard let source = fullSource, !source.isEmpty else { return nil }
-        return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+        allowedMemo.value(authored: false) {
+            guard let source = fullSource, !source.isEmpty else { return nil }
+            return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+        }
     }
 
     func document(authored: Bool, allowRemoteImages: Bool) -> String? {
@@ -58,6 +86,16 @@ struct MessageHTMLDocuments: Equatable {
         case (false, false): return fullBlocked
         case (false, true): return fullAllowed
         }
+    }
+
+    /// Documents are replaced wholesale (never field-mutated), so equal
+    /// sources + scale means equal output; the memo is derived state.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.fontScale == rhs.fontScale
+            && lhs.authoredBlocked == rhs.authoredBlocked
+            && lhs.fullBlocked == rhs.fullBlocked
+            && lhs.authoredSource == rhs.authoredSource
+            && lhs.fullSource == rhs.fullSource
     }
 
     private static func assemble(_ source: String, allowRemoteImages: Bool,
