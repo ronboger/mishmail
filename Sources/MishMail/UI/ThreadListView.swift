@@ -1316,9 +1316,8 @@ struct ThreadRow: View, Equatable {
             // trailing hover actions stay outside and keep their own hits.
             HStack(spacing: 8) {
                 HStack(spacing: 4) {
-                    Text(participantsDisplay)
-                        .font(.system(size: 14 * fontScale, weight: thread.isUnread ? .semibold : .regular))
-                        .foregroundStyle(thread.isUnread ? Color.primary : Color.primary.opacity(0.65))
+                    participantsText
+                        .font(.system(size: 14 * fontScale))
                         .lineLimit(1)
                     if thread.messageCount > 1 {
                         Text("\(thread.messageCount)")
@@ -1418,6 +1417,21 @@ struct ThreadRow: View, Equatable {
 
     private var participantsDisplay: String {
         thread.participants.isEmpty ? thread.fromDisplay : thread.participants
+    }
+
+    /// Gmail/Notion Mail draft cue in the sender column: an orange "Draft"
+    /// marker leads the participants ("Draft, Alice"); a thread whose only
+    /// message is the draft shows just "Draft". Same orange as the detail
+    /// pane's draft card. Concatenated Text so long names truncate at the
+    /// tail and the marker never gets squeezed out.
+    private var participantsText: Text {
+        let names = Text(participantsDisplay)
+            .fontWeight(thread.isUnread ? .semibold : .regular)
+            .foregroundColor(thread.isUnread ? Color.primary : Color.primary.opacity(0.65))
+        guard thread.labels.contains("DRAFT") else { return names }
+        let marker = Text("Draft").fontWeight(.medium).foregroundColor(.orange)
+        if thread.messageCount <= 1 || participantsDisplay.isEmpty { return marker }
+        return marker + Text(", ").foregroundColor(.secondary) + names
     }
 
     /// Notion-style label pill: tinted text on a soft capsule of its color.
