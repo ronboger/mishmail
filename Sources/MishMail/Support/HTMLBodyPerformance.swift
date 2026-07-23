@@ -164,6 +164,14 @@ struct HTMLWebViewPoolLedger {
     }
 }
 
+/// Neighbor pre-render privacy: never load remote content for a thread the
+/// user has not opened. Pool keys include `allowRemoteImages`, so a blocked
+/// pre-render cannot satisfy an allowed open (claim miss → cold load).
+enum HTMLBodyPrerenderPolicy {
+    /// Always false — pre-render is only a warm blocked CSP variant.
+    static let allowRemoteImages = false
+}
+
 /// Pure decision: which HTML fragment (if any) to pre-render for a neighbor.
 enum HTMLBodyPrerenderSelection {
     struct Candidate: Equatable {

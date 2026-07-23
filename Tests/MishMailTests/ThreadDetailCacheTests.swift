@@ -62,15 +62,19 @@ final class ThreadDetailCacheTests: XCTestCase {
         XCTAssertEqual(prep.htmlBytes, html.utf8.count)
         let docs = try XCTUnwrap(prep.documents)
         XCTAssertEqual(docs.fontScale, 1.0)
-        // Authored + full for both image policies.
+        // Blocked variants are eager; allowed are on-demand from retained sources.
         XCTAssertNotNil(docs.authoredBlocked)
-        XCTAssertNotNil(docs.authoredAllowed)
         XCTAssertNotNil(docs.fullBlocked)
-        XCTAssertNotNil(docs.fullAllowed)
+        XCTAssertNotNil(docs.document(authored: true, allowRemoteImages: true))
+        XCTAssertNotNil(docs.document(authored: false, allowRemoteImages: true))
         // Assembled documents inject CSP + CSS.
         XCTAssertTrue(docs.fullBlocked?.contains("Content-Security-Policy") ?? false)
         XCTAssertTrue(docs.authoredBlocked?.contains("New reply") ?? false)
         XCTAssertFalse(docs.authoredBlocked?.contains("gmail_quote") ?? true)
+        // Allowed CSP differs from blocked (remote img-src).
+        let allowed = try XCTUnwrap(docs.document(authored: false, allowRemoteImages: true))
+        XCTAssertTrue(allowed.contains("img-src data: cid: https:"))
+        XCTAssertFalse(docs.fullBlocked?.contains("img-src data: cid: https:") ?? true)
     }
 
     func testMessageHTMLPrepSkipsAssemblyAboveAutomaticByteBudget() {
@@ -82,7 +86,7 @@ final class ThreadDetailCacheTests: XCTestCase {
         XCTAssertEqual(prep.htmlBytes, html.utf8.count)
         // Full assembly is skipped — nothing under the 2 MB auto budget.
         XCTAssertNil(prep.documents?.fullBlocked)
-        XCTAssertNil(prep.documents?.fullAllowed)
+        XCTAssertNil(prep.documents?.document(authored: false, allowRemoteImages: true))
     }
 
     func testMessageHTMLPrepReassembleKeepsTrail() {
@@ -98,6 +102,76 @@ final class ThreadDetailCacheTests: XCTestCase {
         XCTAssertEqual(rebuilt.hasQuotedTrail, prep.hasQuotedTrail)
         XCTAssertEqual(rebuilt.documents?.fontScale, 1.2)
         XCTAssertNotNil(rebuilt.documents?.fullBlocked)
+    }
+
+    func testMessageHTMLDocumentsAllowedVariantsAreLazy() throws {
+        let html = "<p>Body with tracker <img src=\"https://t.example/p.gif\"></p>"
+        let prep = MessageHTMLPrepBuilder.prep(
+            bodyText: "Body", bodyHTML: html, fontScale: 1.0)
+        let docs = try XCTUnwrap(prep.documents)
+        // Eager path only retains blocked documents.
+        XCTAssertNotNil(docs.fullBlocked)
+        XCTAssertTrue(docs.fullBlocked?.contains("img-src data: cid:") ?? false)
+        // Allowed is produced on demand and includes https: in img-src.
+        let allowed = docs.document(authored: false, allowRemoteImages: true)
+        XCTAssertNotNil(allowed)
+        XCTAssertTrue(allowed?.contains("img-src data: cid: https:") ?? false)
+        // Authored absent when no quote trail.
+        XCTAssertNil(docs.authoredBlocked)
+        XCTAssertNil(docs.document(authored: true, allowRemoteImages: false))
+    }
+
+    /// `document` is read from MessageCard's SwiftUI body, which re-evaluates
+    /// on every height change — assembling per access would stall the main
+    /// actor on multi-hundred-KB bodies. Memoized results are shared across
+    /// struct copies so the assembly happens once.
+    func testMessageHTMLDocumentsAllowedVariantIsMemoizedAcrossCopies() throws {
+        let html = "<p>Body <img src=\"https://t.example/p.gif\"></p>"
+        let prep = MessageHTMLPrepBuilder.prep(
+            bodyText: "Body", bodyHTML: html, fontScale: 1.0)
+        let docs = try XCTUnwrap(prep.documents)
+
+        let first = try XCTUnwrap(docs.document(authored: false, allowRemoteImages: true))
+        let again = try XCTUnwrap(docs.document(authored: false, allowRemoteImages: true))
+        XCTAssertEqual(first, again)
+
+        // A copy reuses the memo rather than reassembling.
+        let copy = docs
+        XCTAssertEqual(copy.document(authored: false, allowRemoteImages: true), first)
+        // Equality ignores the memo — copies stay equal after one side is warmed.
+        XCTAssertEqual(copy, docs)
+    }
+
+    /// Reassembling for a new font scale must not serve the old scale's
+    /// memoized allowed document.
+    func testReassembleDropsMemoizedAllowedVariant() throws {
+        let html = "<p>Body <img src=\"https://t.example/p.gif\"></p>"
+        let prep = MessageHTMLPrepBuilder.prep(
+            bodyText: "Body", bodyHTML: html, fontScale: 1.0)
+        let warmed = try XCTUnwrap(prep.documents)
+        _ = warmed.document(authored: false, allowRemoteImages: true)
+
+        let rebuilt = MessageHTMLPrepBuilder.reassembleDocuments(
+            prep, fullHTML: html, fontScale: 1.6)
+        let rebuiltDocs = try XCTUnwrap(rebuilt.documents)
+        let allowed = try XCTUnwrap(
+            rebuiltDocs.document(authored: false, allowRemoteImages: true))
+        XCTAssertEqual(rebuiltDocs.fontScale, 1.6)
+        XCTAssertNotEqual(
+            allowed, warmed.document(authored: false, allowRemoteImages: true))
+    }
+
+    func testBuildBodyPrepMatchesMessageHTMLPrepBuilder() {
+        let message = fixtureMessage(
+            id: "m1", labels: "INBOX",
+            bodyText: "Hi",
+            bodyHTML: "<div>Hi</div>")
+        let empty = fixtureMessage(id: "m2", labels: "INBOX")
+        let prep = ThreadDetailRepository.buildBodyPrep(
+            messages: [message, empty], fontScale: 1.0)
+        XCTAssertEqual(Set(prep.keys), ["m1"])
+        XCTAssertNotNil(prep["m1"]?.documents?.fullBlocked)
+        XCTAssertNil(prep["m2"])
     }
 
     func testContentVersionMismatchReloadsPrefetchedThread() async throws {

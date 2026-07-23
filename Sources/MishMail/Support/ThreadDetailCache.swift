@@ -26,13 +26,58 @@ struct MessageHTMLPrep: Equatable {
         htmlBytes: 0, htmlHeadBytes: 0, documents: nil)
 }
 
-/// Pre-assembled HTML for the four (authored|full) × (blocked|allowed) combos.
+/// Memo for the on-demand allowed-CSP documents.
+///
+/// Reference type so the assembled string survives struct copies: `document`
+/// is read from `MessageCard`'s SwiftUI body, which re-evaluates on every
+/// height change, and re-assembling a multi-hundred-KB body there would stall
+/// the main actor. Locked because payload copies cross the repository actor.
+private final class AllowedDocumentMemo: @unchecked Sendable {
+    private let lock = NSLock()
+    private var cached: [Bool: String?] = [:]
+
+    /// `build` runs at most once per key; nil results are memoized too.
+    func value(authored: Bool, build: () -> String?) -> String? {
+        lock.lock()
+        defer { lock.unlock() }
+        if let hit = cached[authored] { return hit }
+        let made = build()
+        cached[authored] = made
+        return made
+    }
+}
+
+/// Pre-assembled HTML for (authored|full) × (blocked|allowed).
+///
+/// Blocked CSP variants are built eagerly (Ask-policy default). Allowed
+/// variants are assembled on first request and memoized, so the detail LRU
+/// does not retain four full copies of every body (~2 MB each) while a thread
+/// that does allow images still pays the assembly only once.
 struct MessageHTMLDocuments: Equatable {
     var fontScale: Double
     var authoredBlocked: String?
-    var authoredAllowed: String?
     var fullBlocked: String?
-    var fullAllowed: String?
+    /// Source fragments for on-demand allowed assembly (not expanded docs).
+    fileprivate var authoredSource: String?
+    fileprivate var fullSource: String?
+    /// Excluded from `==`: pure derived state, shared across struct copies.
+    private let allowedMemo = AllowedDocumentMemo()
+
+    /// Allowed variant for the authored head, assembled once on first request.
+    var authoredAllowed: String? {
+        allowedMemo.value(authored: true) {
+            guard let source = authoredSource, !source.isEmpty else { return nil }
+            return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+        }
+    }
+
+    /// Allowed variant for the full body, assembled once on first request.
+    var fullAllowed: String? {
+        allowedMemo.value(authored: false) {
+            guard let source = fullSource, !source.isEmpty else { return nil }
+            return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+        }
+    }
 
     func document(authored: Bool, allowRemoteImages: Bool) -> String? {
         switch (authored, allowRemoteImages) {
@@ -41,6 +86,26 @@ struct MessageHTMLDocuments: Equatable {
         case (false, false): return fullBlocked
         case (false, true): return fullAllowed
         }
+    }
+
+    /// Documents are replaced wholesale (never field-mutated), so equal
+    /// sources + scale means equal output; the memo is derived state.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.fontScale == rhs.fontScale
+            && lhs.authoredBlocked == rhs.authoredBlocked
+            && lhs.fullBlocked == rhs.fullBlocked
+            && lhs.authoredSource == rhs.authoredSource
+            && lhs.fullSource == rhs.fullSource
+    }
+
+    private static func assemble(_ source: String, allowRemoteImages: Bool,
+                                 fontScale: Double) -> String? {
+        guard source.utf8.count <= HTMLBodyRenderPolicy.maximumAutomaticBytes
+        else { return nil }
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: fontScale)
+        let csp = HTMLBodyCSP.metaTag(allowRemoteImages: allowRemoteImages)
+        let doc = HTMLBodyDocument.assemble(html: source, cspMeta: csp, styleCSS: css)
+        return doc.isEmpty ? nil : doc
     }
 }
 
@@ -124,39 +189,44 @@ enum MessageHTMLPrepBuilder {
     private static func assembleDocuments(fullHTML: String,
                                           htmlHead: String?,
                                           fontScale: Double) -> MessageHTMLDocuments {
+        // Only blocked CSP variants are expanded eagerly. Allowed variants are
+        // produced on demand from the retained sources (common path is Ask).
         let css = HTMLBodyDarkMode.injectedCSS(fontScale: fontScale)
         let cspBlocked = HTMLBodyCSP.metaTag(allowRemoteImages: false)
-        let cspAllowed = HTMLBodyCSP.metaTag(allowRemoteImages: true)
 
-        func assemble(_ source: String, csp: String) -> String {
+        func assembleBlocked(_ source: String) -> String? {
             // Cap automatic assembly the same way render does — multi-megabyte
             // bodies stay behind the explicit-load placeholder and never get
             // a prebuilt document that would thrash memory in the LRU.
             guard source.utf8.count <= HTMLBodyRenderPolicy.maximumAutomaticBytes
-            else { return "" }
-            return HTMLBodyDocument.assemble(html: source, cspMeta: csp, styleCSS: css)
+            else { return nil }
+            let doc = HTMLBodyDocument.assemble(
+                html: source, cspMeta: cspBlocked, styleCSS: css)
+            return doc.isEmpty ? nil : doc
         }
 
+        let authoredSource: String?
         let authoredBlocked: String?
-        let authoredAllowed: String?
         if let head = htmlHead, !head.isEmpty {
-            let blocked = assemble(head, csp: cspBlocked)
-            let allowed = assemble(head, csp: cspAllowed)
-            authoredBlocked = blocked.isEmpty ? nil : blocked
-            authoredAllowed = allowed.isEmpty ? nil : allowed
+            authoredSource = head
+            authoredBlocked = assembleBlocked(head)
         } else {
+            authoredSource = nil
             authoredBlocked = nil
-            authoredAllowed = nil
         }
 
-        let fullBlockedRaw = assemble(fullHTML, csp: cspBlocked)
-        let fullAllowedRaw = assemble(fullHTML, csp: cspAllowed)
+        let fullBlocked = assembleBlocked(fullHTML)
+        // Retain full source only when a blocked doc was produced (under budget).
+        let fullSource: String? = fullBlocked == nil ? nil : fullHTML
+        // Drop authored source when blocked assembly was skipped (over budget).
+        let retainedAuthoredSource: String? = authoredBlocked == nil ? nil : authoredSource
+
         return MessageHTMLDocuments(
             fontScale: fontScale,
             authoredBlocked: authoredBlocked,
-            authoredAllowed: authoredAllowed,
-            fullBlocked: fullBlockedRaw.isEmpty ? nil : fullBlockedRaw,
-            fullAllowed: fullAllowedRaw.isEmpty ? nil : fullAllowedRaw)
+            fullBlocked: fullBlocked,
+            authoredSource: retainedAuthoredSource,
+            fullSource: fullSource)
     }
 }
 
@@ -281,10 +351,14 @@ actor ThreadDetailRepository {
                 cacheHit: true)
         }
 
-        let loaded = (try? db.read { db in
-            try Self.fetchPayload(threadId: threadId, db: db, fontScale: fontScale)
+        // Hold the SQLCipher reader only for row fetch. Quote scans and HTML
+        // document assembly are pure string work and must not pin a connection.
+        var loaded = (try? db.read { db in
+            try Self.fetchPayload(threadId: threadId, db: db)
         }) ?? ThreadDetailPayload(
             messages: [], attachmentsByMessageId: [:], bodyPrepByMessageId: [:])
+        loaded.bodyPrepByMessageId = Self.buildBodyPrep(
+            messages: loaded.messages, fontScale: fontScale)
         cache.insert(
             ThreadDetailCacheEntry(
                 contentVersion: contentVersion,
@@ -324,9 +398,10 @@ actor ThreadDetailRepository {
         return MessageBodyLoad(message: loaded, prep: prep)
     }
 
+    /// Fetch messages, hydrated bodies, and attachments only. Callers must run
+    /// `buildBodyPrep` after the read transaction returns.
     nonisolated static func fetchPayload(threadId: String,
-                                         db: Database,
-                                         fontScale: Double = 1.0) throws -> ThreadDetailPayload {
+                                         db: Database) throws -> ThreadDetailPayload {
         var messages = try Message.fetchAll(
             db,
             sql: """
@@ -373,6 +448,17 @@ actor ThreadDetailRepository {
                 .fetchAll(db)
         }
 
+        return ThreadDetailPayload(
+            messages: messages,
+            attachmentsByMessageId: Dictionary(grouping: attachments, by: \.messageId),
+            bodyPrepByMessageId: [:])
+    }
+
+    /// Quote-trail scan + document assembly — pure string work, no DB.
+    nonisolated static func buildBodyPrep(
+        messages: [Message],
+        fontScale: Double
+    ) -> [String: MessageHTMLPrep] {
         var bodyPrep: [String: MessageHTMLPrep] = [:]
         bodyPrep.reserveCapacity(messages.count)
         for message in messages {
@@ -384,11 +470,7 @@ actor ThreadDetailRepository {
                 bodyHTML: message.bodyHTML,
                 fontScale: fontScale)
         }
-
-        return ThreadDetailPayload(
-            messages: messages,
-            attachmentsByMessageId: Dictionary(grouping: attachments, by: \.messageId),
-            bodyPrepByMessageId: bodyPrep)
+        return bodyPrep
     }
 
     private nonisolated static func reassemblePayloadDocuments(

@@ -5,9 +5,11 @@ import WebKit
 /// Offscreen pre-paint of neighbor-thread HTML into pooled `WKWebView`s.
 ///
 /// After the open thread's body settles, previous/next newest-message HTML is
-/// loaded into parked views (same CSP / remote-image rules / JS-off config as
-/// the live pane). Up/down navigation can then claim a painted view instead of
-/// starting a cold `loadHTMLString`.
+/// loaded into parked views (JS-off, remote images always blocked — see
+/// `HTMLBodyPrerenderPolicy`). Up/down navigation can then claim a painted
+/// view instead of starting a cold `loadHTMLString`. An open that allows
+/// remote images uses a different pool key and will not reuse a blocked
+/// pre-render.
 ///
 /// Cancelled when the user navigates before work starts or completes. Oversized
 /// bodies (`HTMLBodyRenderPolicy.requiresExplicitLoad`) are skipped.
@@ -31,11 +33,14 @@ enum HTMLBodyNeighborPrerender {
     ///
     /// `loadPayload` should hit `ThreadDetailRepository` (already warmed by
     /// `MailStore.scheduleNeighborPrefetch` when the open settled).
+    ///
+    /// Remote images are always blocked for neighbor pre-render (see
+    /// `HTMLBodyPrerenderPolicy`) so focus-past-a-row never fires tracking
+    /// pixels for mail the user never opened.
     static func schedule(
         openedThreadId: String,
         displayOrder: [String],
         fontScale: Double,
-        allowRemoteImages: @escaping (Message) -> Bool,
         loadPayload: @escaping (String) async -> ThreadDetailPayload
     ) {
         generation &+= 1
@@ -69,7 +74,7 @@ enum HTMLBodyNeighborPrerender {
 
                 let key = HTMLBodyLoadKey(
                     contentID: candidate.contentID,
-                    allowRemoteImages: allowRemoteImages(message),
+                    allowRemoteImages: HTMLBodyPrerenderPolicy.allowRemoteImages,
                     fontScale: fontScale)
                 if HTMLWebViewPool.hasPrerendered(for: key) { continue }
 

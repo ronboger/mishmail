@@ -743,23 +743,12 @@ struct ThreadDetailView: View {
             ? store.threads.map(\.id)
             : store.displayOrder
         let scale = fontScale
-        let vip = store.vipEmails
-        let policyRaw = UserDefaults.standard.string(
-            forKey: RemoteImagePolicy.defaultsKey)
-            ?? RemoteImagePolicy.ask.rawValue
-        let policy = RemoteImagePolicy(rawValue: policyRaw) ?? .ask
+        // Never load remote images for neighbor pre-render — focus-past is not
+        // an open, and VIP/always policy must not fire tracking pixels here.
         HTMLBodyNeighborPrerender.schedule(
             openedThreadId: thread.id,
             displayOrder: order,
             fontScale: scale,
-            allowRemoteImages: { message in
-                RemoteImagePolicy.allows(
-                    policy: policy,
-                    senderEmail: MessageParser.emailAddress(message.fromHeader),
-                    vipEmails: vip,
-                    messageOptIn: false,
-                    threadOptIn: false)
-            },
             loadPayload: { [store] threadId in
                 await store.threadDetailPayload(threadId: threadId).payload
             })
@@ -2193,11 +2182,13 @@ struct HTMLBodyView: NSViewRepresentable {
             webView.setValue(false, forKey: "drawsBackground")
             webView.frame = container.bounds
             webView.autoresizingMask = [.width, .height]
-            if fade, current != nil {
-                webView.alphaValue = 0
-            } else {
-                webView.alphaValue = 1
-            }
+            // Stolen pre-renders still paint foreign DOM until their own load
+            // commits — never show them at alpha 1. Free-list / new views are
+            // blank and may appear immediately (no slower path regression).
+            let hideUntilOwnPaint = !alreadyPainted
+                && (webView.hasForeignContent || (fade && current != nil))
+            webView.alphaValue = hideUntilOwnPaint ? 0 : 1
+            webView.hasForeignContent = false
             container.addSubview(webView)
             current = webView
             pendingReveal = !alreadyPainted
@@ -2225,7 +2216,9 @@ struct HTMLBodyView: NSViewRepresentable {
             next.frame = container.bounds
             next.autoresizingMask = [.width, .height]
             // Stay invisible until first paint so the outgoing body never blanks.
+            // Also covers stolen pre-renders still holding foreign DOM.
             next.alphaValue = 0
+            next.hasForeignContent = false
             container.addSubview(next, positioned: .above, relativeTo: current)
             pendingReveal = true
             settledNotified = false
