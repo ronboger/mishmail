@@ -37,8 +37,9 @@ final class PassthroughWebView: WKWebView {
 /// Creating a `WKWebView` is expensive. The reading pane expands/collapses
 /// cards and browses neighbors frequently, so we keep up to `capacity` views
 /// parked after dismantle (empty free slots and/or pre-painted neighbors).
-/// All pooled views share one ephemeral `WKWebsiteDataStore.nonPersistent()`
-/// (no disk persistence; JS stays off). Remote-image content rules are applied
+/// Each view gets its own ephemeral `WKWebsiteDataStore.nonPersistent()` so
+/// cookies set by one message's remote images never accompany another
+/// message's requests (JS stays off). Remote-image content rules are applied
 /// per load by the caller.
 enum HTMLWebViewPool {
     /// Current body + prev/next pre-renders. Bound total live parked views.
@@ -48,14 +49,14 @@ enum HTMLWebViewPool {
     private static var free: [PassthroughWebView] = []
     private static var prerendered: [String: PassthroughWebView] = [:]
     private static var ledger = HTMLWebViewPoolLedger(capacity: capacity)
-    /// Shared ephemeral store across pooled views — cookies/cache do not
-    /// persist to disk. JS remains disabled on every configuration.
-    private static let sharedDataStore = WKWebsiteDataStore.nonPersistent()
 
     static func makeConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
-        config.websiteDataStore = sharedDataStore
+        // Per-view ephemeral store: recycled views keep their store, but a
+        // view only ever renders one message at a time and the store dies
+        // with the view — never shared across live views.
+        config.websiteDataStore = .nonPersistent()
         // Per-element contrast from effective background (before first paint).
         // App-injected user scripts run even with allowsContentJavaScript off;
         // email content scripts stay disabled.
@@ -163,6 +164,10 @@ enum HTMLWebViewPool {
         guard let view = webView as? PassthroughWebView else { return }
         lock.lock()
         defer { lock.unlock() }
+        // A superseded swap and its completion handler can both try to
+        // recycle the same view — never park the same instance twice.
+        guard !free.contains(where: { $0 === view }),
+              !prerendered.values.contains(where: { $0 === view }) else { return }
         guard ledger.parkedCount < capacity else { return }
         ledger.parkFree()
         free.append(view)
@@ -197,6 +202,9 @@ enum HTMLWebViewPool {
     private static func clearForReuse(_ webView: WKWebView) {
         webView.stopLoading()
         webView.navigationDelegate = nil
+        // A pooled view must never stay parented to a live container —
+        // dequeue would otherwise hand out a view still in the hierarchy.
+        webView.removeFromSuperview()
         // Best-effort: disconnect ResizeObserver before wiping the DOM.
         webView.evaluateJavaScript(HTMLBodyLayout.teardownJS, completionHandler: nil)
         if let view = webView as? PassthroughWebView {

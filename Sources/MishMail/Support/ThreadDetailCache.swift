@@ -315,7 +315,10 @@ actor ThreadDetailRepository {
            let idx = entry.payload.messages.firstIndex(where: { $0.id == id }) {
             entry.payload.messages[idx] = loaded
             entry.payload.bodyPrepByMessageId[id] = prep
-            entry.fontScale = fontScale
+            // Leave entry.fontScale alone: only this one prep was built at
+            // the requested scale. Stamping the entry would make a later
+            // payload() cache hit skip reassembly for the sibling messages
+            // whose documents still carry the old scale.
             cache.insert(entry, for: loaded.threadId)
         }
         return MessageBodyLoad(message: loaded, prep: prep)

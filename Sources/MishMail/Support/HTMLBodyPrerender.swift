@@ -113,6 +113,13 @@ enum HTMLBodyNeighborPrerender {
                 in: webView)
         }
 
+        // The one-shot loader has finished its navigation — drop the retain
+        // so it does not live for the WebView's pooled lifetime.
+        webView.navigationDelegate = nil
+        objc_setAssociatedObject(
+            webView, &PrerenderNavigationLoader.assocKey, nil,
+            .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
+
         guard gen == generation, !Task.isCancelled else {
             HTMLWebViewPool.recycle(webView)
             return

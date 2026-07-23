@@ -2181,6 +2181,9 @@ struct HTMLBodyView: NSViewRepresentable {
         private var navigationGate = HTMLNavigationIdentityGate()
         private var pendingReveal = false
         private var settledNotified = false
+        /// Bumped on every swap/dismantle so an in-flight fade completion
+        /// from a superseded swap cannot recycle views or promote `current`.
+        private var swapGeneration = 0
 
         func attach(_ webView: PassthroughWebView, in container: NSView,
                     alreadyPainted: Bool, fade: Bool) {
@@ -2203,6 +2206,7 @@ struct HTMLBodyView: NSViewRepresentable {
         func swap(to next: PassthroughWebView, alreadyPainted: Bool,
                   html: String, preassembled: String? = nil,
                   allowRemoteImages: Bool, fontScale: Double) {
+            swapGeneration &+= 1
             guard let container else {
                 HTMLWebViewPool.recycle(next)
                 return
@@ -2326,6 +2330,7 @@ struct HTMLBodyView: NSViewRepresentable {
         /// Drop height callbacks and recycle live views when the representable
         /// leaves the hierarchy.
         func dismantle() {
+            swapGeneration &+= 1
             loadToken = UUID()
             loadedKey = nil
             setHeight = nil
@@ -2372,9 +2377,11 @@ struct HTMLBodyView: NSViewRepresentable {
 
         private func applyMeasuredHeight(_ result: Any?, from webView: WKWebView? = nil) {
             guard acceptsHeightReports else { return }
-            if let webView, let incoming, webView !== incoming, webView !== current {
-                return
-            }
+            // During a double-buffered swap the coordinator's contentID is
+            // already the incoming document's, so only the incoming view may
+            // publish or cache heights — the outgoing view's ResizeObserver
+            // would poison the new card's frame and height cache.
+            if incoming != nil, webView !== incoming { return }
             let floor = CGFloat(HTMLBodyLayout.minContentHeight)
             let rawHeight: CGFloat?
             if let h = result as? CGFloat {
@@ -2423,8 +2430,9 @@ struct HTMLBodyView: NSViewRepresentable {
                 container.addSubview(next, positioned: .above, relativeTo: previous)
             }
 
+            let gen = swapGeneration
             let finishSwap = { [weak self] in
-                guard let self else { return }
+                guard let self, self.swapGeneration == gen else { return }
                 if let previous, previous !== next {
                     previous.navigationDelegate = nil
                     previous.removeHeightHandlerIfNeeded()
