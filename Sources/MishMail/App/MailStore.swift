@@ -3742,6 +3742,17 @@ struct ComposeRequest: Identifiable {
         }
     }
 
+    /// Gmail Shift+I / Shift+U: mark the checked set (or focused row) read/unread.
+    func setReadSelected(read: Bool) {
+        if !checkedThreadIds.isEmpty {
+            for thread in checkedThreadsInOrder {
+                setRead(thread, read: read)
+            }
+        } else if let t = selectedThread {
+            setRead(t, read: read)
+        }
+    }
+
     /// Bulk read toggle: if any checked is unread, mark all read; else unread.
     func toggleReadChecked() {
         let targets = checkedThreadsInOrder

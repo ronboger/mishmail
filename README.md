@@ -218,6 +218,7 @@ Fixed shortcuts (not customizable):
 
 | Key | Action |
 |---|---|
+| Shift-I / Shift-U | Mark as read / Mark as unread (Gmail) |
 | g then i / s / t / d / a / p | Go to Inbox / Starred / Sent / Drafts / All mail / Promotions |
 | ↑ / ↓ | Browse threads (without opening the reading pane) |
 | Return | Open selected thread · Esc closes the reading pane |

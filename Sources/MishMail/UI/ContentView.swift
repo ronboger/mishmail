@@ -981,6 +981,15 @@ private extension ContentView {
                 break
             }
             guard let chars = event.charactersIgnoringModifiers else { return event }
+            // Gmail Shift+I / Shift+U mark read / unread. Fixed chords (not in
+            // KeyBindings): charactersIgnoringModifiers keeps Shift on letters
+            // ("I"/"U"), so they must be handled before single-key lookup.
+            let shiftOnly = event.modifierFlags
+                .intersection([.command, .option, .control, .shift]) == [.shift]
+            if let markRead = GmailMarkReadKeys.markAsRead(key: chars, shiftOnly: shiftOnly) {
+                store.setReadSelected(read: markRead)
+                return nil
+            }
             if store.handleKey(chars) { return nil }
             // Unhandled printable keys must not fall through: SwiftUI List
             // type-selects to the first row starting with that letter, which

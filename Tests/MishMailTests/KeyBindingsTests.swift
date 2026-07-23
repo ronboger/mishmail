@@ -111,4 +111,18 @@ final class KeyBindingsTests: XCTestCase {
         XCTAssertEqual(kb.command(for: "q"), .trash)
         XCTAssertEqual(kb.command(for: "b"), .snooze)
     }
+
+    /// Caps Lock / Shift yields uppercase `charactersIgnoringModifiers` for
+    /// letters; single-key actions must still resolve.
+    func testLetterKeysAreCaseInsensitive() {
+        let kb = KeyBindings(defaults: defaults)
+        XCTAssertEqual(kb.command(for: "U"), .toggleRead)
+        XCTAssertEqual(kb.command(for: "E"), .archive)
+        XCTAssertEqual(kb.rebind(.archive, to: "Q"), .ok)
+        XCTAssertEqual(kb.key(for: .archive), "q")
+        XCTAssertEqual(kb.command(for: "Q"), .archive)
+        // Symbol keys still need their Shift form (US layout).
+        XCTAssertEqual(kb.command(for: "!"), .markSpam)
+        XCTAssertEqual(kb.command(for: "#"), .trash)
+    }
 }

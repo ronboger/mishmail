@@ -103,7 +103,8 @@ final class KeyBindings: ObservableObject {
     static let aliases: [String: ShortcutCommand] = ["h": .snooze]
 
     func command(for key: String) -> ShortcutCommand? {
-        primaryCommand(for: key) ?? Self.aliases[key]
+        let key = Self.normalizeKey(key)
+        return primaryCommand(for: key) ?? Self.aliases[key]
     }
 
     /// Explicit user overrides always win over catalog defaults so a
@@ -119,6 +120,7 @@ final class KeyBindings: ObservableObject {
     }
 
     func rebind(_ command: ShortcutCommand, to key: String) -> RebindResult {
+        let key = Self.normalizeKey(key)
         guard key.count == 1, key != " " else {
             return .rejected("Press a single character key.")
         }
@@ -130,6 +132,15 @@ final class KeyBindings: ObservableObject {
         overrides[command] = key
         persist()
         return .ok
+    }
+
+    /// Letters are case-insensitive (Caps Lock / accidental Shift must not
+    /// orphan bindings). Symbol keys like `#` and `!` keep their Shift form.
+    static func normalizeKey(_ key: String) -> String {
+        guard key.count == 1, key.rangeOfCharacter(from: .letters) != nil else {
+            return key
+        }
+        return key.lowercased()
     }
 
     func resetToDefaults() {

@@ -6,6 +6,13 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Fixed
+- **Gmail Shift+I / Shift+U mark read/unread** — those chords were swallowed
+  without effect (`charactersIgnoringModifiers` keeps Shift on letters). They
+  now mark the focused (or multi-selected) conversation read / unread. Letter
+  single-key shortcuts are also case-insensitive so Caps Lock no longer breaks
+  them.
+
 ### Added
 - **Full-window conversations (Superhuman-style, now the default)** — clicking
   a conversation (or pressing ↩) opens it across the whole window instead of a
