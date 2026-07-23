@@ -8,6 +8,7 @@ build/
 DerivedData/
 xcuserdata/
 *.xcuserstate
+mishmail.project
 
 # Agent worktrees & scratch
 .claude/
