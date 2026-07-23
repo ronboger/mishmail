@@ -8,6 +8,10 @@ final class PassthroughWebView: WKWebView {
     /// view's `userContentController`. `removeScriptMessageHandler` raises if
     /// the name is absent, so we only remove when we know we added it.
     var hasHeightMessageHandler = false
+    /// Set when this view was stolen from a pre-render slot and still holds
+    /// another message's painted DOM (blank load is async). Callers must keep
+    /// it at alpha 0 until its own first navigation commits.
+    var hasForeignContent = false
 
     override func scrollWheel(with event: NSEvent) {
         nextResponder?.scrollWheel(with: event)
@@ -91,6 +95,10 @@ enum HTMLWebViewPool {
 
     /// Dequeue a recycled/empty view or create a new one. May steal the oldest
     /// pre-render when the free list is empty so total parked stay bounded.
+    ///
+    /// Stolen pre-renders still show foreign HTML until the async blank load
+    /// commits — they are flagged `hasForeignContent` so attachers hide them.
+    /// Free-list views were already cleared when parked and are not flagged.
     static func dequeue() -> PassthroughWebView {
         lock.lock()
         let acquire = ledger.acquireForDequeue()
@@ -98,11 +106,13 @@ enum HTMLWebViewPool {
         case .free:
             let view = free.popLast()!
             lock.unlock()
+            view.hasForeignContent = false
             return view
         case .stolenPrerender(let key):
             let view = prerendered.removeValue(forKey: key)!
             lock.unlock()
             clearForReuse(view)
+            view.hasForeignContent = true
             return view
         case .createNew:
             lock.unlock()

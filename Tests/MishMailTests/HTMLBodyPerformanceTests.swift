@@ -161,6 +161,24 @@ final class HTMLBodyPerformanceTests: XCTestCase {
         XCTAssertEqual(ledger.prerenderOrder, ["ready"])
     }
 
+    func testNeighborPrerenderPolicyNeverAllowsRemoteImages() {
+        // Pre-render must not fire tracking pixels for unopened neighbors,
+        // even under Always / VIP policy. Pool keys encode allowRemoteImages
+        // so a blocked pre-render cannot satisfy an allowed open.
+        XCTAssertFalse(HTMLBodyPrerenderPolicy.allowRemoteImages)
+        let blocked = HTMLBodyLoadKey(
+            contentID: "m1:full",
+            allowRemoteImages: HTMLBodyPrerenderPolicy.allowRemoteImages,
+            fontScale: 1.0)
+        let allowed = HTMLBodyLoadKey(
+            contentID: "m1:full",
+            allowRemoteImages: true,
+            fontScale: 1.0)
+        XCTAssertNotEqual(blocked.poolKey, allowed.poolKey)
+        XCTAssertTrue(blocked.poolKey.contains("|r=0|"))
+        XCTAssertTrue(allowed.poolKey.contains("|r=1|"))
+    }
+
     func testPrerenderSelectionPrefersAuthoredHead() {
         let html = """
         <div>New reply body</div>
