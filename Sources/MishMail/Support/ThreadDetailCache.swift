@@ -30,25 +30,57 @@ struct MessageHTMLPrep: Equatable {
 ///
 /// Blocked CSP variants are built eagerly (Ask-policy default). Allowed
 /// variants are assembled on demand from retained sources so the detail LRU
-/// does not retain four full copies of every body (~2 MB each).
+/// does not retain four full copies of every body (~2 MB each). The first
+/// allowed access memoizes the assembled document in a box shared by every
+/// copy of this struct — `MessageCard.body` reads these on each evaluation,
+/// and re-running whole-body assembly there would jank Always/VIP browsing.
 struct MessageHTMLDocuments: Equatable {
+    /// Once-per-prep memo for allowed-variant assembly, shared across value
+    /// copies (payload cache, card, pre-render all see the same box).
+    fileprivate final class AllowedMemo {
+        private let lock = NSLock()
+        private var cached: [Bool: String?] = [:]
+
+        func document(authored: Bool, assemble: () -> String?) -> String? {
+            lock.lock()
+            defer { lock.unlock() }
+            if let hit = cached[authored] { return hit }
+            let value = assemble()
+            cached[authored] = value
+            return value
+        }
+    }
+
     var fontScale: Double
     var authoredBlocked: String?
     var fullBlocked: String?
     /// Source fragments for on-demand allowed assembly (not expanded docs).
     fileprivate var authoredSource: String?
     fileprivate var fullSource: String?
+    private let allowedMemo = AllowedMemo()
 
-    /// Allowed variant for the authored head, built lazily when first requested.
-    var authoredAllowed: String? {
-        guard let source = authoredSource, !source.isEmpty else { return nil }
-        return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+    static func == (lhs: MessageHTMLDocuments, rhs: MessageHTMLDocuments) -> Bool {
+        lhs.fontScale == rhs.fontScale
+            && lhs.authoredBlocked == rhs.authoredBlocked
+            && lhs.fullBlocked == rhs.fullBlocked
+            && lhs.authoredSource == rhs.authoredSource
+            && lhs.fullSource == rhs.fullSource
     }
 
-    /// Allowed variant for the full body, built lazily when first requested.
+    /// Allowed variant for the authored head; built once on first request.
+    var authoredAllowed: String? {
+        allowedMemo.document(authored: true) {
+            guard let source = authoredSource, !source.isEmpty else { return nil }
+            return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+        }
+    }
+
+    /// Allowed variant for the full body; built once on first request.
     var fullAllowed: String? {
-        guard let source = fullSource, !source.isEmpty else { return nil }
-        return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+        allowedMemo.document(authored: false) {
+            guard let source = fullSource, !source.isEmpty else { return nil }
+            return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+        }
     }
 
     func document(authored: Bool, allowRemoteImages: Bool) -> String? {

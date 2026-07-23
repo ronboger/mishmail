@@ -107,23 +107,47 @@ final class HTMLBodyPerformanceTests: XCTestCase {
 
     func testHeightCacheEvictsLeastRecentlyUsed() {
         var cache = HTMLBodyHeightCache(capacity: 2)
-        cache.store(100, for: "a")
-        cache.store(200, for: "b")
-        XCTAssertEqual(cache.height(for: "a"), 100) // a is now most recent
+        cache.store(100, width: 700, for: "a")
+        cache.store(200, width: 700, for: "b")
+        XCTAssertEqual(cache.height(for: "a", width: nil), 100) // a now most recent
 
-        cache.store(300, for: "c")
+        cache.store(300, width: 700, for: "c")
 
-        XCTAssertNil(cache.height(for: "b"))
-        XCTAssertEqual(cache.height(for: "a"), 100)
-        XCTAssertEqual(cache.height(for: "c"), 300)
+        XCTAssertNil(cache.height(for: "b", width: nil))
+        XCTAssertEqual(cache.height(for: "a", width: nil), 100)
+        XCTAssertEqual(cache.height(for: "c", width: nil), 300)
     }
 
     func testHeightCacheIgnoresNonPositive() {
         var cache = HTMLBodyHeightCache(capacity: 4)
-        cache.store(0, for: "a")
-        cache.store(-10, for: "b")
-        XCTAssertNil(cache.height(for: "a"))
-        XCTAssertNil(cache.height(for: "b"))
+        cache.store(0, width: 700, for: "a")
+        cache.store(-10, width: 700, for: "b")
+        cache.store(100, width: 0, for: "c")
+        XCTAssertNil(cache.height(for: "a", width: nil))
+        XCTAssertNil(cache.height(for: "b", width: nil))
+        XCTAssertNil(cache.height(for: "c", width: nil))
+    }
+
+    func testHeightCacheKeyIncludesFontScale() {
+        // Same content at a different reading-pane scale lays out differently;
+        // the key must diverge like HTMLBodyLoadKey.poolKey does.
+        XCTAssertNotEqual(
+            HTMLBodyHeightCache.key(contentID: "m1:full", fontScale: 1.0),
+            HTMLBodyHeightCache.key(contentID: "m1:full", fontScale: 1.25))
+        XCTAssertEqual(
+            HTMLBodyHeightCache.key(contentID: "m1:full", fontScale: 1.0),
+            "m1:full|f=1.000")
+    }
+
+    func testHeightCacheRejectsMismatchedWidth() {
+        var cache = HTMLBodyHeightCache(capacity: 4)
+        cache.store(400, width: 700, for: "a")
+
+        // Split resized: a differently-laid-out width must not reuse the height.
+        XCTAssertNil(cache.height(for: "a", width: 500))
+        // Sub-tolerance jitter and unknown width both reuse it.
+        XCTAssertEqual(cache.height(for: "a", width: 700.5), 400)
+        XCTAssertEqual(cache.height(for: "a", width: nil), 400)
     }
 
     func testPoolLedgerPrefersFreeThenStealsOldestPrerender() {

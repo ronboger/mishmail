@@ -17,36 +17,58 @@ struct HTMLBodyLoadKey: Equatable {
     }
 }
 
-/// Bounded LRU of settled HTML body heights keyed by render `contentID`
-/// (`messageId` plus `:authored` / `:full`). Re-open uses the cached height
+/// Bounded LRU of settled HTML body heights. Re-open uses the cached height
 /// immediately so the card frame does not jump after paint.
+///
+/// Height depends on layout inputs, not just content: the key includes
+/// `fontScale` (like `HTMLBodyLoadKey.poolKey`) and each entry records the
+/// container width it was measured at. A lookup that knows its width rejects
+/// entries measured at a different width (split was resized); a lookup that
+/// does not (pre-layout placeholder) accepts the entry best-effort and is
+/// corrected by the real measurement.
 struct HTMLBodyHeightCache {
+    struct Entry: Equatable {
+        var height: CGFloat
+        var width: CGFloat
+    }
+
+    /// Widths within this many points reuse the cached height (autoresize /
+    /// pixel-alignment rounding); anything larger reflows the layout.
+    static let widthTolerance: CGFloat = 1
+
     let capacity: Int
-    private(set) var heights: [String: CGFloat] = [:]
+    private(set) var entries: [String: Entry] = [:]
     private(set) var order: [String] = []
 
     init(capacity: Int = 64) {
         self.capacity = max(1, capacity)
     }
 
-    mutating func height(for contentID: String) -> CGFloat? {
-        guard let height = heights[contentID] else { return nil }
-        touch(contentID)
-        return height
+    static func key(contentID: String, fontScale: Double) -> String {
+        "\(contentID)|f=\(String(format: "%.3f", fontScale))"
     }
 
-    mutating func store(_ height: CGFloat, for contentID: String) {
-        guard height > 0 else { return }
-        heights[contentID] = height
-        touch(contentID)
+    mutating func height(for key: String, width: CGFloat?) -> CGFloat? {
+        guard let entry = entries[key] else { return nil }
+        if let width, abs(entry.width - width) > Self.widthTolerance {
+            return nil
+        }
+        touch(key)
+        return entry.height
+    }
+
+    mutating func store(_ height: CGFloat, width: CGFloat, for key: String) {
+        guard height > 0, width > 0 else { return }
+        entries[key] = Entry(height: height, width: width)
+        touch(key)
         while order.count > capacity, let evicted = order.first {
             order.removeFirst()
-            heights.removeValue(forKey: evicted)
+            entries.removeValue(forKey: evicted)
         }
     }
 
     mutating func removeAll() {
-        heights.removeAll(keepingCapacity: true)
+        entries.removeAll(keepingCapacity: true)
         order.removeAll(keepingCapacity: true)
     }
 
@@ -61,16 +83,22 @@ enum HTMLBodyHeightCacheStore {
     private static let lock = NSLock()
     private static var cache = HTMLBodyHeightCache()
 
-    static func height(for contentID: String) -> CGFloat? {
+    /// `width` nil means "layout width unknown yet" — the entry is applied as
+    /// a pre-paint placeholder and later corrected by a real measurement.
+    static func height(contentID: String, fontScale: Double,
+                       width: CGFloat?) -> CGFloat? {
+        let key = HTMLBodyHeightCache.key(contentID: contentID, fontScale: fontScale)
         lock.lock()
         defer { lock.unlock() }
-        return cache.height(for: contentID)
+        return cache.height(for: key, width: width)
     }
 
-    static func store(_ height: CGFloat, for contentID: String) {
+    static func store(_ height: CGFloat, contentID: String, fontScale: Double,
+                      width: CGFloat) {
+        let key = HTMLBodyHeightCache.key(contentID: contentID, fontScale: fontScale)
         lock.lock()
         defer { lock.unlock() }
-        cache.store(height, for: contentID)
+        cache.store(height, width: width, for: key)
     }
 }
 

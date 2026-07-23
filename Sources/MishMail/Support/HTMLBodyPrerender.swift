@@ -108,7 +108,7 @@ enum HTMLBodyNeighborPrerender {
             }
             // Retain loader for the navigation lifetime via the delegate slot.
             objc_setAssociatedObject(
-                webView, &PrerenderNavigationLoader.assocKey, loader,
+                webView, prerenderLoaderAssocKey, loader,
                 .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
             webView.navigationDelegate = loader
             loader.load(
@@ -122,7 +122,7 @@ enum HTMLBodyNeighborPrerender {
         // so it does not live for the WebView's pooled lifetime.
         webView.navigationDelegate = nil
         objc_setAssociatedObject(
-            webView, &PrerenderNavigationLoader.assocKey, nil,
+            webView, prerenderLoaderAssocKey, nil,
             .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
 
         guard gen == generation, !Task.isCancelled else {
@@ -137,17 +137,31 @@ enum HTMLBodyNeighborPrerender {
     }
 }
 
+/// Stable key for the associated-object retain below. `&` of a `static var`
+/// does not guarantee a unique stable address across calls; a file-scope
+/// allocation does.
+private nonisolated(unsafe) let prerenderLoaderAssocKey: UnsafeMutableRawPointer =
+    malloc(1)!
+
 /// One-shot navigation delegate that finishes a continuation after first paint.
 private final class PrerenderNavigationLoader: NSObject, WKNavigationDelegate {
-    static var assocKey: UInt8 = 0
+    /// A pre-render that never terminates (WebKit stall, malformed document)
+    /// must not pin its continuation — and with it a pooled WKWebView —
+    /// forever. Local loadHTMLString paints settle well under a second.
+    static let timeoutSeconds: TimeInterval = 5
 
     private let completion: (Bool) -> Void
     private var finished = false
     private var loadToken = UUID()
     private var navigationGate = HTMLNavigationIdentityGate()
+    private var timeoutWork: DispatchWorkItem?
 
     init(completion: @escaping (Bool) -> Void) {
         self.completion = completion
+    }
+
+    deinit {
+        timeoutWork?.cancel()
     }
 
     func load(document: String, trustedFallback: String,
@@ -155,6 +169,15 @@ private final class PrerenderNavigationLoader: NSObject, WKNavigationDelegate {
         let token = UUID()
         loadToken = token
         navigationGate.reset()
+        // Deadline covers the whole pipeline: a rule-list callback that never
+        // fires, a navigation that never commits, and a paint that never
+        // reports all resolve the continuation as failed.
+        let timeout = DispatchWorkItem { [weak self] in
+            self?.finish(false)
+        }
+        timeoutWork = timeout
+        DispatchQueue.main.asyncAfter(
+            deadline: .now() + Self.timeoutSeconds, execute: timeout)
         let controller = webView.configuration.userContentController
         controller.removeAllContentRuleLists()
 
@@ -184,6 +207,8 @@ private final class PrerenderNavigationLoader: NSObject, WKNavigationDelegate {
     private func finish(_ success: Bool) {
         guard !finished else { return }
         finished = true
+        timeoutWork?.cancel()
+        timeoutWork = nil
         completion(success)
     }
 

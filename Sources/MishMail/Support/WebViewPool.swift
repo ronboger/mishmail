@@ -127,35 +127,36 @@ enum HTMLWebViewPool {
         webView.navigationDelegate = nil
         webView.removeHeightHandlerIfNeeded()
         let poolKey = key.poolKey
+        // Hold the lock across the whole ledger + dictionary mutation —
+        // dropping it mid-way lets a concurrent dequeue()/claim desync the
+        // ledger from `prerendered` and hit dequeue's force unwraps. WebKit
+        // cleanup on evicted views runs after unlock instead.
+        var evicted: [PassthroughWebView] = []
         lock.lock()
         // Replace existing slot for the same key.
         if let previous = prerendered.removeValue(forKey: poolKey) {
             _ = ledger.claimPrerender(key: poolKey)
-            lock.unlock()
-            clearForReuse(previous)
-            withExtendedLifetime(previous) {}
-            lock.lock()
+            evicted.append(previous)
         }
         let droppedKey = ledger.parkPrerender(key: poolKey)
         if let droppedKey, let dropped = prerendered.removeValue(forKey: droppedKey) {
-            lock.unlock()
-            clearForReuse(dropped)
-            withExtendedLifetime(dropped) {}
-            lock.lock()
+            evicted.append(dropped)
         }
         // Free slots may have been trimmed by the ledger without a key.
         while free.count > ledger.freeCount {
-            let extra = free.removeFirst()
-            lock.unlock()
-            clearForReuse(extra)
-            withExtendedLifetime(extra) {}
-            lock.lock()
+            evicted.append(free.removeFirst())
         }
-        if ledger.prerenderOrder.contains(poolKey) {
+        let parked = ledger.prerenderOrder.contains(poolKey)
+        if parked {
             prerendered[poolKey] = webView
-            lock.unlock()
-        } else {
-            lock.unlock()
+        }
+        lock.unlock()
+
+        for view in evicted {
+            clearForReuse(view)
+        }
+        withExtendedLifetime(evicted) {}
+        if !parked {
             // No room — drop the view.
             clearForReuse(webView)
             withExtendedLifetime(webView) {}

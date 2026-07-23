@@ -1045,6 +1045,10 @@ private extension ContentView {
     private func scheduleDetailSelection(_ id: String) {
         detailSelectionTask?.cancel()
         let settle = DetailOpenPolicy.settleNanoseconds(isKeyRepeat: browseKeyIsRepeat)
+        // Consume the repeat flag: every browse keypress re-arms it before
+        // moveSelection, but a mouse click or programmatic selection after a
+        // held-key burst must not inherit the burst's settle delay.
+        browseKeyIsRepeat = false
         detailSelectionTask = Task { @MainActor in
             if settle > 0 {
                 do {

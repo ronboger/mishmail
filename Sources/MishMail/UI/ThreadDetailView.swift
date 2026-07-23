@@ -1481,8 +1481,10 @@ struct MessageCard: View {
                             onSettled: onBodySettled)
                             .frame(height: htmlHeight)
                             .onAppear {
-                                if let cached = HTMLBodyHeightCacheStore
-                                    .height(for: bodyContentID) {
+                                if let cached = HTMLBodyHeightCacheStore.height(
+                                    contentID: bodyContentID,
+                                    fontScale: fontScale,
+                                    width: nil) {
                                     htmlHeight = cached
                                 }
                             }
@@ -2074,8 +2076,18 @@ struct HTMLBodyView: NSViewRepresentable {
         let heightBinding = _height
         context.coordinator.setHeight = { heightBinding.wrappedValue = $0 }
         // Cached height keeps the card frame stable before the first paint.
-        if let cached = HTMLBodyHeightCacheStore.height(for: contentID) {
-            DispatchQueue.main.async { heightBinding.wrappedValue = cached }
+        // Applied async (SwiftUI forbids state writes mid-update) and only if
+        // no real measurement landed first — a fast paint must not be
+        // overwritten by a stale placeholder.
+        if let cached = HTMLBodyHeightCacheStore.height(
+            contentID: contentID, fontScale: fontScale, width: nil) {
+            let expectedContentID = contentID
+            DispatchQueue.main.async { [weak coordinator = context.coordinator] in
+                guard let coordinator,
+                      coordinator.contentID == expectedContentID,
+                      coordinator.heightUpdateCount == 0 else { return }
+                heightBinding.wrappedValue = cached
+            }
         }
 
         let key = HTMLBodyLoadKey(
@@ -2124,7 +2136,10 @@ struct HTMLBodyView: NSViewRepresentable {
             fontScale: fontScale)
         guard context.coordinator.loadedKey != key else { return }
 
-        if let cached = HTMLBodyHeightCacheStore.height(for: contentID) {
+        let layoutWidth = container.bounds.width
+        if let cached = HTMLBodyHeightCacheStore.height(
+            contentID: contentID, fontScale: fontScale,
+            width: layoutWidth > 0 ? layoutWidth : nil) {
             heightBinding.wrappedValue = cached
         }
 
@@ -2164,7 +2179,9 @@ struct HTMLBodyView: NSViewRepresentable {
         private var incoming: PassthroughWebView?
         private var loadToken = UUID()
         private var heightStability = HTMLHeightStability()
-        private var heightUpdateCount = 0
+        /// Read by the makeNSView cached-height fallback: a stale cached
+        /// placeholder must never overwrite a real measurement.
+        private(set) var heightUpdateCount = 0
         private var renderInterval: PerfMetrics.Interval?
         private var renderTimeout: DispatchWorkItem?
         var acceptsHeightReports = false
@@ -2395,8 +2412,12 @@ struct HTMLBodyView: NSViewRepresentable {
             let observation = heightStability.observe(height)
             if observation.shouldPublish {
                 heightUpdateCount += 1
-                if !contentID.isEmpty {
-                    HTMLBodyHeightCacheStore.store(height, for: contentID)
+                let measuredView = webView ?? incoming ?? current
+                let measuredWidth = measuredView?.frame.width ?? 0
+                if !contentID.isEmpty, let key = loadedKey, measuredWidth > 0 {
+                    HTMLBodyHeightCacheStore.store(
+                        height, contentID: contentID,
+                        fontScale: key.fontScale, width: measuredWidth)
                 }
                 DispatchQueue.main.async { [weak self] in self?.setHeight?(height) }
             }
