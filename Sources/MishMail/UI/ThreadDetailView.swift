@@ -1288,8 +1288,11 @@ struct MessageCard: View {
                             .textSelection(.enabled)
                     }
                 }
+                // Sole infinite-flex child of the header HStack so leftover
+                // width goes entirely to the From/To column. A trailing
+                // Spacer would split free space 50/50 and reintroduce the
+                // "truncated name + blank gap" symptom at half magnitude.
                 .frame(maxWidth: .infinity, alignment: .leading)
-                Spacer(minLength: 8)
                 if expanded, message.bodyHTML != nil, !message.bodyText.isEmpty {
                     Button {
                         showPlainText.toggle()
@@ -1782,9 +1785,11 @@ struct MessageCard: View {
                 }
             }
         } label: {
+            // Label hugs its text so whitespace to the right still falls
+            // through to the header's collapse onTapGesture. The Menu's
+            // outer maxWidth frame (below) expands layout proposal only.
             participantLabel(name: name, email: email, showEmail: showEmail,
                              nameSize: nameSize, nameWeight: nameWeight)
-                .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
         }
         .menuStyle(.button)
@@ -1795,15 +1800,18 @@ struct MessageCard: View {
     }
 
     /// Progressive disclosure for the participant chip: full name+email when
-    /// it fits, then name only (email stays in `.help` / menu), then a
-    /// tail-truncated name. Avoids dual middle-truncation that produced
-    /// unreadable fragments like "Ale…sque abda…y.edu".
+    /// it fits, else a tail-truncated name (email stays in `.help` / menu).
+    /// Avoids dual middle-truncation that produced unreadable fragments
+    /// like "Ale…sque abda…y.edu".
     @ViewBuilder
     private func participantLabel(name: String, email: String, showEmail: Bool,
                                   nameSize: CGFloat, nameWeight: Font.Weight) -> some View {
         let nameFont = Font.system(size: nameSize * fontScale, weight: nameWeight)
         let emailFont = Font.system(size: (nameSize - 1.5) * fontScale)
         if showEmail {
+            // Two alternatives only: a non-fixedSize name with .tail already
+            // "fits" any proposal by truncating, so a middle name-only tier
+            // would never be selected.
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: 6) {
                     Text(name)
@@ -1817,11 +1825,6 @@ struct MessageCard: View {
                         .lineLimit(1)
                         .fixedSize(horizontal: true, vertical: false)
                 }
-                Text(name)
-                    .font(nameFont)
-                    .foregroundStyle(.primary)
-                    .lineLimit(1)
-                    .fixedSize(horizontal: true, vertical: false)
                 Text(name)
                     .font(nameFont)
                     .foregroundStyle(.primary)
