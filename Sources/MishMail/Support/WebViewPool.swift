@@ -104,15 +104,17 @@ enum HTMLWebViewPool {
         let acquire = ledger.acquireForDequeue()
         switch acquire {
         case .free:
+            // Still flagged from clearForReuse when parked: the blank load is
+            // async and may not have committed yet, so the previous document
+            // (possibly an unopened neighbor's pre-render) could still be the
+            // live DOM. Attachers keep flagged views hidden until own paint.
             let view = free.popLast()!
             lock.unlock()
-            view.hasForeignContent = false
             return view
         case .stolenPrerender(let key):
             let view = prerendered.removeValue(forKey: key)!
             lock.unlock()
             clearForReuse(view)
-            view.hasForeignContent = true
             return view
         case .createNew:
             lock.unlock()
@@ -226,5 +228,11 @@ enum HTMLWebViewPool {
         }
         webView.configuration.userContentController.removeAllContentRuleLists()
         webView.loadHTMLString("", baseURL: nil)
+        // The blank load above is async: until it commits, the previous
+        // document is still the live DOM. Flag the view so attachers hide it
+        // until its own content paints; cleared in attach()/swap().
+        if let view = webView as? PassthroughWebView {
+            view.hasForeignContent = true
+        }
     }
 }

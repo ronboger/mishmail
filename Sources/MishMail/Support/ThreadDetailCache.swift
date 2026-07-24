@@ -35,12 +35,27 @@ struct MessageHTMLPrep: Equatable {
 private final class AllowedDocumentMemo: @unchecked Sendable {
     private let lock = NSLock()
     private var cached: [Bool: String?] = [:]
+    #if DEBUG
+    /// Times `build` actually ran (misses). Pins "assembled at most once per
+    /// key" in tests — string-equality checks can't tell a memo hit from a
+    /// per-access rebuild.
+    private var missCount = 0
+
+    var debugMissCount: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return missCount
+    }
+    #endif
 
     /// `build` runs at most once per key; nil results are memoized too.
     func value(authored: Bool, build: () -> String?) -> String? {
         lock.lock()
         defer { lock.unlock() }
         if let hit = cached[authored] { return hit }
+        #if DEBUG
+        missCount += 1
+        #endif
         let made = build()
         cached[authored] = made
         return made
@@ -78,6 +93,11 @@ struct MessageHTMLDocuments: Equatable {
             return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
         }
     }
+
+    #if DEBUG
+    /// Test-only: how many allowed-variant builds the shared memo has run.
+    var debugAllowedBuildCount: Int { allowedMemo.debugMissCount }
+    #endif
 
     func document(authored: Bool, allowRemoteImages: Bool) -> String? {
         switch (authored, allowRemoteImages) {

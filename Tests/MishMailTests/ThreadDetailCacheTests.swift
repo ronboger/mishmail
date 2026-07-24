@@ -142,6 +142,33 @@ final class ThreadDetailCacheTests: XCTestCase {
         XCTAssertEqual(copy, docs)
     }
 
+    #if DEBUG
+    /// String equality can't distinguish a memo hit from a per-access rebuild
+    /// (the jank A2 fixed); the miss counter can.
+    func testAllowedVariantAssemblesExactlyOnceAcrossRepeatedAccess() throws {
+        let html = "<p>Body <img src=\"https://t.example/p.gif\"></p>"
+        let prep = MessageHTMLPrepBuilder.prep(
+            bodyText: "Body", bodyHTML: html, fontScale: 1.0)
+        let docs = try XCTUnwrap(prep.documents)
+        XCTAssertEqual(docs.debugAllowedBuildCount, 0)
+
+        let copy = docs
+        _ = docs.document(authored: false, allowRemoteImages: true)
+        _ = docs.document(authored: false, allowRemoteImages: true)
+        _ = copy.document(authored: false, allowRemoteImages: true)
+        XCTAssertEqual(docs.debugAllowedBuildCount, 1)
+
+        // A nil variant (no authored head here) memoizes its miss too.
+        _ = docs.document(authored: true, allowRemoteImages: true)
+        _ = docs.document(authored: true, allowRemoteImages: true)
+        XCTAssertEqual(docs.debugAllowedBuildCount, 2)
+
+        // Blocked variants never touch the memo.
+        _ = docs.document(authored: false, allowRemoteImages: false)
+        XCTAssertEqual(docs.debugAllowedBuildCount, 2)
+    }
+    #endif
+
     /// Reassembling for a new font scale must not serve the old scale's
     /// memoized allowed document.
     func testReassembleDropsMemoizedAllowedVariant() throws {

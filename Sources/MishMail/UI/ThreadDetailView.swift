@@ -2136,11 +2136,20 @@ struct HTMLBodyView: NSViewRepresentable {
             fontScale: fontScale)
         guard context.coordinator.loadedKey != key else { return }
 
+        // Applied async like makeNSView's placeholder: updateNSView runs
+        // inside SwiftUI's update pass, where a synchronous binding write is
+        // undefined behavior. Guarded so a measurement that lands first wins.
         let layoutWidth = container.bounds.width
         if let cached = HTMLBodyHeightCacheStore.height(
             contentID: contentID, fontScale: fontScale,
             width: layoutWidth > 0 ? layoutWidth : nil) {
-            heightBinding.wrappedValue = cached
+            let expectedContentID = contentID
+            DispatchQueue.main.async { [weak coordinator = context.coordinator] in
+                guard let coordinator,
+                      coordinator.contentID == expectedContentID,
+                      coordinator.heightUpdateCount == 0 else { return }
+                heightBinding.wrappedValue = cached
+            }
         }
 
         context.coordinator.loadedKey = key
@@ -2265,7 +2274,12 @@ struct HTMLBodyView: NSViewRepresentable {
 
             // ResizeObserver normally produces a confirming height quickly.
             // End diagnostics even for malformed documents that never settle.
+            // Views stay hidden until their first height report (pooled views
+            // may hold a stale DOM until the blank load commits), so also
+            // reveal here: a document that never reports must not stay
+            // invisible past the timeout.
             let timeout = DispatchWorkItem { [weak self] in
+                self?.revealIncoming(animated: false)
                 self?.finishRender(reason: "timeout")
             }
             renderTimeout = timeout
