@@ -506,18 +506,28 @@ final class MailStore {
 
     var aiCategories: [String: String] = [:]   // threadId → category
     var classifying = false
+    /// Single-flight load of the persisted map. Stored for the process lifetime
+    /// so later calls are no-ops; concurrent callers await the same task
+    /// instead of racing an empty map (which would re-classify already-sorted
+    /// threads and clobber in-flight `classify` writes on late assignment).
     @ObservationIgnored
-    private var aiCategoriesLoaded = false
+    private var aiCategoriesLoad: Task<Void, Never>?
 
     /// Loads the persisted category map once; after that the in-memory map is
     /// authoritative (classifyInbox updates it as it writes rows), so thread
     /// reloads don't re-read the table every time.
     func loadAICategories() async {
-        guard !aiCategoriesLoaded else { return }
-        aiCategoriesLoaded = true
-        let pool = db
-        let rows = (try? await pool.read { try ThreadAICategory.fetchAll($0) }) ?? []
-        aiCategories = Dictionary(rows.map { ($0.threadId, $0.category) }) { _, last in last }
+        if let existing = aiCategoriesLoad {
+            await existing.value
+            return
+        }
+        let task = Task { @MainActor in
+            let pool = self.db
+            let rows = (try? await pool.read { try ThreadAICategory.fetchAll($0) }) ?? []
+            self.aiCategories = Dictionary(rows.map { ($0.threadId, $0.category) }) { _, last in last }
+        }
+        aiCategoriesLoad = task
+        await task.value
     }
 
     /// Classifies the currently loaded threads into local AI buckets. Manual
@@ -1267,16 +1277,21 @@ struct ComposeRequest: Identifiable {
         return false
     }
 
+    /// Tracked so termination can cancel and await it; the body can still be
+    /// mid-VACUUM when the user quits shortly after first launch.
+    @ObservationIgnored private var startupTask: Task<Void, Never>?
+
     /// Everything here runs *before the first frame*: the app holds the store
     /// in `@State`, so this initializer executes inside the first evaluation
     /// of the app's body. Only work the first frame actually renders from
     /// belongs in it — accounts and saved views (sidebar), VIPs (the Priority
-    /// split the very first list query partitions on), and the list query
-    /// itself, which is already asynchronous.
+    /// split the very first list query partitions on), the blocklist (tiny
+    /// table; Sync All in the first moments must not race an empty set), and
+    /// the list query itself, which is already asynchronous.
     ///
-    /// Everything else — snippets, scheduled sends, the blocklist, the unread
-    /// notification baseline, contact mining — is needed by a surface the user
-    /// has not reached yet, and moved to `runDeferredStartupWork`.
+    /// Everything else — snippets, scheduled sends, the unread notification
+    /// baseline, contact mining — is needed by a surface the user has not
+    /// reached yet, and moved to `runDeferredStartupWork`.
     init() {
         let demoSeeded = DemoSeed.seedIfRequested(AppDatabase.shared.dbPool)
         reloadAccounts()
@@ -1288,8 +1303,13 @@ struct ComposeRequest: Identifiable {
         sendIdentities = fallbackIdentities()
         reloadSavedViews()
         loadVIPs()
+        // Tiny table, but correctness-critical before any early Sync All:
+        // applyBlocklist with an empty set is a silent no-op. Keep this on
+        // the launch path so a future "defer more" pass does not re-open the
+        // window that put it in runDeferredStartupWork.
+        loadBlocked()
         reloadThreads()
-        Task { await self.runDeferredStartupWork() }
+        startupTask = Task { await self.runDeferredStartupWork() }
     }
 
     /// Startup work that no on-screen surface is waiting for.
@@ -1300,7 +1320,6 @@ struct ComposeRequest: Identifiable {
     /// which is what produces new mail at all.
     private func runDeferredStartupWork() async {
         guard !isShuttingDown else { return }
-        loadBlocked()
         reloadScheduledSends()
         // Baseline before polling: every unread thread already in the cache
         // would otherwise look new and fire a notification.
@@ -1319,7 +1338,10 @@ struct ComposeRequest: Identifiable {
             await self?.fireDueScheduledSends()
         }
         // Last, and off the main actor: the one-time post-v24 VACUUM can take
-        // tens of seconds on a large mailbox.
+        // tens of seconds on a large mailbox. Re-check shut-down: the entry
+        // guard was before startPolling and friends, and reclaimSpaceIfNeeded
+        // only refuses once AppDatabase.beginShutdown has run.
+        guard !isShuttingDown else { return }
         await AppDatabase.shared.reclaimSpaceOffMain()
     }
 
@@ -1580,6 +1602,11 @@ struct ComposeRequest: Identifiable {
     }
 
     private func executeTermination() async {
+        // Refuse new maintenance (VACUUM / idle checkpoint) immediately so a
+        // deferred startup tail cannot open a long write after we begin
+        // cancelling tracked tasks. The quit-path checkpoint below uses
+        // force: true to bypass that gate.
+        AppDatabase.shared.beginShutdown()
         stopObservingActivityForPolling()
         syncTimer?.invalidate()
         syncTimer = nil
@@ -1594,6 +1621,8 @@ struct ComposeRequest: Identifiable {
         scheduledSendTimer = nil
 
         // Snapshot then clear so a late completion cannot re-schedule work.
+        // Only these tracked tasks are cancelled and awaited — anything
+        // untracked can still outlive the pool close.
         let tasks = [
             contactsRebuildTask,
             threadReloadTask,
@@ -1601,6 +1630,8 @@ struct ComposeRequest: Identifiable {
             chipReloadTask,
             neighborPrefetchTask,
             threadMutationReconcileTask,
+            startupTask,
+            syncTickTask,
         ].compactMap { $0 }
         contactsRebuildTask = nil
         threadReloadTask = nil
@@ -1608,6 +1639,8 @@ struct ComposeRequest: Identifiable {
         chipReloadTask = nil
         neighborPrefetchTask = nil
         threadMutationReconcileTask = nil
+        startupTask = nil
+        syncTickTask = nil
 
         // Flush while the pool is still open (may write / send).
         if pendingSend != nil {
@@ -1624,10 +1657,12 @@ struct ComposeRequest: Identifiable {
             close: {
                 // Fold the WAL back into the database before releasing the
                 // pool, so the next launch opens a file that needs no
-                // recovery. Runs after every background reader has been
-                // cancelled and awaited, which is exactly the condition a
-                // TRUNCATE checkpoint needs to succeed.
-                AppDatabase.shared.checkpoint()
+                // recovery. Runs after every *tracked* background task has
+                // been cancelled and awaited, which is exactly the condition
+                // a TRUNCATE checkpoint needs to succeed. force: true —
+                // beginShutdown already closed the gate that refuses idle
+                // maintenance, but the quit path must still checkpoint.
+                AppDatabase.shared.checkpoint(force: true)
                 AppDatabase.shared.close()
             }
         )
@@ -1793,8 +1828,19 @@ struct ComposeRequest: Identifiable {
             UserDefaults.standard.set(order, forKey: Self.accountOrderDefaultsKey)
         }
         let byId = Dictionary(uniqueKeysWithValues: raw.map { ($0.id, $0) })
-        accounts = order.compactMap { byId[$0] }
-        labelsByAccount = Dictionary(grouping: snapshot.labels, by: \.accountId)
+        let nextAccounts = order.compactMap { byId[$0] }
+        let nextLabels = Dictionary(grouping: snapshot.labels, by: \.accountId)
+        // Under Observation, assigning an equal value still publishes a
+        // change notification. labelsByAccount's didSet rebuilds
+        // labelsById/labelsByName, and every ThreadListView row / FilterBar
+        // / sidebar reads those — so an unguarded assign on every poll tick
+        // forfeits the idle-sync early-out. Load-bearing, not a micro-opt.
+        if nextAccounts != accounts {
+            accounts = nextAccounts
+        }
+        if nextLabels != labelsByAccount {
+            labelsByAccount = nextLabels
+        }
     }
 
     func reloadSavedViews() {
@@ -2821,9 +2867,9 @@ struct ComposeRequest: Identifiable {
     @ObservationIgnored private var lastSyncAttemptedAt: Date?
 
     /// Async so the catch-up read is awaited rather than left running in an
-    /// untracked task. Termination cancels and awaits every background reader
-    /// before closing SQLCipher; a stray read outliving that is the exact race
-    /// `DatabaseLifecycle` exists to prevent.
+    /// untracked task. Termination cancels and awaits every *tracked*
+    /// background task before closing SQLCipher; a stray read outliving that
+    /// is the exact race `DatabaseLifecycle` exists to prevent.
     func startPolling() async {
         // Demo mode has no real account and no token; polling would only spin
         // up failed syncs and error banners over the screenshot fixtures.
@@ -2842,6 +2888,10 @@ struct ComposeRequest: Identifiable {
             lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled)
     }
 
+    /// In-flight poll tick; tracked so termination can await pool access, and
+    /// consulted so a slow tick is not overlapped by the next timer fire.
+    @ObservationIgnored private var syncTickTask: Task<Void, Never>?
+
     private func armSyncTimer() {
         guard !isShuttingDown else { return }
         let interval = currentPollInterval
@@ -2850,11 +2900,20 @@ struct ComposeRequest: Identifiable {
         syncTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.isShuttingDown else { return }
-                await self.syncAll()
-                await self.fireDueReminders()
-                await self.fireDueSnoozes()
-                // Backstop for the one-shot timer (sleep/wake can eat it).
-                await self.fireDueScheduledSends()
+                // One tick at a time: do not clobber a running task (would
+                // leave its pool work untracked for termination) and do not
+                // stack concurrent syncAll/fireDue* against the same pool.
+                if self.syncTickTask != nil { return }
+                self.syncTickTask = Task { @MainActor [weak self] in
+                    guard let self else { return }
+                    defer { self.syncTickTask = nil }
+                    guard !self.isShuttingDown else { return }
+                    await self.syncAll()
+                    await self.fireDueReminders()
+                    await self.fireDueSnoozes()
+                    // Backstop for the one-shot timer (sleep/wake can eat it).
+                    await self.fireDueScheduledSends()
+                }
             }
         }
     }
@@ -2956,7 +3015,13 @@ struct ComposeRequest: Identifiable {
                         }
                         return (id, nil, change)
                     } catch {
-                        return (id, error, .none)
+                        // Drain rather than fabricate .none: incrementalSync
+                        // may have already rewritten thread rows (deriveThreads
+                        // runs before partialFetch is thrown). Skipping the
+                        // drain would leave anyThreadsChanged false and the
+                        // post-sync reload early-out would hide partial work
+                        // until a later clean pass. Matches sync(accountId:).
+                        return (id, error, await engine.drainContentChange())
                     }
                 }
             }
@@ -3170,12 +3235,12 @@ struct ComposeRequest: Identifiable {
         var changed = false
         for thread in due {
             changed = true
-            var copy = thread
-            copy.reminderAt = nil
-            copy.reminderSetAt = nil
             // "Remind if no reply": only *inbound* activity cancels the nudge.
             // Own follow-ups update lastDate but leave lastInboundDate alone
             // (or nil for pure-outbound threads), so they don't look like a reply.
+            // Snapshot is fine for the notify decision; only the write must be
+            // narrow — whole-row save from the pre-await snapshot would clobber
+            // concurrent user mutations (star, archive, …) that landed in the gap.
             let replied = thread.reminderSetAt.flatMap { setAt in
                 thread.lastInboundDate.map { $0 > setAt }
             } ?? false
@@ -3184,8 +3249,11 @@ struct ComposeRequest: Identifiable {
                                 body: thread.subject.isEmpty ? thread.snippet : thread.subject,
                                 id: "reminder.\(thread.id)")
             }
-            let updated = copy
-            try? await db.write { db in try updated.save(db) }
+            try? await db.write { db in
+                try db.execute(
+                    sql: "UPDATE thread SET reminderAt = NULL, reminderSetAt = NULL WHERE id = ?",
+                    arguments: [thread.id])
+            }
         }
         if changed { reloadThreads() }
     }

@@ -361,7 +361,8 @@ struct LabelRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRe
 
 /// Shared by design: SyncEngine actors, the MainActor store and background
 /// maintenance all reach the same pool. `dbPool` is itself thread-safe and the
-/// only mutable state (`isClosed`) is guarded by `closeLock`.
+/// mutable lifecycle flags (`isClosed`, `isShuttingDown`) are guarded by
+/// `closeLock`.
 final class AppDatabase: @unchecked Sendable {
     static let shared = try! AppDatabase()
     // A pool (WAL), not a serial queue: concurrent readers (e.g. the live
@@ -370,6 +371,11 @@ final class AppDatabase: @unchecked Sendable {
     let dbPool: DatabasePool
     /// True after `close()` — no further access is valid (process is quitting).
     private(set) var isClosed = false
+    /// True once termination has begun. Maintenance refuses to *start* while
+    /// set, so a deferred VACUUM cannot open after tracked tasks are cancelled
+    /// but before the pool closes. The quit-path checkpoint uses
+    /// `checkpoint(force: true)` to bypass this gate.
+    private(set) var isShuttingDown = false
     private let closeLock = NSLock()
     /// On-disk location, kept so the WAL sidecar can be sized without asking
     /// SQLite (see `checkpointIfNeeded`).
@@ -444,8 +450,17 @@ final class AppDatabase: @unchecked Sendable {
         dbPool.interrupt()
     }
 
-    /// Close the pool once, after background readers have been cancelled and
-    /// awaited. Must run before process exit so SQLCipher's atexit teardown
+    /// Mark that process termination has begun. Maintenance entry points
+    /// refuse new work once this is set; call from `MailStore.executeTermination`
+    /// before cancelling tracked tasks.
+    func beginShutdown() {
+        closeLock.lock()
+        isShuttingDown = true
+        closeLock.unlock()
+    }
+
+    /// Close the pool once, after tracked background tasks have been cancelled
+    /// and awaited. Must run before process exit so SQLCipher's atexit teardown
     /// (`sqlcipher_extra_shutdown`) does not race live reader connections.
     ///
     /// Only flips `isClosed` after a successful `close()`. GRDB can throw
@@ -501,8 +516,6 @@ final class AppDatabase: @unchecked Sendable {
 
     // MARK: - WAL and file health
 
-    static let vacuumDefaultsKey = "db.vacuumed.v24bodies"
-
     /// One-time full `VACUUM`, then `auto_vacuum = INCREMENTAL` from here on.
     ///
     /// Migration v24 moved every message body out of the `message` row and
@@ -513,32 +526,46 @@ final class AppDatabase: @unchecked Sendable {
     /// every straddling read.
     ///
     /// `VACUUM` rewrites the file compactly. It is expensive (it copies the
-    /// whole database) so it runs exactly once, gated on a marker; afterwards
-    /// incremental auto-vacuum keeps the file from re-bloating without ever
-    /// needing another full pass.
+    /// whole database) so it runs only when the file is not already in
+    /// INCREMENTAL mode; afterwards incremental auto-vacuum keeps the file
+    /// from re-bloating without ever needing another full pass.
+    ///
+    /// Gated on `PRAGMA auto_vacuum` (2 = INCREMENTAL) rather than a
+    /// UserDefaults marker: `storageDirectory()` selects among MishMail /
+    /// MishMailDemo / MishMailUITests, which share one defaults domain in a
+    /// given bundle. A side-channel marker set after vacuuming a tiny demo
+    /// fixture would permanently skip the real mailbox — and after
+    /// `setAsideUnreadable` replaces a corrupt file, the new file would
+    /// inherit the old marker with `auto_vacuum` still NONE, making
+    /// `incremental_vacuum` in `checkpoint()` a permanent no-op. The database
+    /// header cannot desynchronize from the file it describes.
     ///
     /// Deliberately *not* part of opening the pool: on a large mailbox this
     /// takes tens of seconds, and on the open path that would be tens of
     /// seconds of launch with no window on screen. Call it from a background
     /// task once the app is up (`MailStore.runDeferredStartupWork`).
     func reclaimSpaceIfNeeded() {
-        guard !UserDefaults.standard.bool(forKey: Self.vacuumDefaultsKey) else { return }
         closeLock.lock()
-        let closed = isClosed
+        let blocked = isClosed || isShuttingDown
         closeLock.unlock()
-        guard !closed else { return }
+        guard !blocked else { return }
         do {
+            // 0 = NONE, 1 = FULL, 2 = INCREMENTAL (SQLite).
+            let mode = try dbPool.read { db in
+                try Int.fetchOne(db, sql: "PRAGMA auto_vacuum") ?? 0
+            }
+            guard mode != 2 else { return }
             try dbPool.writeWithoutTransaction { db in
                 // auto_vacuum only takes effect for a database that is
                 // vacuumed after the mode is set, so order matters here.
                 try db.execute(sql: "PRAGMA auto_vacuum = INCREMENTAL")
                 try db.execute(sql: "VACUUM")
             }
-            UserDefaults.standard.set(true, forKey: Self.vacuumDefaultsKey)
         } catch {
             // Not fatal: a failed vacuum (no disk headroom, busy file, or an
             // interrupt during termination) leaves a working — merely larger
-            // — database. Leave the marker unset so a later launch retries.
+            // — database. Leave auto_vacuum non-INCREMENTAL so a later launch
+            // retries from the file's own state.
             NSLog("MishMail: vacuum failed: %@", "\(error)")
         }
     }
@@ -559,6 +586,10 @@ final class AppDatabase: @unchecked Sendable {
     /// cheap (a `stat`) in the common case where the WAL is already small, so
     /// it needs no timer of its own.
     func checkpointIfNeeded() {
+        closeLock.lock()
+        let blocked = isClosed || isShuttingDown
+        closeLock.unlock()
+        guard !blocked else { return }
         guard walSizeBytes >= Self.checkpointThresholdBytes else { return }
         checkpoint()
     }
@@ -589,11 +620,18 @@ final class AppDatabase: @unchecked Sendable {
     ///
     /// `TRUNCATE` blocks until it can checkpoint everything, so this is only
     /// called when nothing else should be running: at idle and on the way out.
-    func checkpoint() {
+    ///
+    /// - Parameter force: When true, bypass the `isShuttingDown` gate. Used
+    ///   only from the quit-path `close:` closure after tracked tasks have
+    ///   been awaited — that checkpoint must still run even though
+    ///   `beginShutdown` has already closed idle maintenance.
+    func checkpoint(force: Bool = false) {
         closeLock.lock()
         let closed = isClosed
+        let shuttingDown = isShuttingDown
         closeLock.unlock()
         guard !closed else { return }
+        guard force || !shuttingDown else { return }
         do {
             try dbPool.writeWithoutTransaction { db in
                 // Order matters: `incremental_vacuum` is itself a write, so
