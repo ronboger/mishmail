@@ -88,6 +88,40 @@ struct ThreadDetailView: View {
     /// Arm neighbor HTML pre-render once per open after the body first settles.
     @State private var neighborPrerenderArmed = false
 
+    /// `.id(thread.id)` remounts this view for every conversation, so `@State`
+    /// starts empty and `.task` cannot run until *after* the first body
+    /// evaluation — the pane would paint blank for a frame no matter how fast
+    /// the payload arrives. Seeding here puts the conversation in that first
+    /// frame whenever the caller already had it.
+    init(thread: MailThread,
+         compactMode: Bool,
+         focusMode: Bool = false,
+         splitMode: Bool = false,
+         initialPayload: ThreadDetailPayload? = nil,
+         onBack: @escaping () -> Void,
+         onReply: @escaping (Message) -> Void) {
+        self.thread = thread
+        self.compactMode = compactMode
+        self.focusMode = focusMode
+        self.splitMode = splitMode
+        self.onBack = onBack
+        self.onReply = onReply
+        guard let initialPayload else { return }
+        _messages = State(initialValue: initialPayload.messages)
+        _attachmentsByMessageId = State(
+            initialValue: initialPayload.attachmentsByMessageId)
+        _bodyPrepByMessageId = State(
+            initialValue: initialPayload.bodyPrepByMessageId)
+        _threadAttachments = State(
+            initialValue: ThreadRefresh.threadAttachments(in: initialPayload))
+        _scrolledMessageId = State(
+            initialValue: ThreadRefresh.initialScrolledMessageId(
+                in: initialPayload.messages))
+        _bodyLoadAttempted = State(
+            initialValue: Set(ThreadRefresh.initialBodyLoadSeedIds(
+                in: initialPayload.messages)))
+    }
+
     var body: some View {
         ScrollViewReader { proxy in
             ScrollView {
@@ -410,38 +444,37 @@ struct ThreadDetailView: View {
                 neighborPrerenderArmed = false
                 // Cancel any in-flight neighbor paints from the previous open.
                 HTMLBodyNeighborPrerender.cancel()
-                let readyInterval = PerfMetrics.begin(.openReady, meta: "thread=\(thread.id)")
-                let load = await store.threadDetailPayload(threadId: thread.id)
-                guard !Task.isCancelled else {
-                    readyInterval.end(extraMeta: "cancelled")
-                    return
-                }
-                let loaded = load.payload.messages
-                if loadGeneration == detailLoadGeneration,
-                   splitMode || store.openedThreadId == thread.id {
-                    // Newest sent + draft cards arrive hydrated; seed so we
-                    // don't re-query. Shared with refreshMessages' empty→full path.
-                    bodyLoadAttempted.formUnion(
-                        ThreadRefresh.initialBodyLoadSeedIds(in: loaded))
-                    messages = loaded
-                    attachmentsByMessageId = load.payload.attachmentsByMessageId
-                    bodyPrepByMessageId = load.payload.bodyPrepByMessageId
-                    threadAttachments = loaded.flatMap { msg in
-                        (attachmentsByMessageId[msg.id] ?? []).map {
-                            (message: msg, attachment: $0)
-                        }
-                    }
-                    // Anchor on newest sent when multi-message; draft-only falls
-                    // back to the last row so a pure-draft pane still positions.
-                    scrolledMessageId = ThreadRefresh.initialScrolledMessageId(in: messages)
-                    if inlineComposeActive {
-                        beginInlineComposeScroll(proxy: proxy)
-                    }
-                    aiSummary = nil; summaryError = nil; summarizing = false
-                    readyInterval.end(
-                        extraMeta: "\(load.cacheHit ? "cache_hit" : "cache_miss") n=\(loaded.count)")
+                // Did `init` already seed from the mirror? When this is 1 the
+                // first rendered frame already showed the conversation; when
+                // it is 0 the pane painted empty until this task ran.
+                let preseeded = messages.isEmpty ? 0 : 1
+                let readyInterval = PerfMetrics.begin(
+                    .openReady, meta: "thread=\(thread.id) preseeded=\(preseeded)")
+                // Paint from the main-actor mirror when the payload is already
+                // known — no `await`, so the pane lands in the same frame as
+                // the row removal. This is the common case on the advance path
+                // (the neighbour was warmed by `scheduleNeighborPrefetch`), and
+                // it is the whole point: going to the repository costs a
+                // round-trip whose return hop waits on the SwiftUI work the
+                // delete just queued, which measured 176–209 ms.
+                if let warm = store.warmThreadDetail(threadId: thread.id) {
+                    applyDetailPayload(warm, proxy: proxy)
+                    readyInterval.end(extraMeta: "warm n=\(warm.messages.count)")
                 } else {
-                    readyInterval.end(extraMeta: "superseded")
+                    let load = await store.threadDetailPayload(threadId: thread.id)
+                    guard !Task.isCancelled else {
+                        readyInterval.end(extraMeta: "cancelled")
+                        return
+                    }
+                    if loadGeneration == detailLoadGeneration,
+                       splitMode || store.openedThreadId == thread.id {
+                        applyDetailPayload(load.payload, proxy: proxy)
+                        readyInterval.end(
+                            extraMeta: "\(load.cacheHit ? "cache_hit" : "cache_miss")"
+                                + " n=\(load.payload.messages.count)")
+                    } else {
+                        readyInterval.end(extraMeta: "superseded")
+                    }
                 }
                 // Dwell before auto mark-read so j/k / scroll-select through the
                 // inbox does not clear every unread badge. Archive (`e`) marks
@@ -750,6 +783,27 @@ struct ThreadDetailView: View {
             messages[currentIdx] = loaded.message
             bodyPrepByMessageId[id] = loaded.prep
         }
+    }
+
+    /// Mount a freshly loaded (or mirrored) payload. Shared by the synchronous
+    /// warm path and the awaited fallback so both land identical state.
+    private func applyDetailPayload(_ payload: ThreadDetailPayload,
+                                    proxy: ScrollViewProxy) {
+        let loaded = payload.messages
+        // Newest sent + draft cards arrive hydrated; seed so we don't
+        // re-query. Shared with refreshMessages' empty→full path.
+        bodyLoadAttempted.formUnion(ThreadRefresh.initialBodyLoadSeedIds(in: loaded))
+        messages = loaded
+        attachmentsByMessageId = payload.attachmentsByMessageId
+        bodyPrepByMessageId = payload.bodyPrepByMessageId
+        threadAttachments = ThreadRefresh.threadAttachments(in: payload)
+        // Anchor on newest sent when multi-message; draft-only falls back to
+        // the last row so a pure-draft pane still positions.
+        scrolledMessageId = ThreadRefresh.initialScrolledMessageId(in: messages)
+        if inlineComposeActive {
+            beginInlineComposeScroll(proxy: proxy)
+        }
+        aiSummary = nil; summaryError = nil; summarizing = false
     }
 
     /// After the open body's first stable paint, warm prev/next newest-message

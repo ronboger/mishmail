@@ -2157,7 +2157,14 @@ struct ComposeRequest: Identifiable {
     /// Record message-row changes reported by a sync (or server search) and
     /// wake the open reading pane. No-op when nothing moved.
     func applyThreadContentChange(_ change: ThreadContentChange) {
+        let epochBefore = contentRevisions.epoch
         guard contentRevisions.apply(change) else { return }
+        if contentRevisions.epoch != epochBefore {
+            // Wholesale invalidation: every mirrored payload is already
+            // unreachable by revision, so release the memory now instead of
+            // waiting for four more navigations to evict it.
+            payloadMirror.removeAll()
+        }
         threadContentToken &+= 1
     }
 
@@ -2650,11 +2657,34 @@ struct ComposeRequest: Identifiable {
         let suppressed = suppressedDraftMessageIds
         let revision = contentRevisions.revision(of: threadId)
         let fontScale = Self.readingPaneFontScale()
-        return await threadDetailRepository.payload(
+        let load = await threadDetailRepository.payload(
             threadId: threadId,
             suppressingDrafts: suppressed,
             revision: revision,
             fontScale: fontScale)
+        payloadMirror.store(
+            load.payload, for: threadId,
+            revision: revision, suppressing: suppressed)
+        return load
+    }
+
+    /// Payloads the repository already produced, held on the main actor.
+    ///
+    /// Sized for the neighbourhood the user is navigating: current, prev,
+    /// next, plus the one they just left (a `k` straight back).
+    private var payloadMirror = ThreadDetailMirror(capacity: 4)
+
+    /// Synchronous reading-pane payload, or nil when the caller must await.
+    ///
+    /// The reading pane paints from this on the advance path. Going to the
+    /// repository instead costs a MainActor → actor → MainActor round-trip
+    /// whose return hop waits on the very SwiftUI work the delete just queued
+    /// — measured at 176–209 ms, and identical for cache hits and misses.
+    func warmThreadDetail(threadId: String) -> ThreadDetailPayload? {
+        payloadMirror.payload(
+            for: threadId,
+            revision: contentRevisions.revision(of: threadId),
+            suppressing: suppressedDraftMessageIds)
     }
 
     /// Off-main body hydration for an expanded reading-pane card, including
@@ -3697,7 +3727,7 @@ struct ComposeRequest: Identifiable {
         let targets = [prev, next].compactMap { $0 }.map {
             (id: $0, revision: contentRevisions.revision(of: $0))
         }
-        neighborPrefetchTask = Task {
+        neighborPrefetchTask = Task { [weak self] in
             do {
                 try await Task.sleep(nanoseconds: 90_000_000)
             } catch {
@@ -3705,10 +3735,17 @@ struct ComposeRequest: Identifiable {
             }
             for target in targets {
                 guard !Task.isCancelled else { return }
-                _ = await repository.payload(
+                let load = await repository.payload(
                     threadId: target.id, suppressingDrafts: suppressed,
                     revision: target.revision,
                     fontScale: fontScale)
+                guard !Task.isCancelled, let self else { return }
+                // Mirror onto the main actor. This is what makes the landing
+                // synchronous: without it the warmed payload still costs an
+                // actor round-trip at exactly the moment MainActor is busiest.
+                self.payloadMirror.store(
+                    load.payload, for: target.id,
+                    revision: target.revision, suppressing: suppressed)
             }
         }
     }

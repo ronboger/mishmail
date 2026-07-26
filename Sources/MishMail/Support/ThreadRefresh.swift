@@ -35,6 +35,19 @@ enum ThreadRefresh {
             ?? messages.last?.id
     }
 
+    /// Flatten a payload into the (message, attachment) pairs the thread meta
+    /// row shows. Shared by the seeding init and the load path so a pane
+    /// rendered from the mirror is identical to one rendered from a load.
+    static func threadAttachments(
+        in payload: ThreadDetailPayload
+    ) -> [(message: Message, attachment: AttachmentRow)] {
+        payload.messages.flatMap { msg in
+            (payload.attachmentsByMessageId[msg.id] ?? []).map {
+                (message: msg, attachment: $0)
+            }
+        }
+    }
+
     /// Message ids that arrive hydrated on open and must not re-trigger a body
     /// fetch (newest sent + any draft cards).
     static func initialBodyLoadSeedIds(in messages: [Message]) -> [String] {

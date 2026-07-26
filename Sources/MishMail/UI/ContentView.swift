@@ -572,6 +572,11 @@ struct ContentView: View {
             focusMode: store.threadFocusMode,
             paneHidden: effectivePaneHidden,
             inlineReserve: inlineComposeReserveHeight,
+            // Read here because DetailPaneHost is deliberately store-free.
+            // Non-mutating, so evaluating it in `body` has no side effects.
+            initialPayload: store.openedThreadId.flatMap {
+                store.warmThreadDetail(threadId: $0)
+            },
             onBack: {
                 if store.threadFocusMode {
                     store.threadFocusMode = false
@@ -597,6 +602,11 @@ private struct DetailPaneHost: View, Equatable {
     let focusMode: Bool
     let paneHidden: Bool
     let inlineReserve: CGFloat
+    /// Seeds a remounted `ThreadDetailView` so its first frame already shows
+    /// the conversation. Excluded from `==` (below) and safe to go stale: it
+    /// is only consumed when `.id(thread.id)` builds a new pane, which cannot
+    /// happen without `thread` — which *is* compared — changing first.
+    let initialPayload: ThreadDetailPayload?
     let onBack: () -> Void
     let onReply: (Message) -> Void
 
@@ -621,6 +631,7 @@ private struct DetailPaneHost: View, Equatable {
                     thread: thread,
                     compactMode: compact,
                     focusMode: focusMode,
+                    initialPayload: initialPayload,
                     onBack: onBack,
                     onReply: onReply)
                     .id(thread.id)

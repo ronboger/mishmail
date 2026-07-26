@@ -7,6 +7,17 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Fixed
+- **Instant reading pane on delete-advance** — trashing a conversation took
+  ~180 ms to show the next one. The payload was already cached; the cost was
+  the `await` reaching it. `ThreadDetailRepository` is an actor, so every read
+  costs a MainActor → actor → MainActor round-trip, and the return hop waits on
+  the very SwiftUI work the delete just queued (measured: cache *hits* cost the
+  same as misses, which ruled out the lookup). Payloads the prefetch already
+  produced are now mirrored on the main actor, so the pane paints with no hop
+  at all — `open.ready` went from 176–209 ms to 0.0–0.1 ms. `ThreadDetailView`
+  also seeds its state at `init`: `.id(thread.id)` remounts it per
+  conversation, so `@State` started empty and the pane painted blank for a
+  frame before `.task` could run, however fast the data arrived.
 - **`g i` (and other go-to shortcuts) leave full-window conversations** — in
   Superhuman-style open, same-mailbox go-to used to no-op and leave you stuck
   inside the thread; it now returns to the list like Esc / the back button
