@@ -68,13 +68,13 @@ enum AboutPanel {
 @main
 struct MishMailApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
-    @StateObject private var store = MailStore()
+    @State private var store = MailStore()
     @AppStorage("fontScale") private var fontScale = 1.0
 
     var body: some Scene {
         WindowGroup {
             ContentView()
-                .environmentObject(store)
+                .environment(store)
                 .environmentObject(store.listFocus)
                 .tint(.notionAccent)
                 .frame(minWidth: 900, minHeight: 560)
@@ -117,7 +117,7 @@ struct MishMailApp: App {
         }
         Settings {
             SettingsView()
-                .environmentObject(store)
+                .environment(store)
         }
     }
 }

@@ -216,16 +216,42 @@ final class ListFocusState: ObservableObject {
     @Published var id: String?
 }
 
+/// Central mailbox state.
+///
+/// `@Observable`, not `ObservableObject`. As one object with sixty-odd
+/// published properties feeding every view in the window, `objectWillChange`
+/// meant a sync-status string, a toast, or a rebuilt contacts array
+/// invalidated the thread list and the reading pane along with the label that
+/// actually changed. Observation tracks reads per property, so a view only
+/// re-renders for the properties its own `body` touched.
+///
+/// `ListFocusState` stays a separate object: it predates this and still earns
+/// its keep by keeping key-repeat focus moves out of the store entirely.
 @MainActor
-final class MailStore: ObservableObject {
-    @Published var accounts: [Account] = []
+@Observable
+final class MailStore {
+    var accounts: [Account] = []
     /// From identities (primary + Gmail send-as) across all linked accounts.
     /// Used by compose's From picker; never confuse `email` with API mailbox.
-    @Published private(set) var sendIdentities: [SendIdentity] = []
-    @Published var labelsByAccount: [String: [LabelRow]] = [:]
-    @Published var threads: [MailThread] = []
-    @Published var savedViews: [SavedView] = []
-    @Published var selectedView: MailboxView = .inbox {
+    private(set) var sendIdentities: [SendIdentity] = []
+    var labelsByAccount: [String: [LabelRow]] = [:] {
+        didSet { rebuildLabelIndexes() }
+    }
+
+    /// `accountId → gmailLabelId → row` and `accountId → name → row`.
+    ///
+    /// Every visible thread row resolves a name and a color for each of its
+    /// labels, and both lookups used to be a linear scan of the account's
+    /// label array — per label, per row, on every body pass. These are plain
+    /// stored properties (not `@ObservationIgnored`) precisely so a view that
+    /// reads them through `labelName` / `labelTint` still re-renders when the
+    /// labels change; `labelsByAccount`'s `didSet` is what republishes them.
+    private(set) var labelsById: [String: [String: LabelRow]] = [:]
+    private(set) var labelsByName: [String: [String: LabelRow]] = [:]
+
+    var threads: [MailThread] = []
+    var savedViews: [SavedView] = []
+    var selectedView: MailboxView = .inbox {
         didSet {
             readStateKeepIds.removeAll()
             resetListWindow()
@@ -241,27 +267,30 @@ final class MailStore: ObservableObject {
         set { listFocus.id = newValue }
     }
     /// Narrow observation surface for list focus — injected as
-    /// `@EnvironmentObject` alongside the store in MishMailApp.
+    /// `@EnvironmentObject` alongside the store (which goes in as an
+    /// `@Observable` `.environment` value) in MishMailApp.
     let listFocus = ListFocusState()
     /// Conversation whose content is mounted in the reading pane. This can
     /// intentionally lag list focus while keyboard browsing coalesces repeats.
-    @Published private(set) var openedThreadId: String?
+    private(set) var openedThreadId: String?
     private var pendingSelectionIntent: ThreadSelectionIntent?
     /// Gmail drafts retained remotely during Undo Send but hidden locally so
     /// the thread never shows both "Draft" and "Sending…".
-    @Published private(set) var suppressedDraftMessageIds: Set<String> = []
-    @Published private(set) var suppressedDraftThreadIds: Set<String> = []
+    private(set) var suppressedDraftMessageIds: Set<String> = []
+    private(set) var suppressedDraftThreadIds: Set<String> = []
     private var suppressedDraftThreadByMessageId: [String: String] = [:]
     /// Multi-select checkboxes (Gmail `x` / Notion-style toggle). Bulk
     /// archive/trash/star/read act on this set when non-empty; the focused
     /// `selectedThreadId` still drives the reading pane.
-    @Published var checkedThreadIds: Set<String> = []
+    var checkedThreadIds: Set<String> = []
     /// Anchor for shift-click range select on checkboxes.
     private var lastCheckedThreadId: String?
     /// Cancels in-flight neighbor header/body warm when selection moves.
+    @ObservationIgnored
     private var neighborPrefetchTask: Task<Void, Never>?
     /// In-flight contacts rebuild (full-table `message` scan); must be
     /// cancelled and awaited before the DatabasePool is closed on quit.
+    @ObservationIgnored
     private var contactsRebuildTask: Task<Void, Never>?
     /// Once true, no new background database work is started. Set by
     /// `prepareForTermination()` on app quit.
@@ -271,27 +300,27 @@ final class MailStore: ObservableObject {
     /// replying `true` while the first close is still in flight.
     private let terminationSlot = DatabaseLifecycle.FlightSlot()
     /// Gmail-style "?" cheat sheet.
-    @Published var showShortcutsHelp = false
+    var showShortcutsHelp = false
     /// User-rebindable single-key shortcuts (Settings → Keyboard shortcuts).
     let keyBindings = KeyBindings()
     /// Live text in the search field. Drives ONLY the dropdown preview —
     /// the inbox list keeps showing `committedSearch` until you commit.
-    @Published var searchText: String = ""
+    var searchText: String = ""
     /// The query the thread list is actually filtered by. Set when a search
     /// is committed (Enter / View all results / picking a suggestion).
-    @Published var committedSearch: String = ""
+    var committedSearch: String = ""
     /// Bumped by `/` (Gmail-style) to move keyboard focus into the sidebar
     /// search field. The sidebar watches this and drives its `@FocusState`.
-    @Published var searchFocusToken = 0
+    var searchFocusToken = 0
     /// True while the search field is focused, so ContentView can float the
     /// wide command-K-style results panel over the message list.
-    @Published var searchActive = false
+    var searchActive = false
     /// ↑/↓ highlight in the search dropdown (the panel clamps to its rows,
     /// same pattern as the label picker's highlight).
-    @Published var searchHighlight = 0
+    var searchHighlight = 0
     /// Bumped by Enter while the dropdown is open; the panel runs the
     /// highlighted row.
-    @Published var searchActivateToken = 0
+    var searchActivateToken = 0
 
     /// Commit a query: filter the thread list by it and remember it.
     func commitSearch(_ query: String) {
@@ -349,7 +378,7 @@ final class MailStore: ObservableObject {
     }
     /// Recent search queries, newest first, shown under the search field while
     /// it has focus. Persisted so history survives relaunch.
-    @Published var recentSearches: [String] =
+    var recentSearches: [String] =
         UserDefaults.standard.stringArray(forKey: "recentSearches") ?? []
 
     /// Remember a submitted/picked query: dedupe (case-insensitive), move to
@@ -372,7 +401,7 @@ final class MailStore: ObservableObject {
         recentSearches = []
         UserDefaults.standard.removeObject(forKey: "recentSearches")
     }
-    @Published var chips = FilterChips.initial(for: .inbox) {
+    var chips = FilterChips.initial(for: .inbox) {
         // Category picks persist per view so they're back after relaunch.
         // Only user edits persist — programmatic resets (view switches) go
         // through resetChips() so built-in defaults never get frozen into
@@ -383,6 +412,7 @@ final class MailStore: ObservableObject {
             }
         }
     }
+    @ObservationIgnored
     private var suppressChipPersistence = false
 
     /// Reset the filter bar for the current view: factory defaults plus the
@@ -392,9 +422,9 @@ final class MailStore: ObservableObject {
         chips = FilterChips.initial(for: selectedView)
         suppressChipPersistence = false
     }
-    @Published var activeAccountId: String?   // nil = all accounts (unified)
-    @Published var syncStatus: String = ""
-    @Published private var presentedError: PresentedError?
+    var activeAccountId: String?   // nil = all accounts (unified)
+    var syncStatus: String = ""
+    private var presentedError: PresentedError?
     /// Existing callers can continue assigning plain messages; they safely
     /// default to retry. Errors that require another action set a structured
     /// presentation instead of relying on wording inspection in the UI.
@@ -405,47 +435,47 @@ final class MailStore: ObservableObject {
     var lastErrorRecovery: ErrorRecoveryAction {
         presentedError?.recovery ?? .retrySync
     }
-    @Published private(set) var demoMode = DemoSeed.isActive
+    private(set) var demoMode = DemoSeed.isActive
     /// Account ids whose saved sign-in Google has rejected (expired/revoked
     /// refresh token); the Accounts settings pane offers a "Reauthorize"
     /// button for these.
-    @Published var accountsNeedingReauth: Set<String> = []
-    @Published var composeRequest: ComposeRequest?
+    var accountsNeedingReauth: Set<String> = []
+    var composeRequest: ComposeRequest?
     /// Compose card is collapsed to a title strip (Notion Mail-style). Draft
     /// state stays mounted; inbox shortcuts work again while minimized.
-    @Published var composeMinimized = false
+    var composeMinimized = false
     /// ComposeView publishes whether the `/` snippet picker is showing so the
     /// ContentView Esc ladder can dismiss it without relying on local-monitor
     /// install order (monitors fire FIFO; an early `return nil` starves later ones).
-    @Published var slashPickerVisible = false
+    var slashPickerVisible = false
     /// Bumped to dismiss the `/` picker (ComposeView sets `slashDismissed`).
-    @Published private(set) var slashPickerDismissToken = 0
+    private(set) var slashPickerDismissToken = 0
     func dismissSlashPicker() {
         guard slashPickerVisible else { return }
         slashPickerDismissToken &+= 1
     }
     /// Bumped for expanded-compose Esc (sheet dismiss → save & close). Same
     /// role as the close button's `.cancelAction`, but works while NSText has focus.
-    @Published private(set) var composeEscToken = 0
+    private(set) var composeEscToken = 0
     func requestComposeEsc() { composeEscToken &+= 1 }
     /// Reading pane fills the window (sidebar + list hidden). Toggled with ⌘↩
     /// when a conversation is selected and Send is not claiming the chord.
-    @Published var threadFocusMode = false
+    var threadFocusMode = false
     /// ContentView mirrors its AppStorage pane flag here so keyboard reply
     /// can choose inline vs floating without reading UserDefaults itself.
     var readingPaneHiddenForCompose = false
-    @Published var undoAction: UndoAction?
-    @Published var editingView: SavedView?
-    @Published var editingAccountLabels = false
-    @Published var showLabelPicker = false
-    @Published var showLabelOrganizer = false
-    @Published var snoozingThread: MailThread?   // custom snooze date sheet
+    var undoAction: UndoAction?
+    var editingView: SavedView?
+    var editingAccountLabels = false
+    var showLabelPicker = false
+    var showLabelOrganizer = false
+    var snoozingThread: MailThread?   // custom snooze date sheet
     /// Draft message pending the "Delete this draft?" alert (per-message so
     /// multi-draft threads discard the card that was clicked, not always the newest).
-    @Published var confirmingDraftDelete: Message?
-    // Per-keystroke picker state lives in its own object (constant reference,
-    // so mutations don't fire MailStore.objectWillChange) — otherwise every
-    // typed character re-renders the whole window, not just the picker.
+    var confirmingDraftDelete: Message?
+    // Per-keystroke picker state lives in its own object so typing in the
+    // picker publishes only to the picker. A `let` is also invisible to
+    // Observation, so the store itself never reports a change for it.
     let labelPicker = LabelPickerState()
 
     /// Open the label picker with fresh state — every entry point (shortcut,
@@ -457,10 +487,11 @@ final class MailStore: ObservableObject {
         labelPicker.navigated = false
         showLabelPicker = true
     }
-    @Published var showCommandPalette = false
-    @Published var showFilterMenu = false   // "+ Filter" popover (Ctrl-F)
-    @Published var unreadCounts: [String: Int] = [:]   // sidebar badges
-    @Published var notice: String?                      // transient confirmation toast
+    var showCommandPalette = false
+    var showFilterMenu = false   // "+ Filter" popover (Ctrl-F)
+    var unreadCounts: [String: Int] = [:]   // sidebar badges
+    var notice: String?                      // transient confirmation toast
+    @ObservationIgnored
     private var noticeTimer: Timer?
 
     func showNotice(_ text: String) {
@@ -473,17 +504,19 @@ final class MailStore: ObservableObject {
 
     // MARK: - On-device AI triage
 
-    @Published var aiCategories: [String: String] = [:]   // threadId → category
-    @Published var classifying = false
+    var aiCategories: [String: String] = [:]   // threadId → category
+    var classifying = false
+    @ObservationIgnored
     private var aiCategoriesLoaded = false
 
     /// Loads the persisted category map once; after that the in-memory map is
     /// authoritative (classifyInbox updates it as it writes rows), so thread
     /// reloads don't re-read the table every time.
-    func loadAICategories() {
+    func loadAICategories() async {
         guard !aiCategoriesLoaded else { return }
         aiCategoriesLoaded = true
-        let rows = (try? db.read { try ThreadAICategory.fetchAll($0) }) ?? []
+        let pool = db
+        let rows = (try? await pool.read { try ThreadAICategory.fetchAll($0) }) ?? []
         aiCategories = Dictionary(rows.map { ($0.threadId, $0.category) }) { _, last in last }
     }
 
@@ -505,15 +538,17 @@ final class MailStore: ObservableObject {
     /// backs off ten minutes after a failure so a down server isn't retried
     /// on every 60-second sync tick.
     static let autoClassifyKey = "autoClassifyEnabled"
+    @ObservationIgnored
     private var autoClassifyPausedUntil: Date?
 
-    func autoClassifyNewMail() {
+    func autoClassifyNewMail() async {
         let defaults = UserDefaults.standard
         guard defaults.object(forKey: Self.autoClassifyKey) == nil
                 || defaults.bool(forKey: Self.autoClassifyKey) else { return }
         if let pause = autoClassifyPausedUntil, pause > Date() { return }
-        loadAICategories()
-        let candidates = (try? db.read { db in
+        await loadAICategories()
+        let pool = db
+        let candidates = (try? await pool.read { db in
             try MailThread
                 .filter(Column("inInbox") == true && Column("inTrash") == false)
                 .order(Column("lastDate").desc).limit(100).fetchAll(db)
@@ -568,10 +603,10 @@ final class MailStore: ObservableObject {
 
     /// Lowercased VIP addresses, and which loaded threads they sent. Kept in
     /// memory so the priority partition never queries per row.
-    @Published private(set) var vipEmails: Set<String> = []
-    @Published private(set) var vipThreadIds: Set<String> = []
-    @Published private(set) var vipGroups: [String: String] = [:]
-    @Published private(set) var vipGroupEnabled: [String: Bool] = [:]
+    private(set) var vipEmails: Set<String> = []
+    private(set) var vipThreadIds: Set<String> = []
+    private(set) var vipGroups: [String: String] = [:]
+    private(set) var vipGroupEnabled: [String: Bool] = [:]
 
     /// VIPs that actually count: members of a toggled-off group are paused.
     var activeVIPEmails: Set<String> {
@@ -751,17 +786,18 @@ final class MailStore: ObservableObject {
     /// Per-account Gmail filters, loaded lazily for Settings and for the
     /// "matching filters" disclosure under each message card. Nil entry means
     /// not yet attempted; empty array means loaded and the account has none.
-    @Published private(set) var filtersByAccount: [String: [GFilter]] = [:]
+    private(set) var filtersByAccount: [String: [GFilter]] = [:]
     /// Human-readable load failure per account (scope missing, network, …).
     /// Cleared on success. On transient failure we keep any previous cache so
     /// matching-filter sections don't vanish because of a blip.
-    @Published private(set) var filtersLoadError: [String: String] = [:]
+    private(set) var filtersLoadError: [String: String] = [:]
     /// Accounts currently mid-fetch — UI can show a spinner. Backed by a
     /// refcount so overlapping force+lazy loads don't drop the spinner early.
-    @Published private(set) var filtersLoading: Set<String> = []
+    private(set) var filtersLoading: Set<String> = []
     private var filterLoadRefCounts: [String: Int] = [:]
     /// In-flight filter fetches; concurrent callers await the same task.
     /// Token lets a finishing load clear its slot without clobbering a newer one.
+    @ObservationIgnored
     private var filterLoadTasks: [String: (token: UUID, task: Task<Void, Never>)] = [:]
 
     /// Fetch filters for one account. Non-force short-circuits only on a
@@ -870,7 +906,7 @@ final class MailStore: ObservableObject {
 
     /// Lowercased blocked addresses. Their threads move to Spam immediately
     /// on block and again after every sync (new arrivals).
-    @Published private(set) var blockedEmails: Set<String> = []
+    private(set) var blockedEmails: Set<String> = []
 
     func loadBlocked() {
         let rows = (try? db.read { try BlockedSender.fetchAll($0) }) ?? []
@@ -890,7 +926,7 @@ final class MailStore: ObservableObject {
         guard e.contains("@") else { return }
         try? db.write { try BlockedSender(email: e).save($0) }
         loadBlocked()
-        applyBlocklist()
+        Task { await applyBlocklist() }
         showNotice("Blocked \(e) — their mail goes to Spam")
     }
 
@@ -909,11 +945,19 @@ final class MailStore: ObservableObject {
     /// per-thread undo toast — blocking is the undoable act, via Unblock).
     /// Runs on block and after each sync so new arrivals never linger.
     /// Matches denorm `fromEmail` / `allFromEmails` in SQL (no full inbox load).
-    func applyBlocklist() {
-        guard !blockedEmails.isEmpty else { return }
+    ///
+    /// Async: this runs at the end of every sync, and the scan is over the
+    /// whole inbox. On the main actor that was a SQLCipher decrypt burst once
+    /// a minute, landing in the middle of whatever the user was typing.
+    func applyBlocklist() async {
+        // `prepareForTermination` sets this on the main actor before its first
+        // suspension, so a block performed as the app quits cannot start a new
+        // read after the shutdown sequence has begun.
+        guard !isShuttingDown, !blockedEmails.isEmpty else { return }
         let blocked = Array(blockedEmails)
-        let hits = PerfMetrics.measure(.syncBlocklist, meta: "blocked=\(blocked.count)") {
-            (try? db.read { db -> [MailThread] in
+        let pool = db
+        let hits = await PerfMetrics.measureAsync(.syncBlocklist, meta: "blocked=\(blocked.count)") {
+            (try? await pool.read { db -> [MailThread] in
                 // Exact token match — no LIKE (underscore is common in emails
                 // and is a single-char wildcard under LIKE).
                 var parts: [String] = []
@@ -1186,21 +1230,30 @@ struct ComposeRequest: Identifiable {
     private let db = AppDatabase.shared.dbPool
     private let threadDetailRepository = ThreadDetailRepository(
         db: AppDatabase.shared.dbPool)
+    @ObservationIgnored
     private var syncTimer: Timer?
+    @ObservationIgnored
     private var undoTimer: Timer?
+    @ObservationIgnored
     private var engines: [String: SyncEngine] = [:]
+    @ObservationIgnored
     private var clients: [String: GmailClient] = [:]
+    @ObservationIgnored
     private var knownUnreadInboxIds: Set<String> = []
+    @ObservationIgnored
     private var notifiedThreadIds: Set<String> = []
     /// Serial tail for optimistic thread writes. UI updates happen first; the
     /// tail preserves mutation order and is awaited before database shutdown.
+    @ObservationIgnored
     private var threadMutationPersistenceTask: Task<Result<Void, Error>, Never>?
     /// Rapid triage reconciles once after the user pauses instead of launching
     /// a full list/count query for every key press.
+    @ObservationIgnored
     private var threadMutationReconcileTask: Task<Void, Never>?
     // Threads whose read state changed while an unread/read filter was active.
     // They stay listed (so opening an unread thread doesn't yank it out from
     // under the reading pane) until the filter is dropped or the view changes.
+    @ObservationIgnored
     private var readStateKeepIds: Set<String> = []
 
     private var readStateFilterActive: Bool {
@@ -1214,6 +1267,16 @@ struct ComposeRequest: Identifiable {
         return false
     }
 
+    /// Everything here runs *before the first frame*: the app holds the store
+    /// in `@State`, so this initializer executes inside the first evaluation
+    /// of the app's body. Only work the first frame actually renders from
+    /// belongs in it — accounts and saved views (sidebar), VIPs (the Priority
+    /// split the very first list query partitions on), and the list query
+    /// itself, which is already asynchronous.
+    ///
+    /// Everything else — snippets, scheduled sends, the blocklist, the unread
+    /// notification baseline, contact mining — is needed by a surface the user
+    /// has not reached yet, and moved to `runDeferredStartupWork`.
     init() {
         let demoSeeded = DemoSeed.seedIfRequested(AppDatabase.shared.dbPool)
         reloadAccounts()
@@ -1225,23 +1288,39 @@ struct ComposeRequest: Identifiable {
         sendIdentities = fallbackIdentities()
         reloadSavedViews()
         loadVIPs()
-        loadBlocked()
         reloadThreads()
+        Task { await self.runDeferredStartupWork() }
+    }
+
+    /// Startup work that no on-screen surface is waiting for.
+    ///
+    /// Nothing here may sit behind the network. The send-as refresh and the
+    /// scheduled-send flush both make Gmail calls, so they run in their own
+    /// task — a slow or hanging request must not be able to delay polling,
+    /// which is what produces new mail at all.
+    private func runDeferredStartupWork() async {
+        guard !isShuttingDown else { return }
+        loadBlocked()
         reloadScheduledSends()
-        // Load send-as identities before firing due scheduled sends so From
-        // headers get alias display names, not bare emails.
-        Task {
-            await self.refreshSendIdentities()
-            await self.fireDueScheduledSends()
-        }
-        knownUnreadInboxIds = currentUnreadInboxIds()
-        notifiedThreadIds = knownUnreadInboxIds
+        // Baseline before polling: every unread thread already in the cache
+        // would otherwise look new and fire a notification.
+        await seedUnreadBaseline()
         Notifier.requestPermission()
-        startPolling()
+        await startPolling()
         rebuildMetadataIfNeeded()
         rebuildContacts()
         reloadSnippets()
         seedDefaultSnippetsIfNeeded()
+
+        // Send-as identities before firing due scheduled sends, so From
+        // headers get alias display names rather than bare emails.
+        Task { [weak self] in
+            await self?.refreshSendIdentities()
+            await self?.fireDueScheduledSends()
+        }
+        // Last, and off the main actor: the one-time post-v24 VACUUM can take
+        // tens of seconds on a large mailbox.
+        await AppDatabase.shared.reclaimSpaceOffMain()
     }
 
     func enterDemoMode() {
@@ -1319,7 +1398,6 @@ struct ComposeRequest: Identifiable {
         UserDefaults.standard.set(true, forKey: key)
         if !planned.isEmpty {
             reloadSnippets()
-            objectWillChange.send()
         }
     }
 
@@ -1328,13 +1406,16 @@ struct ComposeRequest: Identifiable {
     /// UI-facing contact type (stable path for AddressField / search).
     typealias Contact = ContactMiner.Contact
 
-    @Published private(set) var contacts: [Contact] = []
+    private(set) var contacts: [Contact] = []
     /// Full weight map kept in memory so incremental passes merge correctly
     /// (the published list is only the top 2000).
+    @ObservationIgnored
     private var contactWeights: ContactMiner.WeightMap = [:]
     /// Own addresses the current weight map was built under — account add/remove
     /// forces a full rebuild so own-mail exclusion stays correct.
+    @ObservationIgnored
     private var contactsOwnAddresses: Set<String> = []
+    @ObservationIgnored
     private var contactsRebuildGeneration = 0
     private static let contactsHighWaterKey = "contacts.highWaterRowId"
 
@@ -1499,8 +1580,10 @@ struct ComposeRequest: Identifiable {
     }
 
     private func executeTermination() async {
+        stopObservingActivityForPolling()
         syncTimer?.invalidate()
         syncTimer = nil
+        syncTimerInterval = nil
         undoTimer?.invalidate()
         undoTimer = nil
         noticeTimer?.invalidate()
@@ -1538,7 +1621,15 @@ struct ComposeRequest: Identifiable {
         await DatabaseLifecycle.shutDown(
             tasks: tasks,
             interrupt: { AppDatabase.shared.interrupt() },
-            close: { AppDatabase.shared.close() }
+            close: {
+                // Fold the WAL back into the database before releasing the
+                // pool, so the next launch opens a file that needs no
+                // recovery. Runs after every background reader has been
+                // cancelled and awaited, which is exactly the condition a
+                // TRUNCATE checkpoint needs to succeed.
+                AppDatabase.shared.checkpoint()
+                AppDatabase.shared.close()
+            }
         )
     }
 
@@ -1574,7 +1665,9 @@ struct ComposeRequest: Identifiable {
     /// A boolean "next reload" flag is wrong — if that reload is cancelled
     /// (new query / view switch), a later unrelated reload would pin a
     /// non-matching thread into its list.
+    @ObservationIgnored
     private var preserveOpenThreadId: String?
+    @ObservationIgnored
     private var preserveOpenThreadGeneration: Int?
 
     /// Open a specific thread picked from the `/` search panel.
@@ -1655,8 +1748,42 @@ struct ComposeRequest: Identifiable {
     /// so a token refresh or bundle-id migration can't scramble it.
     private static let accountOrderDefaultsKey = "accountOrder"
 
+    /// Blocking reload. Kept for the paths that must see the new value before
+    /// they return: `init` (demo-mode detection reads `accounts` on the next
+    /// line) and the one-off user mutations (rename, add, remove) where a
+    /// deferred publish would show a stale name for a frame.
     func reloadAccounts() {
-        let raw = (try? db.read { try Account.order(Column("id")).fetchAll($0) }) ?? []
+        let snapshot = (try? db.read { try Self.fetchAccounts($0) }) ?? .empty
+        applyAccounts(snapshot)
+    }
+
+    /// Off-main reload for the post-sync tail, which runs once a minute
+    /// whether or not anything changed.
+    func reloadAccountsOffMain() async {
+        let pool = db
+        let snapshot = (try? await pool.read { try Self.fetchAccounts($0) }) ?? .empty
+        applyAccounts(snapshot)
+    }
+
+    struct AccountsSnapshot: Sendable {
+        var accounts: [Account]
+        var labels: [LabelRow]
+        static let empty = AccountsSnapshot(accounts: [], labels: [])
+    }
+
+    /// One reader acquisition for both tables instead of two.
+    nonisolated private static func fetchAccounts(
+        _ db: GRDB.Database
+    ) throws -> AccountsSnapshot {
+        AccountsSnapshot(
+            accounts: try Account.order(Column("id")).fetchAll(db),
+            // User order first (organizer drag), alphabetical among the unordered.
+            labels: try LabelRow.filter(Column("type") == "user")
+                .order(Column("sortOrder"), Column("name")).fetchAll(db))
+    }
+
+    private func applyAccounts(_ snapshot: AccountsSnapshot) {
+        let raw = snapshot.accounts
         let persisted = UserDefaults.standard.stringArray(forKey: Self.accountOrderDefaultsKey) ?? []
         let order = AccountOrder.reconciled(persisted: persisted, live: raw.map(\.id))
         if order != persisted {
@@ -1667,12 +1794,7 @@ struct ComposeRequest: Identifiable {
         }
         let byId = Dictionary(uniqueKeysWithValues: raw.map { ($0.id, $0) })
         accounts = order.compactMap { byId[$0] }
-        // User order first (organizer drag), alphabetical among the unordered.
-        let rows = (try? db.read {
-            try LabelRow.filter(Column("type") == "user")
-                .order(Column("sortOrder"), Column("name")).fetchAll($0)
-        }) ?? []
-        labelsByAccount = Dictionary(grouping: rows, by: \.accountId)
+        labelsByAccount = Dictionary(grouping: snapshot.labels, by: \.accountId)
     }
 
     func reloadSavedViews() {
@@ -1682,10 +1804,13 @@ struct ComposeRequest: Identifiable {
     /// Chip toggles arrive in bursts (typing a sender, flipping several
     /// filters); coalesce them into one reload instead of a full 300-thread
     /// query per change. View switches keep calling reloadThreads() directly.
+    @ObservationIgnored
     private var chipReloadTask: Task<Void, Never>?
     /// In-flight list reload; a newer generation discards older results so
     /// chip debounce + view switch races don't clobber fresher state.
+    @ObservationIgnored
     private var threadReloadTask: Task<Void, Never>?
+    @ObservationIgnored
     private var threadReloadGeneration = 0
 
     func reloadThreadsDebounced() {
@@ -1875,8 +2000,8 @@ struct ComposeRequest: Identifiable {
             }
             guard let payload, !Task.isCancelled else { return }
 
-            await MainActor.run {
-                guard let self, generation == self.threadReloadGeneration else { return }
+            let applied = await MainActor.run { () -> Bool in
+                guard let self, generation == self.threadReloadGeneration else { return false }
                 // Generation-scoped pin: only the reload openThread paired with
                 // may re-attach the hit. Superseded reloads clear without pin.
                 let list: [MailThread]
@@ -1926,8 +2051,11 @@ struct ComposeRequest: Identifiable {
                 // totals include spam + archived and would disagree with the list.
                 self.unreadCounts = payload.counts
                 Notifier.setBadge(payload.badge)
-                self.loadAICategories()
+                return true
             }
+            // One-shot, and a pool read of its own — kept outside the
+            // MainActor block so it never blocks the list swap.
+            if applied { await self?.loadAICategories() }
         }
     }
 
@@ -1942,7 +2070,7 @@ struct ComposeRequest: Identifiable {
     /// Wake-up for the open reading pane: bumped whenever *some* thread's
     /// content changed. The pane compares its own thread's revision before
     /// doing any work — this token is never the identity, only the nudge.
-    @Published private(set) var threadContentToken = 0
+    private(set) var threadContentToken = 0
 
     /// Cache identity for one thread's reading-pane payload.
     func contentRevision(of threadId: String) -> ThreadContentRevision {
@@ -1957,10 +2085,11 @@ struct ComposeRequest: Identifiable {
     }
 
     /// Whether the current list window may have older rows past the loaded depth.
-    @Published private(set) var hasMoreThreads = false
-    @Published private(set) var isLoadingMore = false
+    private(set) var hasMoreThreads = false
+    private(set) var isLoadingMore = false
     /// Cursor after the last loaded thread (for `loadMoreThreads`).
     private var listCursor: ThreadListCursor?
+    @ObservationIgnored
     private var loadMoreTask: Task<Void, Never>?
     /// Identifies the in-flight load-more so a cancelled task cannot nil a newer one.
     private var loadMoreToken = UUID()
@@ -2062,7 +2191,7 @@ struct ComposeRequest: Identifiable {
 
     // MARK: - Server-side search
 
-    @Published var serverSearching = false
+    var serverSearching = false
 
     /// Local search only covers cached mail (within the sync window). This
     /// pulls matching messages straight from Gmail so a search can reach older
@@ -2683,23 +2812,100 @@ struct ComposeRequest: Identifiable {
 
     // MARK: - Sync
 
-    func startPolling() {
+    /// Interval the live timer was armed with, so a cadence change can be
+    /// detected without re-arming (and thereby restarting the countdown) on
+    /// every focus change.
+    @ObservationIgnored private var syncTimerInterval: TimeInterval?
+    @ObservationIgnored private var activityObservers: [NSObjectProtocol] = []
+    /// When a sync last began. Rate-limits the become-frontmost catch-up.
+    @ObservationIgnored private var lastSyncAttemptedAt: Date?
+
+    /// Async so the catch-up read is awaited rather than left running in an
+    /// untracked task. Termination cancels and awaits every background reader
+    /// before closing SQLCipher; a stray read outliving that is the exact race
+    /// `DatabaseLifecycle` exists to prevent.
+    func startPolling() async {
         // Demo mode has no real account and no token; polling would only spin
         // up failed syncs and error banners over the screenshot fixtures.
         if demoMode { return }
         guard !isShuttingDown else { return }
-        fireDueSnoozes()  // catch snoozes that came due while the app was closed
+        // Catch snoozes that came due while the app was closed.
+        await fireDueSnoozes()
+        guard !isShuttingDown else { return }
+        observeActivityForPolling()
+        armSyncTimer()
+    }
+
+    private var currentPollInterval: TimeInterval {
+        PollCadence.interval(
+            appActive: NSApp?.isActive ?? true,
+            lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled)
+    }
+
+    private func armSyncTimer() {
+        guard !isShuttingDown else { return }
+        let interval = currentPollInterval
         syncTimer?.invalidate()
-        syncTimer = Timer.scheduledTimer(withTimeInterval: 60, repeats: true) { [weak self] _ in
+        syncTimerInterval = interval
+        syncTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.isShuttingDown else { return }
                 await self.syncAll()
-                self.fireDueReminders()
-                self.fireDueSnoozes()
+                await self.fireDueReminders()
+                await self.fireDueSnoozes()
                 // Backstop for the one-shot timer (sleep/wake can eat it).
                 await self.fireDueScheduledSends()
             }
         }
+    }
+
+    /// Re-arm only when the cadence actually changed. Focus flaps between two
+    /// windows of the same app do not change `NSApp.isActive`, but Low Power
+    /// Mode and app switches do.
+    private func rearmSyncTimerIfCadenceChanged() {
+        guard syncTimer != nil, !isShuttingDown else { return }
+        guard currentPollInterval != syncTimerInterval else { return }
+        armSyncTimer()
+    }
+
+    private func observeActivityForPolling() {
+        guard activityObservers.isEmpty else { return }
+        let center = NotificationCenter.default
+        // Coming to the front: catch up now rather than making the user look
+        // at a list that can be a whole interval stale, then speed back up.
+        activityObservers.append(center.addObserver(
+            forName: NSApplication.didBecomeActiveNotification,
+            object: nil, queue: .main
+        ) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, !self.isShuttingDown else { return }
+                self.rearmSyncTimerIfCadenceChanged()
+                // Only if the mailbox is actually stale. Without this floor,
+                // alt-tabbing back and forth would fire a full multi-account
+                // sync per switch — more requests against Gmail's quota than
+                // the poll it is supposed to be relieving.
+                if let last = self.lastSyncAttemptedAt,
+                   Date().timeIntervalSince(last) < PollCadence.active {
+                    return
+                }
+                await self.syncAll()
+            }
+        })
+        for name in [NSApplication.didResignActiveNotification,
+                     Notification.Name.NSProcessInfoPowerStateDidChange] {
+            activityObservers.append(center.addObserver(
+                forName: name, object: nil, queue: .main
+            ) { [weak self] _ in
+                Task { @MainActor in self?.rearmSyncTimerIfCadenceChanged() }
+            })
+        }
+    }
+
+    private func stopObservingActivityForPolling() {
+        for observer in activityObservers {
+            NotificationCenter.default.removeObserver(observer)
+        }
+        activityObservers.removeAll()
     }
 
     /// Sync every account with true parallelism at the SyncEngine layer
@@ -2712,12 +2918,15 @@ struct ComposeRequest: Identifiable {
             return
         }
         guard !isShuttingDown else { return }
+        // Covers every exit below, including the no-accounts and early-out
+        // paths — all of them count as "we just looked".
+        defer { lastSyncAttemptedAt = Date() }
         let ids = accounts.map(\.id)
         guard !ids.isEmpty else {
-            applyBlocklist()
-            notifyNewMail()
+            await applyBlocklist()
+            await notifyNewMail()
             rebuildContacts()
-            autoClassifyNewMail()
+            await autoClassifyNewMail()
             return
         }
         for id in ids where engines[id] == nil {
@@ -2730,6 +2939,13 @@ struct ComposeRequest: Identifiable {
         syncStatus = ids.count == 1
             ? "Syncing \(ids[0])…"
             : "Syncing \(ids.count) accounts…"
+
+        // Whether any account actually rewrote thread rows this pass.
+        // `deriveThreads` is the single choke point for message-row writes and
+        // records every key it derives, so `.none` from every engine means the
+        // thread table is byte-identical to before the sync — and the whole
+        // reload tail below would be recomputing the same answers.
+        var anyThreadsChanged = false
 
         await withTaskGroup(of: (String, Error?, ThreadContentChange).self) { group in
             for (id, engine) in pairs {
@@ -2746,6 +2962,7 @@ struct ComposeRequest: Identifiable {
             }
             for await (id, error, change) in group {
                 applyThreadContentChange(change)
+                if change != .none { anyThreadsChanged = true }
                 if let error {
                     if Self.isReauthRequired(error) {
                         requireReauthorization(for: id)
@@ -2766,12 +2983,23 @@ struct ComposeRequest: Identifiable {
             }
         }
         syncStatus = ""
-        reloadAccounts()
+        // Always: `syncLabels` can rename/add a Gmail label without touching a
+        // single thread row, and the sidebar renders from this.
+        await reloadAccountsOffMain()
+        // The steady state for an idle mailbox is "history returned nothing".
+        // Re-running the list query, the blocklist scan, the unread diff and
+        // the classifier every 60 seconds to reach the same answer was pure
+        // main-actor tax.
+        guard anyThreadsChanged else {
+            await AppDatabase.shared.checkpointIfNeededOffMain()
+            return
+        }
         reloadThreads()  // once for all accounts, not once per account
-        applyBlocklist()
-        notifyNewMail()
+        await applyBlocklist()
+        await notifyNewMail()
         rebuildContacts()
-        autoClassifyNewMail()
+        await autoClassifyNewMail()
+        await AppDatabase.shared.checkpointIfNeededOffMain()
     }
 
     func sync(accountId: String) async {
@@ -2851,8 +3079,13 @@ struct ComposeRequest: Identifiable {
 
     // MARK: - New-mail notifications
 
-    private func currentUnreadInboxIds() -> Set<String> {
-        Set((try? db.read { db -> [String] in
+    /// Ids only — `fetchAll().map(\.id)` decoded every column of every unread
+    /// inbox thread (participants, snippet, label blob) just to throw all of
+    /// it away. `select` pushes the projection into SQL, so SQLCipher only
+    /// decrypts the pages the id index actually needs.
+    private func currentUnreadInboxIds() async -> Set<String> {
+        let pool = db
+        return Set((try? await pool.read { db -> [String] in
             // Prefer denormalized category flags when present (schema v11+).
             try MailThread
                 .filter(Column("isUnread") == true)
@@ -2861,17 +3094,45 @@ struct ComposeRequest: Identifiable {
                 .filter(Column("inSpam") == false)
                 .filter(Column("inPromotions") == false)
                 .filter(Column("inSocial") == false)
-                .fetchAll(db).map(\.id)
+                .select(Column("id"), as: String.self)
+                .fetchAll(db)
         }) ?? [])
     }
 
-    private func notifyNewMail() {
-        let current = currentUnreadInboxIds()
+    /// True once the launch baseline is in place. Until then every unread
+    /// thread already in the cache would look "new", so the first pass only
+    /// records what is there rather than announcing all of it.
+    @ObservationIgnored
+    private var unreadBaselineSeeded = false
+
+    /// Adopts `current` as "already known", so none of it notifies.
+    private func adoptUnreadBaseline(_ current: Set<String>) {
+        knownUnreadInboxIds = current
+        notifiedThreadIds = current
+        unreadBaselineSeeded = true
+    }
+
+    /// Seeds the notification baseline without notifying. Runs off the launch
+    /// critical path; a sync that beats it is handled by the same flag.
+    private func seedUnreadBaseline() async {
+        guard !unreadBaselineSeeded else { return }
+        let current = await currentUnreadInboxIds()
+        guard !unreadBaselineSeeded else { return }   // a sync won the race
+        adoptUnreadBaseline(current)
+    }
+
+    private func notifyNewMail() async {
+        let current = await currentUnreadInboxIds()
+        guard unreadBaselineSeeded else {
+            adoptUnreadBaseline(current)
+            return
+        }
         let fresh = current.subtracting(notifiedThreadIds)
         notifiedThreadIds.formUnion(current)
         knownUnreadInboxIds = current
         guard !fresh.isEmpty else { return }
-        let newThreads = (try? db.read { db in
+        let pool = db
+        let newThreads = (try? await pool.read { db in
             try MailThread.filter(fresh.contains(Column("id"))).order(Column("lastDate").desc).fetchAll(db)
         }) ?? []
         for thread in newThreads.prefix(3) {
@@ -2898,8 +3159,12 @@ struct ComposeRequest: Identifiable {
         reloadThreads()
     }
 
-    private func fireDueReminders() {
-        let due = (try? db.read { db in
+    /// Async: this fires on every poll tick, and the overwhelming majority of
+    /// ticks find nothing due. Paying for a main-thread reader to learn that
+    /// was the same once-a-minute tax as the rest of the sync tail.
+    private func fireDueReminders() async {
+        let pool = db
+        let due = (try? await pool.read { db in
             try MailThread.filter(Column("reminderAt") != nil && Column("reminderAt") <= Date()).fetchAll(db)
         }) ?? []
         var changed = false
@@ -2920,7 +3185,7 @@ struct ComposeRequest: Identifiable {
                                 id: "reminder.\(thread.id)")
             }
             let updated = copy
-            try? db.write { db in try updated.save(db) }
+            try? await db.write { db in try updated.save(db) }
         }
         if changed { reloadThreads() }
     }
@@ -3086,15 +3351,45 @@ struct ComposeRequest: Identifiable {
             }
     }
 
+    /// Rebuilds `labelsById` / `labelsByName` from `labelsByAccount`. Driven
+    /// by that property's `didSet`, so the indexes cannot drift from it.
+    private func rebuildLabelIndexes() {
+        var byId: [String: [String: LabelRow]] = [:]
+        var byName: [String: [String: LabelRow]] = [:]
+        for (accountId, rows) in labelsByAccount {
+            var ids: [String: LabelRow] = [:]
+            var names: [String: LabelRow] = [:]
+            ids.reserveCapacity(rows.count)
+            names.reserveCapacity(rows.count)
+            for row in rows {
+                ids[row.gmailLabelId] = row
+                // Ties keep the first in the account's sort order, matching
+                // the `first { … }` scans this replaced.
+                if names[row.name] == nil { names[row.name] = row }
+            }
+            byId[accountId] = ids
+            byName[accountId] = names
+        }
+        labelsById = byId
+        labelsByName = byName
+    }
+
     func labelName(_ labelId: String, account accountId: String) -> String? {
-        labelsByAccount[accountId]?.first { $0.gmailLabelId == labelId }?.name
+        labelsById[accountId]?[labelId]?.name
+    }
+
+    /// Name and display color for a label in a single lookup — what a thread
+    /// row needs for each of its chips.
+    func labelChip(_ labelId: String, account accountId: String) -> ThreadRowLabelChip? {
+        guard let row = labelsById[accountId]?[labelId] else { return nil }
+        return ThreadRowLabelChip(name: row.name, colorHex: row.color)
     }
 
     /// Display color for a label within an account: the user-assigned (or
     /// Gmail-seeded) color, falling back to the name-stable palette. Scoped by
     /// account so two accounts' same-named labels can carry different colors.
     func labelTint(_ name: String, account accountId: String) -> Color {
-        let hex = labelsByAccount[accountId]?.first { $0.name == name }?.color
+        let hex = labelsByName[accountId]?[name]?.color
         return hex.flatMap(Color.hexString) ?? Color.stable(for: name)
     }
 
@@ -3173,7 +3468,7 @@ struct ComposeRequest: Identifiable {
     /// fires no onChange then — and with the top row pre-highlighted, the very
     /// first click in a mailbox is exactly that case — so ContentView listens
     /// to this token and opens the selected conversation explicitly.
-    @Published private(set) var openSelectedToken = 0
+    private(set) var openSelectedToken = 0
     func requestOpenSelected() { openSelectedToken &+= 1 }
 
     /// Thread ids in the order the list actually displays them (priority
@@ -3872,9 +4167,10 @@ struct ComposeRequest: Identifiable {
 
     /// Wakes snoozed threads whose date has passed: clears the snooze and
     /// restores INBOX (locally and on Gmail). Runs on the sync tick.
-    private func fireDueSnoozes() {
+    private func fireDueSnoozes() async {
         let now = Date()
-        let due = (try? db.read { db in
+        let pool = db
+        let due = (try? await pool.read { db in
             try MailThread
                 .filter(Column("snoozeUntil") != nil && Column("snoozeUntil") <= now)
                 .fetchAll(db)
@@ -3910,7 +4206,8 @@ struct ComposeRequest: Identifiable {
         }
     }
 
-    @Published private(set) var pendingSend: PendingSend?
+    private(set) var pendingSend: PendingSend?
+    @ObservationIgnored
     private var pendingSendTimer: Timer?
     static let undoSendWindow: TimeInterval = 10
 
@@ -4028,7 +4325,8 @@ struct ComposeRequest: Identifiable {
 
     // MARK: - Scheduled sends (send later)
 
-    @Published private(set) var scheduledSends: [ScheduledSend] = []
+    private(set) var scheduledSends: [ScheduledSend] = []
+    @ObservationIgnored
     private var scheduledSendTimer: Timer?
 
     func reloadScheduledSends() {
@@ -4553,7 +4851,7 @@ struct ComposeRequest: Identifiable {
     /// Published, load-once cache of the snippets table. Every mutator below
     /// (and the startup seed) refreshes it after writing, so compose's `/`
     /// picker and Settings' table update live without a manual reload.
-    @Published private(set) var allSnippets: [Snippet] = []
+    private(set) var allSnippets: [Snippet] = []
 
     private func reloadSnippets() {
         allSnippets = (try? db.read { try Snippet.order(Column("name")).fetchAll($0) }) ?? []
@@ -4567,19 +4865,16 @@ struct ComposeRequest: Identifiable {
             try s.insert(db)
         }
         reloadSnippets()
-        objectWillChange.send()
     }
 
     func deleteSnippet(_ s: Snippet) {
         try? db.write { db in _ = try Snippet.deleteOne(db, key: s.id) }
         reloadSnippets()
-        objectWillChange.send()
     }
 
     func updateSnippet(_ s: Snippet) {
         try? db.write { db in try s.update(db) }
         reloadSnippets()
-        objectWillChange.send()
     }
 
     /// Imports snippets from a JSON file
@@ -4610,7 +4905,6 @@ struct ComposeRequest: Identifiable {
             }
         }
         reloadSnippets()
-        objectWillChange.send()
         return (planned.count, items.count - planned.count, unknownAccountIds)
     }
 }

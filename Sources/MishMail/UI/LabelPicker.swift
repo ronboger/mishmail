@@ -12,7 +12,7 @@ import SwiftUI
 /// (That's also why there's no .onSubmit: Return is committed by the
 /// monitor, which sees the event first regardless of focus.)
 struct LabelPicker: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     // `store.selectedThread` reads selection, which no longer publishes
     // through MailStore (it lives on ListFocusState). Observe listFocus so a
     // focus-only change can't leave this body stale. Cheap: the picker is

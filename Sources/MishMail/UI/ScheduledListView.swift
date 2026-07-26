@@ -3,7 +3,7 @@ import SwiftUI
 /// The Scheduled view: locally scheduled sends waiting for their time.
 /// Not Gmail threads — rows edit back into compose, send now, or discard.
 struct ScheduledListView: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
 
     var body: some View {
         Group {
@@ -49,7 +49,7 @@ struct ScheduledListView: View {
 }
 
 private struct ScheduledRow: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     let send: ScheduledSend
     @State private var hovering = false
 

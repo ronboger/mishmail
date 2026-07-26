@@ -4,7 +4,7 @@ import SwiftUI
 /// colors are local (they don't touch Gmail) and drive the label pills, the
 /// Labels filter dropdown, and the "l" picker everywhere in the app.
 struct LabelOrganizer: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     @Environment(\.dismiss) private var dismiss
     @State private var selectedAccount: String?
 
@@ -81,7 +81,7 @@ struct LabelOrganizer: View {
 /// One organizer row: a color swatch (opens a palette), the label name, and a
 /// drag handle courtesy of List's move support.
 private struct LabelOrganizerRow: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     let label: LabelRow
     @State private var showPalette = false
 
@@ -110,7 +110,7 @@ private struct LabelOrganizerRow: View {
 /// The color grid shown when picking a label's color, plus a "default" reset
 /// that falls back to the name-stable color.
 private struct LabelColorPalette: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     let label: LabelRow
     let onPick: () -> Void
 

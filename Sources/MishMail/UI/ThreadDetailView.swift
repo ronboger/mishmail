@@ -41,7 +41,7 @@ private final class InlineScrollDisarmGate {
 }
 
 struct ThreadDetailView: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     @AppStorage("fontScale") private var fontScale = 1.0
     @AppStorage("readingPaneHidden") private var readingPaneHidden = false
     let thread: MailThread
@@ -1009,7 +1009,7 @@ struct ThreadDetailView: View {
 /// authored preview (no HTML quote trail / "…" gap), and Continue/Discard
 /// actions on the card itself so edit isn't only at the top of the pane.
 struct DraftMessageCard: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     @AppStorage("fontScale") private var fontScale = 1.0
     let message: Message
     let onNeedBody: () -> Void
@@ -1140,7 +1140,7 @@ struct DraftMessageCard: View {
 }
 
 struct MessageCard: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     @AppStorage("fontScale") private var fontScale = 1.0
     /// Settings → Appearance. Default `.ask` so tracking pixels stay blocked.
     @AppStorage(RemoteImagePolicy.defaultsKey) private var remoteImagePolicyRaw =
@@ -1969,7 +1969,7 @@ struct MessageCard: View {
 /// via `MailStore.ensureFiltersLoaded`; hidden when none match or filters
 /// aren't readable yet (scope / empty account).
 private struct MatchingFiltersSection: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     let message: Message
     var fontScale: Double = 1.0
     @State private var expanded = false

@@ -29,7 +29,7 @@ enum GroupBy: String, CaseIterable {
 }
 
 struct ThreadListView: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     /// Separate from MailStore so ↓ / j focus moves don't re-render sidebar /
     /// detail — only the list (and ContentView's open policy) observe this.
     @EnvironmentObject var listFocus: ListFocusState
@@ -62,15 +62,11 @@ struct ThreadListView: View {
     /// Snapshot everything a row needs so `ThreadRow` can skip body work when
     /// only another row's focus changed (Equatable + no EnvironmentObject).
     private func threadRowModel(_ thread: MailThread, isChecked: Bool) -> ThreadRowModel {
+        // One dictionary hit per label. This runs for every visible row on
+        // every body pass, and used to be two linear scans of the account's
+        // label list per label.
         let labels: [ThreadRowLabelChip] = thread.labels
-            .compactMap { id -> ThreadRowLabelChip? in
-                guard let name = store.labelName(id, account: thread.accountId) else {
-                    return nil
-                }
-                let hex = store.labelsByAccount[thread.accountId]?
-                    .first { $0.name == name }?.color
-                return ThreadRowLabelChip(name: name, colorHex: hex)
-            }
+            .compactMap { store.labelChip($0, account: thread.accountId) }
             .sorted { $0.name < $1.name }
         return ThreadRowModel(
             thread: thread,
@@ -495,7 +491,10 @@ struct ThreadListView: View {
 
 /// Notion Mail-style filter chips above the list, with click-to-refresh.
 struct FilterBar: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
+    /// `@Environment` has no projected value, so controls that need two-way
+    /// access to the store go through this instead of `$store`.
+    private var bound: Bindable<MailStore> { Bindable(store) }
     @State private var showCategoriesPopover = false
     @State private var showLabelsPopover = false
     @State private var labelQuery = ""
@@ -657,7 +656,7 @@ struct FilterBar: View {
                 Color.clear.frame(width: 1, height: 1)
             }
         }
-        .popover(isPresented: $store.showFilterMenu, arrowEdge: .bottom) {
+        .popover(isPresented: bound.showFilterMenu, arrowEdge: .bottom) {
             filterPopover
         }
         .onChange(of: store.showFilterMenu) {
@@ -889,7 +888,7 @@ struct FilterBar: View {
             }
 
             if field == .label {
-                Picker("", selection: $store.chips.labelId) {
+                Picker("", selection: bound.chips.labelId) {
                     Text("Any").tag(String?.none)
                     ForEach(allLabels, id: \.gmailLabelId) { label in
                         Text(label.name).tag(String?.some(label.gmailLabelId))
@@ -1472,7 +1471,7 @@ struct ThreadRow: View, Equatable {
 /// Notion Mail-style categories popover: contains / does-not-contain mode,
 /// selected categories as removable chips, checkboxes, and a clear action.
 struct CategoriesPopover: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
 
     private var filter: Binding<CategoryFilter> {
         Binding(get: { store.chips.category }, set: { store.chips.category = $0 })

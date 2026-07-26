@@ -20,7 +20,10 @@ private struct ComposeHostFrameKey: PreferenceKey {
 }
 
 struct ContentView: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
+    /// `@Environment` has no projected value, so sheets and controls that need
+    /// two-way access to the store go through this instead of `$store`.
+    private var bound: Bindable<MailStore> { Bindable(store) }
     /// List highlight — separate ObservableObject so ↓ / j does not publish
     /// through MailStore (and re-render detail / sidebar). ContentView must
     /// observe it: the open-policy onChange and toolbar state depend on it.
@@ -302,10 +305,10 @@ struct ContentView: View {
         }
         .animation(PMMotion.feedback, value: store.undoAction?.id)
         .animation(PMMotion.feedback, value: store.notice)
-        .sheet(item: $store.editingView) { view in
+        .sheet(item: bound.editingView) { view in
             ViewEditor(view: view)
         }
-        .sheet(item: $store.snoozingThread) { thread in
+        .sheet(item: bound.snoozingThread) { thread in
             SnoozeSheet(current: thread.snoozeUntil) { store.snooze(thread, until: $0) }
         }
         .alert(
@@ -321,10 +324,10 @@ struct ContentView: View {
         } message: { _ in
             Text("This can't be undone.")
         }
-        .sheet(isPresented: $store.showShortcutsHelp) {
+        .sheet(isPresented: bound.showShortcutsHelp) {
             ShortcutsHelpView(bindings: store.keyBindings)
         }
-        .sheet(isPresented: $store.showLabelOrganizer) {
+        .sheet(isPresented: bound.showLabelOrganizer) {
             LabelOrganizer()
         }
         .overlay {
@@ -1065,7 +1068,10 @@ private extension ContentView {
 }
 
 struct Sidebar: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
+    /// `@Environment` has no projected value, so controls that need two-way
+    /// access to the store go through this instead of `$store`.
+    private var bound: Bindable<MailStore> { Bindable(store) }
     @ObservedObject private var updates = UpdateChecker.shared
     // Driven by `/` (Gmail-style) via store.searchFocusToken.
     @FocusState private var searchFocused: Bool
@@ -1089,7 +1095,7 @@ struct Sidebar: View {
                 .accessibilityIdentifier("composeButton")
             }
             .padding(.horizontal, 10).padding(.vertical, 8)
-            SearchField(prompt: "Search", text: $store.searchText, focused: $searchFocused,
+            SearchField(prompt: "Search", text: bound.searchText, focused: $searchFocused,
                         emphasized: searchFocused, onSubmit: {
                     // Fallback path — with the dropdown open, Enter is handled
                     // by the key monitor and routed to the panel instead.
@@ -1106,7 +1112,7 @@ struct Sidebar: View {
                 // Blur is deferred (see noteSearchFocused) so a click on a
                 // result row can land before the panel is torn down.
                 .onChange(of: searchFocused) { store.noteSearchFocused(searchFocused) }
-            List(selection: $store.selectedView) {
+            List(selection: bound.selectedView) {
                 Section("Views") {
                     sidebarItem(.inbox, badge: store.unreadCounts["inbox"])
                     sidebarItem(.promotions, badge: store.unreadCounts["promotions"])
@@ -1242,7 +1248,7 @@ private struct SearchPanelContentHeightKey: PreferenceKey {
 /// ↑/↓/Enter come in from the global key monitor via searchHighlight /
 /// searchActivateToken, so the flow is fully keyboard-driven after `/`.
 struct SearchResultsPanel: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     // Live thread matches; refreshed as the query changes.
     @State private var threadPreview: [MailThread] = []
     // Contact matches for the current query — @State so we filter once per
@@ -1573,7 +1579,10 @@ struct SearchResultsPanel: View {
 /// A Button + popover, NOT a Menu: macOS flattens custom views in Menu
 /// labels, which drops the avatar and name entirely.
 struct AccountSwitcher: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
+    /// `@Environment` has no projected value, so controls that need two-way
+    /// access to the store go through this instead of `$store`.
+    private var bound: Bindable<MailStore> { Bindable(store) }
     @State private var showMenu = false
     /// Id of the account row currently being dragged, for the fade feedback
     /// and to resolve source/destination indices on drop.
@@ -1660,7 +1669,7 @@ struct AccountSwitcher: View {
         // mid-drag) never reaches any onDrop — clear the fade so the source
         // row isn't stuck dimmed after reopening.
         .onChange(of: showMenu) { if !showMenu { draggingAccountId = nil } }
-        .sheet(isPresented: $store.editingAccountLabels) {
+        .sheet(isPresented: bound.editingAccountLabels) {
             AccountLabelsEditor()
         }
     }
@@ -1818,7 +1827,7 @@ private struct AccountDropDelegate: DropDelegate {
 
 /// Rename accounts ("Personal", "Fund", …); labels are local only.
 struct AccountLabelsEditor: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     @Environment(\.dismiss) private var dismiss
     @State private var labels: [String: String] = [:]
     @State private var senderNames: [String: String] = [:]

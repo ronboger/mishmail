@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 /// Notion Mail-style settings window: a slim sidebar of panes on the left,
 /// the selected pane on the right. Opens with Cmd-, or from the app sidebar.
 struct SettingsView: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
 
     enum Pane: String, Identifiable {
         case accounts, googleAPI, filters, snippets, general, appearance, shortcuts, ai, updates
@@ -293,7 +293,7 @@ struct UpdatesSettings: View {
 }
 
 struct AccountsSettings: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
 
     var body: some View {
         PaneScaffold(title: "Accounts") {
@@ -350,7 +350,7 @@ struct AccountsSettings: View {
 // MARK: - Gmail filters (read-only, Notion Mail-style sentences)
 
 struct GmailFiltersSettings: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
 
     private var anyLoading: Bool {
         store.accounts.contains { store.filtersLoading.contains($0.id) }
@@ -447,7 +447,7 @@ struct GmailFiltersSettings: View {
 // MARK: - Snippets (Notion Mail-style table with search + editor sheet)
 
 struct SnippetsSettings: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     @State private var search = ""
     @State private var editing: Snippet?
     @State private var showImporter = false
@@ -692,7 +692,7 @@ private struct SnippetTableRow: View {
 }
 
 private struct SnippetEditor: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     @Environment(\.dismiss) private var dismiss
     let snippet: Snippet
     @State private var name: String
@@ -963,7 +963,7 @@ struct GeneralSettings: View {
 }
 
 struct AppearanceSettings: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     @AppStorage("fontScale") private var fontScale = 1.0
     @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
     @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
@@ -1084,7 +1084,7 @@ struct AppearanceSettings: View {
 /// and a separate bulk section whose paste box pulls every email address out
 /// of free-form text (commas, newlines, "Name <email>", CSV columns).
 private struct VIPManager: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     @Environment(\.dismiss) private var dismiss
     @State private var newVIP = ""
     @State private var addGroup = ""

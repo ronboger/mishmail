@@ -5,7 +5,7 @@ import SwiftUI
 /// outside the window (Gmail is untouched), and "Nothing" removes all of the
 /// account's mail from this Mac. SyncEngine reads the same key.
 struct SyncWindowPicker: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     let accountId: String
     @State private var days: Int
 

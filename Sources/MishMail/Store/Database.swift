@@ -359,7 +359,10 @@ struct LabelRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRe
 
 // MARK: - Database
 
-final class AppDatabase {
+/// Shared by design: SyncEngine actors, the MainActor store and background
+/// maintenance all reach the same pool. `dbPool` is itself thread-safe and the
+/// only mutable state (`isClosed`) is guarded by `closeLock`.
+final class AppDatabase: @unchecked Sendable {
     static let shared = try! AppDatabase()
     // A pool (WAL), not a serial queue: concurrent readers (e.g. the live
     // search dropdown's per-keystroke FTS lookup) run on their own snapshot
@@ -368,6 +371,9 @@ final class AppDatabase {
     /// True after `close()` — no further access is valid (process is quitting).
     private(set) var isClosed = false
     private let closeLock = NSLock()
+    /// On-disk location, kept so the WAL sidecar can be sized without asking
+    /// SQLite (see `checkpointIfNeeded`).
+    private let path: String
 
     init() throws {
         let root = try FileManager.default.url(for: .applicationSupportDirectory,
@@ -387,6 +393,7 @@ final class AppDatabase {
         }
         try FileManager.default.createDirectory(at: dir, withIntermediateDirectories: true)
         let path = dir.appendingPathComponent("mail.sqlite").path
+        self.path = path
 
         // Real mail is encrypted with a Keychain-held key. The fictional demo
         // uses a fixed non-secret fixture key so an ad-hoc source build never
@@ -457,14 +464,151 @@ final class AppDatabase {
         }
     }
 
+    /// Page cache, in kibibytes, expressed the way SQLite wants it (negative
+    /// means KiB rather than a page count, so it stays correct if page_size
+    /// ever changes).
+    ///
+    /// The default is ~2 MB, which is far too small in front of a mailbox
+    /// cache that reaches hundreds of megabytes. Under SQLCipher every cache
+    /// miss is not just a disk read but an AES decrypt plus an HMAC verify of
+    /// the page, so the cache buys much more here than it would on a plain
+    /// SQLite file.
+    ///
+    /// This is **per connection**, and `DatabasePool` opens one writer plus up
+    /// to `maximumReaderCount` readers (5 by default) — so the ceiling is
+    /// ~6× this number, not this number. SQLite grows the cache lazily to the
+    /// limit, and a reader serving one list query touches nowhere near that
+    /// many distinct pages, but the bound is what has to be defensible. 32 MB
+    /// is 16× the default and keeps the worst case under 200 MB.
+    static let pageCacheKiB = 32_768
+
     private static func openAndMigrate(path: String, passphrase: String) throws -> DatabasePool {
         var config = Configuration()
         config.prepareDatabase { db in
             try db.usePassphrase(passphrase)
+            // Must follow the passphrase: SQLCipher rejects most statements
+            // on an un-keyed connection.
+            try db.execute(sql: "PRAGMA cache_size = -\(pageCacheKiB)")
+            // Sorts and temp b-trees (ORDER BY over the thread list, FTS
+            // ranking) stay in memory instead of spilling to a temp file that
+            // SQLCipher would have to encrypt on the way out.
+            try db.execute(sql: "PRAGMA temp_store = MEMORY")
         }
         let pool = try DatabasePool(path: path, configuration: config)
         try migrator.migrate(pool)
         return pool
+    }
+
+    // MARK: - WAL and file health
+
+    static let vacuumDefaultsKey = "db.vacuumed.v24bodies"
+
+    /// One-time full `VACUUM`, then `auto_vacuum = INCREMENTAL` from here on.
+    ///
+    /// Migration v24 moved every message body out of the `message` row and
+    /// blanked the old columns. That frees an enormous number of pages inside
+    /// the file without shrinking it — on a real mailbox the file stayed at
+    /// its pre-migration size, mostly free pages, which spreads live rows
+    /// across far more pages than they need and costs an extra decrypt on
+    /// every straddling read.
+    ///
+    /// `VACUUM` rewrites the file compactly. It is expensive (it copies the
+    /// whole database) so it runs exactly once, gated on a marker; afterwards
+    /// incremental auto-vacuum keeps the file from re-bloating without ever
+    /// needing another full pass.
+    ///
+    /// Deliberately *not* part of opening the pool: on a large mailbox this
+    /// takes tens of seconds, and on the open path that would be tens of
+    /// seconds of launch with no window on screen. Call it from a background
+    /// task once the app is up (`MailStore.runDeferredStartupWork`).
+    func reclaimSpaceIfNeeded() {
+        guard !UserDefaults.standard.bool(forKey: Self.vacuumDefaultsKey) else { return }
+        closeLock.lock()
+        let closed = isClosed
+        closeLock.unlock()
+        guard !closed else { return }
+        do {
+            try dbPool.writeWithoutTransaction { db in
+                // auto_vacuum only takes effect for a database that is
+                // vacuumed after the mode is set, so order matters here.
+                try db.execute(sql: "PRAGMA auto_vacuum = INCREMENTAL")
+                try db.execute(sql: "VACUUM")
+            }
+            UserDefaults.standard.set(true, forKey: Self.vacuumDefaultsKey)
+        } catch {
+            // Not fatal: a failed vacuum (no disk headroom, busy file, or an
+            // interrupt during termination) leaves a working — merely larger
+            // — database. Leave the marker unset so a later launch retries.
+            NSLog("MishMail: vacuum failed: %@", "\(error)")
+        }
+    }
+
+    /// Byte size of the write-ahead log, or 0 when there is none.
+    var walSizeBytes: Int {
+        let attributes = try? FileManager.default
+            .attributesOfItem(atPath: path + "-wal")
+        return (attributes?[.size] as? NSNumber)?.intValue ?? 0
+    }
+
+    /// WAL past which a checkpoint is worth its cost. Small enough that the
+    /// log never becomes a drag on reads, large enough that a steady sync
+    /// isn't truncating the file every pass.
+    static let checkpointThresholdBytes = 16 << 20   // 16 MiB
+
+    /// Checkpoint only when the log has actually grown. Called after sync —
+    /// cheap (a `stat`) in the common case where the WAL is already small, so
+    /// it needs no timer of its own.
+    func checkpointIfNeeded() {
+        guard walSizeBytes >= Self.checkpointThresholdBytes else { return }
+        checkpoint()
+    }
+
+    /// `checkpointIfNeeded` for callers on the main actor. The checkpoint
+    /// itself is a blocking write; it must not run there.
+    func checkpointIfNeededOffMain() async {
+        await Task.detached(priority: .utility) { [self] in
+            checkpointIfNeeded()
+        }.value
+    }
+
+    /// `reclaimSpaceIfNeeded` for callers on the main actor.
+    func reclaimSpaceOffMain() async {
+        await Task.detached(priority: .background) { [self] in
+            reclaimSpaceIfNeeded()
+        }.value
+    }
+
+    /// Checkpoint the write-ahead log and truncate it back to nothing.
+    ///
+    /// SQLite's passive auto-checkpoint only copies pages the readers have
+    /// moved past, and it never shrinks the file. With a pool that keeps
+    /// reader connections alive and a sync that reads continuously, the WAL
+    /// can grow without bound — on a real mailbox it reached the same size as
+    /// the database itself and survived app exit, so every launch paid WAL
+    /// recovery and every read resolved pages through a huge WAL index.
+    ///
+    /// `TRUNCATE` blocks until it can checkpoint everything, so this is only
+    /// called when nothing else should be running: at idle and on the way out.
+    func checkpoint() {
+        closeLock.lock()
+        let closed = isClosed
+        closeLock.unlock()
+        guard !closed else { return }
+        do {
+            try dbPool.writeWithoutTransaction { db in
+                // Order matters: `incremental_vacuum` is itself a write, so
+                // running it after the truncate would immediately re-grow the
+                // log we just emptied. Freeing first lets the checkpoint fold
+                // those pages in too, and the WAL ends at zero.
+                // Bounded per call so this never turns into a long stall.
+                try db.execute(sql: "PRAGMA incremental_vacuum(1000)")
+                try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+            }
+        } catch {
+            // A checkpoint that loses a race with a reader is normal and
+            // harmless — the next idle pass gets it.
+            NSLog("MishMail: wal checkpoint failed: %@", "\(error)")
+        }
     }
 
     /// Moves an unreadable database out of the way (kept as .unreadable for

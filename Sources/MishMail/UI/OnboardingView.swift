@@ -6,7 +6,7 @@ import UniformTypeIdentifiers
 /// deep-links to the exact console pages and a drop target for the downloaded
 /// `client_secret_*.json` (so it's one file instead of two copy-pastes).
 struct OnboardingView: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     @State private var clientID = OAuthConfig.clientID
     @State private var clientSecret = OAuthConfig.clientSecret
     @State private var importing = false

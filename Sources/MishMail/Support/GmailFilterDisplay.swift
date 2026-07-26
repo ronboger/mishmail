@@ -111,7 +111,7 @@ enum GmailFilterDisplay {
 /// One filter as an icon + Notion-style sentence. Compact mode drops the
 /// circular icon chrome for embedding under a message card.
 struct GmailFilterSentenceRow: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     let filter: GFilter
     let accountId: String
     var compact: Bool = false

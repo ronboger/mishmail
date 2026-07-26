@@ -3,7 +3,7 @@ import SwiftUI
 /// Notion Mail-style recipient field: accepted addresses render as chips,
 /// with autocomplete backed by contacts mined from synced mail.
 struct TokenAddressField: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     let label: String
     @Binding var tokens: [String]
     @Binding var draft: String

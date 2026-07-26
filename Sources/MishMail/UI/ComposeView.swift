@@ -4,7 +4,7 @@ import UniformTypeIdentifiers
 /// Notion/Gmail-style compose: a docked card with recipient chips,
 /// borderless fields, minimal footer.
 struct ComposeView: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
 
     let request: MailStore.ComposeRequest
 
@@ -958,7 +958,7 @@ struct ComposeView: View {
                 }, close: {
                     withAnimation(.easeOut(duration: 0.12)) { showSnippets = false }
                 }, accountId: fromAccountId)
-                .environmentObject(store)
+                .environment(store)
                 .padding(.bottom, 8)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }

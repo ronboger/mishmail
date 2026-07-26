@@ -129,7 +129,7 @@ struct AccountScopeBadge: View {
 /// name + preview rows, insert on click, delete on hover. Lives inside the
 /// card (not a popover) so it always presents and stays where you write.
 struct SnippetsPanel: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
 
     let insert: (Snippet) -> Void
     let saveDraftAsSnippet: () -> Void

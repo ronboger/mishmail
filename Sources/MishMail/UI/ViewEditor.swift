@@ -2,7 +2,7 @@ import SwiftUI
 
 /// Create/edit a custom saved view (Notion Mail-style).
 struct ViewEditor: View {
-    @EnvironmentObject var store: MailStore
+    @Environment(MailStore.self) var store
     @Environment(\.dismiss) private var dismiss
     @State var view: SavedView
 
