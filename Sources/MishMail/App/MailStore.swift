@@ -1248,6 +1248,8 @@ struct ComposeRequest: Identifiable {
         }
         demoMode = true
         lastError = nil
+        // The whole mailbox was just replaced under the cache.
+        applyThreadContentChange(.everything)
         accountsNeedingReauth.removeAll()
         selectedView = .inbox
         clearSelection()
@@ -1270,6 +1272,8 @@ struct ComposeRequest: Identifiable {
         }
         demoMode = false
         lastError = nil
+        // Demo mail was just deleted out from under the cache.
+        applyThreadContentChange(.everything)
         accountsNeedingReauth.removeAll()
         selectedView = .inbox
         clearSelection()
@@ -1628,6 +1632,9 @@ struct ComposeRequest: Identifiable {
                 let engine = engines[account.id] ?? SyncEngine(accountId: account.id)
                 engines[account.id] = engine
                 try? await engine.rebuildAllThreadMetadata()
+                // Drain now rather than leaving the rebuild for the next
+                // 60 s poll to report.
+                applyThreadContentChange(await engine.drainContentChange())
             }
             UserDefaults.standard.set(true, forKey: key)
             reloadThreads()
@@ -1695,11 +1702,12 @@ struct ComposeRequest: Identifiable {
     /// (view/search changes call `resetListWindow()` first).
     func reloadThreads() {
         guard !isShuttingDown else { return }
-        // Message rows may have changed (sync, draft discard, send). Bump
-        // before the async list read: the DB write is already committed by
-        // the time anyone calls reloadThreads, so the open reading pane can
-        // re-query its thread immediately.
-        threadContentVersion &+= 1
+        // Deliberately does *not* touch content revisions. This is a list
+        // query — it re-reads thread rows and says nothing about anyone's
+        // message rows. It used to bump a global content version here, which
+        // meant every trash/archive/mark-read (each schedules a reload)
+        // evicted all ten cached reading-pane payloads, neighbours included.
+        // Message-row writes report themselves via `applyThreadContentChange`.
         chipReloadTask?.cancel()   // a direct reload supersedes a pending debounced one
         loadMoreTask?.cancel()
         loadMoreTask = nil
@@ -1916,11 +1924,31 @@ struct ComposeRequest: Identifiable {
         }
     }
 
-    /// Bumped whenever thread/message rows were reloaded from the DB (every
-    /// sync and local mutation funnels through `reloadThreads`). The open
-    /// reading pane keys off this to refresh its message list in place —
-    /// e.g. a discarded draft's card disappears without reopening the thread.
-    @Published private(set) var threadContentVersion = 0
+    /// Per-thread reading-pane content revisions.
+    ///
+    /// Sync is the only writer of message rows; every other mutation rewrites
+    /// the *thread* row and leaves cached bodies valid. Scoping invalidation
+    /// this way is what lets a warmed neighbour survive the trash/archive that
+    /// happens immediately before the user lands on it.
+    private var contentRevisions = ThreadContentRevisions()
+
+    /// Wake-up for the open reading pane: bumped whenever *some* thread's
+    /// content changed. The pane compares its own thread's revision before
+    /// doing any work — this token is never the identity, only the nudge.
+    @Published private(set) var threadContentToken = 0
+
+    /// Cache identity for one thread's reading-pane payload.
+    func contentRevision(of threadId: String) -> ThreadContentRevision {
+        contentRevisions.revision(of: threadId)
+    }
+
+    /// Record message-row changes reported by a sync (or server search) and
+    /// wake the open reading pane. No-op when nothing moved.
+    func applyThreadContentChange(_ change: ThreadContentChange) {
+        guard contentRevisions.apply(change) else { return }
+        threadContentToken &+= 1
+    }
+
     /// Whether the current list window may have older rows past the loaded depth.
     @Published private(set) var hasMoreThreads = false
     @Published private(set) var isLoadingMore = false
@@ -2044,7 +2072,8 @@ struct ComposeRequest: Identifiable {
                 let engine = engines[accountId] ?? SyncEngine(accountId: accountId)
                 engines[accountId] = engine
                 do {
-                    try await engine.searchServer(query: query)
+                    let change = try await engine.searchServer(query: query)
+                    await MainActor.run { self.applyThreadContentChange(change) }
                 } catch {
                     await MainActor.run { self.lastError = error.localizedDescription }
                 }
@@ -2404,17 +2433,15 @@ struct ComposeRequest: Identifiable {
     /// reading pane; hydrate bodies with `messageBody(id:)` on expand.
     /// Quote-trail scans and HTML document assembly run inside the repository
     /// actor so main-thread render only hands ready strings to WebKit.
-    func threadDetailPayload(threadId: String,
-                             forceReload: Bool = false) async -> ThreadDetailLoad {
+    func threadDetailPayload(threadId: String) async -> ThreadDetailLoad {
         let suppressed = suppressedDraftMessageIds
-        let contentVersion = threadContentVersion
+        let revision = contentRevisions.revision(of: threadId)
         let fontScale = Self.readingPaneFontScale()
         return await threadDetailRepository.payload(
             threadId: threadId,
             suppressingDrafts: suppressed,
-            contentVersion: contentVersion,
-            fontScale: fontScale,
-            forceReload: forceReload)
+            revision: revision,
+            fontScale: fontScale)
     }
 
     /// Off-main body hydration for an expanded reading-pane card, including
@@ -2619,6 +2646,9 @@ struct ComposeRequest: Identifiable {
         }
         Keychain.delete("refreshToken.\(id)")
         try? db.write { db in _ = try Account.deleteOne(db, key: id) }
+        // The account's mail cascades away with it; any payload cached for one
+        // of its conversations must not outlive the rows behind it.
+        applyThreadContentChange(.everything)
         engines[id] = nil
         clients[id] = nil
         accountsNeedingReauth.remove(id)
@@ -2694,20 +2724,21 @@ struct ComposeRequest: Identifiable {
             ? "Syncing \(ids[0])…"
             : "Syncing \(ids.count) accounts…"
 
-        await withTaskGroup(of: (String, Error?).self) { group in
+        await withTaskGroup(of: (String, Error?, ThreadContentChange).self) { group in
             for (id, engine) in pairs {
                 group.addTask {
                     do {
-                        try await engine.syncNow { status in
+                        let change = try await engine.syncNow { status in
                             Task { @MainActor [weak self] in self?.syncStatus = status }
                         }
-                        return (id, nil)
+                        return (id, nil, change)
                     } catch {
-                        return (id, error)
+                        return (id, error, .none)
                     }
                 }
             }
-            for await (id, error) in group {
+            for await (id, error, change) in group {
+                applyThreadContentChange(change)
                 if let error {
                     if Self.isReauthRequired(error) {
                         requireReauthorization(for: id)
@@ -2745,9 +2776,10 @@ struct ComposeRequest: Identifiable {
         engines[accountId] = engine
         syncStatus = "Syncing \(accountId)…"
         do {
-            try await engine.syncNow { status in
+            let change = try await engine.syncNow { status in
                 Task { @MainActor [weak self] in self?.syncStatus = status }
             }
+            applyThreadContentChange(change)
             syncStatus = ""
             accountsNeedingReauth.remove(accountId)
             await backfillSenderNameIfNeeded(accountId: accountId)
@@ -2759,7 +2791,10 @@ struct ComposeRequest: Identifiable {
             if Self.isReauthRequired(error) {
                 requireReauthorization(for: accountId)
             } else if case GmailError.partialFetch = error {
-                // Soft: apply what we got; historyId stays put for retry.
+                // Soft: apply what we got; historyId stays put for retry. The
+                // throw skipped syncNow's own drain, so collect the rows that
+                // did land rather than leaving them for the next pass.
+                applyThreadContentChange(await engine.drainContentChange())
                 accountsNeedingReauth.remove(accountId)
                 await backfillSenderNameIfNeeded(accountId: accountId)
                 await refreshSendIdentities(accountId: accountId)
@@ -3219,21 +3254,25 @@ struct ComposeRequest: Identifiable {
         let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
         let repository = threadDetailRepository
         let suppressed = suppressedDraftMessageIds
-        let contentVersion = threadContentVersion
         let fontScale = Self.readingPaneFontScale()
+        // Stamp each neighbour with its own revision now. A sync landing
+        // during the settle can only make this payload miss later — it can
+        // never install content the newer revision should have invalidated.
+        let (prev, next) = NeighborPrefetch.neighbors(selected: openedId, in: order)
+        let targets = [prev, next].compactMap { $0 }.map {
+            (id: $0, revision: contentRevisions.revision(of: $0))
+        }
         neighborPrefetchTask = Task {
             do {
                 try await Task.sleep(nanoseconds: 90_000_000)
             } catch {
                 return
             }
-            let (prev, next) = NeighborPrefetch.neighbors(selected: openedId, in: order)
-            let ids = [prev, next].compactMap { $0 }
-            for id in ids {
+            for target in targets {
                 guard !Task.isCancelled else { return }
                 _ = await repository.payload(
-                    threadId: id, suppressingDrafts: suppressed,
-                    contentVersion: contentVersion,
+                    threadId: target.id, suppressingDrafts: suppressed,
+                    revision: target.revision,
                     fontScale: fontScale)
             }
         }
@@ -3935,19 +3974,18 @@ struct ComposeRequest: Identifiable {
     /// Gmail draft remains untouched until `send` commits after the Undo window.
     private func setPendingDraftSuppressed(_ draft: Message?, suppressed: Bool) {
         guard let draft else { return }
-        let changed: Bool
         if suppressed {
-            let messageChanged = suppressedDraftMessageIds.insert(draft.id).inserted
+            suppressedDraftMessageIds.insert(draft.id)
             suppressedDraftThreadByMessageId[draft.id] = draft.threadId
-            let threadChanged = refreshDraftThreadSuppression(draft.threadId)
-            changed = messageChanged || threadChanged
         } else {
-            let messageChanged = suppressedDraftMessageIds.remove(draft.id) != nil
+            suppressedDraftMessageIds.remove(draft.id)
             suppressedDraftThreadByMessageId.removeValue(forKey: draft.id)
-            let threadChanged = refreshDraftThreadSuppression(draft.threadId)
-            changed = messageChanged || threadChanged
         }
-        if changed { threadContentVersion &+= 1 }
+        // Suppression is applied to the payload the repository *returns*, never
+        // baked into what it caches, so this invalidates no content revision.
+        // Both sets are published — the open pane re-reads off them and hits
+        // the same warm entry.
+        _ = refreshDraftThreadSuppression(draft.threadId)
     }
 
     /// Drafts is thread-based, but suppression is message-based. Hide a row

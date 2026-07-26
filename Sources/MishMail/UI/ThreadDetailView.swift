@@ -82,6 +82,9 @@ struct ThreadDetailView: View {
     @State private var scrollDisarmGate = InlineScrollDisarmGate()
     @State private var refreshTask: Task<Void, Never>?
     @State private var detailLoadGeneration = 0
+    /// Content revision this pane's messages were built from, so a change to
+    /// some *other* conversation never triggers a reload here.
+    @State private var seenContentRevision: ThreadContentRevision?
     /// Arm neighbor HTML pre-render once per open after the body first settles.
     @State private var neighborPrerenderArmed = false
 
@@ -397,6 +400,10 @@ struct ThreadDetailView: View {
             .task(id: thread.id) {
                 detailLoadGeneration &+= 1
                 let loadGeneration = detailLoadGeneration
+                // Seed before the load: anything that lands after this point
+                // is a real change and must refresh, anything already folded
+                // into this payload must not.
+                seenContentRevision = store.contentRevision(of: thread.id)
                 bodyLoadAttempted = []
                 loadRemoteImagesForThread = false
                 expandedMessageId = nil
@@ -458,10 +465,21 @@ struct ThreadDetailView: View {
                       let liveThread else { return }
                 store.setRead(liveThread, read: true)
             }
-            // The store reloaded from the DB (sync, draft discard, send…): refresh
-            // the open thread in place so e.g. a discarded draft's card disappears
-            // without navigating away. Scroll anchor and summary stay put.
-            .onChange(of: store.threadContentVersion) {
+            // Some thread's message rows changed (sync, draft discard, send…).
+            // Refresh in place — a discarded draft's card disappears without
+            // navigating away — but only when it was *this* thread: a sync
+            // touching other conversations must not disturb what we're reading.
+            // Scroll anchor and summary stay put.
+            .onChange(of: store.threadContentToken) {
+                let revision = store.contentRevision(of: thread.id)
+                guard revision != seenContentRevision else { return }
+                seenContentRevision = revision
+                refreshMessages()
+            }
+            // Suppression changes no content revision (it is applied to the
+            // payload on the way out, not cached), so it needs its own nudge.
+            // The reload behind it is a cache hit.
+            .onChange(of: store.suppressedDraftMessageIds) {
                 refreshMessages()
             }
             .onChange(of: inlineComposeActive) { _, active in
@@ -658,8 +676,10 @@ struct ThreadDetailView: View {
         let loadGeneration = detailLoadGeneration
         refreshTask?.cancel()
         refreshTask = Task {
-            let load = await store.threadDetailPayload(
-                threadId: thread.id, forceReload: true)
+            // No forceReload: the revision carried by the request is the source
+            // of truth now. A real content change misses and re-reads; a
+            // suppression-only refresh hits the warm entry.
+            let load = await store.threadDetailPayload(threadId: thread.id)
             guard !Task.isCancelled,
                   loadGeneration == detailLoadGeneration,
                   splitMode || store.openedThreadId == thread.id else { return }

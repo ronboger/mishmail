@@ -35,11 +35,38 @@ actor SyncEngine {
         self.client = GmailClient(accountEmail: accountId)
     }
 
-    func syncNow(progress: (@Sendable (String) -> Void)? = nil) async throws {
+    // MARK: - Reading-pane cache invalidation
+
+    /// Thread ids whose *message* rows this engine rewrote since the last
+    /// drain. Sync is the only writer of message rows — every other mutation
+    /// (trash, archive, star, mark-read, labels) rewrites the thread row and
+    /// leaves cached reading-pane bodies valid — so this is the complete set
+    /// the payload cache needs to invalidate.
+    private var touchedThreadIds = Set<String>()
+
+    /// Rows were pruned or every thread re-derived. The touched set cannot
+    /// describe *removals*, so the whole cache is suspect.
+    private var contentFullyRebuilt = false
+
+    /// What changed since the last drain. Clears the accumulator. Callers use
+    /// this directly to collect partial work after `syncNow` throws.
+    func drainContentChange() -> ThreadContentChange {
+        defer {
+            touchedThreadIds.removeAll(keepingCapacity: true)
+            contentFullyRebuilt = false
+        }
+        if contentFullyRebuilt { return .everything }
+        return touchedThreadIds.isEmpty ? .none : .threads(touchedThreadIds)
+    }
+
+    /// Returns which threads' reading-pane content this pass changed, so the
+    /// caller can invalidate exactly those cached payloads.
+    func syncNow(progress: (@Sendable (String) -> Void)? = nil) async throws
+        -> ThreadContentChange {
         let account = try await db.read { [accountId] db in
             try Account.fetchOne(db, key: accountId)
         }
-        guard var account else { return }
+        guard var account else { return .none }
 
         try await syncLabels()
 
@@ -58,7 +85,7 @@ actor SyncEngine {
             account.lastSyncAt = Date()
             let updated = account
             try await db.write { db in try updated.update(db) }
-            return
+            return drainContentChange()
         }
 
         if let historyId = account.historyId {
@@ -94,6 +121,7 @@ actor SyncEngine {
         account.lastSyncAt = Date()
         let updated = account
         try await db.write { db in try updated.update(db) }
+        return drainContentChange()
     }
 
     /// Recomputes every thread row for this account from its messages.
@@ -166,9 +194,11 @@ actor SyncEngine {
     /// aren't already cached (so a search can reach mail outside the local sync
     /// window), then rebuilds the affected threads. Gmail's `q` syntax matches
     /// the app's search operators (from:/to:/subject:/is:/before:/after:…).
-    func searchServer(query: String, limit: Int = 50) async throws {
+    func searchServer(query: String, limit: Int = 50) async throws
+        -> ThreadContentChange {
         let touchedKeys = try await fetchAll(query: query, limit: limit, progress: nil)
         try await deriveThreads(for: touchedKeys)
+        return drainContentChange()
     }
 
     /// Downloads messages matching `query` that aren't already cached.
@@ -559,6 +589,10 @@ actor SyncEngine {
         try await db.write { [accountId] db in
             try Self.deriveThreads(db, for: keys, accountId: accountId)
         }
+        // Single choke point for message-row writes: everything that rewrites
+        // messages re-derives their threads here, so recording the keys once
+        // covers backfill, history catch-up, window changes and search.
+        touchedThreadIds.formUnion(keys)
     }
 
     static func deriveThreads(_ db: Database, for keys: Set<String>, accountId: String,
@@ -707,6 +741,9 @@ actor SyncEngine {
         }
         try await removeOrphanedThreads()
         try await deriveThreads(for: keys)
+        // The surviving keys say nothing about the threads that were just
+        // pruned away, so their cached payloads can only be dropped wholesale.
+        contentFullyRebuilt = true
     }
 
     /// Deletes thread rows whose messages are all gone.

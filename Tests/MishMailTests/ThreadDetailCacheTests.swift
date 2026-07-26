@@ -201,28 +201,19 @@ final class ThreadDetailCacheTests: XCTestCase {
         XCTAssertNil(prep["m2"])
     }
 
-    func testContentVersionMismatchReloadsPrefetchedThread() async throws {
-        let directory = FileManager.default.temporaryDirectory
-            .appendingPathComponent("thread-detail-\(UUID().uuidString)")
-        try FileManager.default.createDirectory(
-            at: directory, withIntermediateDirectories: true)
-        defer { try? FileManager.default.removeItem(at: directory) }
-        let path = directory.appendingPathComponent("mail.sqlite").path
-        let pool = try DatabasePool(path: path)
-        try AppDatabase.migrator.migrate(pool)
+    func testRevisionMismatchReloadsPrefetchedThread() async throws {
+        let pool = try makeMailPool()
         try await pool.write { db in
-            try Account(
-                id: "me@example.com", displayName: "Me", historyId: nil,
-                lastSyncAt: nil, senderName: "Me").insert(db)
             _ = try SyncEngine.upsertPending(
                 db, items: [.init(message: self.fixtureMessage(
                     id: "m1", labels: "INBOX"), attachments: [])])
         }
         let repository = ThreadDetailRepository(db: pool)
+        var revisions = ThreadContentRevisions()
 
         let prefetched = await repository.payload(
             threadId: "thread", suppressingDrafts: [],
-            contentVersion: 1)
+            revision: revisions.revision(of: "thread"))
         XCTAssertFalse(prefetched.cacheHit)
         XCTAssertEqual(prefetched.payload.messages.map(\.id), ["m1"])
 
@@ -231,19 +222,111 @@ final class ThreadDetailCacheTests: XCTestCase {
                 db, items: [.init(message: self.fixtureMessage(
                     id: "m2", labels: "INBOX"), attachments: [])])
         }
-        let sameVersion = await repository.payload(
+        let sameRevision = await repository.payload(
             threadId: "thread", suppressingDrafts: [],
-            contentVersion: 1)
-        XCTAssertTrue(sameVersion.cacheHit)
-        XCTAssertEqual(sameVersion.payload.messages.map(\.id), ["m1"])
+            revision: revisions.revision(of: "thread"))
+        XCTAssertTrue(sameRevision.cacheHit)
+        XCTAssertEqual(sameRevision.payload.messages.map(\.id), ["m1"])
 
+        revisions.apply(.threads(["thread"]))
         let refreshed = await repository.payload(
             threadId: "thread", suppressingDrafts: [],
-            contentVersion: 2)
+            revision: revisions.revision(of: "thread"))
         XCTAssertFalse(refreshed.cacheHit)
         XCTAssertEqual(
             Set(refreshed.payload.messages.map(\.id)),
             ["m1", "m2"])
+    }
+
+    /// The regression this scoping exists for: triage mutates *other* rows all
+    /// the time, and each one used to evict the warmed neighbor the user was
+    /// about to land on.
+    func testUnrelatedThreadChangeKeepsAWarmedPayloadCached() async throws {
+        let pool = try makeMailPool()
+        try await pool.write { db in
+            _ = try SyncEngine.upsertPending(
+                db, items: [.init(message: self.fixtureMessage(
+                    id: "m1", labels: "INBOX"), attachments: [])])
+        }
+        let repository = ThreadDetailRepository(db: pool)
+        var revisions = ThreadContentRevisions()
+
+        let warmed = await repository.payload(
+            threadId: "thread", suppressingDrafts: [],
+            revision: revisions.revision(of: "thread"))
+        XCTAssertFalse(warmed.cacheHit)
+
+        // A neighbouring conversation was trashed, archived, starred, read…
+        revisions.apply(.threads(["some-other-thread"]))
+
+        let landed = await repository.payload(
+            threadId: "thread", suppressingDrafts: [],
+            revision: revisions.revision(of: "thread"))
+        XCTAssertTrue(landed.cacheHit)
+    }
+
+    func testEverythingChangeEvictsEveryWarmedPayload() async throws {
+        let pool = try makeMailPool()
+        try await pool.write { db in
+            _ = try SyncEngine.upsertPending(
+                db, items: [.init(message: self.fixtureMessage(
+                    id: "m1", labels: "INBOX"), attachments: [])])
+        }
+        let repository = ThreadDetailRepository(db: pool)
+        var revisions = ThreadContentRevisions()
+        _ = await repository.payload(
+            threadId: "thread", suppressingDrafts: [],
+            revision: revisions.revision(of: "thread"))
+
+        revisions.apply(.everything)
+
+        let landed = await repository.payload(
+            threadId: "thread", suppressingDrafts: [],
+            revision: revisions.revision(of: "thread"))
+        XCTAssertFalse(landed.cacheHit)
+    }
+
+    /// Suppression is applied to the returned copy, never baked into the cache,
+    /// so toggling it during an Undo-send window must not cost a reload.
+    func testDraftSuppressionChangeStillHitsTheCache() async throws {
+        let pool = try makeMailPool()
+        try await pool.write { db in
+            _ = try SyncEngine.upsertPending(
+                db, items: [
+                    .init(message: self.fixtureMessage(id: "m1", labels: "INBOX"),
+                          attachments: []),
+                    .init(message: self.fixtureMessage(id: "d1", labels: "DRAFT"),
+                          attachments: []),
+                ])
+        }
+        let repository = ThreadDetailRepository(db: pool)
+        let revisions = ThreadContentRevisions()
+        let revision = revisions.revision(of: "thread")
+        _ = await repository.payload(
+            threadId: "thread", suppressingDrafts: [], revision: revision)
+
+        let suppressed = await repository.payload(
+            threadId: "thread", suppressingDrafts: ["d1"], revision: revision)
+
+        XCTAssertTrue(suppressed.cacheHit)
+        XCTAssertEqual(suppressed.payload.messages.map(\.id), ["m1"])
+    }
+
+    private func makeMailPool() throws -> DatabasePool {
+        let directory = FileManager.default.temporaryDirectory
+            .appendingPathComponent("thread-detail-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(
+            at: directory, withIntermediateDirectories: true)
+        addTeardownBlock { try? FileManager.default.removeItem(at: directory) }
+        let pool = try DatabasePool(
+            path: directory.appendingPathComponent("mail.sqlite").path)
+        try AppDatabase.migrator.migrate(pool)
+        try pool.write { db in
+            try Account(
+                id: "me@example.com", displayName: "Me", historyId: nil,
+                lastSyncAt: nil, senderName: "Me").insert(db)
+        }
+        return pool
     }
 
     private func fixtureMessage(id: String, labels: String,

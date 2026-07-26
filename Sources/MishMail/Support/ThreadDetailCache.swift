@@ -5,8 +5,9 @@ import GRDB
 ///
 /// Quote-trail scans and HTML document assembly are whole-body string work —
 /// doing them on the main actor at first paint stalls keyboard browse. The
-/// repository actor builds these once per contentVersion (and fontScale) so
-/// `MessageCard` / `HTMLBodyView` only hand ready strings to WebKit.
+/// repository actor builds these once per `ThreadContentRevision` (and
+/// fontScale) so `MessageCard` / `HTMLBodyView` only hand ready strings to
+/// WebKit.
 ///
 /// Dark/light appearance is handled inside the injected CSS via
 /// `prefers-color-scheme`, so one assembled document covers both appearances.
@@ -329,7 +330,7 @@ struct MessageBodyLoad {
 }
 
 struct ThreadDetailCacheEntry: Equatable {
-    var contentVersion: Int
+    var revision: ThreadContentRevision
     var fontScale: Double
     var payload: ThreadDetailPayload
 }
@@ -349,19 +350,20 @@ actor ThreadDetailRepository {
         self.db = db
     }
 
+    /// The requested `revision` is the sole validity test — there is no
+    /// force-reload escape hatch, because one would silently reintroduce the
+    /// blanket invalidation this scoping exists to remove.
     func payload(threadId: String, suppressingDrafts suppressedIds: Set<String>,
-                 contentVersion: Int,
-                 fontScale: Double = 1.0,
-                 forceReload: Bool = false) -> ThreadDetailLoad {
-        if !forceReload,
-           let cached = cache.value(for: threadId),
-           cached.contentVersion == contentVersion {
+                 revision: ThreadContentRevision,
+                 fontScale: Double = 1.0) -> ThreadDetailLoad {
+        if let cached = cache.value(for: threadId),
+           cached.revision == revision {
             var payload = cached.payload
             if abs(cached.fontScale - fontScale) > 0.001 {
                 payload = Self.reassemblePayloadDocuments(payload, fontScale: fontScale)
                 cache.insert(
                     ThreadDetailCacheEntry(
-                        contentVersion: contentVersion,
+                        revision: revision,
                         fontScale: fontScale,
                         payload: payload),
                     for: threadId)
@@ -381,7 +383,7 @@ actor ThreadDetailRepository {
             messages: loaded.messages, fontScale: fontScale)
         cache.insert(
             ThreadDetailCacheEntry(
-                contentVersion: contentVersion,
+                revision: revision,
                 fontScale: fontScale,
                 payload: loaded),
             for: threadId)

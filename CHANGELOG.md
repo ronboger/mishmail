@@ -7,6 +7,17 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Fixed
+- **Reading-pane cache survives triage** — the payload cache and neighbor
+  prefetch were keyed on a global content version that `reloadThreads()` bumped
+  on every call. Since trash/archive/star/mark-read each schedule a reload, one
+  keystroke evicted all ten cached conversations — including the prev/next
+  neighbors the prefetch had warmed 50 ms earlier — so rapid triage always
+  landed on a cold payload and the prefetch's work was always discarded.
+  Cache validity is now a per-thread `ThreadContentRevision` that only moves
+  when a sync actually rewrites that thread's message rows; label-only
+  mutations leave every cached body valid. The open pane likewise refreshes
+  in place only when its *own* conversation changed, instead of on any DB
+  activity anywhere.
 - **Gmail Shift+I / Shift+U mark read/unread** — those chords were swallowed
   without effect (`charactersIgnoringModifiers` keeps Shift on letters). They
   now mark the focused (or multi-selected) conversation read / unread. Letter

@@ -1,7 +1,7 @@
 import XCTest
 
 /// The open reading pane refreshes in place when the store reloads
-/// (`threadContentVersion`); this merge keeps hydrated bodies while taking
+/// (its `ThreadContentRevision`); this merge keeps hydrated bodies while taking
 /// fresh header rows — and drops rows gone from the DB (discarded drafts).
 final class ThreadRefreshMergeTests: XCTestCase {
 

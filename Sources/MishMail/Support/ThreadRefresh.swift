@@ -1,8 +1,8 @@
 import Foundation
 
-/// In-place refresh for the open reading pane: when the store reloads from
-/// the DB (`MailStore.threadContentVersion`), ThreadDetailView re-queries its
-/// thread's header rows and merges them over what's on screen.
+/// In-place refresh for the open reading pane: when this thread's content
+/// revision moves (`MailStore.contentRevision(of:)`), ThreadDetailView
+/// re-queries its header rows and merges them over what's on screen.
 enum ThreadRefresh {
 
     /// True when a reading-pane message still needs a body fetch.
