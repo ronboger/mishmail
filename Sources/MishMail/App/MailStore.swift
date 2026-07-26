@@ -230,7 +230,17 @@ final class ListFocusState: ObservableObject {
 @MainActor
 @Observable
 final class MailStore {
+    /// Published account rows for views. `lastSyncAt` is deliberately nil here
+    /// (see `lastSyncByAccount`) — never write these values back to the
+    /// database; re-fetch inside the write transaction instead.
     var accounts: [Account] = []
+    /// Per-account last-sync timestamps, published separately from `accounts`
+    /// so a successful poll tick does not reassign the array views enumerate.
+    /// Every successful `syncNow` stamps `Account.lastSyncAt`, and leaving that
+    /// field on the row type would make `if nextAccounts != accounts` always
+    /// fail — republishing the sidebar, account switcher, Accounts settings,
+    /// and FilterBar on every tick forever.
+    private(set) var lastSyncByAccount: [String: Date] = [:]
     /// From identities (primary + Gmail send-as) across all linked accounts.
     /// Used by compose's From picker; never confuse `email` with API mailbox.
     private(set) var sendIdentities: [SendIdentity] = []
@@ -1632,6 +1642,7 @@ struct ComposeRequest: Identifiable {
             threadMutationReconcileTask,
             startupTask,
             syncTickTask,
+            dueSweepTask,
         ].compactMap { $0 }
         contactsRebuildTask = nil
         threadReloadTask = nil
@@ -1641,6 +1652,7 @@ struct ComposeRequest: Identifiable {
         threadMutationReconcileTask = nil
         startupTask = nil
         syncTickTask = nil
+        dueSweepTask = nil
 
         // Flush while the pool is still open (may write / send).
         if pendingSend != nil {
@@ -1828,15 +1840,34 @@ struct ComposeRequest: Identifiable {
             UserDefaults.standard.set(order, forKey: Self.accountOrderDefaultsKey)
         }
         let byId = Dictionary(uniqueKeysWithValues: raw.map { ($0.id, $0) })
-        let nextAccounts = order.compactMap { byId[$0] }
+        // Strip lastSyncAt from the published rows: it is the one Account
+        // field that changes on every successful sync, and leaving it in
+        // the array views enumerate makes per-tick invalidation unavoidable
+        // no matter what the compare-before-assign guard says. Timestamps
+        // live in lastSyncByAccount instead.
+        var nextSync: [String: Date] = [:]
+        let nextAccounts: [Account] = order.compactMap { id in
+            guard var account = byId[id] else { return nil }
+            if let at = account.lastSyncAt {
+                nextSync[id] = at
+            }
+            account.lastSyncAt = nil
+            return account
+        }
         let nextLabels = Dictionary(grouping: snapshot.labels, by: \.accountId)
         // Under Observation, assigning an equal value still publishes a
-        // change notification. labelsByAccount's didSet rebuilds
-        // labelsById/labelsByName, and every ThreadListView row / FilterBar
-        // / sidebar reads those — so an unguarded assign on every poll tick
-        // forfeits the idle-sync early-out. Load-bearing, not a micro-opt.
+        // change notification. accounts (with lastSyncAt stripped),
+        // lastSyncByAccount, and labelsByAccount each get their own guard
+        // so an idle poll only republishes what actually changed.
+        // labelsByAccount's didSet rebuilds labelsById/labelsByName, and
+        // every ThreadListView row / FilterBar / sidebar reads those —
+        // so an unguarded assign on every poll tick forfeits the idle-sync
+        // early-out. Load-bearing, not a micro-opt.
         if nextAccounts != accounts {
             accounts = nextAccounts
+        }
+        if nextSync != lastSyncByAccount {
+            lastSyncByAccount = nextSync
         }
         if nextLabels != labelsByAccount {
             labelsByAccount = nextLabels
@@ -2888,9 +2919,14 @@ struct ComposeRequest: Identifiable {
             lowPowerMode: ProcessInfo.processInfo.isLowPowerModeEnabled)
     }
 
-    /// In-flight poll tick; tracked so termination can await pool access, and
-    /// consulted so a slow tick is not overlapped by the next timer fire.
+    /// In-flight `syncAll` only; tracked so termination can await pool access,
+    /// and consulted so a slow sync is not overlapped by the next timer fire.
     @ObservationIgnored private var syncTickTask: Task<Void, Never>?
+    /// Independent one-at-a-time guard for due reminders / snoozes / scheduled
+    /// sends. Kept separate from `syncTickTask` so a multi-minute initial
+    /// backfill cannot starve these cheap sweeps — they do not depend on
+    /// sync having completed.
+    @ObservationIgnored private var dueSweepTask: Task<Void, Never>?
 
     private func armSyncTimer() {
         guard !isShuttingDown else { return }
@@ -2900,19 +2936,32 @@ struct ComposeRequest: Identifiable {
         syncTimer = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
             Task { @MainActor in
                 guard let self, !self.isShuttingDown else { return }
-                // One tick at a time: do not clobber a running task (would
-                // leave its pool work untracked for termination) and do not
-                // stack concurrent syncAll/fireDue* against the same pool.
-                if self.syncTickTask != nil { return }
-                self.syncTickTask = Task { @MainActor [weak self] in
-                    guard let self else { return }
-                    defer { self.syncTickTask = nil }
-                    guard !self.isShuttingDown else { return }
-                    await self.syncAll()
-                    await self.fireDueReminders()
-                    await self.fireDueSnoozes()
-                    // Backstop for the one-shot timer (sleep/wake can eat it).
-                    await self.fireDueScheduledSends()
+                // Two independent one-at-a-time guards: a long syncAll must
+                // not skip due sweeps, and a slow sweep must not stack
+                // concurrent fireDue* against itself. Do not clobber a
+                // running task (would leave its pool work untracked for
+                // termination).
+                if self.syncTickTask == nil {
+                    self.syncTickTask = Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        defer { self.syncTickTask = nil }
+                        guard !self.isShuttingDown else { return }
+                        await self.syncAll()
+                    }
+                }
+                // Due sweeps are independent of syncAll and do not wait for
+                // it — reminders, snoozes, and the scheduled-send backstop
+                // must still fire on schedule during a long backfill.
+                if self.dueSweepTask == nil {
+                    self.dueSweepTask = Task { @MainActor [weak self] in
+                        guard let self else { return }
+                        defer { self.dueSweepTask = nil }
+                        guard !self.isShuttingDown else { return }
+                        await self.fireDueReminders()
+                        await self.fireDueSnoozes()
+                        // Backstop for the one-shot timer (sleep/wake can eat it).
+                        await self.fireDueScheduledSends()
+                    }
                 }
             }
         }
@@ -3108,13 +3157,20 @@ struct ComposeRequest: Identifiable {
 
     /// Accounts added before senderName existed get it from the profile.
     private func backfillSenderNameIfNeeded(accountId: String) async {
-        guard var account = accounts.first(where: { $0.id == accountId }),
-              account.senderName.isEmpty,
+        // Gate on the published row (senderName is stable there), but never
+        // write that value back: published accounts carry lastSyncAt = nil,
+        // and a whole-row update would clobber the real timestamp in the DB.
+        // Re-fetch inside the write, same as renameAccount / setSenderName.
+        guard let published = accounts.first(where: { $0.id == accountId }),
+              published.senderName.isEmpty,
               let name = try? await client(for: accountId).userName(),
               !name.isEmpty else { return }
-        account.senderName = name
-        let updated = account
-        try? await db.write { db in try updated.update(db) }
+        try? await db.write { db in
+            if var account = try Account.fetchOne(db, key: accountId) {
+                account.senderName = name
+                try account.update(db)
+            }
+        }
     }
 
     /// RFC 2822 From value for a mailbox primary (legacy call sites / new
@@ -3249,10 +3305,19 @@ struct ComposeRequest: Identifiable {
                                 body: thread.subject.isEmpty ? thread.snippet : thread.subject,
                                 id: "reminder.\(thread.id)")
             }
+            // Compare-and-clear: the narrow UPDATE is only *safe* because of
+            // `AND reminderAt = ?`. Without the predicate, a reminder the user
+            // sets on this thread during the await gap (after the snapshot,
+            // before the write) would be silently wiped. Matching the
+            // snapshot's value means we only clear the reminder we actually
+            // read — narrow alone is not enough.
             try? await db.write { db in
                 try db.execute(
-                    sql: "UPDATE thread SET reminderAt = NULL, reminderSetAt = NULL WHERE id = ?",
-                    arguments: [thread.id])
+                    sql: """
+                        UPDATE thread SET reminderAt = NULL, reminderSetAt = NULL
+                        WHERE id = ? AND reminderAt = ?
+                        """,
+                    arguments: [thread.id, thread.reminderAt])
             }
         }
         if changed { reloadThreads() }
