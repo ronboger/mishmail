@@ -1020,7 +1020,9 @@ struct FilterBar: View {
     }
 
     private var lastSync: Date? {
-        store.accounts.compactMap(\.lastSyncAt).min()
+        // Oldest last-sync across accounts (nil when none have synced).
+        // Timestamps live on lastSyncByAccount, not on published Account rows.
+        store.lastSyncByAccount.values.min()
     }
 
     private var allLabels: [LabelRow] {

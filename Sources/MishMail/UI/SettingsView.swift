@@ -310,7 +310,7 @@ struct AccountsSettings: View {
                                             .help("Google no longer accepts this account's saved sign-in (expired or revoked). Reauthorize to resume syncing.")
                                     }
                                 }
-                                if let last = account.lastSyncAt {
+                                if let last = store.lastSyncByAccount[account.id] {
                                     Text("Last sync \(last, format: .relative(presentation: .named))")
                                         .font(.caption).foregroundStyle(.secondary)
                                 }

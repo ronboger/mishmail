@@ -626,6 +626,12 @@ final class AppDatabase: @unchecked Sendable {
     ///   been awaited — that checkpoint must still run even though
     ///   `beginShutdown` has already closed idle maintenance.
     func checkpoint(force: Bool = false) {
+        // Check-then-act deliberately releases closeLock before the write.
+        // Holding closeLock across the write would deadlock against
+        // interrupt(), which also acquires closeLock — a lock-holding
+        // VACUUM/checkpoint would hang forever if quit interrupted mid-write.
+        // The microsecond window where a maintenance write can straddle
+        // close() is knowingly accepted.
         closeLock.lock()
         let closed = isClosed
         let shuttingDown = isShuttingDown
