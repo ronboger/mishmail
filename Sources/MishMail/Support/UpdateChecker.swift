@@ -46,11 +46,16 @@ final class UpdateChecker: ObservableObject {
     private var timer: Timer?
     private static let lastCheckKey = "updates.lastCheckAt"
 
-    /// Quiet daily checks: once now if a day has passed, then hourly ticks
-    /// that re-check when the window lapses — a mail app stays open for
-    /// days, so launch-only checking would never surface anything.
+    /// Quiet checks: always once at launch, then hourly ticks that re-check
+    /// when the daily window lapses.
+    ///
+    /// Launch used to go through the same daily gate, which meant relaunching
+    /// into a brand-new release showed nothing — the timestamp had been
+    /// written hours earlier and survives in the app's preferences. A launch
+    /// is rare and one request is cheap, so it always looks; the hourly tick
+    /// exists for the opposite case, a mail app left open for days.
     func startPeriodicChecks() {
-        checkIfDue()
+        Task { await check(quietly: true) }
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 3_600, repeats: true) { _ in
             Task { @MainActor in UpdateChecker.shared.checkIfDue() }
@@ -261,7 +266,7 @@ final class UpdateChecker: ObservableObject {
         // below awaits this same shutdown rather than redoing it.
         await prepareForQuit?()
         do {
-            try await UpdateInstaller.relaunch(runningApp)
+            try UpdateInstaller.relaunch(runningApp)
         } catch {
             // The pool is closed and every timer is invalidated, so this
             // process can no longer sync, save, or send — staying open would

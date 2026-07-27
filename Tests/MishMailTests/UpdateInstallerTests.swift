@@ -120,6 +120,30 @@ final class UpdateInstallerTests: XCTestCase {
         XCTAssertEqual(try marker(of: app), "0.4.0")
     }
 
+    // MARK: - Relaunch script
+
+    func testRelaunchScriptWaitsForThisProcessThenOpensTheApp() {
+        let script = UpdateInstaller.relaunchScript(pid: 4242,
+                                                    appPath: "/Applications/MishMail.app")
+        // Waiting matters: asking LaunchServices for a second instance of our
+        // own bundle fails while we're still running (-10810).
+        XCTAssertTrue(script.contains("kill -0 4242"))
+        XCTAssertTrue(script.contains("open '/Applications/MishMail.app'"))
+        // Bounded, so a process that never exits doesn't leave a shell spinning.
+        XCTAssertTrue(script.contains("-lt 300"))
+    }
+
+    func testRelaunchScriptQuotesAwkwardPaths() {
+        let spaced = UpdateInstaller.relaunchScript(
+            pid: 1, appPath: "/Users/someone/My Apps/MishMail.app")
+        XCTAssertTrue(spaced.contains("open '/Users/someone/My Apps/MishMail.app'"),
+                      "a space in the path must not split the argument")
+        // An apostrophe would otherwise close the quote and let the rest of
+        // the path run as commands.
+        XCTAssertEqual(UpdateInstaller.shellQuoted("/Users/o'brien/MishMail.app"),
+                       "'/Users/o'\\''brien/MishMail.app'")
+    }
+
     // MARK: - Translocation
 
     func testTranslocatedAppIsDetected() {

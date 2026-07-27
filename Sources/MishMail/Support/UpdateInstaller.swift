@@ -157,16 +157,48 @@ enum UpdateInstaller {
 
     // MARK: - Relaunch
 
-    /// Launch the freshly installed bundle and quit. Terminating only after
-    /// the launch succeeds means a failure here leaves the user on a working
-    /// (already updated) app rather than a closed one.
+    /// Single-quote a path for `/bin/sh`, so a space or apostrophe in the
+    /// install path can't end the argument or inject a command.
+    nonisolated static func shellQuoted(_ path: String) -> String {
+        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    }
+
+    /// Shell that waits for `pid` to exit, then opens `app`.
+    ///
+    /// Asking LaunchServices to start a second instance of our own bundle from
+    /// inside it fails — observed as "a miscellaneous error occurred"
+    /// (LaunchServices -10810) updating 0.4.1 → 0.4.2 — and the swap makes it
+    /// worse, because the registration LaunchServices has cached now points at
+    /// the bundle we just replaced. Waiting until this process is gone removes
+    /// both problems at once: nothing is running to conflict with, and `open`
+    /// on a path re-reads the bundle that's actually there.
+    ///
+    /// The poll is bounded so a process that never exits leaves a shell
+    /// sleeping for 30s rather than forever.
+    nonisolated static func relaunchScript(pid: Int32, appPath: String) -> String {
+        """
+        n=0
+        while kill -0 \(pid) 2>/dev/null && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done
+        sleep 0.3
+        open \(shellQuoted(appPath))
+        """
+    }
+
+    /// Hand the relaunch to a detached shell, then quit so it can run.
+    ///
+    /// Only failing to *spawn* the shell throws: once it is running we're
+    /// committed, because the wait means we must be gone before it can report
+    /// anything. If its `open` were to fail the user is left with an installed
+    /// update and a closed app — recoverable by opening it — whereas throwing
+    /// here keeps them on a process whose database is already shut down.
     @MainActor
-    static func relaunch(_ app: URL) async throws {
-        let config = NSWorkspace.OpenConfiguration()
-        config.createsNewApplicationInstance = true
-        config.activates = true
+    static func relaunch(_ app: URL) throws {
+        let proc = Process()
+        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
+        proc.arguments = ["-c", relaunchScript(pid: ProcessInfo.processInfo.processIdentifier,
+                                               appPath: app.path)]
         do {
-            _ = try await NSWorkspace.shared.openApplication(at: app, configuration: config)
+            try proc.run()
         } catch {
             throw InstallError.relaunchFailed(error.localizedDescription)
         }
