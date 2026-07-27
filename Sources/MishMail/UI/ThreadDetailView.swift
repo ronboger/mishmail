@@ -2618,7 +2618,6 @@ struct HTMLBodyView: NSViewRepresentable {
             // publish or cache heights — the outgoing view's ResizeObserver
             // would poison the new card's frame and height cache.
             if incoming != nil, webView !== incoming { return }
-            let floor = CGFloat(HTMLBodyLayout.minContentHeight)
             let rawHeight: CGFloat?
             if let h = result as? CGFloat {
                 rawHeight = h
@@ -2633,7 +2632,10 @@ struct HTMLBodyView: NSViewRepresentable {
             }
             guard let rawHeight, rawHeight > 0 else { return }
 
-            let height = max(rawHeight, floor)
+            // Floor + hard ceiling (mirrors JS). Pathological markup or a
+            // residual measure↔frame feedback loop must not grow the card
+            // without bound (infinite scroll in the reading pane).
+            let height = HTMLBodyLayout.clampContentHeight(rawHeight)
             let observation = heightStability.observe(height)
             if observation.shouldPublish {
                 heightUpdateCount += 1

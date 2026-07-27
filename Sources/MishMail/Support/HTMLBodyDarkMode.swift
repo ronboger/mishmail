@@ -62,6 +62,7 @@ enum HTMLBodyDarkMode {
         body { font: \(font)px -apple-system, sans-serif; color: canvastext; margin: 0; background: transparent; }
         img { max-width: 100%; height: auto; }
         \(HTMLBodyLayout.imageCSS)
+        \(HTMLBodyLayout.antiFeedbackCSS)
         @media (prefers-color-scheme: dark) {
           body, body :not(a):not(a *) { color: #e6e6e6 !important; }
           a, a * { color: #6cb2ff !important; }

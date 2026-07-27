@@ -61,6 +61,22 @@ final class HTMLBodyLayoutTests: XCTestCase {
         XCTAssertEqual(HTMLBodyLayout.cappedSize(width: 552, height: 80)?.width, 552)
     }
 
+    // MARK: - Content height clamp
+
+    func testClampContentHeightFloorsAndCaps() {
+        XCTAssertEqual(HTMLBodyLayout.clampContentHeight(0),
+                       CGFloat(HTMLBodyLayout.minContentHeight))
+        XCTAssertEqual(HTMLBodyLayout.clampContentHeight(-10),
+                       CGFloat(HTMLBodyLayout.minContentHeight))
+        XCTAssertEqual(HTMLBodyLayout.clampContentHeight(480), 480)
+        XCTAssertEqual(HTMLBodyLayout.clampContentHeight(CGFloat(HTMLBodyLayout.maxContentHeight + 1)),
+                       CGFloat(HTMLBodyLayout.maxContentHeight))
+        XCTAssertEqual(HTMLBodyLayout.clampContentHeight(.infinity),
+                       CGFloat(HTMLBodyLayout.minContentHeight))
+        XCTAssertEqual(HTMLBodyLayout.clampContentHeight(.nan),
+                       CGFloat(HTMLBodyLayout.minContentHeight))
+    }
+
     // MARK: - CSS / JS contracts
 
     func testImageCSSMentionsLayoutClasses() {
@@ -69,11 +85,22 @@ final class HTMLBodyLayoutTests: XCTestCase {
         XCTAssertTrue(css.contains(HTMLBodyLayout.failedImageClass))
     }
 
+    func testAntiFeedbackCSSNeutralizesFullBleedHeights() {
+        let css = HTMLBodyLayout.antiFeedbackCSS
+        XCTAssertTrue(css.contains("height=\"100%\""))
+        XCTAssertTrue(css.contains("100vh"))
+        XCTAssertTrue(css.contains(HTMLBodyLayout.heightNeutralizedClass))
+        XCTAssertTrue(css.contains("height: auto !important"))
+    }
+
     func testInjectedDarkModeCSSIncludesLayoutImageRules() {
         let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         XCTAssertTrue(css.contains("img { max-width: 100%; height: auto; }"))
         XCTAssertTrue(css.contains(HTMLBodyLayout.layoutImageClass))
         XCTAssertTrue(css.contains(HTMLBodyLayout.failedImageClass))
+        // Anti-feedback rules ship with every message document.
+        XCTAssertTrue(css.contains("100vh"))
+        XCTAssertTrue(css.contains(HTMLBodyLayout.heightNeutralizedClass))
     }
 
     func testLayoutJSPreservesAndClearsDimensions() {
@@ -81,6 +108,7 @@ final class HTMLBodyLayoutTests: XCTestCase {
         // Cap constants match Swift.
         XCTAssertTrue(js.contains("var MAX_W=\(HTMLBodyLayout.maxPreservedWidth)"))
         XCTAssertTrue(js.contains("var MAX_H=\(HTMLBodyLayout.maxPreservedHeight)"))
+        XCTAssertTrue(js.contains("var MAX_CONTENT_H=\(HTMLBodyLayout.maxContentHeight)"))
         // Blocked path stamps layout class + inline sizes.
         XCTAssertTrue(js.contains(HTMLBodyLayout.layoutImageClass))
         XCTAssertTrue(js.contains("setProperty('height'"))
@@ -106,12 +134,19 @@ final class HTMLBodyLayoutTests: XCTestCase {
         // Still prefer visible child bottoms (no dead quote gap regression).
         XCTAssertTrue(js.contains("body.children"))
         XCTAssertTrue(js.contains("getBoundingClientRect"))
+        // Infinite-scroll breakers: neutralize vh-tied heights + freeze
+        // growth that tracks the host frame.
+        XCTAssertTrue(js.contains("neutralizeViewportHeights"))
+        XCTAssertTrue(js.contains("__mmFrozenH"))
+        XCTAssertTrue(js.contains(HTMLBodyLayout.heightNeutralizedClass))
     }
 
     func testTeardownJSDisconnectsObserver() {
         let js = HTMLBodyLayout.teardownJS
         XCTAssertTrue(js.contains("__mmRO"))
         XCTAssertTrue(js.contains("disconnect"))
+        // Recycled views must not keep a freeze from a prior document.
+        XCTAssertTrue(js.contains("__mmFrozenH"))
     }
 
     func testFixturePlainTextContainsCode() {
