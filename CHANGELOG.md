@@ -4,6 +4,27 @@ All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
+## [0.4.2] - 2026-07-27
+
+The first release that existing installs can take through the new in-place
+updater, and cut partly to exercise it end to end.
+
+### Fixed
+- **`scripts/update-mishmail.sh` no longer prints an `xattr` usage dump**
+  mid-install. The recursive form it used doesn't exist on this macOS; the
+  quarantine attribute Gatekeeper reads lives on the bundle root anyway, which
+  is what the app's own `clearQuarantine` clears.
+
+### Changed
+- **`make release` refuses to run unless `HEAD` is exactly `origin/main` and
+  the tree is clean.** `gh release create` tags the *remote's* main, not local
+  HEAD, so cutting a release with the version bump unpushed publishes a
+  correct zip under a tag whose source still carries the old version — which
+  is what happened to v0.4.1 and cost a `--cleanup-tag` redo. One comparison
+  catches unpushed, behind, diverged, and released-off-a-side-branch alike;
+  the clean-tree half covers changes that would land in the zip but not the
+  tag.
+
 ## [0.4.1] - 2026-07-27
 
 ### Changed
