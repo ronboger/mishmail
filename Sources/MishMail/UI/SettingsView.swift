@@ -973,6 +973,7 @@ struct AppearanceSettings: View {
     /// Default `.ask` preserves privacy (no open-tracking until opt-in).
     @AppStorage(RemoteImagePolicy.defaultsKey) private var remoteImagePolicyRaw =
         RemoteImagePolicy.ask.rawValue
+    @AppStorage(AppTheme.storageKey) private var appThemeRaw = AppTheme.system.rawValue
     @State private var showVIPManager = false
 
     private var priorityMode: PrioritySplit.Mode {
@@ -982,6 +983,23 @@ struct AppearanceSettings: View {
     var body: some View {
         PaneScaffold(title: "Appearance") {
             Form {
+                Section {
+                    Picker("Theme", selection: $appThemeRaw) {
+                        ForEach(AppTheme.allCases) { theme in
+                            Text(theme.title).tag(theme.rawValue)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    // Apply here too: the main-window observer can't fire
+                    // when Settings is the only open window.
+                    .onChange(of: appThemeRaw) {
+                        AppTheme.apply(.from(raw: appThemeRaw))
+                    }
+                } footer: {
+                    Text("System follows your Mac's light/dark appearance; Light and Dark keep MishMail fixed regardless of macOS.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
                 Section {
                     Picker("Opening a conversation", selection: $threadOpenStyleRaw) {
                         Text("Fills the window").tag(ThreadOpenStyle.fullWindow.rawValue)
