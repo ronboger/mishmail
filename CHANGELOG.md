@@ -4,6 +4,30 @@ All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
+## [0.4.4] - 2026-07-27
+
+### Fixed
+- **The update restarts the app, verified end to end.** Two previous attempts
+  failed on real hardware: asking LaunchServices for a second instance of the
+  bundle we're running from returns -10810, and the sandbox blocks spawning a
+  shell to do it instead. MishMail now embeds a tiny second app,
+  `MishMailRelauncher`, at `Contents/Library/`. A separate bundle id makes it
+  an ordinary "open another app", which the sandbox allows, and it waits for
+  MishMail to disappear before reopening it — so nothing conflicts and nothing
+  stale is resolved. It has no Dock icon and no UI.
+
+  The helper is built with the app's entitlements and is therefore sandboxed,
+  which mattered: a sandboxed process can't `kill(pid, 0)` another one, so the
+  first version read "already gone" immediately, reopened MishMail while it
+  was still running, and exited before the quit it was waiting for. Liveness
+  is asked through `NSRunningApplication` instead.
+- **The failure dialog can no longer strand the app.** If the restart does
+  fail, MishMail comes to the front before showing the alert — it once sat
+  unseen on another Space while the app hung behind it on a closed database —
+  and a backstop exits the process if termination is blocked past five
+  seconds. Everything is already flushed by then; staying on screen only
+  misleads.
+
 ## [0.4.3] - 2026-07-27
 
 ### Fixed

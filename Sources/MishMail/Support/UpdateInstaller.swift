@@ -15,6 +15,7 @@ enum UpdateInstaller {
     enum InstallError: LocalizedError, Equatable {
         case grantDeclined
         case wrongFolder(chosen: String, expected: String)
+        case relauncherMissing
         case relaunchFailed(String)
 
         var errorDescription: String? {
@@ -23,6 +24,8 @@ enum UpdateInstaller {
                 return "MishMail needs permission to replace itself before it can install the update."
             case .wrongFolder(let chosen, let expected):
                 return "Chose “\(chosen)”, but MishMail is installed in “\(expected)”."
+            case .relauncherMissing:
+                return "the update has no embedded relauncher"
             case .relaunchFailed(let why):
                 // Read inside a sentence the caller builds around it ("couldn't
                 // restart itself (…)"), so this is the bare reason, not a
@@ -157,48 +160,39 @@ enum UpdateInstaller {
 
     // MARK: - Relaunch
 
-    /// Single-quote a path for `/bin/sh`, so a space or apostrophe in the
-    /// install path can't end the argument or inject a command.
-    nonisolated static func shellQuoted(_ path: String) -> String {
-        "'" + path.replacingOccurrences(of: "'", with: "'\\''") + "'"
+    /// The relauncher embedded in an app bundle. Resolved against the bundle
+    /// being *installed* rather than the running one — after the swap that
+    /// path holds the new copy, and its relauncher is the one that exists on
+    /// disk.
+    nonisolated static func relauncherURL(inside app: URL) -> URL {
+        app.appendingPathComponent("Contents/Library/MishMailRelauncher.app")
     }
 
-    /// Shell that waits for `pid` to exit, then opens `app`.
+    /// Start the embedded relauncher, then quit so it can do its job.
     ///
-    /// Asking LaunchServices to start a second instance of our own bundle from
-    /// inside it fails — observed as "a miscellaneous error occurred"
-    /// (LaunchServices -10810) updating 0.4.1 → 0.4.2 — and the swap makes it
-    /// worse, because the registration LaunchServices has cached now points at
-    /// the bundle we just replaced. Waiting until this process is gone removes
-    /// both problems at once: nothing is running to conflict with, and `open`
-    /// on a path re-reads the bundle that's actually there.
+    /// MishMail can't restart itself. Asking LaunchServices for a second
+    /// instance of the bundle we're running from fails with -10810, and the
+    /// sandbox blocks spawning a shell to do it instead — both were tried, and
+    /// both failed on real hardware. The relauncher is a separate bundle id,
+    /// so launching it is an ordinary "open another app" that the sandbox
+    /// permits, and it waits for this process to disappear before reopening
+    /// the new copy.
     ///
-    /// The poll is bounded so a process that never exits leaves a shell
-    /// sleeping for 30s rather than forever.
-    nonisolated static func relaunchScript(pid: Int32, appPath: String) -> String {
-        """
-        n=0
-        while kill -0 \(pid) 2>/dev/null && [ $n -lt 300 ]; do sleep 0.1; n=$((n+1)); done
-        sleep 0.3
-        open \(shellQuoted(appPath))
-        """
-    }
-
-    /// Hand the relaunch to a detached shell, then quit so it can run.
-    ///
-    /// Only failing to *spawn* the shell throws: once it is running we're
-    /// committed, because the wait means we must be gone before it can report
-    /// anything. If its `open` were to fail the user is left with an installed
-    /// update and a closed app — recoverable by opening it — whereas throwing
-    /// here keeps them on a process whose database is already shut down.
+    /// Awaiting the launch matters: it means the helper is running *before* we
+    /// terminate, so nothing is lost in the gap.
     @MainActor
-    static func relaunch(_ app: URL) throws {
-        let proc = Process()
-        proc.executableURL = URL(fileURLWithPath: "/bin/sh")
-        proc.arguments = ["-c", relaunchScript(pid: ProcessInfo.processInfo.processIdentifier,
-                                               appPath: app.path)]
+    static func relaunch(_ app: URL) async throws {
+        let helper = relauncherURL(inside: app)
+        guard FileManager.default.fileExists(atPath: helper.path) else {
+            throw InstallError.relauncherMissing
+        }
+        let config = NSWorkspace.OpenConfiguration()
+        config.arguments = [String(ProcessInfo.processInfo.processIdentifier), app.path]
+        // It has no UI; pulling focus to it would only flicker.
+        config.activates = false
+        config.createsNewApplicationInstance = true
         do {
-            try proc.run()
+            _ = try await NSWorkspace.shared.openApplication(at: helper, configuration: config)
         } catch {
             throw InstallError.relaunchFailed(error.localizedDescription)
         }

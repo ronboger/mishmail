@@ -120,28 +120,45 @@ final class UpdateInstallerTests: XCTestCase {
         XCTAssertEqual(try marker(of: app), "0.4.0")
     }
 
-    // MARK: - Relaunch script
+    // MARK: - Relauncher
 
-    func testRelaunchScriptWaitsForThisProcessThenOpensTheApp() {
-        let script = UpdateInstaller.relaunchScript(pid: 4242,
-                                                    appPath: "/Applications/MishMail.app")
-        // Waiting matters: asking LaunchServices for a second instance of our
-        // own bundle fails while we're still running (-10810).
-        XCTAssertTrue(script.contains("kill -0 4242"))
-        XCTAssertTrue(script.contains("open '/Applications/MishMail.app'"))
-        // Bounded, so a process that never exits doesn't leave a shell spinning.
-        XCTAssertTrue(script.contains("-lt 300"))
+    func testRelauncherIsResolvedInsideTheBundle() {
+        // Resolved against the bundle being installed, not the running one:
+        // after the swap that path holds the new copy.
+        XCTAssertEqual(
+            UpdateInstaller.relauncherURL(inside:
+                URL(fileURLWithPath: "/Applications/MishMail.app")).path,
+            "/Applications/MishMail.app/Contents/Library/MishMailRelauncher.app")
     }
 
-    func testRelaunchScriptQuotesAwkwardPaths() {
-        let spaced = UpdateInstaller.relaunchScript(
-            pid: 1, appPath: "/Users/someone/My Apps/MishMail.app")
-        XCTAssertTrue(spaced.contains("open '/Users/someone/My Apps/MishMail.app'"),
-                      "a space in the path must not split the argument")
-        // An apostrophe would otherwise close the quote and let the rest of
-        // the path run as commands.
-        XCTAssertEqual(UpdateInstaller.shellQuoted("/Users/o'brien/MishMail.app"),
-                       "'/Users/o'\\''brien/MishMail.app'")
+    /// The shipped app must actually carry the relauncher — without it the
+    /// update installs and then can't restart, which is the whole bug this
+    /// exists to fix. Skipped cleanly when there's no build to look at.
+    func testBuiltAppEmbedsTheRelauncher() throws {
+        guard let app = builtAppURL() else {
+            throw XCTSkip("No built MishMail app in DerivedData; run `make build` first")
+        }
+        let helper = UpdateInstaller.relauncherURL(inside: app)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: helper.path),
+                      "expected an embedded relauncher at \(helper.path)")
+        // A bundle without its executable would launch and do nothing.
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: helper.appendingPathComponent("Contents/MacOS/MishMailRelauncher").path))
+    }
+
+    /// Prefer Release, then Debug, resolved from this source file so the
+    /// working directory under xcodebuild doesn't matter.
+    private func builtAppURL() -> URL? {
+        let repo = URL(fileURLWithPath: #filePath)
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+            .deletingLastPathComponent()
+        for rel in ["build/dd.noindex/Build/Products/Release/MishMail.app",
+                    "build/dd.noindex/Build/Products/Debug/MishMail Debug.app"] {
+            let url = repo.appendingPathComponent(rel)
+            if FileManager.default.fileExists(atPath: url.path) { return url }
+        }
+        return nil
     }
 
     // MARK: - Translocation

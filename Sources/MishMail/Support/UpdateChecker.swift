@@ -266,13 +266,16 @@ final class UpdateChecker: ObservableObject {
         // below awaits this same shutdown rather than redoing it.
         await prepareForQuit?()
         do {
-            try UpdateInstaller.relaunch(runningApp)
+            try await UpdateInstaller.relaunch(runningApp)
         } catch {
             // The pool is closed and every timer is invalidated, so this
             // process can no longer sync, save, or send — staying open would
             // look alive while silently dropping the user's work. Quitting on
             // an installed update is the honest outcome.
             status = "MishMail \(release.version) is installed — reopen it to finish."
+            // Come to the front first. This alert once sat unseen on another
+            // Space while the app hung behind it on a closed database.
+            NSApp.activate(ignoringOtherApps: true)
             let alert = NSAlert()
             alert.messageText = "MishMail \(release.version) is installed."
             alert.informativeText = "MishMail couldn't restart itself "
@@ -281,6 +284,13 @@ final class UpdateChecker: ObservableObject {
             alert.addButton(withTitle: "Quit")
             alert.runModal()
             NSApp.terminate(nil)
+        }
+        // Backstop. Everything is already flushed, so if termination is
+        // deferred or blocked past this point the process is only capable of
+        // misleading the user by still being on screen.
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(5))
+            exit(0)
         }
     }
 

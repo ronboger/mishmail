@@ -14,6 +14,13 @@ targets:
     sources: [Sources/MishMail]
     dependencies:
       - package: GRDB
+      # Embedded at Contents/Library/MishMailRelauncher.app and signed on copy.
+      - target: MishMailRelauncher
+        embed: true
+        codeSign: true
+        copy:
+          destination: wrapper
+          subpath: Contents/Library
     entitlements:
       path: Sources/MishMail/MishMail.entitlements
       properties:
@@ -73,6 +80,37 @@ targets:
         Release:
           PRODUCT_NAME: MishMail
           PRODUCT_BUNDLE_IDENTIFIER: dev.ronboger.MishMail
+  # A second, deliberately tiny app whose whole job is to reopen MishMail after
+  # it quits. It exists because a sandboxed app cannot restart itself: asking
+  # LaunchServices for a second instance of the bundle you are running from
+  # fails (-10810, seen updating 0.4.1 → 0.4.2), and the sandbox blocks
+  # spawning a shell to do it instead (0.4.2 → 0.4.3). A separate bundle id
+  # clears both — launching *another* app is permitted, and by the time this
+  # one acts MishMail is gone, so there is nothing to conflict with.
+  # LSUIElement: no Dock icon, no menu bar, nothing on screen.
+  MishMailRelauncher:
+    type: application
+    platform: macOS
+    sources: [Sources/MishMailRelauncher]
+    # The same signing config as the app it lives inside — an embedded bundle
+    # signed with a different certificate than its parent fails the build, and
+    # this has to stay matched across all three tiers (ad-hoc default, free
+    # Personal Team via Local.xcconfig, Developer ID).
+    configFiles:
+      Debug: Config/Signing.xcconfig
+      Release: Config/Signing.xcconfig
+    settings:
+      base:
+        PRODUCT_NAME: MishMailRelauncher
+        PRODUCT_BUNDLE_IDENTIFIER: dev.ronboger.MishMail.Relauncher
+        MARKETING_VERSION: 0.4.3
+        CURRENT_PROJECT_VERSION: 1
+        SWIFT_VERSION: 5.10
+        GENERATE_INFOPLIST_FILE: true
+        INFOPLIST_KEY_LSUIElement: true
+        INFOPLIST_KEY_NSHumanReadableCopyright: ""
+        ENABLE_HARDENED_RUNTIME: true
+        SKIP_INSTALL: true
   # Standalone unit tests over the non-UI core (parsers, MIME, DB schema,
   # sync derivation). Compiles those sources directly — no app host, so no
   # keychain prompts, no network, no real database.
