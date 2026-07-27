@@ -283,16 +283,18 @@ final class UpdateChecker: ObservableObject {
         // race a fresh launch's first writes. Re-entrant, so the terminate
         // below awaits this same shutdown rather than redoing it.
         await prepareForQuit?()
+        // Backstop, armed *before* terminate and on a background queue, both
+        // on purpose. `terminate` can block this task in a nested AppKit
+        // event loop (it did, every 0.4.x update: a `.terminateLater` reply
+        // scheduled on the main actor can never run while this call is still
+        // on the stack), and a main-actor backstop would be stuck in that
+        // same queue. Everything is already flushed, so if quitting stalls,
+        // staying open only misleads the user — and the relauncher gives up
+        // waiting after 30 seconds.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 5) { exit(0) }
         // The relauncher is already running and watching this process; quitting
         // is the signal for it to unquarantine the new bundle and reopen it.
         NSApp.terminate(nil)
-        // Backstop. Everything is already flushed, so if termination is
-        // deferred or blocked past this point the process is only capable of
-        // misleading the user by still being on screen.
-        Task { @MainActor in
-            try? await Task.sleep(for: .seconds(5))
-            exit(0)
-        }
     }
 
     /// Fallback when the app can't install for itself: hand the user the

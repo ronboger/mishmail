@@ -305,6 +305,11 @@ final class MailStore {
     /// Once true, no new background database work is started. Set by
     /// `prepareForTermination()` on app quit.
     private(set) var isShuttingDown = false
+    /// True once `prepareForTermination()` has fully finished. The delegate's
+    /// `applicationShouldTerminate` answers `.terminateNow` from then on —
+    /// there is nothing left to wait for, and waiting is what deadlocked the
+    /// updater's quit (see the delegate for the mechanics).
+    private(set) var hasCompletedTermination = false
     /// Single-flight quit work so a second Cmd-Q / re-entrant
     /// `applicationShouldTerminate` awaits the same shutdown instead of
     /// replying `true` while the first close is still in flight.
@@ -1609,6 +1614,7 @@ struct ComposeRequest: Identifiable {
         await DatabaseLifecycle.singleFlight(slot: terminationSlot) { [self] in
             await self.executeTermination()
         }
+        hasCompletedTermination = true
     }
 
     private func executeTermination() async {

@@ -28,6 +28,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let store = Self.store else { return .terminateNow }
+        // The updater quits via `NSApp.terminate` from inside a main-actor
+        // task, after awaiting this same shutdown. Answering `.terminateLater`
+        // there deadlocks: AppKit spins a nested event loop inside `terminate`
+        // waiting for the reply, but a nested loop can't re-enter the main
+        // dispatch queue while the updater's callout is still on the stack, so
+        // the replying Task below never runs (hung every 0.4.x update). When
+        // the shutdown has already run to completion there is nothing left to
+        // wait for — quit synchronously.
+        guard !store.hasCompletedTermination else { return .terminateNow }
         Task { @MainActor in
             await store.prepareForTermination()
             sender.reply(toApplicationShouldTerminate: true)
