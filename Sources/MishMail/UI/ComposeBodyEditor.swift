@@ -73,15 +73,14 @@ struct ComposeBodyEditor: NSViewRepresentable {
         context.coordinator.bindFormatTarget()
         Coordinator.highlight(textView, fontSize: fontSize)
 
-        let scroll = NSScrollView()
+        // OverlayComposeScrollView pins scrollerStyle so AppKit can't flip
+        // back to legacy when a mouse is plugged in / "Always show scroll bars"
+        // is on (that flip used to reflow the body on the next Enter).
+        let scroll = OverlayComposeScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true
-        // Overlay scrollers never steal content width. Legacy (always-on /
-        // autohide) scrollers shrink the clip view when the body overflows,
-        // reflowing every line and looking like a rightward jump on Enter.
-        scroll.scrollerStyle = .overlay
         scroll.horizontalScrollElasticity = .none
         scroll.automaticallyAdjustsContentInsets = false
         scroll.contentInsets = NSEdgeInsets()
@@ -95,11 +94,6 @@ struct ComposeBodyEditor: NSViewRepresentable {
         context.coordinator.fontSize = fontSize
         context.coordinator.formatTarget = formatTarget
         context.coordinator.bindFormatTarget()
-        // AppKit can flip scrollerStyle with system prefs / appearance changes;
-        // keep overlay so a vertical scroller never reflows the body.
-        if scroll.scrollerStyle != .overlay {
-            scroll.scrollerStyle = .overlay
-        }
         guard let textView = scroll.documentView as? ComposeBodyTextView else { return }
         context.coordinator.textView = textView
 
@@ -383,6 +377,30 @@ struct ComposeBodyEditor: NSViewRepresentable {
                 storage.addAttributes([.foregroundColor: marker], range: match.range(at: 3))
             }
         }
+    }
+}
+
+/// NSScrollView that never yields to legacy scrollers.
+///
+/// AppKit resets `scrollerStyle` when `NSScroller.preferredScrollerStyle`
+/// changes (mouse connect, System Settings). Legacy style steals ~15pt of
+/// clip width the moment the body overflows — the Enter-key reflow jump.
+/// Forcing overlay here (not just in makeNSView) closes the one-frame window
+/// where a style flip could still reflow before the next updateNSView.
+final class OverlayComposeScrollView: NSScrollView {
+    override var scrollerStyle: NSScroller.Style {
+        get { .overlay }
+        set { super.scrollerStyle = .overlay }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        super.scrollerStyle = .overlay
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        super.scrollerStyle = .overlay
     }
 }
 
