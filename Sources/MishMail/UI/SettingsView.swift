@@ -276,7 +276,9 @@ struct UpdatesSettings: View {
                                 Text("Check for Updates")
                             }
                         }
-                        .disabled(updates.checking)
+                        // A check during an install would overwrite its
+                        // progress status; `check` refuses anyway.
+                        .disabled(updates.checking || updates.installing)
                         Spacer()
                         if let last = updates.lastChecked {
                             Text("Checked \(last, format: .relative(presentation: .named))")

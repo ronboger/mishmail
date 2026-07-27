@@ -1187,7 +1187,9 @@ struct Sidebar: View {
                         Image(systemName: "arrow.down.circle.fill")
                             .font(.system(size: 12))
                             .foregroundStyle(Color.accentColor)
-                        Text("Update app to \(release.version)")
+                        // Says "restart" up front: from here one click on a
+                        // sidebar row installs and relaunches the app.
+                        Text("Update to \(release.version) and restart")
                             .font(.system(size: 12.5, weight: .medium))
                         Spacer()
                     }

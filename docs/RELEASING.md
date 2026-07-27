@@ -90,6 +90,11 @@ everyone." This doc is about `make release`.
   derives it automatically. Don't create the tag by hand.
 - The updater compares `MARKETING_VERSION` strings, so **the version must
   strictly increase** or existing installs won't offer the update.
+- The updater also refuses a release whose **zipped app's
+  `CFBundleShortVersionString` doesn't equal the tag** — that pin is what
+  stops a repo takeover from republishing an old signed build under a higher
+  tag. `make release` derives the tag from `MARKETING_VERSION`, so this only
+  bites if a zip is attached by hand.
 - **One release per version.** `gh release create` fails if `v<version>`
   already exists — if you need to redo a release, delete the old one first
   (`gh release delete v0.2.0 --cleanup-tag`) or bump to a new version (cleaner).

@@ -90,14 +90,43 @@ final class UpdateInstallerTests: XCTestCase {
                        "a failed install must leave the app the user is running alone")
     }
 
+    func testSwapLeavesTheInstalledBundleUnquarantined() throws {
+        let fm = FileManager.default
+        let work = try scratchDirectory()
+        defer { try? fm.removeItem(at: work) }
+
+        let installed = try stubApp(named: "MishMail.app", in: work, marker: "0.4.0")
+        let staging = work.appendingPathComponent("staging", isDirectory: true)
+        try fm.createDirectory(at: staging, withIntermediateDirectories: true)
+        let update = try stubApp(named: "MishMail.app", in: staging, marker: "0.4.1")
+        // Whatever tagged it, the installed app must not carry the attribute:
+        // Gatekeeper refuses to launch a quarantined un-notarized build, so a
+        // tag surviving the swap would break the relaunch outright.
+        try tagQuarantined(update)
+        XCTAssertTrue(isQuarantined(update), "fixture should start tagged")
+
+        try UpdateInstaller.swap(newApp: update, onto: installed)
+
+        XCTAssertFalse(isQuarantined(installed))
+    }
+
     func testClearQuarantineToleratesAnUntaggedBundle() throws {
         let work = try scratchDirectory()
         defer { try? FileManager.default.removeItem(at: work) }
         let app = try stubApp(named: "MishMail.app", in: work, marker: "0.4.0")
-        // Nothing in the download path tags the bundle; clearing is a no-op
-        // that must not blow up.
+        // Nothing in the download path tags the bundle, so clearing is
+        // normally a no-op — one that must not blow up.
         UpdateInstaller.clearQuarantine(app)
         XCTAssertEqual(try marker(of: app), "0.4.0")
+    }
+
+    // MARK: - Translocation
+
+    func testTranslocatedAppIsDetected() {
+        XCTAssertTrue(UpdateInstaller.isTranslocated(URL(fileURLWithPath:
+            "/private/var/folders/ab/xyz/d/AppTranslocation/1B2C-3D/d/MishMail.app")))
+        XCTAssertFalse(UpdateInstaller.isTranslocated(
+            URL(fileURLWithPath: "/Applications/MishMail.app")))
     }
 
     // MARK: - Fixtures
@@ -126,6 +155,18 @@ final class UpdateInstallerTests: XCTestCase {
         try marker.write(to: contents.appendingPathComponent("version.txt"),
                          atomically: true, encoding: .utf8)
         return app
+    }
+
+    private func tagQuarantined(_ url: URL) throws {
+        let value = "0001;00000000;test;\(UUID().uuidString)"
+        let ok = value.withCString {
+            setxattr(url.path, "com.apple.quarantine", $0, strlen($0), 0, 0)
+        }
+        try XCTSkipIf(ok != 0, "filesystem rejected the quarantine xattr")
+    }
+
+    private func isQuarantined(_ url: URL) -> Bool {
+        getxattr(url.path, "com.apple.quarantine", nil, 0, 0, 0) >= 0
     }
 
     private func marker(of app: URL) throws -> String {

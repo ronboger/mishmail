@@ -38,6 +38,14 @@ enum UpdateInstaller {
         app.deletingLastPathComponent()
     }
 
+    /// True when the running app is on a read-only App Translocation mount —
+    /// what macOS does with a quarantined app launched straight from where it
+    /// was downloaded instead of being moved first. There is no real install
+    /// directory to swap into until the user puts it somewhere permanent.
+    nonisolated static func isTranslocated(_ app: URL) -> Bool {
+        app.resolvingSymlinksInPath().path.contains("/AppTranslocation/")
+    }
+
     /// A stored grant is reused only for the folder the running app is in.
     /// Anything else means the app moved since the last update, and the stale
     /// grant would install over a bundle nobody is running.

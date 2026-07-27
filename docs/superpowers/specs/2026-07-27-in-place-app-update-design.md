@@ -1,7 +1,7 @@
 # In-place app update (Install and Relaunch)
 
 **Date:** 2026-07-27
-**Status:** Designed
+**Status:** Implemented — revised after review (see "Changes from review")
 
 ## Problem
 
@@ -60,19 +60,26 @@ into place" half is being replaced.
 download trustworthy*. A new `Support/UpdateInstaller.swift` owns
 *getting it into place*:
 
-- `installDirectory() -> URL?` — resolve the persisted app-scoped
-  bookmark, `nil` when absent or stale.
-- `requestInstallDirectory() -> URL?` — `NSOpenPanel`, directories only,
-  opened on the running app's parent folder, titled "Install MishMail".
-  Persists the bookmark on success.
-- `install(verifiedApp:over:) throws` — `FileManager.replaceItemAt`,
-  wrapped in `startAccessingSecurityScopedResource` /
-  `stopAccessingSecurityScopedResource`.
-- `relaunch() throws` — `NSWorkspace.openApplication` with
+- `installDirectory(for:) -> URL` — the running app's parent folder.
+- `isTranslocated(_:) -> Bool` — whether the running app sits on a
+  read-only App Translocation mount, where no in-place install is
+  possible.
+- `resolveGrant(installDirectory:defaults:) -> URL?` — resolve the
+  persisted app-scoped bookmark; `nil` when absent, unresolvable, or
+  pointing anywhere but the running app's folder. Unusable bookmarks are
+  dropped so the next attempt re-prompts instead of failing forever.
+- `requestGrant(installDirectory:defaults:) throws -> URL` —
+  `NSOpenPanel`, directories only, opened *on* the install folder with
+  nothing selected, so confirming without navigating grants exactly the
+  folder needed. Prompt: "Grant Access". Persists the bookmark.
+- `withAccess(to:_:)` — holds the security scope around a body.
+- `swap(newApp:onto:) throws` — `clearQuarantine`, then
+  `FileManager.replaceItemAt`.
+- `relaunch(_:) async throws` — `NSWorkspace.openApplication` with
   `createsNewApplicationInstance`, then terminate.
 
-`UpdateChecker.downloadAndVerifyApp` is unchanged except that the
-in-place path no longer calls `markQuarantined`.
+`UpdateChecker.downloadAndVerifyApp` keeps every existing check, drops
+the `markQuarantined` call, and gains version pinning (below).
 
 ### Install target and the grant
 
@@ -97,14 +104,32 @@ The in-place install does **not** set `com.apple.quarantine`. By the time
 SHA-256 against the published `SHA256SUMS` (when present), full nested
 code-signature validity (`kSecCSCheckNestedCode |
 kSecCSCheckAllArchitectures`), and Team ID continuity with the running
-app — plus notarization for Developer ID builds. That is strictly
-stronger than what Gatekeeper checks on an Apple Development build,
-where the quarantine tag buys nothing but a warning on every update.
-This is the same trade Sparkle makes.
+app — plus notarization for Developer ID builds, and (after review) the
+bundle's own version. That is stronger than what Gatekeeper checks on an
+Apple Development build. Keeping the tag would not even be the
+conservative option: on macOS 14+ Gatekeeper *refuses to launch* a
+quarantined un-notarized build, so the tag would break the relaunch on
+every single update. What is actually given up is XProtect's
+first-launch malware scan and a user-override speed bump in a scenario
+(stolen signing key *and* repo compromise) where the attacker already
+owns the same Mac the key lives on. This is the same trade Sparkle
+makes.
 
 The Finder-reveal fallback **keeps** the tag. There the user
 double-clicks a bundle out of a temp directory themselves, and the
 trust chain is the OS's job again.
+
+### Trust: version pinning
+
+Signatures prove identity, not freshness. Every past release is public
+and carries the same Team ID, so whoever controls the GitHub account —
+with no signing key at all — could republish an old, vulnerable, validly
+signed build under a higher tag and roll the app backwards past every
+other check. `downloadAndVerifyApp` therefore requires the extracted
+bundle's `CFBundleShortVersionString` to equal the release version it
+was offered as; `make release` derives the tag from `MARKETING_VERSION`,
+so the two always agree for real releases, and a mismatch falls back to
+opening the release page.
 
 ### Install timing
 
@@ -113,55 +138,79 @@ Deferring the swap to quit-time would mean doing filesystem work during
 termination without a helper process — Sparkle uses a separate installer
 XPC for exactly that reason — so it is not worth the fragility here.
 
-Compose autosave is debounced (`ComposeView.scheduleAutosave`) and
-compose windows save their draft on close, so a normal `NSApp.terminate`
-should flush rather than drop. Confirming that is a spike (below), not an
-assumption.
+Compose autosave is debounced and a compose window's pending save is
+*not* flushed by app termination, so a restart can drop the last few
+seconds of typing. Rather than build a compose-session registry for
+this, the install asks first when a draft is open ("Install and Restart"
+/ "Cancel"). With no draft open there is no prompt.
 
 ### Failure paths
 
-Every failure degrades to today's behavior rather than a dead end.
+Up to the swap, every failure degrades to the old behavior rather than a
+dead end. After it, there is no going back — the new bundle is already
+installed and the database is closed.
 
 | Failure | Behavior |
 | --- | --- |
+| Running from an App Translocation mount | Finder reveal, quarantine tagged; no install directory exists to swap into |
 | Panel cancelled / no grant | Finder reveal, quarantine tagged, as today |
-| `install` throws (disk full, permissions) | Verified copy stays in temp; status explains; Finder reveal offered |
-| `relaunch` throws | Swap already succeeded — do **not** terminate. Status: "Update installed — quit and reopen MishMail." |
+| `swap` throws (disk full, permissions, TCC) | Verified copy stays in temp; status explains; Finder reveal offered |
+| `relaunch` throws | The pool is closed and the timers are dead, so the process can no longer sync, save, or send. Alert ("MishMail X is installed… will now quit"), then terminate — a closed app on an installed update beats a zombie that looks alive |
 | Download or verification fails | Unchanged: status explains, release page opens |
-
-Termination happens only after `openApplication` returns successfully.
 
 ### UI
 
-`UpdatesSettings` keeps its shape. The primary button runs the whole
-sequence on one click, its label tracking the phase
-(Update App → Downloading… → Verifying… → Installing…), with "View on
-GitHub" beside it. The footer copy loses "drag into Applications to
-install" and describes the real flow, including the one-time folder
-prompt. The sidebar update affordance is unchanged.
+`UpdatesSettings` keeps its shape. The primary button, **Install and
+Relaunch**, runs the whole sequence on one click, showing a spinner and
+"Updating…" while the status line beneath tracks the phase
+(Downloading… → Installing… → Restarting…). "View on GitHub" sits beside
+it, and "Check for Updates" is disabled during an install. The footer
+copy loses "drag into Applications to install" and describes the real
+flow, including the one-time folder prompt. The sidebar affordance
+becomes "Update to X and restart" — one click there installs, so the
+label says so rather than hiding it in a tooltip.
 
 ## Testing
 
 - The swap is exercised against a temp directory containing a stub
-  `.app`: a successful replace, and a failure leaving the original intact.
+  `.app`: a successful replace, a failure leaving the original intact,
+  and a tagged bundle arriving unquarantined (the property the relaunch
+  depends on).
 - Install-target resolution — bookmark directory matching the running
-  app's parent, mismatch forcing a re-prompt — is a pure function and is
-  unit-tested.
+  app's parent, mismatch forcing a re-prompt, an unresolvable bookmark
+  being dropped — is pure and unit-tested, as is translocation
+  detection.
+- `bundleVersion` is tested both ways: a real `CFBundleShortVersionString`
+  and a bundle with no readable version, which must not pass as any
+  version.
 - Existing `UpdateCheckerTests` (version compare, checksum parsing,
   asset picking) are unaffected and must stay green.
 - The grant and the relaunch need a real release to exercise: cut a
   throwaway v0.4.1 and update a 0.4.0 install before trusting it.
 
-## Spikes — assumptions to verify before shipping
+## Changes from review
 
-1. **Sandboxed self-relaunch.** Whether
-   `NSWorkspace.openApplication(createsNewApplicationInstance:)` is
-   permitted for a sandboxed app launching itself. If it is blocked, the
-   fallback is the "quit and reopen" message — degraded, not broken.
+An adversarial review of the first implementation produced four changes,
+all folded in above: quitting rather than lingering when the relaunch
+fails (the DB is already closed by then, so the old "stay open" plan
+left a zombie); version pinning against tag-based rollback; an
+open-draft confirmation before the restart; and an App Translocation
+guard. Smaller: `check()` now refuses to run during an install, and the
+sidebar label states that it restarts.
+
+## Spikes — assumptions still to verify on real hardware
+
+1. **Sandboxed self-relaunch.**
+   `NSWorkspace.openApplication(createsNewApplicationInstance:)` from a
+   sandboxed app launching itself is a LaunchServices request rather than
+   an exec and is expected to be permitted, but it is unverified. If it
+   is blocked, the app installs the update and quits with an alert.
 2. **macOS 14+ App Management (TCC).** Modifying another app's bundle
-   normally prompts. Self-updates where the writing process and the
-   target share a Team ID are exempt, and Team ID continuity is already
-   enforced — but confirm on the actual OS.
-3. **Terminate flushing a pending compose autosave.** ComposeView saves
-   on close; whether `NSApp.terminate` reaches that path with a debounce
-   still in flight needs checking.
+   normally prompts. Apple exempts same-Team-ID self-updates, and Team ID
+   continuity is enforced here, but whether that exemption applies
+   cleanly to a free Personal Team certificate on a given point release
+   is unconfirmed. Failure surfaces as an `EPERM` out of `replaceItemAt`
+   and falls back to the Finder reveal.
+3. **`NSOpenPanel` returning the displayed directory when nothing is
+   selected.** Long-standing panel behavior, but if it ever returns
+   `nil`, the result is `grantDeclined` → Finder reveal.

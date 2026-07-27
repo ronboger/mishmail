@@ -92,6 +92,9 @@ struct MishMailApp: App {
                     UpdateChecker.shared.prepareForQuit = { [weak store] in
                         await store?.prepareForTermination()
                     }
+                    UpdateChecker.shared.hasOpenDraft = { [weak store] in
+                        store?.composeRequest != nil
+                    }
                     UpdateChecker.shared.startPeriodicChecks()
                 }
                 // mailto: from browsers / other apps when we're the default

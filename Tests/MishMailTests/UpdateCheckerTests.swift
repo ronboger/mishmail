@@ -35,6 +35,39 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertEqual(found?.lastPathComponent, "MishMail.app")
     }
 
+    /// Version pinning is what stops a GitHub-account compromise from rolling
+    /// the app back to an old, correctly signed, still-vulnerable release
+    /// republished under a higher tag.
+    func testBundleVersionReadsShortVersionString() throws {
+        let app = try Self.stubApp(version: "0.4.1")
+        defer { try? FileManager.default.removeItem(at: app.deletingLastPathComponent()) }
+        XCTAssertEqual(UpdateChecker.bundleVersion(of: app), "0.4.1")
+    }
+
+    func testBundleVersionIsNilWithoutAnInfoPlist() throws {
+        let app = try Self.stubApp(version: nil)
+        defer { try? FileManager.default.removeItem(at: app.deletingLastPathComponent()) }
+        XCTAssertNil(UpdateChecker.bundleVersion(of: app),
+                     "a bundle with no readable version must not pass as any version")
+    }
+
+    /// A `.app` under a fresh temp directory, with an Info.plist when a
+    /// version is given.
+    private static func stubApp(version: String?) throws -> URL {
+        let root = FileManager.default.temporaryDirectory
+            .appendingPathComponent("pm-version-\(UUID().uuidString)", isDirectory: true)
+        let app = root.appendingPathComponent("MishMail.app", isDirectory: true)
+        let contents = app.appendingPathComponent("Contents", isDirectory: true)
+        try FileManager.default.createDirectory(at: contents, withIntermediateDirectories: true)
+        if let version {
+            let plist = try PropertyListSerialization.data(
+                fromPropertyList: ["CFBundleShortVersionString": version],
+                format: .xml, options: 0)
+            try plist.write(to: contents.appendingPathComponent("Info.plist"))
+        }
+        return app
+    }
+
     func testVerifyRejectsPlainDirectory() {
         let dir = FileManager.default.temporaryDirectory
             .appendingPathComponent("pm-unsigned-\(UUID().uuidString).app", isDirectory: true)
