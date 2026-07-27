@@ -3,11 +3,12 @@ import AppKit
 import Security
 import CryptoKit
 
-/// Checks GitHub Releases for a newer version of the app. The app is
-/// sandboxed, so there is no in-place auto-install: "Update App" downloads
-/// the release zip, verifies SHA-256 (when published), code signature, Team ID
-/// continuity, and notarization for Developer ID builds — then reveals the app
-/// in Finder. Falls back to the release page if verification fails.
+/// Checks GitHub Releases for a newer version of the app. "Install and
+/// Relaunch" downloads the release zip, verifies SHA-256 (when published),
+/// code signature, Team ID continuity, and notarization for Developer ID
+/// builds, then hands the verified bundle to `UpdateInstaller`, which swaps it
+/// over the running app and restarts. Verification failures open the release
+/// page; install failures fall back to revealing the app in Finder.
 @MainActor
 final class UpdateChecker: ObservableObject {
     static let shared = UpdateChecker()
@@ -32,6 +33,12 @@ final class UpdateChecker: ObservableObject {
     var currentVersion: String {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
     }
+
+    /// Graceful-shutdown hook the app installs at launch, so an in-place
+    /// install can close the database before the relaunched instance opens
+    /// it. A closure rather than a direct `MailStore` call because the unit
+    /// test target compiles this file without the app's store.
+    var prepareForQuit: (() async -> Void)?
 
     private var timer: Timer?
     private static let lastCheckKey = "updates.lastCheckAt"
@@ -150,23 +157,72 @@ final class UpdateChecker: ObservableObject {
         installing = true
         status = "Downloading MishMail \(release.version)…"
         defer { installing = false }
+
+        let runningApp = Bundle.main.bundleURL
+        let verified: VerifyResult
         do {
-            let result = try await Self.downloadAndVerifyApp(
+            verified = try await Self.downloadAndVerifyApp(
                 from: assetURL,
                 checksumURL: release.checksumURL,
-                runningAppURL: Bundle.main.bundleURL
+                runningAppURL: runningApp
             )
-            var msg = "Verified MishMail \(release.version)"
-            if result.checksumVerified { msg += " (SHA-256)" }
-            if let team = result.teamID { msg += " · Team \(team)" }
-            if result.notarized { msg += " · notarized" }
-            msg += ". Drag it into Applications to install."
-            status = msg
-            NSWorkspace.shared.activateFileViewerSelecting([result.appURL])
         } catch {
             status = "Couldn't verify the update (\(error.localizedDescription)). Opening the release page instead."
             NSWorkspace.shared.open(release.htmlURL)
+            return
         }
+        await install(verified, release: release, runningApp: runningApp)
+    }
+
+    /// Swap the verified bundle over the running app and restart. Every
+    /// failure degrades to the old reveal-in-Finder path instead of a dead
+    /// end — the verified copy is still sitting in the temp directory.
+    private func install(_ verified: VerifyResult, release: Release, runningApp: URL) async {
+        let installDir = UpdateInstaller.installDirectory(for: runningApp)
+        let grant: URL
+        do {
+            grant = try UpdateInstaller.resolveGrant(installDirectory: installDir)
+                ?? UpdateInstaller.requestGrant(installDirectory: installDir)
+        } catch {
+            revealForManualInstall(verified, reason: error.localizedDescription)
+            return
+        }
+
+        status = "Installing MishMail \(release.version)…"
+        do {
+            try UpdateInstaller.withAccess(to: grant) {
+                try UpdateInstaller.swap(newApp: verified.appURL, onto: runningApp)
+            }
+        } catch {
+            revealForManualInstall(
+                verified,
+                reason: "Couldn't install the update (\(error.localizedDescription)).")
+            return
+        }
+
+        // Past this point the new bundle is already in place, so a failure
+        // must never read as "nothing happened".
+        status = "Restarting MishMail \(release.version)…"
+        // Close the database before a second instance opens it. The pool is
+        // WAL and multi-process safe, but the quit-path checkpoint shouldn't
+        // race a fresh launch's first writes. Re-entrant, so the terminate
+        // below awaits this same shutdown rather than redoing it.
+        await prepareForQuit?()
+        do {
+            try await UpdateInstaller.relaunch(runningApp)
+        } catch {
+            status = "MishMail \(release.version) is installed — quit and reopen to finish."
+        }
+    }
+
+    /// Fallback when the app can't install for itself: hand the user the
+    /// verified bundle the way the old flow did. They double-click it out of
+    /// a temp directory from here, so Gatekeeper's checks are the OS's job
+    /// again and the quarantine tag belongs back on it.
+    private func revealForManualInstall(_ verified: VerifyResult, reason: String) {
+        Self.markQuarantined(verified.appURL)
+        status = "\(reason) Drag the revealed MishMail into Applications to install it."
+        NSWorkspace.shared.activateFileViewerSelecting([verified.appURL])
     }
 
     struct VerifyResult {
@@ -247,8 +303,9 @@ final class UpdateChecker: ObservableObject {
         try verifyCodeSignature(of: appURL)
         let trust = try evaluateTrust(updateApp: appURL, runningApp: runningAppURL,
                                       officialRelease: checksumVerified)
-        // Gatekeeper still sees this as internet-downloaded content.
-        markQuarantined(appURL)
+        // Deliberately not quarantined here: an in-place install has already
+        // cleared stronger checks than Gatekeeper would apply. Only the
+        // manual-install fallback tags it (see `revealForManualInstall`).
         return VerifyResult(appURL: appURL, checksumVerified: checksumVerified,
                             teamID: trust.teamID, notarized: trust.notarized)
     }

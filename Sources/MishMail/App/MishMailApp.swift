@@ -89,6 +89,9 @@ struct MishMailApp: App {
                     AppDelegate.store = store
                     AppTheme.apply(.from(raw: appThemeRaw))
                     RemoteImagePolicy.migrateIfNeeded()
+                    UpdateChecker.shared.prepareForQuit = { [weak store] in
+                        await store?.prepareForTermination()
+                    }
                     UpdateChecker.shared.startPeriodicChecks()
                 }
                 // mailto: from browsers / other apps when we're the default

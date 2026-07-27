@@ -169,9 +169,13 @@ published as updates for other users.
 
 MishMail publishes binaries to GitHub Releases (`ronboger/mishmail`). The
 app checks once a day; when a newer version exists, an **Update app** button
-appears at the bottom of the sidebar and in **Settings → Updates** — clicking it
-downloads the release zip, then drag the new MishMail into Applications to
-replace the old copy.
+appears at the bottom of the sidebar and an **Install and Relaunch** button in
+**Settings → Updates** — clicking either downloads and verifies the release
+zip, replaces MishMail where it's installed, and restarts it. Because the app
+is sandboxed, the *first* update asks once for permission to its own install
+folder (usually `/Applications`); the grant is remembered, so later updates are
+a single click. If that permission is declined or the swap fails, the verified
+app is revealed in Finder to drag in by hand.
 
 To cut a release: bump `MARKETING_VERSION` in `project.yml`, then
 

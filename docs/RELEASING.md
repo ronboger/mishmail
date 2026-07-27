@@ -80,7 +80,9 @@ everyone." This doc is about `make release`.
    Running apps pick it up within ~a day, or immediately via **Settings →
    Updates → Check for Updates**. The updater downloads the zip, checks
    SHA-256 against `SHA256SUMS`, then verifies code signature / Team ID /
-   notarization before revealing the app in Finder.
+   notarization before swapping the bundle over the running app and
+   relaunching (`UpdateInstaller.swift`). Only a declined permission grant or a
+   failed swap falls back to revealing the app in Finder.
 
 ## Tag & version rules
 

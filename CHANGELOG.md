@@ -61,6 +61,20 @@ minor versions may still change behavior.
   instance moves between placements, so typed text is never lost.
 
 ### Changed
+- **Updates install themselves** — "Update App" used to download the release
+  zip, extract it into a temp folder, and open Finder on it so you could drag
+  the app into Applications yourself, with a Gatekeeper warning waiting at the
+  end because the verified bundle was still tagged as quarantined. It is now
+  one button, **Install and Relaunch**: the same download and verification
+  (SHA-256, nested code signature, Team ID continuity, notarization for
+  Developer ID builds), then an atomic swap over the installed app and a
+  restart. Because MishMail is sandboxed it cannot write its own install
+  folder unaided, so the first update asks once for permission to that folder
+  and remembers it as a security-scoped bookmark; every later update is a
+  single click. The quarantine tag is gone from this path — the update has
+  already cleared stronger checks than Gatekeeper applies to an Apple
+  Development build. A declined grant or a failed swap still reveals the
+  verified app in Finder, quarantined, exactly as before.
 - **Instant triage handoff** — archive, trash, spam, and snooze now publish
   their row/count changes before encrypted-database and Gmail work, and replace
   the reading pane with the next conversation in the same update. Repeated

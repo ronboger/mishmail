@@ -244,24 +244,22 @@ struct UpdatesSettings: View {
                                 if updates.installing {
                                     HStack(spacing: 6) {
                                         ProgressView().controlSize(.small)
-                                        Text("Verifying…")
+                                        Text("Updating…")
                                     }
                                 } else {
-                                    Text("Update App")
+                                    Text("Install and Relaunch")
                                 }
                             }
                             .buttonStyle(.borderedProminent)
                             .disabled(updates.installing)
                             Button("View on GitHub") { updates.openReleasePage() }
                         }
-                    } else if let status = updates.status {
-                        Text(status).font(.system(size: 12)).foregroundStyle(.secondary)
                     }
-                    if updates.available != nil, let status = updates.status {
+                    if let status = updates.status {
                         Text(status).font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text("Update App downloads the release zip, checks SHA-256 (when published), code signature, Team ID, and notarization for Developer ID builds, then reveals the app in Finder — drag into Applications to install. Failed checks open the GitHub release page instead. Quiet daily checks also surface an update button in the sidebar.")
+                    Text("Installing downloads the release zip, checks SHA-256 (when published), code signature, Team ID, and notarization for Developer ID builds, then replaces MishMail where it's installed and restarts it. The first update asks once for permission to that folder, since the app is sandboxed. Failed checks open the GitHub release page; a failed install reveals the verified app in Finder to drag in by hand. Quiet daily checks also surface an update button in the sidebar.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Section {

@@ -1195,7 +1195,7 @@ struct Sidebar: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 12).padding(.top, 8)
-                .help("Download MishMail \(release.version) from GitHub")
+                .help("Install MishMail \(release.version) and relaunch")
             }
             SettingsLink {
                 HStack(spacing: 7) {
