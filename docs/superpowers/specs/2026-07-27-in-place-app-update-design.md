@@ -198,19 +198,37 @@ open-draft confirmation before the restart; and an App Translocation
 guard. Smaller: `check()` now refuses to run during an install, and the
 sidebar label states that it restarts.
 
-## Spikes — assumptions still to verify on real hardware
+## Spikes — resolved by the first real update (0.4.1 → 0.4.2)
 
-1. **Sandboxed self-relaunch.**
-   `NSWorkspace.openApplication(createsNewApplicationInstance:)` from a
-   sandboxed app launching itself is a LaunchServices request rather than
-   an exec and is expected to be permitted, but it is unverified. If it
-   is blocked, the app installs the update and quits with an alert.
-2. **macOS 14+ App Management (TCC).** Modifying another app's bundle
-   normally prompts. Apple exempts same-Team-ID self-updates, and Team ID
-   continuity is enforced here, but whether that exemption applies
-   cleanly to a free Personal Team certificate on a given point release
-   is unconfirmed. Failure surfaces as an `EPERM` out of `replaceItemAt`
-   and falls back to the Finder reveal.
-3. **`NSOpenPanel` returning the displayed directory when nothing is
-   selected.** Long-standing panel behavior, but if it ever returns
-   `nil`, the result is `grantDeclined` → Finder reveal.
+1. **Sandboxed self-relaunch — FAILED, then fixed.**
+   `NSWorkspace.openApplication(createsNewApplicationInstance:)` returned
+   "a miscellaneous error occurred" (LaunchServices `-10810`). Asking for
+   a second instance of our own bundle from inside it doesn't work, and
+   swapping first compounds it: the registration LaunchServices has
+   cached points at the inode just deleted. Replaced in 0.4.3 with a
+   detached `/bin/sh` that polls until this process exits, then `open`s
+   the app by path — no instance conflict, and the bundle is re-read from
+   disk. The failure path behaved exactly as designed: alert, then quit,
+   rather than a zombie on a closed database.
+2. **macOS App Management (TCC) — PASSED.** `replaceItemAt` from the
+   sandbox container onto `/Applications` succeeded with no prompt on a
+   free Personal Team certificate; the installed bundle really was 0.4.2
+   afterwards. The same-Team-ID self-update exemption holds.
+3. **`NSOpenPanel` empty selection — PASSED.** The panel returned
+   `/Applications` with nothing selected, and the resulting app-scoped
+   bookmark persisted (512 bytes under `updates.installDirBookmark`), so
+   later updates skip the prompt.
+
+A fourth problem surfaced at the same time, unrelated to the spikes:
+`startPeriodicChecks` ran its launch check through the same daily gate as
+the hourly tick, and that timestamp survives in preferences across an
+update — so relaunching into a brand-new release showed nothing until
+"Check for Updates" was pressed. 0.4.3 always checks at launch.
+
+Still unverified after 0.4.3: whether the detached-shell relaunch works
+from inside the sandbox. Spawning `/bin/sh` is permitted and the child
+inherits the sandbox, where `open` is a LaunchServices client like
+`NSWorkspace` — but the first update *from* a 0.4.3 install is the proof.
+If the spawn itself fails it throws and the alert-and-quit path runs as
+before; if the spawn succeeds but `open` doesn't, the update is installed
+and the app simply has to be reopened.
