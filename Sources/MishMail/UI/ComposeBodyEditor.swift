@@ -58,6 +58,9 @@ struct ComposeBodyEditor: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.textContainer?.widthTracksTextView = true
+        // minSize defaults to the initial frame; leave it at zero so the
+        // first layout pass (often 0×0 from SwiftUI) can't pin a stale width.
+        textView.minSize = .zero
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                                   height: CGFloat.greatestFiniteMagnitude)
         textView.string = text
@@ -70,11 +73,17 @@ struct ComposeBodyEditor: NSViewRepresentable {
         context.coordinator.bindFormatTarget()
         Coordinator.highlight(textView, fontSize: fontSize)
 
-        let scroll = NSScrollView()
+        // OverlayComposeScrollView pins scrollerStyle so AppKit can't flip
+        // back to legacy when a mouse is plugged in / "Always show scroll bars"
+        // is on (that flip used to reflow the body on the next Enter).
+        let scroll = OverlayComposeScrollView()
         scroll.drawsBackground = false
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true
+        scroll.horizontalScrollElasticity = .none
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsets()
         scroll.borderType = .noBorder
         scroll.documentView = textView
         context.coordinator.fontSize = fontSize
@@ -371,6 +380,30 @@ struct ComposeBodyEditor: NSViewRepresentable {
     }
 }
 
+/// NSScrollView that never yields to legacy scrollers.
+///
+/// AppKit resets `scrollerStyle` when `NSScroller.preferredScrollerStyle`
+/// changes (mouse connect, System Settings). Legacy style steals ~15pt of
+/// clip width the moment the body overflows — the Enter-key reflow jump.
+/// Forcing overlay here (not just in makeNSView) closes the one-frame window
+/// where a style flip could still reflow before the next updateNSView.
+final class OverlayComposeScrollView: NSScrollView {
+    override var scrollerStyle: NSScroller.Style {
+        get { .overlay }
+        set { super.scrollerStyle = .overlay }
+    }
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        super.scrollerStyle = .overlay
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+        super.scrollerStyle = .overlay
+    }
+}
+
 /// NSTextView that claims markdown formatting key equivalents and reports
 /// first-responder focus (not just the editing session).
 final class ComposeBodyTextView: NSTextView {
@@ -387,6 +420,30 @@ final class ComposeBodyTextView: NSTextView {
         let ok = super.resignFirstResponder()
         if ok { onFocusChange?(false) }
         return ok
+    }
+
+    /// `scrollRangeToVisible` (caret after Return) can nudge the clip view
+    /// horizontally when document width and clip width disagree by a pixel —
+    /// classic NSTextView "body jumps sideways while typing" failure mode.
+    /// Pin origin.x so the body never drifts while typing newlines.
+    override func scrollRangeToVisible(_ charRange: NSRange) {
+        super.scrollRangeToVisible(charRange)
+        pinHorizontalScroll()
+    }
+
+    override func layout() {
+        super.layout()
+        pinHorizontalScroll()
+    }
+
+    private func pinHorizontalScroll() {
+        guard let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        guard abs(clip.bounds.origin.x) > 0.01 else { return }
+        var origin = clip.bounds.origin
+        origin.x = 0
+        clip.setBoundsOrigin(origin)
+        scroll.reflectScrolledClipView(clip)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
