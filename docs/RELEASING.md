@@ -80,7 +80,9 @@ everyone." This doc is about `make release`.
    Running apps pick it up within ~a day, or immediately via **Settings →
    Updates → Check for Updates**. The updater downloads the zip, checks
    SHA-256 against `SHA256SUMS`, then verifies code signature / Team ID /
-   notarization before revealing the app in Finder.
+   notarization before swapping the bundle over the running app and
+   relaunching (`UpdateInstaller.swift`). Only a declined permission grant or a
+   failed swap falls back to revealing the app in Finder.
 
 ## Tag & version rules
 
@@ -88,6 +90,11 @@ everyone." This doc is about `make release`.
   derives it automatically. Don't create the tag by hand.
 - The updater compares `MARKETING_VERSION` strings, so **the version must
   strictly increase** or existing installs won't offer the update.
+- The updater also refuses a release whose **zipped app's
+  `CFBundleShortVersionString` doesn't equal the tag** — that pin is what
+  stops a repo takeover from republishing an old signed build under a higher
+  tag. `make release` derives the tag from `MARKETING_VERSION`, so this only
+  bites if a zip is attached by hand.
 - **One release per version.** `gh release create` fails if `v<version>`
   already exists — if you need to redo a release, delete the old one first
   (`gh release delete v0.2.0 --cleanup-tag`) or bump to a new version (cleaner).

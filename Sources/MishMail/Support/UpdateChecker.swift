@@ -3,11 +3,12 @@ import AppKit
 import Security
 import CryptoKit
 
-/// Checks GitHub Releases for a newer version of the app. The app is
-/// sandboxed, so there is no in-place auto-install: "Update App" downloads
-/// the release zip, verifies SHA-256 (when published), code signature, Team ID
-/// continuity, and notarization for Developer ID builds — then reveals the app
-/// in Finder. Falls back to the release page if verification fails.
+/// Checks GitHub Releases for a newer version of the app. "Install and
+/// Relaunch" downloads the release zip, verifies SHA-256 (when published),
+/// code signature, Team ID continuity, and notarization for Developer ID
+/// builds, then hands the verified bundle to `UpdateInstaller`, which swaps it
+/// over the running app and restarts. Verification failures open the release
+/// page; install failures fall back to revealing the app in Finder.
 @MainActor
 final class UpdateChecker: ObservableObject {
     static let shared = UpdateChecker()
@@ -33,6 +34,15 @@ final class UpdateChecker: ObservableObject {
         Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0"
     }
 
+    /// Graceful-shutdown hook the app installs at launch, so an in-place
+    /// install can close the database before the relaunched instance opens
+    /// it. A closure rather than a direct `MailStore` call because the unit
+    /// test target compiles this file without the app's store.
+    var prepareForQuit: (() async -> Void)?
+    /// Whether a compose window is open, for the same reason and by the same
+    /// mechanism — the restart asks first when a draft is on screen.
+    var hasOpenDraft: (() -> Bool)?
+
     private var timer: Timer?
     private static let lastCheckKey = "updates.lastCheckAt"
 
@@ -55,8 +65,10 @@ final class UpdateChecker: ObservableObject {
 
     func check(quietly: Bool = false) async {
         // Quiet checks yield to one already in flight; an explicit click
-        // still runs (and reports) even if a quiet check is racing it.
-        guard !(checking && quietly) else { return }
+        // still runs (and reports) even if a quiet check is racing it. Nothing
+        // checks during an install — it would overwrite the progress status
+        // and could clear `available` out from under the running install.
+        guard !(checking && quietly), !installing else { return }
         checking = true
         defer { checking = false; lastChecked = Date() }
         do {
@@ -147,26 +159,134 @@ final class UpdateChecker: ObservableObject {
             NSWorkspace.shared.open(release.htmlURL)
             return
         }
+        // Claim the flow before the confirmation runs: a modal spins its own
+        // run loop, so a second click during it would otherwise pass the
+        // guard above and stack another alert.
         installing = true
-        status = "Downloading MishMail \(release.version)…"
         defer { installing = false }
+        // Remembered so a draft opened *during* the download still gets its
+        // own question: one answer shouldn't cover a draft that didn't exist
+        // when it was given.
+        let answeredWithDraftOpen = hasOpenDraft?() == true
+        guard confirmRestartOverOpenDraft(release) else {
+            status = "Update cancelled."
+            return
+        }
+        status = "Downloading MishMail \(release.version)…"
+
+        let runningApp = Bundle.main.bundleURL
+        let verified: VerifyResult
         do {
-            let result = try await Self.downloadAndVerifyApp(
+            verified = try await Self.downloadAndVerifyApp(
                 from: assetURL,
                 checksumURL: release.checksumURL,
-                runningAppURL: Bundle.main.bundleURL
+                expectedVersion: release.version,
+                runningAppURL: runningApp
             )
-            var msg = "Verified MishMail \(release.version)"
-            if result.checksumVerified { msg += " (SHA-256)" }
-            if let team = result.teamID { msg += " · Team \(team)" }
-            if result.notarized { msg += " · notarized" }
-            msg += ". Drag it into Applications to install."
-            status = msg
-            NSWorkspace.shared.activateFileViewerSelecting([result.appURL])
         } catch {
             status = "Couldn't verify the update (\(error.localizedDescription)). Opening the release page instead."
             NSWorkspace.shared.open(release.htmlURL)
+            return
         }
+        await install(verified, release: release, runningApp: runningApp,
+                      draftAlreadyAnswered: answeredWithDraftOpen)
+    }
+
+    /// Restarting is disruptive in a way an ordinary button click is not, so
+    /// an open draft gets a say first. Compose autosaves on a debounce and
+    /// termination does not flush a save that is still pending, so the last
+    /// few seconds of typing genuinely can be lost.
+    private func confirmRestartOverOpenDraft(_ release: Release) -> Bool {
+        guard hasOpenDraft?() == true else { return true }
+        let alert = NSAlert()
+        alert.messageText = "Install MishMail \(release.version) and restart?"
+        alert.informativeText = "You have a draft open. It saves to Gmail as you type, "
+            + "but anything typed in the last moment could be lost."
+        alert.addButton(withTitle: "Install and Restart")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Swap the verified bundle over the running app and restart. Up to the
+    /// swap, every failure degrades to the old reveal-in-Finder path instead
+    /// of a dead end — the verified copy is still sitting in the temp
+    /// directory.
+    private func install(_ verified: VerifyResult, release: Release, runningApp: URL,
+                         draftAlreadyAnswered: Bool) async {
+        // A quarantined app launched from where it was downloaded runs off a
+        // read-only App Translocation mount, so there is no install directory
+        // to swap into until the user puts it somewhere real.
+        guard !UpdateInstaller.isTranslocated(runningApp) else {
+            revealForManualInstall(
+                verified, reason: "MishMail is running from a temporary location.")
+            return
+        }
+
+        let installDir = UpdateInstaller.installDirectory(for: runningApp)
+        let grant: URL
+        do {
+            grant = try UpdateInstaller.resolveGrant(installDirectory: installDir)
+                ?? UpdateInstaller.requestGrant(installDirectory: installDir)
+        } catch {
+            revealForManualInstall(verified, reason: error.localizedDescription)
+            return
+        }
+
+        // The confirmation upstream is a whole download old. A draft started
+        // since then never got asked, and this is the last moment where
+        // saying no still costs nothing.
+        if !draftAlreadyAnswered, !confirmRestartOverOpenDraft(release) {
+            status = "Update cancelled."
+            return
+        }
+
+        status = "Installing MishMail \(release.version)…"
+        do {
+            try UpdateInstaller.withAccess(to: grant) {
+                try UpdateInstaller.swap(newApp: verified.appURL, onto: runningApp)
+            }
+        } catch {
+            revealForManualInstall(
+                verified,
+                reason: "Couldn't install the update (\(error.localizedDescription)).")
+            return
+        }
+
+        // Past this point the new bundle is already in place and there is no
+        // going back: a failure must never read as "nothing happened".
+        status = "Restarting MishMail \(release.version)…"
+        // Close the database before a second instance opens it. The pool is
+        // WAL and multi-process safe, but the quit-path checkpoint shouldn't
+        // race a fresh launch's first writes. Re-entrant, so the terminate
+        // below awaits this same shutdown rather than redoing it.
+        await prepareForQuit?()
+        do {
+            try await UpdateInstaller.relaunch(runningApp)
+        } catch {
+            // The pool is closed and every timer is invalidated, so this
+            // process can no longer sync, save, or send — staying open would
+            // look alive while silently dropping the user's work. Quitting on
+            // an installed update is the honest outcome.
+            status = "MishMail \(release.version) is installed — reopen it to finish."
+            let alert = NSAlert()
+            alert.messageText = "MishMail \(release.version) is installed."
+            alert.informativeText = "MishMail couldn't restart itself "
+                + "(\(error.localizedDescription)) and will now quit. "
+                + "Open it again from \(installDir.lastPathComponent) to finish updating."
+            alert.addButton(withTitle: "Quit")
+            alert.runModal()
+            NSApp.terminate(nil)
+        }
+    }
+
+    /// Fallback when the app can't install for itself: hand the user the
+    /// verified bundle the way the old flow did. They double-click it out of
+    /// a temp directory from here, so Gatekeeper's checks are the OS's job
+    /// again and the quarantine tag belongs back on it.
+    private func revealForManualInstall(_ verified: VerifyResult, reason: String) {
+        Self.markQuarantined(verified.appURL)
+        status = "\(reason) Drag the revealed MishMail into Applications to install it."
+        NSWorkspace.shared.activateFileViewerSelecting([verified.appURL])
     }
 
     struct VerifyResult {
@@ -183,6 +303,7 @@ final class UpdateChecker: ObservableObject {
         case unzipFailed(Int32)
         case checksumMismatch
         case checksumMissingForAsset
+        case versionMismatch(expected: String, found: String?)
         case teamMismatch(expected: String, found: String?)
         case adHocDowngrade
         case notDeveloperID
@@ -196,6 +317,8 @@ final class UpdateChecker: ObservableObject {
             case .unzipFailed(let c): return "unzip failed (exit \(c))"
             case .checksumMismatch: return "SHA-256 did not match the published checksum"
             case .checksumMissingForAsset: return "checksum file did not list this zip"
+            case .versionMismatch(let exp, let found):
+                return "release \(exp) contains MishMail \(found ?? "of unknown version")"
             case .teamMismatch(let exp, let found):
                 return "Team ID mismatch (running \(exp), update \(found ?? "ad-hoc"))"
             case .adHocDowngrade: return "refusing ad-hoc update while running a team-signed build"
@@ -206,10 +329,12 @@ final class UpdateChecker: ObservableObject {
     }
 
     /// Full install pipeline: download zip → optional SHA-256 → extract →
-    /// signature + Team ID + notarization policy → quarantined app URL.
+    /// version pinning → signature + Team ID + notarization policy →
+    /// verified app URL.
     nonisolated static func downloadAndVerifyApp(
         from zipURL: URL,
         checksumURL: URL?,
+        expectedVersion: String,
         runningAppURL: URL
     ) async throws -> VerifyResult {
         let (tempFile, resp) = try await URLSession.shared.download(from: zipURL)
@@ -245,10 +370,24 @@ final class UpdateChecker: ObservableObject {
 
         guard let appURL = findApp(in: extractDir) else { throw UpdateError.noAppInArchive }
         try verifyCodeSignature(of: appURL)
+        // Signatures prove identity, not freshness. Every past release is
+        // public and carries the same Team ID, so whoever controls the GitHub
+        // account — with no signing key at all — could re-publish an old,
+        // vulnerable build under a higher tag and roll the app backwards past
+        // every other check here. Pin the bundle's own version to the tag we
+        // decided was newer; `make release` derives one from the other. The
+        // two checks close the gap together: Info.plist is sealed by the code
+        // directory, so editing the version to match breaks the signature —
+        // which is also why this reads the plist only after that passes.
+        let shipped = bundleVersion(of: appURL)
+        guard shipped == expectedVersion else {
+            throw UpdateError.versionMismatch(expected: expectedVersion, found: shipped)
+        }
         let trust = try evaluateTrust(updateApp: appURL, runningApp: runningAppURL,
                                       officialRelease: checksumVerified)
-        // Gatekeeper still sees this as internet-downloaded content.
-        markQuarantined(appURL)
+        // Deliberately not quarantined here: an in-place install has already
+        // cleared stronger checks than Gatekeeper would apply. Only the
+        // manual-install fallback tags it (see `revealForManualInstall`).
         return VerifyResult(appURL: appURL, checksumVerified: checksumVerified,
                             teamID: trust.teamID, notarized: trust.notarized)
     }
@@ -297,6 +436,17 @@ final class UpdateChecker: ObservableObject {
         guard proc.terminationStatus == 0 else {
             throw UpdateError.unzipFailed(proc.terminationStatus)
         }
+    }
+
+    /// `CFBundleShortVersionString` of a bundle on disk — the same string
+    /// `currentVersion` reads for the running app, so the two compare.
+    nonisolated static func bundleVersion(of appURL: URL) -> String? {
+        let plist = appURL.appendingPathComponent("Contents/Info.plist")
+        guard let data = try? Data(contentsOf: plist),
+              let info = try? PropertyListSerialization.propertyList(
+                from: data, options: [], format: nil) as? [String: Any]
+        else { return nil }
+        return info["CFBundleShortVersionString"] as? String
     }
 
     nonisolated static func findApp(in directory: URL) -> URL? {

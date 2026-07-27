@@ -21,6 +21,10 @@ targets:
         com.apple.security.network.client: true
         com.apple.security.network.server: true
         com.apple.security.files.user-selected.read-write: true
+        # In-place updates: the user grants the app's own install directory
+        # once through an open panel, and that grant is kept as an app-scoped
+        # security bookmark so later updates install on a single click.
+        com.apple.security.files.bookmarks.app-scope: true
         # The tracked signing default is ad-hoc + hardened runtime. Hardened
         # runtime turns on library validation, which requires every loaded
         # library to share the app's Team ID — but the SPM-built GRDB.framework
@@ -109,6 +113,7 @@ targets:
       - Sources/MishMail/Support/SnippetInsertion.swift
       - Sources/MishMail/Support/SnippetMatch.swift
       - Sources/MishMail/Support/UpdateChecker.swift
+      - Sources/MishMail/Support/UpdateInstaller.swift
       - Sources/MishMail/Support/HTMLBodyCSP.swift
       - Sources/MishMail/Support/HTMLBodyDarkMode.swift
       - Sources/MishMail/Support/HTMLBodyDocument.swift
