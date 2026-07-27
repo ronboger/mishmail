@@ -24,7 +24,10 @@ enum UpdateInstaller {
             case .wrongFolder(let chosen, let expected):
                 return "Chose “\(chosen)”, but MishMail is installed in “\(expected)”."
             case .relaunchFailed(let why):
-                return "couldn't relaunch (\(why))"
+                // Read inside a sentence the caller builds around it ("couldn't
+                // restart itself (…)"), so this is the bare reason, not a
+                // phrase that would nest a second set of parentheses.
+                return why
             }
         }
     }

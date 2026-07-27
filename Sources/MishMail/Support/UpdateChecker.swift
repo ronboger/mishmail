@@ -164,6 +164,10 @@ final class UpdateChecker: ObservableObject {
         // guard above and stack another alert.
         installing = true
         defer { installing = false }
+        // Remembered so a draft opened *during* the download still gets its
+        // own question: one answer shouldn't cover a draft that didn't exist
+        // when it was given.
+        let answeredWithDraftOpen = hasOpenDraft?() == true
         guard confirmRestartOverOpenDraft(release) else {
             status = "Update cancelled."
             return
@@ -184,7 +188,8 @@ final class UpdateChecker: ObservableObject {
             NSWorkspace.shared.open(release.htmlURL)
             return
         }
-        await install(verified, release: release, runningApp: runningApp)
+        await install(verified, release: release, runningApp: runningApp,
+                      draftAlreadyAnswered: answeredWithDraftOpen)
     }
 
     /// Restarting is disruptive in a way an ordinary button click is not, so
@@ -206,7 +211,8 @@ final class UpdateChecker: ObservableObject {
     /// swap, every failure degrades to the old reveal-in-Finder path instead
     /// of a dead end — the verified copy is still sitting in the temp
     /// directory.
-    private func install(_ verified: VerifyResult, release: Release, runningApp: URL) async {
+    private func install(_ verified: VerifyResult, release: Release, runningApp: URL,
+                         draftAlreadyAnswered: Bool) async {
         // A quarantined app launched from where it was downloaded runs off a
         // read-only App Translocation mount, so there is no install directory
         // to swap into until the user puts it somewhere real.
@@ -223,6 +229,14 @@ final class UpdateChecker: ObservableObject {
                 ?? UpdateInstaller.requestGrant(installDirectory: installDir)
         } catch {
             revealForManualInstall(verified, reason: error.localizedDescription)
+            return
+        }
+
+        // The confirmation upstream is a whole download old. A draft started
+        // since then never got asked, and this is the last moment where
+        // saying no still costs nothing.
+        if !draftAlreadyAnswered, !confirmRestartOverOpenDraft(release) {
+            status = "Update cancelled."
             return
         }
 
@@ -355,17 +369,20 @@ final class UpdateChecker: ObservableObject {
         try unzip(zipPath, into: extractDir)
 
         guard let appURL = findApp(in: extractDir) else { throw UpdateError.noAppInArchive }
+        try verifyCodeSignature(of: appURL)
         // Signatures prove identity, not freshness. Every past release is
         // public and carries the same Team ID, so whoever controls the GitHub
         // account — with no signing key at all — could re-publish an old,
         // vulnerable build under a higher tag and roll the app backwards past
         // every other check here. Pin the bundle's own version to the tag we
-        // decided was newer; `make release` derives one from the other.
+        // decided was newer; `make release` derives one from the other. The
+        // two checks close the gap together: Info.plist is sealed by the code
+        // directory, so editing the version to match breaks the signature —
+        // which is also why this reads the plist only after that passes.
         let shipped = bundleVersion(of: appURL)
         guard shipped == expectedVersion else {
             throw UpdateError.versionMismatch(expected: expectedVersion, found: shipped)
         }
-        try verifyCodeSignature(of: appURL)
         let trust = try evaluateTrust(updateApp: appURL, runningApp: runningAppURL,
                                       officialRelease: checksumVerified)
         // Deliberately not quarantined here: an in-place install has already
