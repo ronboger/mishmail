@@ -1200,7 +1200,7 @@ private struct ActiveFilterChip: View {
 
     var body: some View {
         HStack(spacing: 4) {
-            Text(title).font(.caption)
+            Text(title).font(.caption).foregroundStyle(Color.notionAccent)
             Button(action: remove) {
                 Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
                     .pmHitTarget(extra: 8)
