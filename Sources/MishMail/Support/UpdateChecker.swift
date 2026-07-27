@@ -159,13 +159,16 @@ final class UpdateChecker: ObservableObject {
             NSWorkspace.shared.open(release.htmlURL)
             return
         }
+        // Claim the flow before the confirmation runs: a modal spins its own
+        // run loop, so a second click during it would otherwise pass the
+        // guard above and stack another alert.
+        installing = true
+        defer { installing = false }
         guard confirmRestartOverOpenDraft(release) else {
             status = "Update cancelled."
             return
         }
-        installing = true
         status = "Downloading MishMail \(release.version)…"
-        defer { installing = false }
 
         let runningApp = Bundle.main.bundleURL
         let verified: VerifyResult
