@@ -1007,16 +1007,7 @@ struct FilterBar: View {
     }
 
     private func activeChip(_ title: String, remove: @escaping () -> Void) -> some View {
-        HStack(spacing: 4) {
-            Text(title).font(.caption)
-            Button(action: remove) {
-                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
-                    .pmHitTarget(extra: 8)
-            }
-            .buttonStyle(PressScaleButtonStyle()).foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(Color.notionAccent.opacity(0.2), in: Capsule())
+        ActiveFilterChip(title: title, remove: remove)
     }
 
     private var lastSync: Date? {
@@ -1175,8 +1166,9 @@ private struct FilterChipLabel: View {
         .padding(.horizontal, 8).padding(.vertical, 4)
         .background(fill, in: Capsule())
         .contentShape(Capsule())
+        // Hover only — active/inactive toggles stay instant so keyboard and
+        // programmatic flips don't fade.
         .animation(PMMotion.interactive, value: hovering)
-        .animation(PMMotion.interactive, value: active)
         .onHover { hovering = $0 }
     }
 
@@ -1196,6 +1188,30 @@ private struct FilterChipLabel: View {
             return Color.notionAccent.opacity(hovering ? 0.22 : 0.16)
         }
         return Color.secondary.opacity(hovering ? 0.16 : 0.10)
+    }
+}
+
+/// Removable filter pill (From/Date/…): same accent fill + hover lift as the
+/// active Labels chip so the bar stays visually uniform.
+private struct ActiveFilterChip: View {
+    let title: String
+    let remove: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title).font(.caption)
+            Button(action: remove) {
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                    .pmHitTarget(extra: 8)
+            }
+            .buttonStyle(PressScaleButtonStyle()).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(Color.notionAccent.opacity(hovering ? 0.22 : 0.16), in: Capsule())
+        .contentShape(Capsule())
+        .animation(PMMotion.interactive, value: hovering)
+        .onHover { hovering = $0 }
     }
 }
 
