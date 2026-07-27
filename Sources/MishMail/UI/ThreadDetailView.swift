@@ -70,6 +70,11 @@ struct ThreadDetailView: View {
     @State private var bodyLoadAttempted: Set<String> = []
     /// Session-only HTML with `cid:` rewritten to `data:` (not persisted).
     @State private var cidInlinedHTMLById: [String: String] = [:]
+    /// Byte count of the body *before* `cid:` → `data:` rewrite, for the
+    /// oversized-HTML gate. The resolve handler overwrites the in-memory
+    /// `bodyHTML` with the inlined string, so the card can't recover the
+    /// pre-inline size from the message itself.
+    @State private var cidPreInlineBytesById: [String: Int] = [:]
     /// Avoid re-fetching the same message for Content-ID recovery every expand.
     @State private var cidResolveAttempted: Set<String> = []
     /// Only one sent message owns a live body renderer at a time. This keeps
@@ -204,6 +209,7 @@ struct ThreadDetailView: View {
                                         attachments: attachmentsByMessageId[message.id] ?? [],
                                         bodyPrep: bodyPrepByMessageId[message.id],
                                         cidInlinedHTML: cidInlinedHTMLById[message.id],
+                                        cidPreInlineBytes: cidPreInlineBytesById[message.id],
                                         expandedMessageId: $expandedMessageId,
                                         loadImagesForThread: $loadRemoteImagesForThread,
                                         onReply: { onReply(message) },
@@ -445,6 +451,7 @@ struct ThreadDetailView: View {
                 seenContentRevision = store.contentRevision(of: thread.id)
                 bodyLoadAttempted = []
                 cidInlinedHTMLById = [:]
+                cidPreInlineBytesById = [:]
                 cidResolveAttempted = []
                 loadRemoteImagesForThread = false
                 expandedMessageId = nil
@@ -814,6 +821,7 @@ struct ThreadDetailView: View {
             await MainActor.run {
                 guard splitMode || store.openedThreadId == thread.id else { return }
                 cidInlinedHTMLById[id] = result.html
+                cidPreInlineBytesById[id] = html.utf8.count
                 attachmentsByMessageId[id] = result.attachments
                 if let refreshed = result.refreshedMessage,
                    let idx = messages.firstIndex(where: { $0.id == id }) {
@@ -1273,6 +1281,7 @@ struct MessageCard: View {
     /// Session-only body with `cid:` images rewritten to `data:` URIs.
     /// When set, preferred over `message.bodyHTML` / preassembled docs.
     let cidInlinedHTML: String?
+    let cidPreInlineBytes: Int?
     @Binding var expandedMessageId: String?
     /// Session-wide opt-in shared by every card in the open thread.
     @Binding var loadImagesForThread: Bool
@@ -1353,6 +1362,7 @@ struct MessageCard: View {
          attachments: [AttachmentRow] = [],
          bodyPrep: MessageHTMLPrep? = nil,
          cidInlinedHTML: String? = nil,
+         cidPreInlineBytes: Int? = nil,
          expandedMessageId: Binding<String?>,
          loadImagesForThread: Binding<Bool> = .constant(false),
          onReply: @escaping () -> Void,
@@ -1363,6 +1373,7 @@ struct MessageCard: View {
         self.attachments = attachments
         self.bodyPrep = bodyPrep
         self.cidInlinedHTML = cidInlinedHTML
+        self.cidPreInlineBytes = cidPreInlineBytes
         self._expandedMessageId = expandedMessageId
         self._loadImagesForThread = loadImagesForThread
         self.onReply = onReply
@@ -1394,7 +1405,9 @@ struct MessageCard: View {
             // data: URI growth is image payload WebKit handles fine, and a
             // message that rendered automatically before inlining must not
             // flip into the approval placeholder because its images resolved.
-            htmlBytes = message.bodyHTML.map(\.utf8.count) ?? fullBytes
+            // (Can't measure message.bodyHTML — the resolve handler overwrote
+            // it with the inlined string; the caller stashes the true size.)
+            htmlBytes = cidPreInlineBytes ?? fullBytes
             htmlHeadBytes = min(htmlHead?.utf8.count ?? 0, htmlBytes)
             htmlDocuments = nil
         } else if hasBody, let prep = bodyPrep {
