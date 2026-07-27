@@ -4,7 +4,40 @@ All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
-## [Unreleased]
+## [0.4.1] - 2026-07-27
+
+### Changed
+- **Updates install themselves** — "Update App" used to download the release
+  zip, extract it into a temp folder, and open Finder on it so you could drag
+  the app into Applications yourself, with a Gatekeeper warning waiting at the
+  end because the verified bundle was still tagged as quarantined. It is now
+  one button, **Install and Relaunch**: the same download and verification
+  (SHA-256, nested code signature, Team ID continuity, notarization for
+  Developer ID builds), then an atomic swap over the installed app and a
+  restart. Because MishMail is sandboxed it cannot write its own install
+  folder unaided, so the first update asks once for permission to that folder
+  and remembers it as a security-scoped bookmark; every later update is a
+  single click. The quarantine tag is gone from this path — the update has
+  already cleared stronger checks than Gatekeeper applies to an Apple
+  Development build, and keeping it would make macOS refuse to launch the
+  update at all. A declined grant, a failed swap, or an app running from a
+  temporary location still reveals the verified app in Finder, quarantined,
+  exactly as before. If a draft is open, the restart asks first.
+- **Updates are pinned to the version they claim to be** — signatures prove
+  identity, not freshness, so anyone who took over the GitHub account could
+  have republished an old, validly signed, vulnerable build under a higher tag
+  and rolled the app backwards past every other check. The extracted bundle's
+  `CFBundleShortVersionString` now has to match the release it was offered as.
+
+### Added
+- **`scripts/update-mishmail.sh`** — updates an existing install from the
+  terminal, running the same checks the app does. Mainly for crossing *to*
+  0.4.1: builds older than this tag every download as quarantined, and macOS
+  refuses to launch a quarantined build that isn't notarized, so updating
+  through the old in-app flow ends in a Finder drag and a trip through System
+  Settings. Also a recovery path if an in-place update ever fails.
+
+## [0.4.0] - 2026-07-27
 
 ### Fixed
 - **Instant reading pane on delete-advance** — trashing a conversation took
@@ -71,27 +104,6 @@ minor versions may still change behavior.
   instance moves between placements, so typed text is never lost.
 
 ### Changed
-- **Updates install themselves** — "Update App" used to download the release
-  zip, extract it into a temp folder, and open Finder on it so you could drag
-  the app into Applications yourself, with a Gatekeeper warning waiting at the
-  end because the verified bundle was still tagged as quarantined. It is now
-  one button, **Install and Relaunch**: the same download and verification
-  (SHA-256, nested code signature, Team ID continuity, notarization for
-  Developer ID builds), then an atomic swap over the installed app and a
-  restart. Because MishMail is sandboxed it cannot write its own install
-  folder unaided, so the first update asks once for permission to that folder
-  and remembers it as a security-scoped bookmark; every later update is a
-  single click. The quarantine tag is gone from this path — the update has
-  already cleared stronger checks than Gatekeeper applies to an Apple
-  Development build, and keeping it would make macOS refuse to launch the
-  update at all. A declined grant, a failed swap, or an app running from a
-  temporary location still reveals the verified app in Finder, quarantined,
-  exactly as before. If a draft is open, the restart asks first.
-- **Updates are pinned to the version they claim to be** — signatures prove
-  identity, not freshness, so anyone who took over the GitHub account could
-  have republished an old, validly signed, vulnerable build under a higher tag
-  and rolled the app backwards past every other check. The extracted bundle's
-  `CFBundleShortVersionString` now has to match the release it was offered as.
 - **Instant triage handoff** — archive, trash, spam, and snooze now publish
   their row/count changes before encrypted-database and Gmail work, and replace
   the reading pane with the next conversation in the same update. Repeated

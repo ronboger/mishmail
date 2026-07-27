@@ -177,6 +177,18 @@ folder (usually `/Applications`); the grant is remembered, so later updates are
 a single click. If that permission is declined or the swap fails, the verified
 app is revealed in Finder to drag in by hand.
 
+To update from the terminal instead — or to cross from a build older than
+0.4.1, whose updater predates all of this — run:
+
+```sh
+scripts/update-mishmail.sh
+```
+
+It runs the same checks the app does (SHA-256 against `SHA256SUMS`, code
+signature, Team ID continuity with the install it's replacing, and the release
+version against the bundle's own), then replaces `/Applications/MishMail.app`
+and relaunches. Pass a path as the first argument if MishMail lives elsewhere.
+
 To cut a release: bump `MARKETING_VERSION` in `project.yml`, then
 
 ```sh
