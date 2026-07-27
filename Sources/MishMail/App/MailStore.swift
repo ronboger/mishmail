@@ -5032,7 +5032,6 @@ struct ComposeRequest: Identifiable {
         }
 
         var parts: [String: (mimeType: String, data: Data)] = [:]
-        let client = client(for: message.accountId)
         for cid in refs {
             guard let att = byCID[cid] else { continue }
             // Only image/* — skip non-image Content-ID parts. (Don't consult
