@@ -245,6 +245,24 @@ final class UpdateChecker: ObservableObject {
             return
         }
 
+        // Start the relauncher before touching anything. It has to come from
+        // the bundle we're running — the one LaunchServices knows and that
+        // carries no quarantine. Once the swap lands, the only copy on disk is
+        // the update's, which is quarantined like every file a sandboxed
+        // process writes and therefore cannot be launched at all.
+        //
+        // So this failing means the update would install and then be
+        // unopenable: better to leave the working app alone and hand over the
+        // verified copy instead.
+        do {
+            try await UpdateInstaller.startRelauncher(appPath: runningApp)
+        } catch {
+            revealForManualInstall(
+                verified,
+                reason: "Couldn't start the updater (\(error.localizedDescription)).")
+            return
+        }
+
         status = "Installing MishMail \(release.version)…"
         do {
             try UpdateInstaller.withAccess(to: grant) {
@@ -265,26 +283,9 @@ final class UpdateChecker: ObservableObject {
         // race a fresh launch's first writes. Re-entrant, so the terminate
         // below awaits this same shutdown rather than redoing it.
         await prepareForQuit?()
-        do {
-            try await UpdateInstaller.relaunch(runningApp)
-        } catch {
-            // The pool is closed and every timer is invalidated, so this
-            // process can no longer sync, save, or send — staying open would
-            // look alive while silently dropping the user's work. Quitting on
-            // an installed update is the honest outcome.
-            status = "MishMail \(release.version) is installed — reopen it to finish."
-            // Come to the front first. This alert once sat unseen on another
-            // Space while the app hung behind it on a closed database.
-            NSApp.activate(ignoringOtherApps: true)
-            let alert = NSAlert()
-            alert.messageText = "MishMail \(release.version) is installed."
-            alert.informativeText = "MishMail couldn't restart itself "
-                + "(\(error.localizedDescription)) and will now quit. "
-                + "Open it again from \(installDir.lastPathComponent) to finish updating."
-            alert.addButton(withTitle: "Quit")
-            alert.runModal()
-            NSApp.terminate(nil)
-        }
+        // The relauncher is already running and watching this process; quitting
+        // is the signal for it to unquarantine the new bundle and reopen it.
+        NSApp.terminate(nil)
         // Backstop. Everything is already flushed, so if termination is
         // deferred or blocked past this point the process is only capable of
         // misleading the user by still being on screen.

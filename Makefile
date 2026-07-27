@@ -52,14 +52,31 @@ VALID_SIGNING_IDENTITY = $(if $(strip $(TEAM)),$(shell python3 scripts/check_sig
 VALID_DEVELOPER_IDENTITY = $(if $(strip $(TEAM)),$(shell python3 scripts/check_signing.py $(TEAM) developer_id 2>/dev/null))
 ifeq ($(VALID_SIGNING_IDENTITY),yes)
 DEBUG_SIGN_FLAGS =
-INSTALL_SIGN_FLAGS = CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements
+INSTALL_SIGN_FLAGS = MISHMAIL_APP_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements
 else
 DEBUG_SIGN_FLAGS = CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM=
 INSTALL_SIGN_FLAGS = CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEAM= \
-	CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.entitlements
+	MISHMAIL_APP_ENTITLEMENTS=Sources/MishMail/MishMail.entitlements
 endif
 
 .PHONY: test ui-test build run demo install gen hooks release clean signing-doctor require-stable-signing require-run-signing require-pushed
+
+# Refuse to ship an embedded relauncher that inherited the app's sandbox.
+# Stripping com.apple.quarantine from the installed update is its entire job,
+# the sandbox denies that silently (removexattr returns EPERM and nothing
+# checks), and the result is an update that installs and then cannot be
+# opened at all — which is exactly what 0.4.3 through 0.4.5 shipped. $(1) is
+# the .app to check.
+define check_relauncher
+	@if codesign -d --entitlements - "$(1)/Contents/Library/MishMailRelauncher.app" 2>/dev/null \
+		| grep -q "app-sandbox"; then \
+		echo "Refusing: the embedded relauncher is sandboxed and cannot unquarantine"; \
+		echo "the update it installs. Check MISHMAIL_APP_ENTITLEMENTS is used instead of"; \
+		echo "a command-line CODE_SIGN_ENTITLEMENTS, which applies to every target."; \
+		exit 1; \
+	fi
+	@echo "Relauncher is unsandboxed (can unquarantine the update)."
+endef
 
 gen:
 	@# Worktrees lack the git-ignored Config/Local.xcconfig (personal signing
@@ -141,6 +158,7 @@ demo: build
 install: gen require-stable-signing
 	xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
 		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet $(INSTALL_SIGN_FLAGS)
+	$(call check_relauncher,$(RELEASE_APP))
 	rm -rf /Applications/MishMail.app
 	ditto "$(RELEASE_APP)" /Applications/MishMail.app
 	@echo "Installed MishMail.app → /Applications (your daily driver)."
@@ -226,11 +244,11 @@ release: require-pushed test
 		xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
 			-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet \
 			CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" DEVELOPMENT_TEAM=$(TEAM) \
-			CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements; \
+			MISHMAIL_APP_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements; \
 	else \
 		xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
 			-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet \
-			CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements; \
+			MISHMAIL_APP_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements; \
 	fi
 	# Notarize and staple (Developer ID builds only): the in-app updater and
 	# Gatekeeper both reject un-notarized Developer ID builds. One-time setup:
@@ -244,6 +262,7 @@ release: require-pushed test
 		rm notarize-upload.zip && \
 		xcrun stapler staple MishMail.app; \
 	fi
+	$(call check_relauncher,$(RELEASE_APP))
 	cd $(RELEASE_DIR) && \
 		ditto -c -k --keepParent MishMail.app $(ZIP_NAME) && \
 		shasum -a 256 $(ZIP_NAME) > SHA256SUMS && \

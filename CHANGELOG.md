@@ -4,6 +4,33 @@ All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
+## [0.4.6] - 2026-07-27
+
+### Fixed
+- **The update restarts the app. The cause was never the sandbox.** Three
+  releases shipped three different relaunch mechanisms, all failing with the
+  same LaunchServices -10810, and the real reason was one the earlier fixes
+  couldn't have addressed: **every file a sandboxed process writes is
+  force-quarantined by the kernel, and the sandbox denies `removexattr` on
+  `com.apple.quarantine`** — silently, since the call compiles and just
+  returns -1. So the "clear quarantine" step added in 0.4.5 never cleared
+  anything, the freshly installed update stayed quarantined, and macOS
+  refuses to launch a quarantined bundle that isn't notarized. That includes
+  the embedded relauncher, which is why it couldn't start.
+
+  Two changes make it work. The relauncher is now signed **without** the
+  sandbox entitlement, so it can actually strip the attribute; the app's
+  entitlements are selected through a build variable rather than an
+  xcodebuild command-line setting, which applied to every target and was how
+  the helper silently inherited the sandbox. And MishMail starts the helper
+  **before** the swap, from its own registered, unquarantined bundle — after
+  the swap the only copy on disk is the update's, which cannot be launched
+  until something unquarantines it.
+
+  `make install` and `make release` now refuse to ship a sandboxed
+  relauncher, since the failure is otherwise invisible until an update is
+  attempted.
+
 ## [0.4.5] - 2026-07-27
 
 ### Fixed

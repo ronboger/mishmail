@@ -184,20 +184,22 @@ enum UpdateInstaller {
         app.appendingPathComponent("Contents/Library/MishMailRelauncher.app")
     }
 
-    /// Start the embedded relauncher, then quit so it can do its job.
+    /// Start the embedded relauncher. It waits for this process to exit, then
+    /// unquarantines the installed bundle and reopens it.
     ///
-    /// MishMail can't restart itself. Asking LaunchServices for a second
-    /// instance of the bundle we're running from fails with -10810, and the
-    /// sandbox blocks spawning a shell to do it instead — both were tried, and
-    /// both failed on real hardware. The relauncher is a separate bundle id,
-    /// so launching it is an ordinary "open another app" that the sandbox
-    /// permits, and it waits for this process to disappear before reopening
-    /// the new copy.
+    /// **Called before the swap, and that ordering is the whole trick.** The
+    /// helper has to be launched from the bundle we are currently running:
+    /// that one is registered with LaunchServices and carries no quarantine.
+    /// The copy inside the downloaded update is quarantined like every other
+    /// file a sandboxed process writes, and a quarantined un-notarized bundle
+    /// will not launch at all (-10810) — so after the swap there is nothing
+    /// left that can start it. Launching it first is what breaks the cycle.
     ///
-    /// Awaiting the launch matters: it means the helper is running *before* we
-    /// terminate, so nothing is lost in the gap.
+    /// Awaiting the launch matters: the helper is confirmed running before
+    /// anything irreversible happens, so a failure here can still be handled
+    /// by not swapping at all.
     @MainActor
-    static func relaunch(_ app: URL) async throws {
+    static func startRelauncher(appPath app: URL) async throws {
         let helper = relauncherURL(inside: app)
         guard FileManager.default.fileExists(atPath: helper.path) else {
             throw InstallError.relauncherMissing
@@ -212,6 +214,5 @@ enum UpdateInstaller {
         } catch {
             throw InstallError.relaunchFailed(error.localizedDescription)
         }
-        NSApp.terminate(nil)
     }
 }

@@ -21,29 +21,13 @@ targets:
         copy:
           destination: wrapper
           subpath: Contents/Library
-    entitlements:
-      path: Sources/MishMail/MishMail.entitlements
-      properties:
-        com.apple.security.app-sandbox: true
-        com.apple.security.network.client: true
-        com.apple.security.network.server: true
-        com.apple.security.files.user-selected.read-write: true
-        # In-place updates: the user grants the app's own install directory
-        # once through an open panel, and that grant is kept as an app-scoped
-        # security bookmark so later updates install on a single click.
-        com.apple.security.files.bookmarks.app-scope: true
-        # The tracked signing default is ad-hoc + hardened runtime. Hardened
-        # runtime turns on library validation, which requires every loaded
-        # library to share the app's Team ID — but the SPM-built GRDB.framework
-        # gets its own separate ad-hoc signature, so dyld rejects it at launch
-        # ("different Team IDs") and the app crashes. Disabling library
-        # validation lets the ad-hoc app load its embedded framework.
-        #
-        # For Developer ID / notarized shipping builds, use
-        # MishMail.Distribution.entitlements instead (no disable) — Xcode
-        # re-signs GRDB with your team so validation passes, and the process
-        # stays fully hardened. See Config/Signing.xcconfig.
-        com.apple.security.cs.disable-library-validation: true
+    # The app's entitlements are hand-maintained plists (the rationale for
+    # each key lives as comments inside them), selected per build through
+    # MISHMAIL_APP_ENTITLEMENTS below — NOT through an `entitlements:` block
+    # here, because that block's generated CODE_SIGN_ENTITLEMENTS overrides
+    # the variable-driven one in settings.
+    #   Sources/MishMail/MishMail.entitlements               — dev default
+    #   Sources/MishMail/MishMail.Distribution.entitlements  — install/release
     # Signing lives in Config/Signing.xcconfig (portable ad-hoc default; drop a
     # Config/Local.xcconfig to sign with your own team). Keep it out of the
     # per-target settings so the xcconfig actually wins.
@@ -52,6 +36,14 @@ targets:
       Release: Config/Signing.xcconfig
     settings:
       base:
+        # Which entitlements file signs the APP — routed through a variable so
+        # the Makefile can switch install/release builds to the Distribution
+        # entitlements without putting CODE_SIGN_ENTITLEMENTS on the xcodebuild
+        # command line. A command-line setting applies to EVERY target, which
+        # is how the relauncher shipped sandboxed in 0.4.3–0.4.5 and silently
+        # lost the ability to strip quarantine (its whole job).
+        MISHMAIL_APP_ENTITLEMENTS: Sources/MishMail/MishMail.entitlements
+        CODE_SIGN_ENTITLEMENTS: $(MISHMAIL_APP_ENTITLEMENTS)
         MARKETING_VERSION: 0.4.5
         CURRENT_PROJECT_VERSION: 3
         SWIFT_VERSION: 5.10
@@ -101,6 +93,13 @@ targets:
       Release: Config/Signing.xcconfig
     settings:
       base:
+        # NOT the app's entitlements, and above all NOT sandboxed. The helper
+        # must remove com.apple.quarantine from the installed update — the
+        # sandbox denies that removal (EPERM), and a quarantined un-notarized
+        # bundle won't launch at all (-10810). make install / make release
+        # verify this after building; see the entitlements file itself for the
+        # full story.
+        CODE_SIGN_ENTITLEMENTS: Sources/MishMailRelauncher/MishMailRelauncher.entitlements
         PRODUCT_NAME: MishMailRelauncher
         PRODUCT_BUNDLE_IDENTIFIER: dev.ronboger.MishMail.Relauncher
         # No MARKETING_VERSION here on purpose: nothing reads the helper's
@@ -121,6 +120,9 @@ targets:
     platform: macOS
     sources:
       - Tests/MishMailTests
+      # The relauncher's quarantine stripping, testable here because the test
+      # runner is unsandboxed — the same reason the strip lives in the helper.
+      - Sources/MishMailRelauncher/Quarantine.swift
       - Sources/MishMail/Gmail
       - Sources/MishMail/Store/Database.swift
       - Sources/MishMail/Store/SidebarCounts.swift

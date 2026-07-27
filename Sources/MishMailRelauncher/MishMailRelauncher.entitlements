@@ -1,0 +1,16 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!--
+  Deliberately empty — above all, NO com.apple.security.app-sandbox.
+
+  The relauncher's one job is to strip com.apple.quarantine from the freshly
+  installed bundle and reopen it. The sandbox denies removexattr on that
+  attribute (EPERM, silently), which is exactly how 0.4.3–0.4.5 shipped
+  relaunch steps that could never work: the Makefile used to pass the app's
+  CODE_SIGN_ENTITLEMENTS on the xcodebuild command line, which applies to
+  every target, so the helper inherited the app's sandbox. `make install` and
+  `make release` now refuse to ship a sandboxed relauncher.
+-->
+<plist version="1.0">
+<dict/>
+</plist>

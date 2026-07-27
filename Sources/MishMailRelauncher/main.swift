@@ -1,24 +1,27 @@
 import AppKit
 
-/// Reopens MishMail once it has quit, and nothing else.
+/// Reopens MishMail once it has quit — after stripping quarantine from the
+/// freshly installed bundle, which is the half a sandboxed MishMail cannot do.
 ///
-/// MishMail cannot restart itself. Asking LaunchServices for a second instance
-/// of the bundle you are running from fails with -10810, and the sandbox
-/// blocks spawning a shell to do it after the fact — both were tried and both
-/// failed in the wild. This runs as a separate bundle id, launched *before*
-/// MishMail terminates, so by the time it acts there is no running instance to
-/// conflict with and no stale registration to resolve.
+/// Two facts shape this process, both verified the hard way across 0.4.2–0.4.5:
+///
+/// - Every file a sandboxed process writes is force-quarantined by the kernel,
+///   and the sandbox denies `removexattr` on `com.apple.quarantine` (EPERM).
+///   So the just-swapped-in update is always quarantined, and Gatekeeper
+///   refuses to launch a quarantined un-notarized bundle (-10810) — including
+///   the copy of this very helper inside it. That is why MishMail launches
+///   *this* helper from its own still-registered, non-quarantined bundle
+///   BEFORE the swap, and why this helper is signed without the sandbox
+///   entitlement: unsandboxed, the removal actually works.
+/// - MishMail cannot restart itself either way: a second instance of the
+///   bundle it runs from is -10810, and post-swap the new bundle is
+///   quarantined. A separate bundle id launched pre-swap sidesteps both.
 ///
 /// Usage: `MishMailRelauncher <pid of MishMail> <path to MishMail.app>`
 
-/// True while MishMail is still up.
-///
-/// Asked through LaunchServices rather than `kill(pid, 0)`: this helper is
-/// built with the app's entitlements, so it is sandboxed, and a sandboxed
-/// process may not signal another one — `kill` fails with EPERM and every
-/// check reads as "already gone". That made an earlier version reopen MishMail
-/// while it was still running, which does nothing at all, and then exit before
-/// the quit it was supposed to be waiting for.
+/// True while MishMail is still up. Asked through LaunchServices rather than
+/// `kill(pid, 0)` purely for API niceness — either works now that this
+/// process is unsandboxed.
 func isAlive(_ pid: pid_t) -> Bool {
     NSRunningApplication(processIdentifier: pid) != nil
 }
@@ -30,13 +33,20 @@ guard args.count >= 3, let pid = pid_t(args[1]) else {
 }
 let target = URL(fileURLWithPath: args[2])
 
-// Wait for MishMail to go. Bounded, because if it never quits then reopening
-// it would do nothing useful and this process should not linger forever.
+// Wait for MishMail to go. Launched before the swap, so the wait spans the
+// install itself plus the database shutdown. Bounded, because if MishMail
+// never quits — say the swap failed and it stayed up to show the fallback —
+// reopening it would do nothing useful and this process should not linger.
 let deadline = Date().addingTimeInterval(30)
 while isAlive(pid), Date() < deadline {
     usleep(100_000)
 }
 guard !isAlive(pid) else { exit(1) }
+
+// The whole reason this helper exists: make the new bundle launchable.
+// Harmless when the install failed and the old, untagged bundle is still in
+// place — stripping an absent attribute is a no-op.
+Quarantine.strip(from: target)
 
 // LaunchServices needs a beat to notice the process is gone; without it the
 // open can be folded into the instance that is still shutting down.
@@ -46,9 +56,8 @@ if NSWorkspace.shared.open(target) {
     exit(0)
 }
 
-// Last resort. This inherits MishMail's sandbox, which blocks spawning, so it
-// only helps in a build where the helper is signed without those entitlements
-// — cheap to keep, and never reached when the call above succeeds.
+// Last resort, and a real one now: this process is unsandboxed, so spawning
+// `open` works. Never reached when the call above succeeds.
 let proc = Process()
 proc.executableURL = URL(fileURLWithPath: "/usr/bin/open")
 proc.arguments = [target.path]
