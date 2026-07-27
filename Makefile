@@ -56,7 +56,7 @@ INSTALL_SIGN_FLAGS = CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEA
 	CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.entitlements
 endif
 
-.PHONY: test ui-test build run demo install gen hooks release clean signing-doctor require-stable-signing require-run-signing
+.PHONY: test ui-test build run demo install gen hooks release clean signing-doctor require-stable-signing require-run-signing require-pushed
 
 gen:
 	@# Worktrees lack the git-ignored Config/Local.xcconfig (personal signing
@@ -165,6 +165,37 @@ require-stable-signing:
 		exit 1; \
 	fi
 
+# `gh release create` tags whatever the REMOTE's main points at, not local
+# HEAD. Cutting a release with the version bump still unpushed therefore
+# publishes a correct zip under a tag whose source carries the *old* version,
+# and anyone building from that tag gets the previous release (this happened
+# on v0.4.1; see docs/RELEASING.md). Requiring HEAD to be exactly origin/main
+# catches every shape of it at once — unpushed, behind, diverged, or released
+# off a side branch — and the clean-tree check covers changes that would land
+# in the zip but not the tag. Runs before `test` so it fails in a second
+# rather than after the suite.
+require-pushed:
+	@if [ -n "$$(git status --porcelain)" ]; then \
+		echo "Refusing release: the working tree isn't clean."; \
+		echo "Uncommitted changes would ship inside the zip but not in the tagged source."; \
+		git status --short; \
+		exit 1; \
+	fi
+	@git fetch --quiet origin main || { \
+		echo "Refusing release: couldn't fetch origin/main to check where the tag would land."; \
+		exit 1; \
+	}
+	@head_sha=$$(git rev-parse HEAD); remote_sha=$$(git rev-parse FETCH_HEAD); \
+	if [ "$$head_sha" != "$$remote_sha" ]; then \
+		echo "Refusing release: HEAD is not what origin/main points at, so the tag"; \
+		echo "would land on the wrong commit."; \
+		echo "  HEAD         $$(git rev-parse --short HEAD)  $$(git log -1 --format=%s HEAD)"; \
+		echo "  origin/main  $$(git rev-parse --short FETCH_HEAD)  $$(git log -1 --format=%s FETCH_HEAD)"; \
+		echo ""; \
+		echo "Push main (or check it out) and try again."; \
+		exit 1; \
+	fi
+
 # Build Release, zip the app bundle, write SHA256SUMS, and publish a GitHub
 # release tagged v<MARKETING_VERSION>. The in-app updater verifies the zip
 # against SHA256SUMS, then the app's code signature / Team ID / notarization.
@@ -176,7 +207,7 @@ require-stable-signing:
 #     how every release to date has shipped); other people's Macs get
 #     Gatekeeper warnings and should build from source.
 # Both tiers use Distribution entitlements (full library validation).
-release: test
+release: require-pushed test
 	@if [ -z "$(TEAM)" ] || [ "$(VALID_SIGNING_IDENTITY)" != "yes" ]; then \
 		echo "Refusing release: no valid signing identity for DEVELOPMENT_TEAM in Config/Local.xcconfig."; \
 		echo "Run 'make signing-doctor' for the free Personal Team setup."; \
