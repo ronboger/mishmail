@@ -103,9 +103,9 @@ targets:
       base:
         PRODUCT_NAME: MishMailRelauncher
         PRODUCT_BUNDLE_IDENTIFIER: dev.ronboger.MishMail.Relauncher
-        # Deliberately independent of the app's: nothing reads it, and tying
-        # it to MARKETING_VERSION would only be one more thing to drift.
-        MARKETING_VERSION: 1.0
+        # No MARKETING_VERSION here on purpose: nothing reads the helper's
+        # version, and a second one in this file is what the Makefile's
+        # version lookup would trip over.
         CURRENT_PROJECT_VERSION: 1
         SWIFT_VERSION: 5.10
         GENERATE_INFOPLIST_FILE: true

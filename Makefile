@@ -27,7 +27,10 @@
 
 PROJECT = MishMail.xcodeproj
 # Single source of truth for the version: MARKETING_VERSION in project.yml.
-VERSION = $(shell awk '/MARKETING_VERSION:/ {print $$2}' project.yml)
+# First match only — the app's. Without `exit`, a MARKETING_VERSION on any
+# other target would silently make this "0.4.4 1.0" and take the whole release
+# down at the ditto step.
+VERSION = $(shell awk '/MARKETING_VERSION:/ {print $$2; exit}' project.yml)
 # Derived data path — the .noindex suffix keeps every product out of Spotlight.
 DD = build/dd.noindex
 # Pin arch so xcodebuild doesn't warn about multiple matching destinations
