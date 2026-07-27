@@ -420,6 +420,12 @@ actor ThreadDetailRepository {
         return MessageBodyLoad(message: loaded, prep: prep)
     }
 
+    /// Drop a cached thread payload (e.g. after a full re-fetch rewrote
+    /// attachment Content-IDs). Safe no-op when the thread was never cached.
+    func drop(threadId: String) {
+        cache.removeValue(for: threadId)
+    }
+
     /// Fetch messages, hydrated bodies, and attachments only. Callers must run
     /// `buildBodyPrep` after the read transaction returns.
     nonisolated static func fetchPayload(threadId: String,

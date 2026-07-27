@@ -201,6 +201,145 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertEqual(attachments[0].mimeType, "application/pdf")
         XCTAssertEqual(attachments[0].size, 12345)
         XCTAssertEqual(attachments[0].messageId, message.id)
+        XCTAssertNil(attachments[0].contentId)
+    }
+
+    /// Inline image parts with Content-ID (and empty filename) must become
+    /// attachment rows so the reading pane can resolve `cid:` at display time.
+    func testParseInlineImageWithContentID() throws {
+        // 1×1 PNG
+        let png: [UInt8] = [
+            0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A, 0x00, 0x00, 0x00, 0x0D,
+            0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x01,
+            0x08, 0x02, 0x00, 0x00, 0x00, 0x90, 0x77, 0x53, 0xDE, 0x00, 0x00, 0x00,
+            0x0C, 0x49, 0x44, 0x41, 0x54, 0x08, 0xD7, 0x63, 0xF8, 0xCF, 0xC0, 0x00,
+            0x00, 0x00, 0x03, 0x00, 0x01, 0x00, 0x05, 0xFE, 0x02, 0xFE, 0xDC, 0xCC,
+            0x59, 0xE7, 0x00, 0x00, 0x00, 0x00, 0x49, 0x45, 0x4E, 0x44, 0xAE, 0x42,
+            0x60, 0x82
+        ]
+        let pngB64 = Data(png).base64URLEncoded()
+        let htmlB64 = b64url(#"<p>Hi</p><img src="cid:piece1@usps" alt="Mailpiece Image">"#)
+        let json = """
+        {
+          "id": "m-cid", "threadId": "t-cid",
+          "internalDate": "1751500000000",
+          "payload": {
+            "mimeType": "multipart/related",
+            "headers": [{"name": "From", "value": "USPS <usps@email.informeddelivery.usps.com>"}],
+            "parts": [
+              {"mimeType": "text/html", "body": {"data": "\(htmlB64)"}},
+              {
+                "mimeType": "image/png",
+                "filename": "",
+                "headers": [
+                  {"name": "Content-ID", "value": "<piece1@usps>"},
+                  {"name": "Content-Disposition", "value": "inline"}
+                ],
+                "body": {"attachmentId": "att-cid-1", "size": \(png.count), "data": "\(pngB64)"}
+              }
+            ]
+          }
+        }
+        """
+        let (message, attachments) = MessageParser.parse(try decodeGMessage(json), accountId: "ron@x.com")
+        XCTAssertEqual(attachments.count, 1)
+        XCTAssertEqual(attachments[0].contentId, "piece1@usps")
+        XCTAssertEqual(attachments[0].gmailAttachmentId, "att-cid-1")
+        XCTAssertTrue(attachments[0].filename.hasPrefix("inline-"))
+        XCTAssertEqual(attachments[0].mimeType, "image/png")
+        // attachmentId parts are NOT inlined at parse time: they resolve at
+        // render time (session-only) instead of persisting data: URIs.
+        let html = try XCTUnwrap(message.bodyHTML)
+        XCTAssertFalse(html.contains("data:image/png;base64,"), html)
+        XCTAssertTrue(html.contains("cid:piece1@usps"), html)
+        XCTAssertTrue(html.contains("Mailpiece Image"))
+    }
+
+    func testParseInlineImageDataOnlyIsInlinedAtParseTime() throws {
+        let png: [UInt8] = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]
+        let pngB64 = Data(png).base64URLEncoded()
+        let htmlB64 = b64url(#"<p>Hi</p><img src="cid:logo@x">"#)
+        let json = """
+        {
+          "id": "m-cid2", "threadId": "t-cid2",
+          "internalDate": "1751500000000",
+          "payload": {
+            "mimeType": "multipart/related",
+            "headers": [{"name": "From", "value": "a@b.com"}],
+            "parts": [
+              {"mimeType": "text/html", "body": {"data": "\(htmlB64)"}},
+              {
+                "mimeType": "image/png",
+                "filename": "",
+                "headers": [{"name": "Content-ID", "value": "<logo@x>"}],
+                "body": {"size": \(png.count), "data": "\(pngB64)"}
+              }
+            ]
+          }
+        }
+        """
+        let (message, attachments) = MessageParser.parse(try decodeGMessage(json), accountId: "ron@x.com")
+        // No attachmentId → no row, but the wire-borne bytes are the only copy,
+        // so parse-time rewrite inlines them.
+        XCTAssertTrue(attachments.isEmpty)
+        let html = try XCTUnwrap(message.bodyHTML)
+        XCTAssertTrue(html.contains("data:image/png;base64,"), html)
+        XCTAssertFalse(html.contains("cid:logo@x"), html)
+    }
+
+    func testParseOversizedDataOnlyBlobIsNotInlined() throws {
+        let big = Data(repeating: 0xAB, count: CIDImageInliner.maxPersistedBlobBytes + 1)
+        let htmlB64 = b64url(#"<img src="cid:big@x">"#)
+        let json = """
+        {
+          "id": "m-cid3", "threadId": "t-cid3",
+          "internalDate": "1751500000000",
+          "payload": {
+            "mimeType": "multipart/related",
+            "headers": [{"name": "From", "value": "a@b.com"}],
+            "parts": [
+              {"mimeType": "text/html", "body": {"data": "\(htmlB64)"}},
+              {
+                "mimeType": "image/png",
+                "filename": "",
+                "headers": [{"name": "Content-ID", "value": "<big@x>"}],
+                "body": {"size": \(big.count), "data": "\(big.base64URLEncoded())"}
+              }
+            ]
+          }
+        }
+        """
+        let (message, attachments) = MessageParser.parse(try decodeGMessage(json), accountId: "ron@x.com")
+        XCTAssertTrue(attachments.isEmpty)
+        let html = try XCTUnwrap(message.bodyHTML)
+        XCTAssertTrue(html.contains("cid:big@x"), "oversized blob must stay a cid: reference")
+        XCTAssertFalse(html.contains("data:image/png"), html)
+    }
+
+    func testParsePlainInlineImageWithoutFilenameOrCIDIsNotAnAttachment() throws {
+        // Marketing-mail logo: image/* + attachmentId, no filename, no
+        // Content-ID. Must not create a row (paperclip pollution).
+        let json = """
+        {
+          "id": "m-logo", "threadId": "t-logo",
+          "internalDate": "1751500000000",
+          "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [{"name": "From", "value": "a@b.com"}],
+            "parts": [
+              {"mimeType": "text/html", "body": {"data": "\(b64url("<p>Buy now</p>"))"}},
+              {
+                "mimeType": "image/gif",
+                "filename": "",
+                "body": {"attachmentId": "att-logo", "size": 120}
+              }
+            ]
+          }
+        }
+        """
+        let (message, attachments) = MessageParser.parse(try decodeGMessage(json), accountId: "ron@x.com")
+        XCTAssertTrue(attachments.isEmpty)
+        XCTAssertFalse(message.hasAttachment)
     }
 
     func testParseHTMLOnlyMessageFallsBackToStrippedText() throws {

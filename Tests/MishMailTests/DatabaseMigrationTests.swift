@@ -78,6 +78,9 @@ final class DatabaseMigrationTests: XCTestCase {
             let snippetCols = try db.columns(in: "snippet").map(\.name)
             XCTAssertTrue(snippetCols.contains("accountIdsJSON"),
                           "v26 must add accountIdsJSON on snippet")
+            let attachmentCols = try db.columns(in: "attachment").map(\.name)
+            XCTAssertTrue(attachmentCols.contains("contentId"),
+                          "v28 must add contentId on attachment")
         }
     }
 

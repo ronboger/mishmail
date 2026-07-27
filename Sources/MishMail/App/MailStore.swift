@@ -4887,6 +4887,126 @@ struct ComposeRequest: Identifiable {
         return out
     }
 
+    /// Result of resolving `cid:` images for one reading-pane card.
+    struct CIDInlineResult: Sendable {
+        /// HTML with matched `cid:` rewritten to `data:` URIs. Session-only —
+        /// not written back to `message_body`, which would bloat SQLCipher.
+        /// (The one persisted exception: parse-time inlining of small
+        /// wire-borne blobs that have no attachmentId and so can't be fetched
+        /// later; see `CIDImageInliner.maxPersistedBlobBytes`.)
+        let html: String
+        /// Attachment rows after a possible full re-fetch (may gain `contentId`).
+        let attachments: [AttachmentRow]
+        /// True when the message was re-fetched from Gmail to recover Content-IDs
+        /// missing from a pre-v28 sync.
+        let didRefetch: Bool
+        /// Parsed message when re-fetched (body may already include parse-time
+        /// inlines); nil when only attachment downloads were needed.
+        let refreshedMessage: Message?
+    }
+
+    /// Rewrite HTML `cid:` images to `data:` URIs using attachment bytes.
+    ///
+    /// Local / not a tracking-pixel opt-in: Content-ID parts already arrived with
+    /// the message. When cached attachments lack `contentId` (synced before v28)
+    /// but the body still references `cid:`, re-fetches the full Gmail payload
+    /// once so Content-IDs land and the next open works offline for metadata.
+    func inlineCIDImages(message: Message, attachments: [AttachmentRow],
+                         html: String) async -> CIDInlineResult? {
+        guard CIDImageInliner.containsCIDReferences(html) else { return nil }
+        let refs = CIDImageInliner.referencedIDs(in: html)
+        guard !refs.isEmpty else { return nil }
+
+        var workingHTML = html
+        var workingAtts = attachments
+        var refreshed: Message?
+        var didRefetch = false
+
+        func mapByCID(_ rows: [AttachmentRow]) -> [String: AttachmentRow] {
+            var map: [String: AttachmentRow] = [:]
+            for att in rows {
+                guard let raw = att.contentId else { continue }
+                let key = CIDImageInliner.normalize(raw)
+                if !key.isEmpty { map[key] = att }
+            }
+            return map
+        }
+
+        var byCID = mapByCID(workingAtts)
+        let unresolved = refs.filter { byCID[$0] == nil }
+        if !unresolved.isEmpty {
+            if let pair = await refetchMessageFull(message) {
+                didRefetch = true
+                refreshed = pair.message
+                workingAtts = pair.attachments
+                byCID = mapByCID(workingAtts)
+                // Parse-time rewrite may already have inlined small blobs.
+                if let newHTML = pair.message.bodyHTML,
+                   !CIDImageInliner.containsCIDReferences(newHTML) {
+                    return CIDInlineResult(
+                        html: newHTML, attachments: workingAtts,
+                        didRefetch: true, refreshedMessage: pair.message)
+                }
+                if let newHTML = pair.message.bodyHTML {
+                    workingHTML = newHTML
+                }
+            }
+        }
+
+        var parts: [String: (mimeType: String, data: Data)] = [:]
+        let client = client(for: message.accountId)
+        for cid in refs {
+            guard let att = byCID[cid] else { continue }
+            // Only image/* — skip non-image Content-ID parts. (Don't consult
+            // sanitizeMIME here: its fallback is image/jpeg, so it would pass
+            // everything.)
+            guard att.mimeType.lowercased().hasPrefix("image/") else { continue }
+            do {
+                let data = try await client.getAttachment(
+                    messageId: message.gmailId,
+                    attachmentId: att.gmailAttachmentId)
+                guard !data.isEmpty else { continue }
+                parts[cid] = (att.mimeType, data)
+            } catch {
+                // Leave this cid unresolved; other images can still load.
+                continue
+            }
+        }
+        guard !parts.isEmpty else {
+            if didRefetch, let refreshed {
+                return CIDInlineResult(
+                    html: workingHTML, attachments: workingAtts,
+                    didRefetch: true, refreshedMessage: refreshed)
+            }
+            return nil
+        }
+        let rewritten = CIDImageInliner.rewrite(workingHTML, parts: parts)
+        return CIDInlineResult(
+            html: rewritten, attachments: workingAtts,
+            didRefetch: didRefetch, refreshedMessage: refreshed)
+    }
+
+    /// Full-format re-fetch + upsert so Content-IDs land on attachment rows.
+    private func refetchMessageFull(_ message: Message) async -> (message: Message, attachments: [AttachmentRow])? {
+        do {
+            let g = try await client(for: message.accountId)
+                .getMessage(id: message.gmailId, format: "full")
+            let (parsed, atts) = MessageParser.parse(g, accountId: message.accountId)
+            try await db.write { db in
+                _ = try SyncEngine.upsertPending(
+                    db,
+                    items: [.init(message: parsed, attachments: atts, headersOnly: false)])
+            }
+            applyThreadContentChange(.threads([message.threadId]))
+            await threadDetailRepository.drop(threadId: message.threadId)
+            // `parsed` still carries body fields from MessageParser (upsert only
+            // clears on-row columns in the DB copy).
+            return (parsed, atts)
+        } catch {
+            return nil
+        }
+    }
+
     /// Opens in the default app via a private temp file inside the sandbox
     /// (macOS purges it; nothing is written to user folders). The file is
     /// namespaced by message id (so same-named attachments never collide) and
