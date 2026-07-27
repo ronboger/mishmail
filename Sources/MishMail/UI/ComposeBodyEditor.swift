@@ -58,6 +58,9 @@ struct ComposeBodyEditor: NSViewRepresentable {
         textView.isVerticallyResizable = true
         textView.isHorizontallyResizable = false
         textView.textContainer?.widthTracksTextView = true
+        // minSize defaults to the initial frame; leave it at zero so the
+        // first layout pass (often 0×0 from SwiftUI) can't pin a stale width.
+        textView.minSize = .zero
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                                   height: CGFloat.greatestFiniteMagnitude)
         textView.string = text
@@ -75,6 +78,13 @@ struct ComposeBodyEditor: NSViewRepresentable {
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true
+        // Overlay scrollers never steal content width. Legacy (always-on /
+        // autohide) scrollers shrink the clip view when the body overflows,
+        // reflowing every line and looking like a rightward jump on Enter.
+        scroll.scrollerStyle = .overlay
+        scroll.horizontalScrollElasticity = .none
+        scroll.automaticallyAdjustsContentInsets = false
+        scroll.contentInsets = NSEdgeInsets()
         scroll.borderType = .noBorder
         scroll.documentView = textView
         context.coordinator.fontSize = fontSize
@@ -85,6 +95,11 @@ struct ComposeBodyEditor: NSViewRepresentable {
         context.coordinator.fontSize = fontSize
         context.coordinator.formatTarget = formatTarget
         context.coordinator.bindFormatTarget()
+        // AppKit can flip scrollerStyle with system prefs / appearance changes;
+        // keep overlay so a vertical scroller never reflows the body.
+        if scroll.scrollerStyle != .overlay {
+            scroll.scrollerStyle = .overlay
+        }
         guard let textView = scroll.documentView as? ComposeBodyTextView else { return }
         context.coordinator.textView = textView
 
@@ -387,6 +402,30 @@ final class ComposeBodyTextView: NSTextView {
         let ok = super.resignFirstResponder()
         if ok { onFocusChange?(false) }
         return ok
+    }
+
+    /// `scrollRangeToVisible` (caret after Return) can nudge the clip view
+    /// horizontally when document width and clip width disagree by a pixel —
+    /// classic NSTextView "body jumps sideways while typing" failure mode.
+    /// Pin origin.x so the body never drifts while typing newlines.
+    override func scrollRangeToVisible(_ charRange: NSRange) {
+        super.scrollRangeToVisible(charRange)
+        pinHorizontalScroll()
+    }
+
+    override func layout() {
+        super.layout()
+        pinHorizontalScroll()
+    }
+
+    private func pinHorizontalScroll() {
+        guard let scroll = enclosingScrollView else { return }
+        let clip = scroll.contentView
+        guard abs(clip.bounds.origin.x) > 0.01 else { return }
+        var origin = clip.bounds.origin
+        origin.x = 0
+        clip.setBoundsOrigin(origin)
+        scroll.reflectScrolledClipView(clip)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {
