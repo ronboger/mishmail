@@ -146,11 +146,11 @@ enum HTMLBodyLayout {
         let neutral = heightNeutralizedClass
         return """
         /* Full-bleed height="100%" tables fill the WKWebView viewport; when
-           the host frame tracks content height that creates infinite grow. */
+           the host frame tracks content height that creates infinite grow.
+           Only the percent form — bare height="100" means 100px spacers
+           (transactional templates) and must not be collapsed. */
         table[height="100%"], tbody[height="100%"], tr[height="100%"],
-        td[height="100%"], th[height="100%"], div[height="100%"],
-        table[height="100"], tbody[height="100"], tr[height="100"],
-        td[height="100"], th[height="100"], div[height="100"] {
+        td[height="100%"], th[height="100%"], div[height="100%"] {
           height: auto !important;
         }
         /* Inline viewport units (common spacing variants). */
@@ -322,13 +322,21 @@ enum HTMLBodyLayout {
             for (var i = 0; i < imgs.length; i++) applyImage(imgs[i]);
           }
 
-          /* Kill computed heights that track the WKWebView viewport. Email
-             stylesheets often set min-height:100vh / height:100% on wrappers;
-             attribute CSS cannot see those rules. Threshold: within 2px of
-             the current viewport and at least 200px (ignore tiny coincidences). */
+          /* Kill computed *min-heights* that track the WKWebView viewport.
+             Email stylesheets often set min-height:100vh on wrappers;
+             attribute CSS cannot see those rules. Only min-height is sticky-
+             neutralized: a fixed height:600px hero that briefly equals the
+             viewport must not be permanently collapsed. Threshold: within
+             2px of the current viewport and at least 200px. */
           function neutralizeViewportHeights(){
             var vh = viewportHeight();
             if (vh < 200) return false;
+            if (typeof window.__mmLastNeutralVH === 'number'
+                && window.__mmLastNeutralVH === vh) {
+              /* Viewport height unchanged — skip O(n) getComputedStyle walk. */
+              return false;
+            }
+            window.__mmLastNeutralVH = vh;
             var changed = false;
             var nodes = document.querySelectorAll('body, body *');
             for (var i = 0; i < nodes.length; i++) {
@@ -340,13 +348,9 @@ enum HTMLBodyLayout {
               try { cs = window.getComputedStyle(el); } catch (e) { continue; }
               if (!cs) continue;
               var mh = parseFloat(cs.minHeight);
-              var ht = parseFloat(cs.height);
               var killMin = (mh === mh) && mh >= 200 && Math.abs(mh - vh) <= 2;
-              var killH = (ht === ht) && ht >= 200 && Math.abs(ht - vh) <= 2
-                && cs.height !== 'auto';
-              if (!killMin && !killH) continue;
-              if (killMin) el.style.setProperty('min-height', '0', 'important');
-              if (killH) el.style.setProperty('height', 'auto', 'important');
+              if (!killMin) continue;
+              el.style.setProperty('min-height', '0', 'important');
               if (el.classList) el.classList.add(NEUTRAL);
               changed = true;
             }
@@ -412,9 +416,14 @@ enum HTMLBodyLayout {
           }
 
           function onImgEvent(ev){
-            applyImage(ev.target);
-            /* Real image geometry change — allow a new size even if frozen. */
-            window.__mmFrozenH = 0;
+            var img = ev.target;
+            applyImage(img);
+            /* Only real geometry changes should unfreeze. Blocked/error images
+               already have placeholders applied — clearing freeze on every
+               error restarts the measure→frame loop and can oscillate. */
+            if (img && img.complete && img.naturalWidth > 0) {
+              window.__mmFrozenH = 0;
+            }
             report();
           }
 
@@ -422,6 +431,7 @@ enum HTMLBodyLayout {
           window.__mmLastH = 0;
           window.__mmLastVH = 0;
           window.__mmFrozenH = 0;
+          window.__mmLastNeutralVH = 0;
 
           neutralizeViewportHeights();
 
@@ -471,6 +481,7 @@ enum HTMLBodyLayout {
             window.__mmLastH = 0;
             window.__mmLastVH = 0;
             window.__mmFrozenH = 0;
+            window.__mmLastNeutralVH = 0;
           } catch (e) {}
         })();
         """

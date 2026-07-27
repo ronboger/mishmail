@@ -91,6 +91,10 @@ final class HTMLBodyLayoutTests: XCTestCase {
         XCTAssertTrue(css.contains("100vh"))
         XCTAssertTrue(css.contains(HTMLBodyLayout.heightNeutralizedClass))
         XCTAssertTrue(css.contains("height: auto !important"))
+        // Bare height="100" is 100px spacers in transactional mail — must NOT
+        // be collapsed (Fable finding: percent-only full-bleed rule).
+        XCTAssertFalse(css.contains("[height=\"100\"]"),
+                       "bare height=100 is fixed px, not full-bleed")
     }
 
     func testInjectedDarkModeCSSIncludesLayoutImageRules() {
@@ -134,11 +138,15 @@ final class HTMLBodyLayoutTests: XCTestCase {
         // Still prefer visible child bottoms (no dead quote gap regression).
         XCTAssertTrue(js.contains("body.children"))
         XCTAssertTrue(js.contains("getBoundingClientRect"))
-        // Infinite-scroll breakers: neutralize vh-tied heights + freeze
-        // growth that tracks the host frame.
+        // Infinite-scroll breakers: neutralize vh-tied min-heights + freeze
+        // growth that tracks the host frame. Unfreeze only on real image geometry.
         XCTAssertTrue(js.contains("neutralizeViewportHeights"))
         XCTAssertTrue(js.contains("__mmFrozenH"))
+        XCTAssertTrue(js.contains("__mmLastNeutralVH"))
         XCTAssertTrue(js.contains(HTMLBodyLayout.heightNeutralizedClass))
+        XCTAssertTrue(js.contains("naturalWidth > 0"))
+        // min-height only (not sticky height:auto on coincidental fixed heroes).
+        XCTAssertTrue(js.contains("setProperty('min-height'"))
     }
 
     func testTeardownJSDisconnectsObserver() {
