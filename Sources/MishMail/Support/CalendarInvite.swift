@@ -61,17 +61,25 @@ struct CalendarInvite: Equatable, Sendable {
     var description: String
     var organizerEmail: String
     var organizerName: String
+    /// Bare attendee emails from ATTENDEE lines (lowercased, mailto: stripped).
+    /// Used to pick a send-as identity that the organizer's calendar already knows.
+    var attendeeEmails: [String]
     var start: Date?
     var end: Date?
     var isAllDay: Bool
     var sequence: Int
-    /// Raw unfolded ICS used to build the METHOD:REPLY payload.
+    /// Full unfolded `RECURRENCE-ID…` property line from the request, when
+    /// present (single-instance RSVP on a recurring series). Echoed verbatim
+    /// into METHOD:REPLY so the organizer applies PARTSTAT to the right occurrence.
+    var recurrenceIdLine: String?
+    /// Raw ICS source (kept for debugging / future round-trips; reply is rebuilt).
     var sourceICS: String
 
-    /// True when this is an actionable invitation (not a cancel/publish/reply).
-    var isActionable: Bool {
-        method == .request || method == .publish || method == .unknown
-    }
+    /// True when Accept / Decline / Maybe should be offered.
+    /// Gmail is conservative: only METHOD:REQUEST is actionable. PUBLISH /
+    /// unknown (forwarded exports) would otherwise email whatever ORGANIZER
+    /// the untrusted attachment author wrote.
+    var isActionable: Bool { method == .request }
 
     var isCancelled: Bool { method == .cancel }
 
@@ -97,16 +105,23 @@ struct CalendarInvite: Equatable, Sendable {
 
         var methodRaw: String?
         var inEvent = false
+        /// Depth of nested components inside VEVENT (VALARM, etc.). Props
+        /// belonging to those components must not overwrite VEVENT fields —
+        /// Outlook VALARMs ship `DESCRIPTION:REMINDER` that would otherwise
+        /// replace the meeting description under first-wins.
+        var nestedDepth = 0
         var props: [String: (params: [String: String], value: String)] = [:]
-        // Preserve ATTENDEE lines (multiple) separately for reply building.
-        var attendeeLines: [String] = []
+        var attendeeEmails: [String] = []
+        var recurrenceIdLine: String?
 
         for line in lines {
             let upper = line.uppercased()
             if upper.hasPrefix("BEGIN:VEVENT") {
                 inEvent = true
+                nestedDepth = 0
                 props = [:]
-                attendeeLines = []
+                attendeeEmails = []
+                recurrenceIdLine = nil
                 continue
             }
             if upper.hasPrefix("END:VEVENT") {
@@ -119,21 +134,32 @@ struct CalendarInvite: Equatable, Sendable {
                 }
                 continue
             }
-            guard let colon = line.firstIndex(of: ":") else { continue }
-            let nameAndParams = String(line[..<colon])
-            let value = String(line[line.index(after: colon)...])
-            let parts = nameAndParams.split(separator: ";", maxSplits: 32,
-                                            omittingEmptySubsequences: false)
-            guard let namePart = parts.first else { continue }
-            let name = String(namePart).uppercased()
-            var params: [String: String] = [:]
-            for p in parts.dropFirst() {
-                let kv = p.split(separator: "=", maxSplits: 1)
-                guard kv.count == 2 else { continue }
-                params[String(kv[0]).uppercased()] = String(kv[1])
+            // Skip nested components entirely (VALARM is the common case).
+            if upper.hasPrefix("BEGIN:") {
+                nestedDepth += 1
+                continue
             }
+            if upper.hasPrefix("END:") {
+                if nestedDepth > 0 { nestedDepth -= 1 }
+                continue
+            }
+            if nestedDepth > 0 { continue }
+
+            guard let nameAndValue = splitProperty(line) else { continue }
+            let name = nameAndValue.name
+            let params = nameAndValue.params
+            let value = nameAndValue.value
+
             if name == "ATTENDEE" {
-                attendeeLines.append(line)
+                let (email, _) = parseAddress(value: value, params: params)
+                let lower = email.lowercased()
+                if !lower.isEmpty, !attendeeEmails.contains(lower) {
+                    attendeeEmails.append(lower)
+                }
+            }
+            if name == "RECURRENCE-ID", recurrenceIdLine == nil {
+                // Keep the original property line (params + value) for the reply.
+                recurrenceIdLine = line
             }
             // First wins for most props; later DTSTART/DTEND rarely appear twice.
             if props[name] == nil {
@@ -171,10 +197,12 @@ struct CalendarInvite: Equatable, Sendable {
             description: description,
             organizerEmail: orgEmail,
             organizerName: orgName,
+            attendeeEmails: attendeeEmails,
             start: startParsed?.date,
             end: end,
             isAllDay: startParsed?.allDay ?? false,
             sequence: sequence,
+            recurrenceIdLine: recurrenceIdLine,
             sourceICS: ics
         )
     }
@@ -197,6 +225,11 @@ struct CalendarInvite: Equatable, Sendable {
             "DTSTAMP:\(stamp)",
             "SEQUENCE:\(sequence)",
         ]
+        // Instance RSVP on a recurring series — without this the organizer
+        // applies PARTSTAT to the master / wrong occurrence.
+        if let recurrenceIdLine, !recurrenceIdLine.isEmpty {
+            lines.append(recurrenceIdLine)
+        }
         if let start {
             lines.append(isAllDay
                 ? "DTSTART;VALUE=DATE:\(Self.formatDateOnly(start))"
@@ -299,26 +332,39 @@ struct CalendarInvite: Equatable, Sendable {
 
     // MARK: - Persistence key for local RSVP state
 
-    /// Stable UserDefaults key for the last RSVP we sent for this UID.
-    static func rsvpDefaultsKey(accountId: String, uid: String) -> String {
+    /// Stable UserDefaults key for the last RSVP we sent for this UID (+ instance).
+    static func rsvpDefaultsKey(accountId: String, uid: String,
+                                recurrenceIdLine: String? = nil) -> String {
         // UID can contain `@` and punctuation; keep the key printable.
         let safeUID = uid.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
             ?? uid
         let safeAcct = accountId.addingPercentEncoding(withAllowedCharacters: .alphanumerics)
             ?? accountId
-        return "calendar.rsvp.\(safeAcct).\(safeUID)"
+        var key = "calendar.rsvp.\(safeAcct).\(safeUID)"
+        if let recurrenceIdLine, !recurrenceIdLine.isEmpty {
+            let safeRID = recurrenceIdLine
+                .addingPercentEncoding(withAllowedCharacters: .alphanumerics) ?? recurrenceIdLine
+            key += ".\(safeRID)"
+        }
+        return key
     }
 
     static func storedRSVP(accountId: String, uid: String,
+                           recurrenceIdLine: String? = nil,
                            defaults: UserDefaults = .standard) -> RSVP? {
-        guard let raw = defaults.string(forKey: rsvpDefaultsKey(accountId: accountId, uid: uid))
+        guard let raw = defaults.string(
+            forKey: rsvpDefaultsKey(accountId: accountId, uid: uid,
+                                    recurrenceIdLine: recurrenceIdLine))
         else { return nil }
         return RSVP(rawValue: raw)
     }
 
     static func storeRSVP(_ status: RSVP, accountId: String, uid: String,
+                          recurrenceIdLine: String? = nil,
                           defaults: UserDefaults = .standard) {
-        defaults.set(status.rawValue, forKey: rsvpDefaultsKey(accountId: accountId, uid: uid))
+        defaults.set(status.rawValue,
+                     forKey: rsvpDefaultsKey(accountId: accountId, uid: uid,
+                                             recurrenceIdLine: recurrenceIdLine))
     }
 
     // MARK: - Parsing helpers
@@ -339,6 +385,58 @@ struct CalendarInvite: Equatable, Sendable {
             }
         }
         return out.filter { !$0.isEmpty }
+    }
+
+    /// Split `NAME;PARAM=val:value`, respecting double-quoted param values so
+    /// `CN="Boger; Ron"` does not break on the semicolon / colon inside quotes.
+    static func splitProperty(_ line: String)
+        -> (name: String, params: [String: String], value: String)? {
+        // Find the first unquoted colon — that separates name/params from value.
+        var inQuotes = false
+        var colonIndex: String.Index?
+        var i = line.startIndex
+        while i < line.endIndex {
+            let ch = line[i]
+            if ch == "\"" { inQuotes.toggle() }
+            else if ch == ":", !inQuotes {
+                colonIndex = i
+                break
+            }
+            i = line.index(after: i)
+        }
+        guard let colonIndex else { return nil }
+        let nameAndParams = String(line[..<colonIndex])
+        let value = String(line[line.index(after: colonIndex)...])
+
+        // Split params on unquoted semicolons.
+        var segments: [String] = []
+        var current = ""
+        inQuotes = false
+        for ch in nameAndParams {
+            if ch == "\"" { inQuotes.toggle(); current.append(ch); continue }
+            if ch == ";", !inQuotes {
+                segments.append(current)
+                current = ""
+                continue
+            }
+            current.append(ch)
+        }
+        segments.append(current)
+        guard let namePart = segments.first, !namePart.isEmpty else { return nil }
+        let name = namePart.uppercased()
+        var params: [String: String] = [:]
+        for seg in segments.dropFirst() {
+            guard let eq = seg.firstIndex(of: "=") else { continue }
+            let key = String(seg[..<eq]).uppercased()
+            var val = String(seg[seg.index(after: eq)...])
+            if val.hasPrefix("\""), val.hasSuffix("\""), val.count >= 2 {
+                val = String(val.dropFirst().dropLast())
+                    .replacingOccurrences(of: "\\\"", with: "\"")
+                    .replacingOccurrences(of: "\\\\", with: "\\")
+            }
+            params[key] = val
+        }
+        return (name, params, value)
     }
 
     private static func unescape(_ value: String) -> String {
@@ -423,8 +521,7 @@ struct CalendarInvite: Equatable, Sendable {
         if isUTC {
             cal.timeZone = TimeZone(secondsFromGMT: 0)!
         } else if let tzid = params["TZID"],
-                  let tz = TimeZone(identifier: tzid)
-                    ?? TimeZone(identifier: tzid.replacingOccurrences(of: "\"", with: "")) {
+                  let tz = resolveTimeZone(tzid) {
             cal.timeZone = tz
         } else {
             cal.timeZone = .current
@@ -435,6 +532,44 @@ struct CalendarInvite: Equatable, Sendable {
         guard let date = cal.date(from: comps) else { return nil }
         return ParsedDate(date: date, allDay: false)
     }
+
+    /// Resolve an ICS TZID to a Foundation TimeZone. Handles IANA ids and a
+    /// small Windows→IANA map for the Outlook-origin invites we actually see.
+    static func resolveTimeZone(_ tzid: String) -> TimeZone? {
+        let cleaned = tzid
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+            .trimmingCharacters(in: .whitespaces)
+        if let tz = TimeZone(identifier: cleaned) { return tz }
+        if let iana = windowsTimeZoneMap[cleaned],
+           let tz = TimeZone(identifier: iana) { return tz }
+        return nil
+    }
+
+    /// Common Windows TZ names → IANA. Incomplete by design; unmapped TZIDs
+    /// still fall back to local time in `parseDate`.
+    private static let windowsTimeZoneMap: [String: String] = [
+        "W. Europe Standard Time": "Europe/Berlin",
+        "Central European Standard Time": "Europe/Warsaw",
+        "Romance Standard Time": "Europe/Paris",
+        "GMT Standard Time": "Europe/London",
+        "Greenwich Standard Time": "Atlantic/Reykjavik",
+        "UTC": "UTC",
+        "Eastern Standard Time": "America/New_York",
+        "Central Standard Time": "America/Chicago",
+        "Mountain Standard Time": "America/Denver",
+        "Pacific Standard Time": "America/Los_Angeles",
+        "US Mountain Standard Time": "America/Phoenix",
+        "Alaskan Standard Time": "America/Anchorage",
+        "Hawaiian Standard Time": "Pacific/Honolulu",
+        "Tokyo Standard Time": "Asia/Tokyo",
+        "China Standard Time": "Asia/Shanghai",
+        "India Standard Time": "Asia/Kolkata",
+        "AUS Eastern Standard Time": "Australia/Sydney",
+        "E. Australia Standard Time": "Australia/Brisbane",
+        "Israel Standard Time": "Asia/Jerusalem",
+        "Russian Standard Time": "Europe/Moscow",
+        "South Africa Standard Time": "Africa/Johannesburg",
+    ]
 
     /// Parse RFC 5545 DURATION (`PT1H30M`, `P1D`, `-PT15M`).
     static func parseDuration(_ raw: String) -> TimeInterval? {

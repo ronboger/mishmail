@@ -47,6 +47,9 @@ final class CalendarInviteTests: XCTestCase {
         XCTAssertFalse(invite.isAllDay)
         XCTAssertTrue(invite.isActionable)
         XCTAssertFalse(invite.isCancelled)
+        XCTAssertNil(invite.recurrenceIdLine)
+        XCTAssertEqual(Set(invite.attendeeEmails),
+                       Set(["ron@x.com", "erica@example.com"]))
         XCTAssertNotNil(invite.start)
         XCTAssertNotNil(invite.end)
         // 2026-08-05 21:00–22:00 UTC
@@ -58,6 +61,7 @@ final class CalendarInviteTests: XCTestCase {
         // sampleRequest has a folded ATTENDEE line; UID must still parse.
         let invite = CalendarInvite.parse(sampleRequest)
         XCTAssertEqual(invite?.uid, "abc123@google.com")
+        XCTAssertTrue(invite?.attendeeEmails.contains("ron@x.com") == true)
     }
 
     func testParseCancel() {
@@ -229,4 +233,223 @@ final class CalendarInviteTests: XCTestCase {
         XCTAssertTrue(text.contains("In-Reply-To: <orig@mail>"))
         XCTAssertTrue(text.contains("Subject: Accepted:"))
     }
+
+    // MARK: - Fable review follow-ups
+
+    func testRecurrenceIdEchoedInReply() {
+        let ics = """
+            BEGIN:VCALENDAR
+            METHOD:REQUEST
+            VERSION:2.0
+            BEGIN:VEVENT
+            UID:series@google.com
+            SUMMARY:Weekly sync
+            DTSTART:20260805T170000Z
+            DTEND:20260805T173000Z
+            RECURRENCE-ID:20260805T170000Z
+            ORGANIZER:mailto:lead@x.com
+            ATTENDEE:mailto:ron@x.com
+            SEQUENCE:0
+            END:VEVENT
+            END:VCALENDAR
+            """
+        let invite = CalendarInvite.parse(ics)!
+        XCTAssertEqual(invite.recurrenceIdLine, "RECURRENCE-ID:20260805T170000Z")
+        let reply = invite.replyICS(status: .accepted, attendeeEmail: "ron@x.com")
+        XCTAssertTrue(reply.contains("RECURRENCE-ID:20260805T170000Z"),
+                      "instance RSVP must carry RECURRENCE-ID; got:\n\(reply)")
+    }
+
+    func testRecurrenceIdWithTZIDPreserved() {
+        let ics = """
+            BEGIN:VCALENDAR
+            METHOD:REQUEST
+            VERSION:2.0
+            BEGIN:VEVENT
+            UID:series@x.com
+            SUMMARY:Office hours
+            DTSTART;TZID=America/Los_Angeles:20260805T100000
+            DTEND;TZID=America/Los_Angeles:20260805T110000
+            RECURRENCE-ID;TZID=America/Los_Angeles:20260805T100000
+            ORGANIZER:mailto:a@x.com
+            END:VEVENT
+            END:VCALENDAR
+            """
+        let invite = CalendarInvite.parse(ics)!
+        XCTAssertEqual(invite.recurrenceIdLine,
+                       "RECURRENCE-ID;TZID=America/Los_Angeles:20260805T100000")
+        let reply = invite.replyICS(status: .declined, attendeeEmail: "ron@x.com")
+        XCTAssertTrue(reply.contains(
+            "RECURRENCE-ID;TZID=America/Los_Angeles:20260805T100000"))
+    }
+
+    func testValarmDoesNotOverwriteDescription() {
+        let ics = """
+            BEGIN:VCALENDAR
+            METHOD:REQUEST
+            VERSION:2.0
+            BEGIN:VEVENT
+            UID:alarm@x.com
+            SUMMARY:Dentist
+            DESCRIPTION:Bring insurance card
+            DTSTART:20260805T180000Z
+            DTEND:20260805T190000Z
+            ORGANIZER:mailto:desk@clinic.com
+            BEGIN:VALARM
+            TRIGGER:-PT30M
+            ACTION:DISPLAY
+            DESCRIPTION:REMINDER
+            END:VALARM
+            END:VEVENT
+            END:VCALENDAR
+            """
+        let invite = CalendarInvite.parse(ics)!
+        XCTAssertEqual(invite.description, "Bring insurance card")
+        XCTAssertNotEqual(invite.description, "REMINDER")
+        XCTAssertEqual(invite.summary, "Dentist")
+    }
+
+    func testValarmBeforeDescriptionStillSkipped() {
+        // First-wins would have kept REMINDER if VALARM weren't skipped.
+        let ics = """
+            BEGIN:VCALENDAR
+            METHOD:REQUEST
+            VERSION:2.0
+            BEGIN:VEVENT
+            UID:alarm2@x.com
+            SUMMARY:Call
+            DTSTART:20260805T180000Z
+            BEGIN:VALARM
+            DESCRIPTION:REMINDER
+            ACTION:DISPLAY
+            TRIGGER:-PT15M
+            END:VALARM
+            DESCRIPTION:Real notes
+            ORGANIZER:mailto:a@x.com
+            END:VEVENT
+            END:VCALENDAR
+            """
+        let invite = CalendarInvite.parse(ics)!
+        XCTAssertEqual(invite.description, "Real notes")
+    }
+
+    func testOnlyRequestIsActionable() {
+        XCTAssertTrue(CalendarInvite.parse("""
+            BEGIN:VCALENDAR
+            METHOD:REQUEST
+            BEGIN:VEVENT
+            UID:r@x.com
+            SUMMARY:Meet
+            ORGANIZER:mailto:a@x.com
+            END:VEVENT
+            END:VCALENDAR
+            """)?.isActionable == true)
+
+        XCTAssertFalse(CalendarInvite.parse("""
+            BEGIN:VCALENDAR
+            METHOD:PUBLISH
+            BEGIN:VEVENT
+            UID:p@x.com
+            SUMMARY:Holiday
+            ORGANIZER:mailto:a@x.com
+            END:VEVENT
+            END:VCALENDAR
+            """)?.isActionable == true)
+
+        // No METHOD → unknown → not actionable (untrusted ORGANIZER).
+        XCTAssertFalse(CalendarInvite.parse("""
+            BEGIN:VCALENDAR
+            BEGIN:VEVENT
+            UID:u@x.com
+            SUMMARY:Exported
+            ORGANIZER:mailto:stranger@evil.example
+            END:VEVENT
+            END:VCALENDAR
+            """)?.isActionable == true)
+    }
+
+    func testWindowsTZIDMapsToIANA() {
+        XCTAssertEqual(
+            CalendarInvite.resolveTimeZone("Pacific Standard Time")?.identifier,
+            "America/Los_Angeles")
+        XCTAssertEqual(
+            CalendarInvite.resolveTimeZone("W. Europe Standard Time")?.identifier,
+            "Europe/Berlin")
+        // IANA passes through.
+        XCTAssertEqual(
+            CalendarInvite.resolveTimeZone("America/New_York")?.identifier,
+            "America/New_York")
+        XCTAssertNil(CalendarInvite.resolveTimeZone("Totally Fake Zone"))
+    }
+
+    func testWindowsTZIDUsedForDTSTART() {
+        let ics = """
+            BEGIN:VCALENDAR
+            METHOD:REQUEST
+            VERSION:2.0
+            BEGIN:VEVENT
+            UID:outlook@x.com
+            SUMMARY:Standup
+            DTSTART;TZID=Pacific Standard Time:20260805T090000
+            DTEND;TZID=Pacific Standard Time:20260805T093000
+            ORGANIZER:mailto:boss@x.com
+            END:VEVENT
+            END:VCALENDAR
+            """
+        let invite = CalendarInvite.parse(ics)!
+        // 2026-08-05 09:00 America/Los_Angeles (PDT, UTC-7) = 16:00 UTC
+        let expected = TimeZone(identifier: "America/Los_Angeles")!
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = expected
+        let start = cal.date(from: DateComponents(
+            year: 2026, month: 8, day: 5, hour: 9, minute: 0, second: 0))!
+        XCTAssertEqual(invite.start?.timeIntervalSince1970, start.timeIntervalSince1970)
+    }
+
+    func testQuotedCNWithSemicolon() {
+        let ics = """
+            BEGIN:VCALENDAR
+            METHOD:REQUEST
+            VERSION:2.0
+            BEGIN:VEVENT
+            UID:cn@x.com
+            SUMMARY:Chat
+            DTSTART:20260805T180000Z
+            ORGANIZER;CN="Boger; Ron":mailto:ron@x.com
+            ATTENDEE;CN="Smith, Jane":mailto:jane@y.com
+            END:VEVENT
+            END:VCALENDAR
+            """
+        let invite = CalendarInvite.parse(ics)!
+        XCTAssertEqual(invite.organizerEmail, "ron@x.com")
+        XCTAssertEqual(invite.organizerName, "Boger; Ron")
+        XCTAssertEqual(invite.attendeeEmails, ["jane@y.com"])
+    }
+
+    func testSplitPropertyRespectsQuotedParams() {
+        let line = #"ORGANIZER;CN="Boger; Ron":mailto:ron@x.com"#
+        let parsed = CalendarInvite.splitProperty(line)
+        XCTAssertEqual(parsed?.name, "ORGANIZER")
+        XCTAssertEqual(parsed?.params["CN"], "Boger; Ron")
+        XCTAssertEqual(parsed?.value, "mailto:ron@x.com")
+    }
+
+    func testRSVPPersistenceIsPerRecurrenceInstance() {
+        let suite = "CalendarInviteTests.rid.\(UUID().uuidString)"
+        let ud = UserDefaults(suiteName: suite)!
+        defer { ud.removePersistentDomain(forName: suite) }
+        let rid = "RECURRENCE-ID:20260805T170000Z"
+        CalendarInvite.storeRSVP(.accepted, accountId: "ron@x.com",
+                                 uid: "series@x.com",
+                                 recurrenceIdLine: rid, defaults: ud)
+        // Master (no RID) is still unanswered.
+        XCTAssertNil(CalendarInvite.storedRSVP(
+            accountId: "ron@x.com", uid: "series@x.com", defaults: ud))
+        XCTAssertEqual(
+            CalendarInvite.storedRSVP(
+                accountId: "ron@x.com", uid: "series@x.com",
+                recurrenceIdLine: rid, defaults: ud),
+            .accepted)
+    }
 }
+

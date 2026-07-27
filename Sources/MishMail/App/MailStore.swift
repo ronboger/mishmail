@@ -4884,9 +4884,10 @@ struct ComposeRequest: Identifiable {
             showNotice("RSVP is disabled in the demo inbox")
             return
         }
-        // Prefer a send-as address that appears on the invite (To/Cc of the
-        // message) so the PARTSTAT matches the attendee Google Calendar knows.
-        let identity = preferredRSVPIdentity(for: message)
+        // Prefer a send-as address listed as ATTENDEE on the invite (the
+        // address the organizer's calendar already knows), then fall back to
+        // a To/Cc match, then the mailbox primary.
+        let identity = preferredRSVPIdentity(for: message, invite: invite)
         let fromEmail = identity.email
         let displayName = identity.displayName
         let organizer = invite.organizerEmail
@@ -4911,18 +4912,28 @@ struct ComposeRequest: Identifiable {
                 replyTo: message,
                 attachments: [attachment]
             )
-            CalendarInvite.storeRSVP(status, accountId: message.accountId, uid: invite.uid)
+            CalendarInvite.storeRSVP(
+                status, accountId: message.accountId, uid: invite.uid,
+                recurrenceIdLine: invite.recurrenceIdLine)
             showNotice("\(status.subjectPrefix) — reply sent to \(organizer)")
         } catch {
             lastError = error.localizedDescription
         }
     }
 
-    /// Identity used on the RSVP: an account send-as that is a recipient of
-    /// the invite message, else the mailbox primary.
-    private func preferredRSVPIdentity(for message: Message) -> (email: String, displayName: String) {
+    /// Identity used on the RSVP. Order:
+    /// 1. send-as listed in the invite's ATTENDEE lines (most reliable),
+    /// 2. send-as appearing on the message To/Cc,
+    /// 3. mailbox primary.
+    private func preferredRSVPIdentity(
+        for message: Message, invite: CalendarInvite
+    ) -> (email: String, displayName: String) {
         let candidates = fromIdentities(forMailbox: message.accountId)
-        let recipientEmails: Set<String> = {
+        let attendeeSet = Set(invite.attendeeEmails.map { $0.lowercased() })
+        if let match = candidates.first(where: { attendeeSet.contains($0.email.lowercased()) }) {
+            return (match.email, match.displayName)
+        }
+        let headerEmails: Set<String> = {
             var set = Set<String>()
             for header in [message.toHeader, message.ccHeader] {
                 for addr in MessageParser.splitAddresses(header) {
@@ -4932,7 +4943,7 @@ struct ComposeRequest: Identifiable {
             }
             return set
         }()
-        if let match = candidates.first(where: { recipientEmails.contains($0.email.lowercased()) }) {
+        if let match = candidates.first(where: { headerEmails.contains($0.email.lowercased()) }) {
             return (match.email, match.displayName)
         }
         if let primary = candidates.first(where: \.isPrimary) ?? candidates.first {
