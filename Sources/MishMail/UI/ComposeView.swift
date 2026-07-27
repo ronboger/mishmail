@@ -704,6 +704,8 @@ struct ComposeView: View {
 
     @ViewBuilder
     private var draftStatusLabel: some View {
+        // Status text is fixed-size so it never wraps or steals width by
+        // compressing the left cluster (which used to wrap "Snippets").
         switch draftStatus {
         case .idle:
             EmptyView()
@@ -711,16 +713,22 @@ struct ComposeView: View {
             Text("Saving…")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize()
                 .accessibilityIdentifier("draftStatusSaving")
         case .saved:
             Text("Draft saved")
                 .font(.system(size: 12))
                 .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .fixedSize()
                 .accessibilityIdentifier("draftStatusSaved")
         case .failed:
             Text("Draft not saved")
                 .font(.system(size: 12))
                 .foregroundStyle(.red.opacity(0.85))
+                .lineLimit(1)
+                .fixedSize()
                 .accessibilityIdentifier("draftStatusFailed")
         }
     }
@@ -973,11 +981,15 @@ struct ComposeView: View {
                 } label: {
                     HStack(spacing: 4) {
                         Image(systemName: "text.badge.plus")
-                        Text("Snippets").font(.system(size: 12))
+                        Text("Snippets")
+                            .font(.system(size: 12))
+                            .lineLimit(1)
                     }
                     .foregroundStyle(showSnippets ? Color.notionAccent : Color.secondary)
                 }
                 .buttonStyle(.plain)
+                // Same as Send: never wrap/compress when "Draft saved" appears.
+                .fixedSize()
                 .keyboardShortcut("/", modifiers: .command)
                 .help("Insert a saved snippet (⌘/)")
 
