@@ -169,29 +169,47 @@ require-stable-signing:
 # release tagged v<MARKETING_VERSION>. The in-app updater verifies the zip
 # against SHA256SUMS, then the app's code signature / Team ID / notarization.
 # Bump MARKETING_VERSION in project.yml first; requires the gh CLI.
-# When Config/Local.xcconfig has DEVELOPMENT_TEAM, builds with Distribution
-# entitlements (full library validation).
+# Two signing tiers (see docs/RELEASING.md "Signing tiers"):
+#   - Developer ID identity present  -> Manual Developer ID signing + notarize.
+#   - Otherwise, free Personal Team  -> Apple Development signing, no
+#     notarization. Existing installs on the same Team ID update fine (this is
+#     how every release to date has shipped); other people's Macs get
+#     Gatekeeper warnings and should build from source.
+# Both tiers use Distribution entitlements (full library validation).
 release: test
-	@if [ -n "$(TEAM)" ] && [ "$(VALID_DEVELOPER_IDENTITY)" = "yes" ]; then \
-		echo "Release signing team $(TEAM) — using MishMail.Distribution.entitlements"; \
-	else \
-		echo "Refusing public release: a paid-program Developer ID Application identity and notarization are required for distribution to other Macs."; \
+	@if [ -z "$(TEAM)" ] || [ "$(VALID_SIGNING_IDENTITY)" != "yes" ]; then \
+		echo "Refusing release: no valid signing identity for DEVELOPMENT_TEAM in Config/Local.xcconfig."; \
+		echo "Run 'make signing-doctor' for the free Personal Team setup."; \
 		exit 1; \
 	fi
-	xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
-		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet \
-		CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" DEVELOPMENT_TEAM=$(TEAM) \
-		CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements
-	# Notarize and staple: the in-app updater and Gatekeeper both reject
-	# un-notarized Developer ID builds. One-time setup:
+	@if [ "$(VALID_DEVELOPER_IDENTITY)" = "yes" ]; then \
+		echo "Release signing team $(TEAM) with Developer ID (will notarize)."; \
+	else \
+		echo "Release signing team $(TEAM) with Apple Development (free Personal Team, no notarization)."; \
+		echo "Existing installs on team $(TEAM) update fine; strangers' Macs will see Gatekeeper warnings."; \
+	fi
+	@if [ "$(VALID_DEVELOPER_IDENTITY)" = "yes" ]; then \
+		xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
+			-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet \
+			CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" DEVELOPMENT_TEAM=$(TEAM) \
+			CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements; \
+	else \
+		xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
+			-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet \
+			CODE_SIGN_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements; \
+	fi
+	# Notarize and staple (Developer ID builds only): the in-app updater and
+	# Gatekeeper both reject un-notarized Developer ID builds. One-time setup:
 	#   xcrun notarytool store-credentials $(NOTARY_PROFILE) \
 	#     --apple-id <appleid> --team-id $(TEAM) --password <app-specific-pw>
-	cd $(RELEASE_DIR) && \
+	@if [ "$(VALID_DEVELOPER_IDENTITY)" = "yes" ]; then \
+		cd $(RELEASE_DIR) && \
 		ditto -c -k --keepParent MishMail.app notarize-upload.zip && \
 		xcrun notarytool submit notarize-upload.zip \
 			--keychain-profile $(NOTARY_PROFILE) --wait && \
 		rm notarize-upload.zip && \
-		xcrun stapler staple MishMail.app
+		xcrun stapler staple MishMail.app; \
+	fi
 	cd $(RELEASE_DIR) && \
 		ditto -c -k --keepParent MishMail.app $(ZIP_NAME) && \
 		shasum -a 256 $(ZIP_NAME) > SHA256SUMS && \

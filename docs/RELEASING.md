@@ -25,12 +25,12 @@ everyone." This doc is about `make release`.
   ```
 - **`xcodegen`** installed (`brew install xcodegen`) — the Makefile regenerates
   the project from `project.yml` on every build.
-- **Signing**: the tracked default is ad-hoc + hardened runtime, which runs
-  fine locally but is **not** distributable to other machines without warnings.
-  For a real public release, sign with a Developer ID and notarize — see
-  [Distributable signing](#distributable-signing-developer-id) below. The
-  updater intentionally rejects ad-hoc release binaries because an ad-hoc
-  signature provides no publisher identity, and `make release` enforces this.
+- **Signing**: `Config/Local.xcconfig` (git-ignored) must define
+  `DEVELOPMENT_TEAM` with a valid signing identity in the keychain. The
+  standard setup here is the **free Personal Team** ("Apple Development"
+  certificate, no paid program) — see [Signing tiers](#signing-tiers). Run
+  `make signing-doctor` to check. Pure ad-hoc (no team at all) is refused:
+  an ad-hoc signature provides no publisher identity for the updater.
 
 ## Release checklist
 
@@ -92,12 +92,46 @@ everyone." This doc is about `make release`.
   already exists — if you need to redo a release, delete the old one first
   (`gh release delete v0.2.0 --cleanup-tag`) or bump to a new version (cleaner).
 
-## Distributable signing (Developer ID)
+## Signing tiers
 
-The ad-hoc default is fine for local builds, but it is not accepted by the
-in-app updater and Gatekeeper will warn other users. To ship a binary:
+`make release` picks a tier automatically from what's in the keychain:
 
-1. Create `Config/Local.xcconfig` (git-ignored) with a Developer ID identity:
+### Tier 1 — free Personal Team (the standard path here)
+
+**This is how every MishMail release to date has shipped.** No paid Apple
+Developer Program needed. `Config/Local.xcconfig`:
+
+```
+CODE_SIGN_STYLE = Automatic
+DEVELOPMENT_TEAM = 47T79PSL25
+CODE_SIGN_IDENTITY = Apple Development
+```
+
+The build is signed with the free "Apple Development" certificate (get one by
+signing into Xcode → Settings → Accounts with any Apple ID; no membership
+required). No notarization happens or is required. Trust model:
+
+- **Your own installs update seamlessly** — the in-app updater accepts
+  Apple Development-signed updates as long as the **Team ID matches** the
+  running install ("Team ID continuity" in `UpdateChecker.swift`).
+- **Other people's Macs** will get Gatekeeper warnings on the downloaded
+  binary; building from source is the supported path for them (per README).
+
+If `make release` says "Refusing release: no valid signing identity", the
+usual causes are: the Apple Development cert expired (open Xcode →
+Settings → Accounts → Manage Certificates and it auto-renews), or
+`Config/Local.xcconfig` is missing on this machine (it's git-ignored —
+recreate it with the block above).
+
+### Tier 2 — Developer ID + notarization (optional, paid program)
+
+If a "Developer ID Application" identity for the team exists in the keychain,
+`make release` automatically switches to Manual Developer ID signing and
+notarizes + staples before publishing (requires a stored
+`MishMail-notary` keychain profile). This makes the binary Gatekeeper-clean
+for strangers. Setup:
+
+1. In `Config/Local.xcconfig`, use a Developer ID identity:
    ```
    CODE_SIGN_STYLE = Manual
    DEVELOPMENT_TEAM = XXXXXXXXXX
@@ -109,15 +143,14 @@ in-app updater and Gatekeeper will warn other users. To ship a binary:
    `DEVELOPMENT_TEAM` is set, so library validation stays ON for shipping
    builds. (Ad-hoc CI/Debug still use the looser entitlements so the
    separately-signed GRDB framework can load.)
-2. **Notarize** before (or right after) `make release` so the updater's
-   notarization check passes for Developer ID builds:
+2. **Store notarization credentials** once so `make release` can notarize
+   automatically:
    ```sh
-   xcrun notarytool submit build/dd.noindex/Build/Products/Release/MishMail-<version>.zip \
-     --apple-id <you@example.com> --team-id XXXXXXXXXX --wait
-   xcrun stapler staple build/dd.noindex/Build/Products/Release/MishMail.app
+   xcrun notarytool store-credentials MishMail-notary \
+     --apple-id <you@example.com> --team-id XXXXXXXXXX --password <app-specific-pw>
    ```
-   Re-zip + regenerate `SHA256SUMS` after stapling if you staple the app rather
-   than the zip, then attach both assets to the GitHub release.
+   With the Developer ID identity and this profile in place, `make release`
+   notarizes and staples the app before zipping — no manual steps.
 
 Each user still needs their own Google OAuth client (see the README) — no
 client secrets are ever committed. Building from source remains a first-class
@@ -127,6 +160,14 @@ path regardless of signing.
 
 - **`make release` stops at tests** — a test failed; the release is aborted
   before anything is published. Fix, commit, re-run.
+- **"There is no XCFramework found at …" pointing at an old path** — the
+  DerivedData cache went stale (e.g. the repo directory was moved/renamed).
+  Fix: `rm -rf build/dd.noindex` and re-run; packages re-resolve on the next
+  build.
+- **"Refusing release: no valid signing identity"** — see
+  [Signing tiers](#signing-tiers); usually a missing `Config/Local.xcconfig`
+  or an expired Apple Development cert. A paid Developer ID is **not**
+  required.
 - **`gh release create` says the release exists** — you already released this
   version. Bump `MARKETING_VERSION` and try again, or delete the old release.
 - **Updater doesn't offer the new version** — confirm the new
