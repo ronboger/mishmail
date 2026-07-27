@@ -1390,8 +1390,12 @@ struct MessageCard: View {
                 htmlHead = nil
                 hasQuotedTrail = false
             }
-            htmlBytes = fullBytes
-            htmlHeadBytes = htmlHead?.utf8.count ?? 0
+            // Gate the oversized-HTML placeholder on the pre-inline body:
+            // data: URI growth is image payload WebKit handles fine, and a
+            // message that rendered automatically before inlining must not
+            // flip into the approval placeholder because its images resolved.
+            htmlBytes = message.bodyHTML.map(\.utf8.count) ?? fullBytes
+            htmlHeadBytes = min(htmlHead?.utf8.count ?? 0, htmlBytes)
             htmlDocuments = nil
         } else if hasBody, let prep = bodyPrep {
             textHead = prep.textHead

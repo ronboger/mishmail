@@ -62,22 +62,22 @@ enum MessageParser {
             .flatMap { $0.isEmpty ? nil : $0 }
         let filename = part.filename.flatMap { $0.isEmpty ? nil : $0 }
 
-        // Downloadable / inline MIME parts: filename, Content-ID, or image/*
-        // with an attachmentId. Empty-filename inline images used to be dropped
-        // entirely, so USPS-style mailpiece scans never rendered.
+        // Downloadable / inline MIME parts: filename or Content-ID with an
+        // attachmentId. Empty-filename inline images with a Content-ID used to
+        // be dropped entirely, so USPS-style mailpiece scans never rendered.
+        // (Plain image/* parts with neither stay excluded — admitting them put
+        // a paperclip on every logo-bearing marketing mail.)
         if let attachmentId = part.body?.attachmentId,
-           filename != nil || contentId != nil || isImage {
+           filename != nil || contentId != nil {
             let name = filename
                 ?? CIDImageInliner.syntheticFilename(contentId: contentId, mimeType: mime)
             attachments.append(AttachmentRow(
                 id: nil, messageId: messageId, gmailAttachmentId: attachmentId,
                 filename: name, mimeType: mime,
                 size: part.body?.size ?? 0, contentId: contentId))
-            // Some responses also embed small image bytes next to attachmentId.
-            if isImage, let cid = contentId,
-               let raw = part.body?.data, let bytes = decodeBase64URLData(raw) {
-                inlineBlobs[cid] = (mime, bytes)
-            }
+            // No blob capture here: attachmentId parts are resolved at render
+            // time via getAttachment, session-only. Persisting their bytes as
+            // data: URIs in message_body would bloat SQLCipher.
         } else if let data = part.body?.data {
             if let decoded = decodeBase64URL(data) {
                 switch part.mimeType {
@@ -86,9 +86,14 @@ enum MessageParser {
                 default: break
                 }
             }
-            // Inline image with Content-ID but no attachmentId (bytes on wire).
+            // Inline image with Content-ID but no attachmentId: the bytes on
+            // the wire are the only copy (getAttachment can't fetch these), so
+            // they get inlined at parse time and persist with the body. Gmail
+            // hands large parts an attachmentId, so these are small; the cap
+            // bounds message_body growth against pathological payloads.
             if isImage, let cid = contentId,
-               let bytes = decodeBase64URLData(data) {
+               let bytes = decodeBase64URLData(data),
+               bytes.count <= CIDImageInliner.maxPersistedBlobBytes {
                 inlineBlobs[cid] = (mime, bytes)
             }
         }

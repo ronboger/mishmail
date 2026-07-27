@@ -4889,8 +4889,11 @@ struct ComposeRequest: Identifiable {
 
     /// Result of resolving `cid:` images for one reading-pane card.
     struct CIDInlineResult: Sendable {
-        /// HTML with matched `cid:` rewritten to `data:` URIs (session-only;
-        /// not written back to `message_body` — that would bloat SQLCipher).
+        /// HTML with matched `cid:` rewritten to `data:` URIs. Session-only —
+        /// not written back to `message_body`, which would bloat SQLCipher.
+        /// (The one persisted exception: parse-time inlining of small
+        /// wire-borne blobs that have no attachmentId and so can't be fetched
+        /// later; see `CIDImageInliner.maxPersistedBlobBytes`.)
         let html: String
         /// Attachment rows after a possible full re-fetch (may gain `contentId`).
         let attachments: [AttachmentRow]
@@ -4954,10 +4957,10 @@ struct ComposeRequest: Identifiable {
         let client = client(for: message.accountId)
         for cid in refs {
             guard let att = byCID[cid] else { continue }
-            // Only image/* — skip non-image Content-ID parts.
-            guard att.mimeType.lowercased().hasPrefix("image/")
-                    || CIDImageInliner.sanitizeMIME(att.mimeType).hasPrefix("image/")
-            else { continue }
+            // Only image/* — skip non-image Content-ID parts. (Don't consult
+            // sanitizeMIME here: its fallback is image/jpeg, so it would pass
+            // everything.)
+            guard att.mimeType.lowercased().hasPrefix("image/") else { continue }
             do {
                 let data = try await client.getAttachment(
                     messageId: message.gmailId,

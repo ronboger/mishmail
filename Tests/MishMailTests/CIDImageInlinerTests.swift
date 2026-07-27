@@ -47,7 +47,8 @@ final class CIDImageInlinerTests: XCTestCase {
         XCTAssertEqual(CIDImageInliner.sanitizeMIME("image/jpeg; charset=binary"),
                        "image/jpeg")
         XCTAssertEqual(CIDImageInliner.sanitizeMIME("text/html"), "image/jpeg")
-        XCTAssertEqual(CIDImageInliner.sanitizeMIME("image/svg+xml"), "image/svg+xml")
+        // SVG is the one image type with a script grammar — always relabeled.
+        XCTAssertEqual(CIDImageInliner.sanitizeMIME("image/svg+xml"), "image/jpeg")
     }
 
     func testContainsCIDReferences() {

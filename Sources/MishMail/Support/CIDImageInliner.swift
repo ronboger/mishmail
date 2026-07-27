@@ -7,6 +7,11 @@ import Foundation
 /// supplies the missing bytes. Pure / hostless so unit tests can pin behavior
 /// without WebKit or Gmail.
 enum CIDImageInliner {
+    /// Largest wire-borne blob (no attachmentId, so unfetchable later) that
+    /// parse-time rewrite will bake into the persisted body. Anything bigger
+    /// stays a broken `cid:` rather than bloating message_body.
+    static let maxPersistedBlobBytes = 256 * 1024
+
     /// Normalize a Content-ID header value or `cid:` URL target to a
     /// comparable key: strip optional `cid:` / angle brackets, percent-decode
     /// once, trim, lowercase.
@@ -77,10 +82,10 @@ enum CIDImageInliner {
         return result as String
     }
 
-    /// `data:` URI for an image part. Strips parameters from MIME type and
-    /// rejects obviously non-image types with a safe `application/octet-stream`
-    /// so a hostile Content-Type cannot inject a scriptable SVG-as-HTML payload
-    /// via a type we don't expect (SVG still needs care; we only allow image/*).
+    /// `data:` URI for an image part. Strips parameters from the MIME type and
+    /// relabels anything outside the raster image/* family as `image/jpeg`, so
+    /// a hostile Content-Type can only ever produce a broken image — never a
+    /// scriptable payload.
     static func dataURI(mimeType: String, data: Data) -> String {
         let mime = sanitizeMIME(mimeType)
         let b64 = data.base64EncodedString()
@@ -94,9 +99,11 @@ enum CIDImageInliner {
             .map { String($0).trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
             ?? ""
         // Allow image/* only — CID inlining is for mailpiece/logo scans, not
-        // arbitrary attachments that happen to carry a Content-ID.
+        // arbitrary attachments that happen to carry a Content-ID. SVG is
+        // excluded: it's the one image type with a script grammar, and no
+        // mailer needs it for inline scans. Relabeled bytes render broken.
         let allowed = CharacterSet.alphanumerics.union(CharacterSet(charactersIn: "/.+-"))
-        if head.hasPrefix("image/"),
+        if head.hasPrefix("image/"), head != "image/svg+xml",
            head.unicodeScalars.allSatisfy({ allowed.contains($0) }) {
             return head
         }
@@ -110,7 +117,6 @@ enum CIDImageInliner {
             case "image/png": return "png"
             case "image/gif": return "gif"
             case "image/webp": return "webp"
-            case "image/svg+xml": return "svg"
             default: return "jpg"
             }
         }()
