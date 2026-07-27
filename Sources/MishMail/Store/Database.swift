@@ -163,6 +163,15 @@ struct AttachmentRow: Codable, Identifiable, Hashable, FetchableRecord, Persista
     /// downloadable attachments and for rows synced before v28.
     var contentId: String? = nil
     mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+
+    /// Sentinel `gmailAttachmentId` for inline `text/calendar` MIME parts that
+    /// have no Gmail attachmentId (Outlook / Calendly). Download re-fetches the
+    /// full message and re-extracts the part — there is no getAttachment handle.
+    static let inlineCalendarAttachmentId = "inline:text/calendar"
+
+    static func isInlineCalendarId(_ id: String) -> Bool {
+        id == inlineCalendarAttachmentId
+    }
 }
 
 struct SavedView: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {

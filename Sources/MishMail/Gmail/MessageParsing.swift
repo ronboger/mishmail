@@ -96,6 +96,22 @@ enum MessageParser {
                bytes.count <= CIDImageInliner.maxPersistedBlobBytes {
                 inlineBlobs[cid] = (mime, bytes)
             }
+            // Inline text/calendar without attachmentId (Outlook / Calendly).
+            // Skip when a real calendar attachment already exists so Google
+            // invites (invite.ics + multipart alternative) don't double-card.
+            if isCalendarMime(mime),
+               let bytes = decodeBase64URLData(data), !bytes.isEmpty,
+               !attachments.contains(where: {
+                   CalendarInvite.isCalendarAttachment(
+                       mimeType: $0.mimeType, filename: $0.filename)
+               }) {
+                let name = filename.map { MessageParser.safeFilename($0) } ?? "invite.ics"
+                attachments.append(AttachmentRow(
+                    id: nil, messageId: messageId,
+                    gmailAttachmentId: AttachmentRow.inlineCalendarAttachmentId,
+                    filename: name, mimeType: mime,
+                    size: bytes.count, contentId: contentId))
+            }
         }
         for child in part.parts ?? [] {
             collectParts(child, messageId: messageId, text: &text, html: &html,
@@ -111,6 +127,33 @@ enum MessageParser {
         var b64 = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
         while b64.count % 4 != 0 { b64 += "=" }
         return Data(base64Encoded: b64)
+    }
+
+    /// MIME types that carry iCalendar payloads (not just `.ics` filenames).
+    static func isCalendarMime(_ mime: String) -> Bool {
+        let m = mime.lowercased()
+        return m.hasPrefix("text/calendar") || m.contains("application/ics")
+    }
+
+    /// First inline `text/calendar` part body (no attachmentId) in a full Gmail
+    /// payload. Used when the attachment row was stored with the inline
+    /// sentinel and we need the bytes again.
+    static func inlineCalendarData(in g: GMessage) -> Data? {
+        var found: Data?
+        func walk(_ part: GMessage.Part?) {
+            guard found == nil, let part else { return }
+            let mime = part.mimeType ?? ""
+            if isCalendarMime(mime),
+               part.body?.attachmentId == nil,
+               let b64 = part.body?.data,
+               let bytes = decodeBase64URLData(b64), !bytes.isEmpty {
+                found = bytes
+                return
+            }
+            for child in part.parts ?? [] { walk(child) }
+        }
+        walk(g.payload)
+        return found
     }
 
     /// Converts an HTML body to readable plain text. Non-content elements

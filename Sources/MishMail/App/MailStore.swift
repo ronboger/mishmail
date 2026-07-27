@@ -4855,8 +4855,7 @@ struct ComposeRequest: Identifiable {
         Task {
             do {
                 for att in attachments {
-                    let data = try await client(for: message.accountId)
-                        .getAttachment(messageId: message.gmailId, attachmentId: att.gmailAttachmentId)
+                    let data = try await downloadAttachment(att, message: message)
                     let dest = Self.availableAttachmentURL(
                         in: dir, filename: MessageParser.safeFilename(att.filename))
                     try data.write(to: dest, options: .atomic)
@@ -4872,6 +4871,86 @@ struct ComposeRequest: Identifiable {
         }
     }
 
+    // MARK: - Calendar invite RSVP
+
+    /// Send an iTIP METHOD:REPLY for a calendar invite attachment and
+    /// remember the local RSVP state. Mirrors Gmail / Notion Mail Accept /
+    /// Decline / Maybe without requiring a Calendar OAuth scope.
+    func rsvpToInvite(_ invite: CalendarInvite,
+                      status: CalendarInvite.RSVP,
+                      message: Message) async {
+        guard !demoMode else {
+            showNotice("RSVP is disabled in the demo inbox")
+            return
+        }
+        // Prefer a send-as address listed as ATTENDEE on the invite (the
+        // address the organizer's calendar already knows), then fall back to
+        // a To/Cc match, then the mailbox primary.
+        let identity = preferredRSVPIdentity(for: message, invite: invite)
+        let fromEmail = identity.email
+        let displayName = identity.displayName
+        let organizer = invite.organizerEmail
+        guard !organizer.isEmpty else {
+            lastError = "This invite has no organizer to reply to."
+            return
+        }
+        let attachment = invite.replyAttachment(
+            status: status, attendeeEmail: fromEmail, attendeeName: displayName)
+        let subject = invite.replySubject(status: status)
+        let body = invite.replyBody(status: status, responderName: displayName.isEmpty
+                                    ? fromEmail : displayName)
+        do {
+            // Thread the RSVP into the invite conversation (Gmail does this).
+            try await send(
+                from: message.accountId,
+                fromEmail: fromEmail,
+                to: organizer,
+                cc: "",
+                subject: subject,
+                body: body,
+                replyTo: message,
+                attachments: [attachment]
+            )
+            CalendarInvite.storeRSVP(
+                status, accountId: message.accountId, uid: invite.uid,
+                recurrenceIdLine: invite.recurrenceIdLine)
+            showNotice("\(status.subjectPrefix) — reply sent to \(organizer)")
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Identity used on the RSVP. Order:
+    /// 1. send-as listed in the invite's ATTENDEE lines (most reliable),
+    /// 2. send-as appearing on the message To/Cc,
+    /// 3. mailbox primary.
+    private func preferredRSVPIdentity(
+        for message: Message, invite: CalendarInvite
+    ) -> (email: String, displayName: String) {
+        let candidates = fromIdentities(forMailbox: message.accountId)
+        let attendeeSet = Set(invite.attendeeEmails.map { $0.lowercased() })
+        if let match = candidates.first(where: { attendeeSet.contains($0.email.lowercased()) }) {
+            return (match.email, match.displayName)
+        }
+        let headerEmails: Set<String> = {
+            var set = Set<String>()
+            for header in [message.toHeader, message.ccHeader] {
+                for addr in MessageParser.splitAddresses(header) {
+                    let e = MessageParser.emailAddress(addr).lowercased()
+                    if !e.isEmpty { set.insert(e) }
+                }
+            }
+            return set
+        }()
+        if let match = candidates.first(where: { headerEmails.contains($0.email.lowercased()) }) {
+            return (match.email, match.displayName)
+        }
+        if let primary = candidates.first(where: \.isPrimary) ?? candidates.first {
+            return (primary.email, primary.displayName)
+        }
+        return (message.accountId, accounts.first { $0.id == message.accountId }?.senderName ?? "")
+    }
+
     // MARK: - Attachments
 
     /// Downloads a message's attachments as sendable MIME parts — used to
@@ -4879,8 +4958,7 @@ struct ComposeRequest: Identifiable {
     func loadAttachments(for message: Message) async throws -> [MIMEBuilder.Attachment] {
         var out: [MIMEBuilder.Attachment] = []
         for att in attachments(for: message.id) {
-            let data = try await client(for: message.accountId)
-                .getAttachment(messageId: message.gmailId, attachmentId: att.gmailAttachmentId)
+            let data = try await downloadAttachment(att, message: message)
             out.append(.init(filename: MessageParser.safeFilename(att.filename),
                              mimeType: att.mimeType, data: data))
         }
@@ -4962,9 +5040,7 @@ struct ComposeRequest: Identifiable {
             // everything.)
             guard att.mimeType.lowercased().hasPrefix("image/") else { continue }
             do {
-                let data = try await client.getAttachment(
-                    messageId: message.gmailId,
-                    attachmentId: att.gmailAttachmentId)
+                let data = try await downloadAttachment(att, message: message)
                 guard !data.isEmpty else { continue }
                 parts[cid] = (att.mimeType, data)
             } catch {
@@ -5007,6 +5083,30 @@ struct ComposeRequest: Identifiable {
         }
     }
 
+    /// Bytes for one attachment (calendar ICS parse, single-file open).
+    /// Inline `text/calendar` parts (no Gmail attachmentId) are re-extracted
+    /// from a full message fetch — they have no getAttachment handle.
+    func downloadAttachment(_ attachment: AttachmentRow,
+                            message: Message) async throws -> Data {
+        if AttachmentRow.isInlineCalendarId(attachment.gmailAttachmentId) {
+            if let data = try await extractInlineCalendarData(message: message) {
+                return data
+            }
+            throw CocoaError(.fileNoSuchFile)
+        }
+        return try await client(for: message.accountId)
+            .getAttachment(messageId: message.gmailId,
+                           attachmentId: attachment.gmailAttachmentId)
+    }
+
+    /// Pull the first inline `text/calendar` part off a full Gmail payload
+    /// (Outlook / Calendly style — no attachmentId on the wire).
+    private func extractInlineCalendarData(message: Message) async throws -> Data? {
+        let g = try await client(for: message.accountId)
+            .getMessage(id: message.gmailId, format: "full")
+        return MessageParser.inlineCalendarData(in: g)
+    }
+
     /// Opens in the default app via a private temp file inside the sandbox
     /// (macOS purges it; nothing is written to user folders). The file is
     /// namespaced by message id (so same-named attachments never collide) and
@@ -5031,8 +5131,7 @@ struct ComposeRequest: Identifiable {
             }
             try fm.removeItem(at: url)
         }
-        let data = try await client(for: message.accountId)
-            .getAttachment(messageId: message.gmailId, attachmentId: attachment.gmailAttachmentId)
+        let data = try await downloadAttachment(attachment, message: message)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true,
                                attributes: [.posixPermissions: 0o700])
         try data.write(to: url, options: .atomic)
@@ -5118,8 +5217,7 @@ struct ComposeRequest: Identifiable {
         guard panel.runModal() == .OK, let destination = panel.url else { return }
         Task {
             do {
-                let data = try await client(for: message.accountId)
-                    .getAttachment(messageId: message.gmailId, attachmentId: attachment.gmailAttachmentId)
+                let data = try await downloadAttachment(attachment, message: message)
                 let values = try? destination.resourceValues(
                     forKeys: [.isSymbolicLinkKey, .isRegularFileKey])
                 if values?.isSymbolicLink == true {
