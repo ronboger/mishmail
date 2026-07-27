@@ -142,6 +142,7 @@ targets:
       - Sources/MishMail/Support/MarkReadOnOpen.swift
       - Sources/MishMail/Support/GmailMarkReadKeys.swift
       - Sources/MishMail/Support/PendingDraftVisibility.swift
+      - Sources/MishMail/Support/CalendarInvite.swift
       - Sources/MishMail/Auth/OAuth.swift
     dependencies:
       - package: GRDB

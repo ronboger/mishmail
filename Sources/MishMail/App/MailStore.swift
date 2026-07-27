@@ -4872,6 +4872,75 @@ struct ComposeRequest: Identifiable {
         }
     }
 
+    // MARK: - Calendar invite RSVP
+
+    /// Send an iTIP METHOD:REPLY for a calendar invite attachment and
+    /// remember the local RSVP state. Mirrors Gmail / Notion Mail Accept /
+    /// Decline / Maybe without requiring a Calendar OAuth scope.
+    func rsvpToInvite(_ invite: CalendarInvite,
+                      status: CalendarInvite.RSVP,
+                      message: Message) async {
+        guard !demoMode else {
+            showNotice("RSVP is disabled in the demo inbox")
+            return
+        }
+        // Prefer a send-as address that appears on the invite (To/Cc of the
+        // message) so the PARTSTAT matches the attendee Google Calendar knows.
+        let identity = preferredRSVPIdentity(for: message)
+        let fromEmail = identity.email
+        let displayName = identity.displayName
+        let organizer = invite.organizerEmail
+        guard !organizer.isEmpty else {
+            lastError = "This invite has no organizer to reply to."
+            return
+        }
+        let attachment = invite.replyAttachment(
+            status: status, attendeeEmail: fromEmail, attendeeName: displayName)
+        let subject = invite.replySubject(status: status)
+        let body = invite.replyBody(status: status, responderName: displayName.isEmpty
+                                    ? fromEmail : displayName)
+        do {
+            // Thread the RSVP into the invite conversation (Gmail does this).
+            try await send(
+                from: message.accountId,
+                fromEmail: fromEmail,
+                to: organizer,
+                cc: "",
+                subject: subject,
+                body: body,
+                replyTo: message,
+                attachments: [attachment]
+            )
+            CalendarInvite.storeRSVP(status, accountId: message.accountId, uid: invite.uid)
+            showNotice("\(status.subjectPrefix) — reply sent to \(organizer)")
+        } catch {
+            lastError = error.localizedDescription
+        }
+    }
+
+    /// Identity used on the RSVP: an account send-as that is a recipient of
+    /// the invite message, else the mailbox primary.
+    private func preferredRSVPIdentity(for message: Message) -> (email: String, displayName: String) {
+        let candidates = fromIdentities(forMailbox: message.accountId)
+        let recipientEmails: Set<String> = {
+            var set = Set<String>()
+            for header in [message.toHeader, message.ccHeader] {
+                for addr in MessageParser.splitAddresses(header) {
+                    let e = MessageParser.emailAddress(addr).lowercased()
+                    if !e.isEmpty { set.insert(e) }
+                }
+            }
+            return set
+        }()
+        if let match = candidates.first(where: { recipientEmails.contains($0.email.lowercased()) }) {
+            return (match.email, match.displayName)
+        }
+        if let primary = candidates.first(where: \.isPrimary) ?? candidates.first {
+            return (primary.email, primary.displayName)
+        }
+        return (message.accountId, accounts.first { $0.id == message.accountId }?.senderName ?? "")
+    }
+
     // MARK: - Attachments
 
     /// Downloads a message's attachments as sendable MIME parts — used to
@@ -4879,12 +4948,19 @@ struct ComposeRequest: Identifiable {
     func loadAttachments(for message: Message) async throws -> [MIMEBuilder.Attachment] {
         var out: [MIMEBuilder.Attachment] = []
         for att in attachments(for: message.id) {
-            let data = try await client(for: message.accountId)
-                .getAttachment(messageId: message.gmailId, attachmentId: att.gmailAttachmentId)
+            let data = try await downloadAttachment(att, message: message)
             out.append(.init(filename: MessageParser.safeFilename(att.filename),
                              mimeType: att.mimeType, data: data))
         }
         return out
+    }
+
+    /// Bytes for one attachment (calendar ICS parse, single-file open).
+    func downloadAttachment(_ attachment: AttachmentRow,
+                            message: Message) async throws -> Data {
+        try await client(for: message.accountId)
+            .getAttachment(messageId: message.gmailId,
+                           attachmentId: attachment.gmailAttachmentId)
     }
 
     /// Opens in the default app via a private temp file inside the sandbox

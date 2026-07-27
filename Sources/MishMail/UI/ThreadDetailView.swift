@@ -1602,16 +1602,35 @@ struct MessageCard: View {
                     .buttonStyle(.plain)
                     .help(showQuoted ? "Hide quoted text" : "Show quoted text")
                 }
-                if !attachments.isEmpty {
+                // Calendar invites get a Gmail/Notion-style Accept card; the
+                // .ics itself is hidden from the generic attachment chips so
+                // it isn't double-presented as a dumb file.
+                let calendarAtts = attachments.filter {
+                    CalendarInvite.isCalendarAttachment(
+                        mimeType: $0.mimeType, filename: $0.filename)
+                }
+                let fileAtts = attachments.filter {
+                    !CalendarInvite.isCalendarAttachment(
+                        mimeType: $0.mimeType, filename: $0.filename)
+                }
+                if !calendarAtts.isEmpty {
+                    VStack(alignment: .leading, spacing: 8) {
+                        ForEach(calendarAtts) { att in
+                            CalendarInviteCard(message: message, attachment: att,
+                                               fontScale: fontScale)
+                        }
+                    }
+                }
+                if !fileAtts.isEmpty {
                     ScrollView(.horizontal, showsIndicators: false) {
                         HStack(spacing: 8) {
-                            if attachments.count > 1 {
+                            if fileAtts.count > 1 {
                                 Button {
-                                    store.saveAllAttachments(attachments, message: message)
+                                    store.saveAllAttachments(fileAtts, message: message)
                                 } label: {
                                     HStack(spacing: 5) {
                                         Image(systemName: "arrow.down.to.line")
-                                        Text("Download all (\(attachments.count))")
+                                        Text("Download all (\(fileAtts.count))")
                                             .font(.system(size: 12, weight: .medium))
                                     }
                                     .padding(.horizontal, 10).padding(.vertical, 8)
@@ -1621,7 +1640,7 @@ struct MessageCard: View {
                                 .buttonStyle(.plain)
                                 .help("Save every attachment to a folder you choose")
                             }
-                            ForEach(attachments) { att in
+                            ForEach(fileAtts) { att in
                                 HStack(spacing: 8) {
                                     Button {
                                         store.openAttachment(att, message: message)
@@ -2012,6 +2031,9 @@ struct MessageCard: View {
         if mime.contains("spreadsheet") || mime.contains("csv") || mime.contains("excel") { return "tablecells" }
         if mime.hasPrefix("video/") { return "film" }
         if mime.hasPrefix("audio/") { return "waveform" }
+        if mime.hasPrefix("text/calendar") || mime.contains("application/ics") {
+            return "calendar"
+        }
         return "doc"
     }
 }
