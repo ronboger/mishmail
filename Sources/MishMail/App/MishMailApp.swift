@@ -10,6 +10,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private var memoryPressureSource: DispatchSourceMemoryPressure?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        // Apply a forced Light/Dark theme before the first window draws so a
+        // non-system choice doesn't flash the system appearance at launch.
+        AppTheme.apply(.current)
         // Compile the remote-image content rule once so the first message open
         // never pays the WKContentRuleList async hop.
         HTMLRemoteImageBlocker.prepareAtLaunch()
@@ -70,6 +73,7 @@ struct MishMailApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @State private var store = MailStore()
     @AppStorage("fontScale") private var fontScale = 1.0
+    @AppStorage(AppTheme.storageKey) private var appThemeRaw = AppTheme.system.rawValue
 
     var body: some Scene {
         WindowGroup {
@@ -78,8 +82,12 @@ struct MishMailApp: App {
                 .environmentObject(store.listFocus)
                 .tint(.notionAccent)
                 .frame(minWidth: 900, minHeight: 560)
+                .onChange(of: appThemeRaw) {
+                    AppTheme.apply(.from(raw: appThemeRaw))
+                }
                 .onAppear {
                     AppDelegate.store = store
+                    AppTheme.apply(.from(raw: appThemeRaw))
                     RemoteImagePolicy.migrateIfNeeded()
                     UpdateChecker.shared.startPeriodicChecks()
                 }
