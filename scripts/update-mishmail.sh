@@ -103,13 +103,13 @@ NEW_VERSION="$(version_of "$NEW_APP")"
 [ "$NEW_VERSION" = "$VERSION" ] \
   || die "release $VERSION contains MishMail $NEW_VERSION"
 
-# Belt-and-braces: curl doesn't quarantine what it downloads, so this is
-# normally a no-op. If something did tag it, Gatekeeper reads the attribute on
-# the bundle root, and the app is verified against the running install's own
-# identity — a stronger claim than Gatekeeper can make about an un-notarized
-# build. Leaving a tag on would only mean macOS refusing to launch what we
-# just checked. (`xattr` here has no -r; the root is the part that counts.)
-xattr -d com.apple.quarantine "$NEW_APP" 2>/dev/null || true
+# Every item, not just the bundle root: ditto stamps the attribute onto
+# everything it extracts, and the embedded relauncher is an app bundle in its
+# own right — leaving it tagged makes macOS refuse to launch it. The app has
+# already been verified against the running install's own identity, which is a
+# stronger claim than Gatekeeper can make about an un-notarized build.
+# (`xattr` here has no -r, hence find.)
+find "$NEW_APP" -exec xattr -d com.apple.quarantine {} \; 2>/dev/null || true
 
 if pgrep -qx MishMail; then
   printf 'Quitting MishMail…\n'

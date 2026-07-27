@@ -102,12 +102,20 @@ final class UpdateInstallerTests: XCTestCase {
         // Whatever tagged it, the installed app must not carry the attribute:
         // Gatekeeper refuses to launch a quarantined un-notarized build, so a
         // tag surviving the swap would break the relaunch outright.
+        // Tag the root *and* something nested. ditto stamps everything it
+        // extracts, and a nested app bundle that stays tagged can't be
+        // launched — which is exactly how the 0.4.4 restart broke.
         try tagQuarantined(update)
+        let nested = update.appendingPathComponent("Contents/version.txt")
+        try tagQuarantined(nested)
         XCTAssertTrue(isQuarantined(update), "fixture should start tagged")
+        XCTAssertTrue(isQuarantined(nested), "nested fixture should start tagged")
 
         try UpdateInstaller.swap(newApp: update, onto: installed)
 
         XCTAssertFalse(isQuarantined(installed))
+        XCTAssertFalse(isQuarantined(installed.appendingPathComponent("Contents/version.txt")),
+                       "nested items must be cleared too, not just the bundle root")
     }
 
     func testClearQuarantineToleratesAnUntaggedBundle() throws {

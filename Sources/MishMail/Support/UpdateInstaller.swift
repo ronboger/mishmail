@@ -151,11 +151,27 @@ enum UpdateInstaller {
     /// The installed update is deliberately *not* quarantined: it has already
     /// passed SHA-256, a full nested signature check, and Team ID continuity
     /// with the running app — stronger than Gatekeeper's check on an Apple
-    /// Development build, where the tag buys nothing but a warning on every
-    /// update. Nothing in the download path sets the attribute; this is
-    /// belt-and-braces so the intent is explicit at the swap.
+    /// Development build, which refuses to launch a quarantined un-notarized
+    /// bundle outright.
+    ///
+    /// Every item, not just the bundle root. `ditto` stamps the attribute onto
+    /// everything it extracts from the downloaded zip, and the embedded
+    /// relauncher is an app bundle in its own right: clearing only the root
+    /// left it quarantined, and launching it failed with LaunchServices
+    /// -10810 — which is what broke the restart in 0.4.4.
     nonisolated static func clearQuarantine(_ url: URL) {
-        _ = removexattr(url.path, "com.apple.quarantine", 0)
+        removeQuarantineAttribute(url)
+        guard let items = FileManager.default.enumerator(
+            at: url, includingPropertiesForKeys: nil) else { return }
+        for case let item as URL in items {
+            removeQuarantineAttribute(item)
+        }
+    }
+
+    /// `XATTR_NOFOLLOW` so a symlink is cleared itself rather than whatever it
+    /// points at — app bundles are full of them.
+    nonisolated static func removeQuarantineAttribute(_ url: URL) {
+        _ = removexattr(url.path, "com.apple.quarantine", XATTR_NOFOLLOW)
     }
 
     // MARK: - Relaunch

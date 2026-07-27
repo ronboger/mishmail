@@ -4,6 +4,20 @@ All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
+## [0.4.5] - 2026-07-27
+
+### Fixed
+- **The restart works — the real cause was quarantine, not the sandbox.**
+  0.4.4's embedded relauncher failed to launch with LaunchServices -10810, the
+  same error the two earlier attempts hit. It was never a sandbox restriction:
+  `ditto` stamps `com.apple.quarantine` onto *every* file it extracts from the
+  downloaded zip, and the update only cleared it from the bundle root. The
+  embedded relauncher is an app bundle in its own right, so it stayed
+  quarantined — and macOS refuses to launch a quarantined bundle that isn't
+  notarized, which these builds never are. 33 items in a freshly updated
+  0.4.4 were still tagged. Quarantine is now cleared across the whole bundle,
+  which is what the earlier root-only version should always have done.
+
 ## [0.4.4] - 2026-07-27
 
 ### Fixed
