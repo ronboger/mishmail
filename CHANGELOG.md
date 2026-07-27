@@ -4,6 +4,26 @@ All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
+## [0.4.3] - 2026-07-27
+
+### Fixed
+- **The update actually restarts the app now.** Updating 0.4.1 → 0.4.2 through
+  the app worked right up to the restart: the permission panel appeared, the
+  grant stuck, and the swap landed — but LaunchServices refused the relaunch
+  with "a miscellaneous error occurred" (-10810). Asking it for a second
+  instance of our own bundle from inside that bundle doesn't work, and
+  replacing the bundle first makes it worse, because the registration it has
+  cached points at the copy that was just deleted. The relaunch is now handed
+  to a detached shell that waits for the app to exit before opening it: by
+  then nothing is running to conflict with, and opening by path re-reads the
+  bundle that's actually there.
+- **Updates are checked on every launch.** The launch check went through the
+  same once-a-day gate as the background tick, and that timestamp lives in
+  preferences which survive an update — so relaunching straight into a
+  brand-new release surfaced nothing until you pressed Check for Updates by
+  hand. A launch is rare and one request is cheap; the hourly tick still
+  covers a window left open for days.
+
 ## [0.4.2] - 2026-07-27
 
 The first release that existing installs can take through the new in-place
