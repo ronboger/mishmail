@@ -1149,7 +1149,8 @@ struct Sidebar: View {
                 Section("Mail") {
                     sidebarItem(.allMail)
                     sidebarItem(.sent)
-                    sidebarItem(.drafts)
+                    // Count is total drafts (not unread) — Notion Mail-style.
+                    sidebarItem(.drafts, badge: store.unreadCounts["drafts"])
                     // Only surfaces once something is scheduled (Gmail-style).
                     if !store.scheduledSends.isEmpty || store.selectedView == .scheduled {
                         sidebarItem(.scheduled, badge: store.scheduledSends.count)
