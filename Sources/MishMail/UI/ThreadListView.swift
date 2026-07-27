@@ -1007,16 +1007,7 @@ struct FilterBar: View {
     }
 
     private func activeChip(_ title: String, remove: @escaping () -> Void) -> some View {
-        HStack(spacing: 4) {
-            Text(title).font(.caption)
-            Button(action: remove) {
-                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
-                    .pmHitTarget(extra: 8)
-            }
-            .buttonStyle(PressScaleButtonStyle()).foregroundStyle(.secondary)
-        }
-        .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(Color.notionAccent.opacity(0.2), in: Capsule())
+        ActiveFilterChip(title: title, remove: remove)
     }
 
     private var lastSync: Date? {
@@ -1053,14 +1044,12 @@ struct FilterBar: View {
             showLabelsPopover = true
         } label: {
             if let name = store.chips.labelName {
-                // Active: show the label's own color as a leading dot.
-                HStack(spacing: 4) {
-                    Circle().fill(store.labelTint(anyAccount: name)).frame(width: 8, height: 8)
-                    Text("\(store.chips.labelExclude ? "≠ " : "")\(name)").font(.caption)
-                }
-                .foregroundStyle(Color.notionAccent)
-                .padding(.horizontal, 8).padding(.vertical, 4)
-                .background(Color.notionAccent.opacity(0.16), in: Capsule())
+                // Active: label's own color as a leading dot; same hover lift
+                // as FilterChipLabel so the pill doesn't feel dead.
+                ActiveLabelChipLabel(
+                    name: "\(store.chips.labelExclude ? "≠ " : "")\(name)",
+                    tint: store.labelTint(anyAccount: name)
+                )
             } else {
                 chipLabel("Labels", icon: "tag", active: false)
             }
@@ -1152,15 +1141,98 @@ struct FilterBar: View {
     }
 
     private func chipLabel(_ title: String, icon: String, active: Bool) -> some View {
+        FilterChipLabel(title: title, icon: icon, active: active)
+    }
+}
+
+/// Notion Mail-style filter chip: icon rests muted and lights up on hover,
+/// with a slightly brighter pill fill. Active chips stay accent-tinted and
+/// only lift the fill so the blue doesn't fight the hover cue.
+private struct FilterChipLabel: View {
+    let title: String
+    let icon: String
+    let active: Bool
+    @State private var hovering = false
+
+    var body: some View {
         HStack(spacing: 4) {
-            Image(systemName: icon).font(.caption)
-            Text(title).font(.caption)
+            Image(systemName: icon)
+                .font(.caption)
+                .foregroundStyle(iconColor)
+            Text(title)
+                .font(.caption)
+                .foregroundStyle(textColor)
         }
-        // Notion Mail-style active chip: blue text on a blue-tinted pill.
-        .foregroundStyle(active ? Color.notionAccent : Color.primary)
         .padding(.horizontal, 8).padding(.vertical, 4)
-        .background(active ? Color.notionAccent.opacity(0.16) : Color.secondary.opacity(0.1),
-                    in: Capsule())
+        .background(fill, in: Capsule())
+        .contentShape(Capsule())
+        // Hover only — active/inactive toggles stay instant so keyboard and
+        // programmatic flips don't fade.
+        .animation(PMMotion.interactive, value: hovering)
+        .onHover { hovering = $0 }
+    }
+
+    private var iconColor: Color {
+        if active { return .notionAccent }
+        // Rest muted → primary on hover: the Notion "icons light up" feedback.
+        return hovering ? .primary : .secondary
+    }
+
+    private var textColor: Color {
+        if active { return .notionAccent }
+        return hovering ? .primary : .secondary
+    }
+
+    private var fill: Color {
+        if active {
+            return Color.notionAccent.opacity(hovering ? 0.22 : 0.16)
+        }
+        return Color.secondary.opacity(hovering ? 0.16 : 0.10)
+    }
+}
+
+/// Removable filter pill (From/Date/…): same accent fill + hover lift as the
+/// active Labels chip so the bar stays visually uniform.
+private struct ActiveFilterChip: View {
+    let title: String
+    let remove: () -> Void
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Text(title).font(.caption)
+            Button(action: remove) {
+                Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
+                    .pmHitTarget(extra: 8)
+            }
+            .buttonStyle(PressScaleButtonStyle()).foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(Color.notionAccent.opacity(hovering ? 0.22 : 0.16), in: Capsule())
+        .contentShape(Capsule())
+        .animation(PMMotion.interactive, value: hovering)
+        .onHover { hovering = $0 }
+    }
+}
+
+/// Active Labels chip: colored dot + name, with the same hover fill lift as
+/// `FilterChipLabel` so the filter bar feels uniform.
+private struct ActiveLabelChipLabel: View {
+    let name: String
+    let tint: Color
+    @State private var hovering = false
+
+    var body: some View {
+        HStack(spacing: 4) {
+            Circle().fill(tint).frame(width: 8, height: 8)
+            Text(name).font(.caption)
+        }
+        .foregroundStyle(Color.notionAccent)
+        .padding(.horizontal, 8).padding(.vertical, 4)
+        .background(Color.notionAccent.opacity(hovering ? 0.22 : 0.16), in: Capsule())
+        .contentShape(Capsule())
+        .animation(PMMotion.interactive, value: hovering)
+        .onHover { hovering = $0 }
     }
 }
 
