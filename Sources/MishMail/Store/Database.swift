@@ -158,6 +158,10 @@ struct AttachmentRow: Codable, Identifiable, Hashable, FetchableRecord, Persista
     var filename: String
     var mimeType: String
     var size: Int
+    /// Normalized Content-ID (no angle brackets / `cid:` prefix), when the
+    /// MIME part is referenced from HTML as `src="cid:…"`. Nil for ordinary
+    /// downloadable attachments and for rows synced before v28.
+    var contentId: String? = nil
     mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 }
 
@@ -1242,6 +1246,13 @@ final class AppDatabase: @unchecked Sendable {
                 try db.execute(sql: """
                     UPDATE thread SET inPromotions = ?, inSocial = ? WHERE id = ?
                     """, arguments: [tabs.promotions, tabs.social, threadKey])
+            }
+        }
+        // v28: Content-ID on attachments so HTML `cid:` images can be inlined
+        // at render time (USPS Informed Delivery mailpiece scans, etc.).
+        m.registerMigration("v28") { db in
+            try db.alter(table: "attachment") { t in
+                t.add(column: "contentId", .text)
             }
         }
         return m

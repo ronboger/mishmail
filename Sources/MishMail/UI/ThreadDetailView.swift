@@ -68,6 +68,10 @@ struct ThreadDetailView: View {
     /// Message ids we already tried to hydrate — avoids re-querying forever
     /// for genuinely empty bodies (`needsBodyLoad` stays true).
     @State private var bodyLoadAttempted: Set<String> = []
+    /// Session-only HTML with `cid:` rewritten to `data:` (not persisted).
+    @State private var cidInlinedHTMLById: [String: String] = [:]
+    /// Avoid re-fetching the same message for Content-ID recovery every expand.
+    @State private var cidResolveAttempted: Set<String> = []
     /// Only one sent message owns a live body renderer at a time. This keeps
     /// HTML-heavy threads from accumulating WKWebViews and helper processes.
     @State private var expandedMessageId: String?
@@ -199,6 +203,7 @@ struct ThreadDetailView: View {
                                         isLast: message.id == lastNonDraftId,
                                         attachments: attachmentsByMessageId[message.id] ?? [],
                                         bodyPrep: bodyPrepByMessageId[message.id],
+                                        cidInlinedHTML: cidInlinedHTMLById[message.id],
                                         expandedMessageId: $expandedMessageId,
                                         loadImagesForThread: $loadRemoteImagesForThread,
                                         onReply: { onReply(message) },
@@ -439,6 +444,8 @@ struct ThreadDetailView: View {
                 // into this payload must not.
                 seenContentRevision = store.contentRevision(of: thread.id)
                 bodyLoadAttempted = []
+                cidInlinedHTMLById = [:]
+                cidResolveAttempted = []
                 loadRemoteImagesForThread = false
                 expandedMessageId = nil
                 neighborPrerenderArmed = false
@@ -772,7 +779,11 @@ struct ThreadDetailView: View {
     /// Hydrate one message's body into `messages` when the user expands it.
     private func loadBodyIfNeeded(id: String) {
         guard let idx = messages.firstIndex(where: { $0.id == id }) else { return }
-        guard Self.needsBodyLoad(messages[idx]) else { return }
+        guard Self.needsBodyLoad(messages[idx]) else {
+            // Body already present (newest message, cache hit) — still try CID.
+            resolveCIDImagesIfNeeded(id: id)
+            return
+        }
         guard !bodyLoadAttempted.contains(id) else { return }
         bodyLoadAttempted.insert(id)
         Task {
@@ -782,6 +793,55 @@ struct ThreadDetailView: View {
             else { return }
             messages[currentIdx] = loaded.message
             bodyPrepByMessageId[id] = loaded.prep
+            resolveCIDImagesIfNeeded(id: id)
+        }
+    }
+
+    /// Download / re-parse Content-ID image parts and rewrite `cid:` → `data:`
+    /// for the open card. Local bytes only — not gated on Load images.
+    private func resolveCIDImagesIfNeeded(id: String) {
+        guard !cidResolveAttempted.contains(id) else { return }
+        guard let msg = messages.first(where: { $0.id == id }),
+              let html = msg.bodyHTML,
+              CIDImageInliner.containsCIDReferences(html)
+        else { return }
+        cidResolveAttempted.insert(id)
+        let atts = attachmentsByMessageId[id] ?? []
+        Task {
+            guard let result = await store.inlineCIDImages(
+                message: msg, attachments: atts, html: html)
+            else { return }
+            await MainActor.run {
+                guard splitMode || store.openedThreadId == thread.id else { return }
+                cidInlinedHTMLById[id] = result.html
+                attachmentsByMessageId[id] = result.attachments
+                if let refreshed = result.refreshedMessage,
+                   let idx = messages.firstIndex(where: { $0.id == id }) {
+                    // Keep session-inlined HTML on the card via cidInlinedHTMLById;
+                    // update headers/snippet from the re-fetch but leave the
+                    // stored body prep pointing at DB HTML until rebuild below.
+                    var merged = refreshed
+                    merged.bodyHTML = result.html
+                    messages[idx] = merged
+                    bodyPrepByMessageId[id] = MessageHTMLPrepBuilder.prep(
+                        bodyText: merged.bodyText,
+                        bodyHTML: result.html,
+                        fontScale: fontScale)
+                } else if let idx = messages.firstIndex(where: { $0.id == id }) {
+                    var copy = messages[idx]
+                    copy.bodyHTML = result.html
+                    messages[idx] = copy
+                    bodyPrepByMessageId[id] = MessageHTMLPrepBuilder.prep(
+                        bodyText: copy.bodyText,
+                        bodyHTML: result.html,
+                        fontScale: fontScale)
+                }
+                threadAttachments = messages.flatMap { m in
+                    (attachmentsByMessageId[m.id] ?? []).map {
+                        (message: m, attachment: $0)
+                    }
+                }
+            }
         }
     }
 
@@ -804,6 +864,12 @@ struct ThreadDetailView: View {
             beginInlineComposeScroll(proxy: proxy)
         }
         aiSummary = nil; summaryError = nil; summarizing = false
+        // Newest sent is expanded by default and may already be hydrated —
+        // kick CID resolve without waiting for a second expand.
+        if let focus = ThreadRefresh.initialScrolledMessageId(in: messages)
+            ?? lastNonDraftId {
+            resolveCIDImagesIfNeeded(id: focus)
+        }
     }
 
     /// After the open body's first stable paint, warm prev/next newest-message
@@ -1204,6 +1270,9 @@ struct MessageCard: View {
     let attachments: [AttachmentRow]
     /// Off-main precomputed trail + assembled documents from the repository.
     let bodyPrep: MessageHTMLPrep?
+    /// Session-only body with `cid:` images rewritten to `data:` URIs.
+    /// When set, preferred over `message.bodyHTML` / preassembled docs.
+    let cidInlinedHTML: String?
     @Binding var expandedMessageId: String?
     /// Session-wide opt-in shared by every card in the open thread.
     @Binding var loadImagesForThread: Bool
@@ -1283,6 +1352,7 @@ struct MessageCard: View {
     init(message: Message, isLast: Bool,
          attachments: [AttachmentRow] = [],
          bodyPrep: MessageHTMLPrep? = nil,
+         cidInlinedHTML: String? = nil,
          expandedMessageId: Binding<String?>,
          loadImagesForThread: Binding<Bool> = .constant(false),
          onReply: @escaping () -> Void,
@@ -1292,15 +1362,38 @@ struct MessageCard: View {
         self.isLast = isLast
         self.attachments = attachments
         self.bodyPrep = bodyPrep
+        self.cidInlinedHTML = cidInlinedHTML
         self._expandedMessageId = expandedMessageId
         self._loadImagesForThread = loadImagesForThread
         self.onReply = onReply
         self.onNeedBody = onNeedBody
         self.onBodySettled = onBodySettled
         let hasBody = !ThreadDetailView.needsBodyLoad(message)
-        // Prefer repository prep (built off the main actor). Fall back to the
-        // legacy NSCache / main-thread scan only when prep is missing.
-        if hasBody, let prep = bodyPrep {
+        // CID-inlined HTML already embeds image bytes; prefer it over the
+        // repository prep (which still has unresolved `cid:`).
+        if hasBody, let inlined = cidInlinedHTML, !inlined.isEmpty {
+            let fullBytes = inlined.utf8.count
+            let detectedHead: String? = {
+                if fullBytes <= HTMLBodyRenderPolicy.maximumAutomaticBytes {
+                    return QuotedReply.authoredHTMLHead(inlined)
+                }
+                return QuotedReply.authoredHTMLHead(
+                    inlined,
+                    scanCharacterLimit: HTMLBodyRenderPolicy.oversizedQuoteScanCharacterLimit)
+            }()
+            if let head = detectedHead {
+                textHead = nil
+                htmlHead = head
+                hasQuotedTrail = true
+            } else {
+                textHead = nil
+                htmlHead = nil
+                hasQuotedTrail = false
+            }
+            htmlBytes = fullBytes
+            htmlHeadBytes = htmlHead?.utf8.count ?? 0
+            htmlDocuments = nil
+        } else if hasBody, let prep = bodyPrep {
             textHead = prep.textHead
             htmlHead = prep.htmlHead
             hasQuotedTrail = prep.hasQuotedTrail
@@ -1522,7 +1615,7 @@ struct MessageCard: View {
                         .font(.system(size: 14.5 * fontScale))
                         .lineSpacing(3)
                         .textSelection(.enabled)
-                } else if let html = message.bodyHTML, !html.isEmpty {
+                } else if let html = (cidInlinedHTML ?? message.bodyHTML), !html.isEmpty {
                     // Structured quotes are removed before WebKit sees the
                     // document. Besides avoiding repeated history parsing,
                     // this gives head/full loads distinct constant-time ids.
@@ -1535,8 +1628,12 @@ struct MessageCard: View {
                         userApproved: approvedOversizedHTML) {
                         oversizedHTMLPlaceholder(byteCount: renderedBytes)
                     } else {
+                        // CID-inlined bodies skip preassembled docs (those still
+                        // carry unresolved `cid:` + blocked/allowed CSP variants
+                        // built from the DB HTML).
                         let preassembled: String? = {
-                            guard let docs = htmlDocuments,
+                            guard cidInlinedHTML == nil,
+                                  let docs = htmlDocuments,
                                   abs(docs.fontScale - fontScale) < 0.001
                             else { return nil }
                             return docs.document(
@@ -1545,6 +1642,7 @@ struct MessageCard: View {
                         }()
                         let bodyContentID = message.id
                             + (useAuthoredHTML ? ":authored" : ":full")
+                            + (cidInlinedHTML != nil ? ":cid" : "")
                         HTMLBodyView(
                             contentID: bodyContentID,
                             html: renderedHTML,

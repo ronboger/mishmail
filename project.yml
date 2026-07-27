@@ -120,6 +120,7 @@ targets:
       - Sources/MishMail/Support/HTMLBodyLayout.swift
       - Sources/MishMail/Support/HTMLBodyPerformance.swift
       - Sources/MishMail/Support/HTMLRemoteImageBlocker.swift
+      - Sources/MishMail/Support/CIDImageInliner.swift
       - Sources/MishMail/Support/RemoteImagePolicy.swift
       - Sources/MishMail/Support/ThreadExporter.swift
       - Sources/MishMail/Support/Markdown.swift
