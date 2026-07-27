@@ -901,8 +901,10 @@ private extension ContentView {
                     window.close()
                     return nil
                 }
-                if event.window?.firstResponder is NSTextView
-                    || event.window?.firstResponder is NSTextField {
+                // Editable only: selectable conversation text holding focus
+                // must not turn the first Esc into a blur, or leaving a
+                // full-window conversation would cost two presses.
+                if TextFocus.isEditing(event.window?.firstResponder) {
                     event.window?.makeFirstResponder(nil)
                     // Drop the `/` panel immediately on Esc (don't wait for
                     // the deferred blur dismiss used by mouse clicks).
@@ -945,8 +947,10 @@ private extension ContentView {
                   !store.showLabelPicker,
                   (store.composeRequest == nil || store.composeMinimized),
                   store.editingView == nil,
-                  !(event.window?.firstResponder is NSTextView),
-                  !(event.window?.firstResponder is NSTextField)
+                  // Only *editable* text stands the shortcuts down. Selectable
+                  // read-only text (the whole conversation) must not — see
+                  // TextFocus.
+                  !TextFocus.isEditing(event.window?.firstResponder)
             else { return event }
             // Gmail's `/`: jump focus to the sidebar search field. A
             // collapsed sidebar has no field to focus — reveal it first and

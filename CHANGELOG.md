@@ -18,6 +18,16 @@ minor versions may still change behavior.
   also seeds its state at `init`: `.id(thread.id)` remounts it per
   conversation, so `@State` started empty and the pane painted blank for a
   frame before `.task` could run, however fast the data arrived.
+- **Single-key shortcuts work while reading a conversation** — `g i`, `j`/`k`,
+  `e`, and every other Gmail-style key went dead once focus landed on the
+  message text, so a full-window conversation had no keyboard way back to the
+  inbox. The key monitor stood down whenever the first responder was an
+  `NSTextField`/`NSTextView` — but SwiftUI renders selectable `Text` as a
+  *read-only* `NSTextField`, and a conversation is built out of them, so simply
+  reading an email disarmed the shortcuts. It now stands down only for
+  **editable** text (search, compose, the label-picker query), which is the
+  case the check was actually for. Esc no longer wastes its first press
+  blurring selectable text either.
 - **`g i` (and other go-to shortcuts) leave full-window conversations** — in
   Superhuman-style open, same-mailbox go-to used to no-op and leave you stuck
   inside the thread; it now returns to the list like Esc / the back button

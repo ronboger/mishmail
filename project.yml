@@ -93,6 +93,7 @@ targets:
       - Sources/MishMail/Support/Keychain.swift
       - Sources/MishMail/Support/SearchQuery.swift
       - Sources/MishMail/Support/SelectionAdvance.swift
+      - Sources/MishMail/Support/TextFocus.swift
       - Sources/MishMail/Support/ThreadContentRevisions.swift
       - Sources/MishMail/Support/ThreadDetailMirror.swift
       - Sources/MishMail/Support/GoToMailbox.swift
