@@ -51,12 +51,19 @@ everyone." This doc is about `make release`.
    each build individually identifiable; it's not required for the updater,
    which compares `MARKETING_VERSION`.
 
-3. **Commit the bump.**
+3. **Commit the bump — and push it before step 4.**
    ```sh
    git add project.yml
    git commit -m "Release v0.2.0"
    git push
    ```
+   The push is not optional. `gh release create` tags whatever the *remote's*
+   `main` currently points at, not your local HEAD, so releasing with the bump
+   still unpushed publishes a correct zip under a tag whose source still says
+   the old version — anyone building from the tag gets the previous release.
+   If that happens, redo it: `gh release delete v0.2.0 --cleanup-tag`, push,
+   then re-create the release from the artifacts already in
+   `build/dd.noindex/Build/Products/Release/`.
 
 4. **Cut the release.** `make release` runs the full test suite first, then
    builds Release, zips the app, writes **SHA256SUMS**, and creates the GitHub
