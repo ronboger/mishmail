@@ -1042,7 +1042,7 @@ struct AppearanceSettings: View {
                 } header: {
                     Text("VIP senders")
                 } footer: {
-                    Text("New mail from these addresses pins to Priority the moment it arrives. You can also right-click any thread → Add sender to VIPs.")
+                    Text("New mail from these addresses pins to Priority the moment it arrives. You can also click a sender name in a message, or right-click any thread → Add sender to VIPs.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

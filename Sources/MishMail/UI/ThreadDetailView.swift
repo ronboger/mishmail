@@ -2020,13 +2020,18 @@ struct MessageCard: View {
     }
 
     /// A clickable participant: name + address, opening a Notion Mail-style
-    /// menu (draft to them, search their mail, copy either part).
+    /// menu (draft to them, search their mail, copy, VIP, split, block).
     @ViewBuilder
     private func participantMenu(_ raw: String, nameSize: CGFloat = 12.5,
                                  nameWeight: Font.Weight = .regular) -> some View {
         let email = MessageParser.emailAddress(raw)
         let name = MessageParser.displayName(fromHeader: raw)
         let showEmail = name.lowercased() != email.lowercased()
+        let ownEmails = Set(store.accounts.map { $0.id.lowercased() })
+        let vipAction = ParticipantMenuVIP.action(
+            email: email,
+            vipEmails: store.vipEmails,
+            ownEmails: ownEmails)
         Menu {
             Button {
                 store.openCompose(.init(replyTo: nil, prefillTo: email))
@@ -2043,8 +2048,22 @@ struct MessageCard: View {
             if showEmail {
                 Button("Copy \"\(name)\"") { copyToPasteboard(name) }
             }
-            // Split/block only make sense for other people's addresses.
-            if !store.accounts.contains(where: { $0.id.lowercased() == email.lowercased() }) {
+            // VIP / split / block only make sense for other people's addresses.
+            // VIP sits between copy and split so promoting a sender is one
+            // click from the same menu that opens when you click their name.
+            if let vipAction {
+                Divider()
+                Button {
+                    switch vipAction {
+                    case .add(let e): store.addVIP(e)
+                    case .remove(let e): store.removeVIP(e)
+                    }
+                } label: {
+                    Label(ParticipantMenuVIP.title(for: vipAction),
+                          systemImage: ParticipantMenuVIP.systemImage(for: vipAction))
+                }
+            }
+            if !ownEmails.contains(email.lowercased()) {
                 Divider()
                 Button {
                     store.splitFromInbox(matching: email, named: name)
