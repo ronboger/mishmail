@@ -195,17 +195,39 @@ enum UpdateInstaller {
     /// will not launch at all (-10810) — so after the swap there is nothing
     /// left that can start it. Launching it first is what breaks the cycle.
     ///
-    /// Awaiting the launch matters: the helper is confirmed running before
-    /// anything irreversible happens, so a failure here can still be handled
-    /// by not swapping at all.
+    /// **No argv, and that is the hard-won part.** macOS silently strips
+    /// `OpenConfiguration.arguments` when the launching process is sandboxed:
+    /// the 0.4.9→0.4.10 breadcrumbs show the helper starting with `args=[]`
+    /// and exiting 64 within 3ms, which is how every earlier update's restart
+    /// died — a healthy helper that was never told what to do. Everything
+    /// travels through a *plan file* instead, written where the helper can
+    /// derive the path on its own: this app's container tmp, reachable
+    /// unsandboxed via the fixed bundle id (`Relaunch.planURL(home:)` derives
+    /// the same path on both sides).
+    ///
+    /// **`openApplication` resolving is not proof the helper is executing**
+    /// either — a launch still in flight dies when the swap replaces its
+    /// bundle, and the system's retries then exec the swapped-in quarantined
+    /// copy, which macOS refuses outright. So the helper confirms by
+    /// handshake: its first act is writing the ready marker named by the
+    /// plan's nonce, and this returns only once that marker exists. Until
+    /// then the swap has not happened and every failure degrades safely.
     @MainActor
     static func startRelauncher(appPath app: URL) async throws {
         let helper = relauncherURL(inside: app)
         guard FileManager.default.fileExists(atPath: helper.path) else {
             throw InstallError.relauncherMissing
         }
+        let nonce = UUID().uuidString
+        let temp = FileManager.default.temporaryDirectory
+        let plan = Relaunch.Plan(pid: ProcessInfo.processInfo.processIdentifier,
+                                 appPath: app.path, nonce: nonce)
+        do {
+            try JSONEncoder().encode(plan).write(to: Relaunch.planURL(inTemp: temp))
+        } catch {
+            throw InstallError.relaunchFailed("couldn't write the relauncher plan")
+        }
         let config = NSWorkspace.OpenConfiguration()
-        config.arguments = [String(ProcessInfo.processInfo.processIdentifier), app.path]
         // It has no UI; pulling focus to it would only flicker.
         config.activates = false
         config.createsNewApplicationInstance = true
@@ -214,5 +236,18 @@ enum UpdateInstaller {
         } catch {
             throw InstallError.relaunchFailed(error.localizedDescription)
         }
+        // Generous deadline on purpose: a first-ever launch of the helper can
+        // sit behind a Gatekeeper/XProtect scan for several seconds, which is
+        // exactly the window openApplication's early return used to hide.
+        let marker = Relaunch.markerURL(inTemp: temp, nonce: nonce)
+        let deadline = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: marker.path) {
+            guard Date() < deadline else {
+                throw InstallError.relaunchFailed(
+                    "the relauncher never signalled that it started")
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        try? FileManager.default.removeItem(at: marker)
     }
 }
