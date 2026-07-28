@@ -285,12 +285,11 @@ final class UpdateChecker: ObservableObject {
         await prepareForQuit?()
         // Backstop, armed *before* terminate and on a background queue, both
         // on purpose. `terminate` can block this task in a nested AppKit
-        // event loop (it did, every 0.4.x update: a `.terminateLater` reply
-        // scheduled on the main actor can never run while this call is still
-        // on the stack), and a main-actor backstop would be stuck in that
-        // same queue. Everything is already flushed, so if quitting stalls,
-        // staying open only misleads the user — and the relauncher gives up
-        // waiting after 30 seconds.
+        // event loop (a `.terminateLater` reply scheduled on the main actor
+        // can never run while this call is still on the stack), and a
+        // main-actor backstop would be stuck in that same queue. Everything
+        // is already flushed, so if quitting stalls, staying open only
+        // misleads the user — and the relauncher's wait is bounded.
         DispatchQueue.global().asyncAfter(deadline: .now() + 5) { exit(0) }
         // The relauncher is already running and watching this process; quitting
         // is the signal for it to unquarantine the new bundle and reopen it.

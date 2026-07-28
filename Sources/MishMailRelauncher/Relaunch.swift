@@ -6,9 +6,7 @@ import Foundation
 /// Nothing here travels through argv, because nothing can: macOS strips
 /// `NSWorkspace.OpenConfiguration.arguments` when the launching process is
 /// sandboxed, silently — the helper starts healthy, argument-less, and
-/// useless (the 0.4.9→0.4.10 breadcrumbs: `start: args=[]`, `exit 64`,
-/// 3ms apart; every earlier update's restart died the same invisible way).
-/// Instead the app writes a *plan file* at a path both sides can compute
+/// useless. Instead the app writes a *plan file* at a path both sides can compute
 /// independently: the app because the container tmp IS its temporary
 /// directory, the unsandboxed helper because container paths follow from
 /// `$HOME` and the fixed bundle id.

@@ -6,11 +6,8 @@ import Foundation
 /// anywhere else: every file a sandboxed process writes is force-quarantined
 /// by the kernel no matter how it is written, and `removexattr` on that
 /// attribute fails with EPERM from inside the sandbox — silently, since the
-/// call compiles and simply returns -1. That is how three releases shipped a
-/// "clear quarantine" step that never cleared anything (see the 0.4.5
-/// addendum in docs/superpowers/specs/2026-07-27-in-place-app-update-design.md).
-/// The relauncher is signed *without* the sandbox entitlement precisely so
-/// this call is permitted.
+/// call compiles and simply returns -1. The relauncher is signed *without*
+/// the sandbox entitlement precisely so this call is permitted.
 ///
 /// Gatekeeper refuses to launch a quarantined un-notarized bundle outright
 /// (LaunchServices -10810), so a freshly swapped-in update is unlaunchable

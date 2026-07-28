@@ -33,9 +33,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         // there deadlocks: AppKit spins a nested event loop inside `terminate`
         // waiting for the reply, but a nested loop can't re-enter the main
         // dispatch queue while the updater's callout is still on the stack, so
-        // the replying Task below never runs (hung every 0.4.x update). When
-        // the shutdown has already run to completion there is nothing left to
-        // wait for — quit synchronously.
+        // the replying Task below never runs. When the shutdown has already
+        // run to completion there is nothing left to wait for — quit
+        // synchronously.
         guard !store.hasCompletedTermination else { return .terminateNow }
         Task { @MainActor in
             await store.prepareForTermination()

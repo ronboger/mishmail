@@ -156,9 +156,9 @@ enum UpdateInstaller {
     ///
     /// Every item, not just the bundle root. `ditto` stamps the attribute onto
     /// everything it extracts from the downloaded zip, and the embedded
-    /// relauncher is an app bundle in its own right: clearing only the root
-    /// left it quarantined, and launching it failed with LaunchServices
-    /// -10810 — which is what broke the restart in 0.4.4.
+    /// relauncher is an app bundle in its own right: clear only the root and
+    /// the relauncher stays quarantined, failing to launch with LaunchServices
+    /// -10810.
     nonisolated static func clearQuarantine(_ url: URL) {
         removeQuarantineAttribute(url)
         guard let items = FileManager.default.enumerator(
@@ -195,15 +195,12 @@ enum UpdateInstaller {
     /// will not launch at all (-10810) — so after the swap there is nothing
     /// left that can start it. Launching it first is what breaks the cycle.
     ///
-    /// **No argv, and that is the hard-won part.** macOS silently strips
-    /// `OpenConfiguration.arguments` when the launching process is sandboxed:
-    /// the 0.4.9→0.4.10 breadcrumbs show the helper starting with `args=[]`
-    /// and exiting 64 within 3ms, which is how every earlier update's restart
-    /// died — a healthy helper that was never told what to do. Everything
-    /// travels through a *plan file* instead, written where the helper can
-    /// derive the path on its own: this app's container tmp, reachable
-    /// unsandboxed via the fixed bundle id (`Relaunch.planURL(home:)` derives
-    /// the same path on both sides).
+    /// **No argv.** macOS silently strips `OpenConfiguration.arguments` when
+    /// the launching process is sandboxed, leaving a healthy helper that was
+    /// never told what to do. Everything travels through a *plan file*
+    /// instead, written where the helper can derive the path on its own:
+    /// this app's container tmp, reachable unsandboxed via the fixed bundle
+    /// id (`Relaunch` derives the same path on both sides).
     ///
     /// **`openApplication` resolving is not proof the helper is executing**
     /// either — a launch still in flight dies when the swap replaces its

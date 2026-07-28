@@ -307,7 +307,7 @@ final class MailStore {
     private(set) var isShuttingDown = false
     /// True once `prepareForTermination()` has fully finished. The delegate's
     /// `applicationShouldTerminate` answers `.terminateNow` from then on —
-    /// there is nothing left to wait for, and waiting is what deadlocked the
+    /// there is nothing left to wait for, and waiting would deadlock the
     /// updater's quit (see the delegate for the mechanics).
     private(set) var hasCompletedTermination = false
     /// Single-flight quit work so a second Cmd-Q / re-entrant

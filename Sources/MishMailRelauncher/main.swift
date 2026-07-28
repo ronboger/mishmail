@@ -3,7 +3,7 @@ import AppKit
 /// Reopens MishMail once it has quit — after stripping quarantine from the
 /// freshly installed bundle, which is the half a sandboxed MishMail cannot do.
 ///
-/// Two facts shape this process, both verified the hard way across 0.4.2–0.4.5:
+/// Two facts shape this process:
 ///
 /// - Every file a sandboxed process writes is force-quarantined by the kernel,
 ///   and the sandbox denies `removexattr` on `com.apple.quarantine` (EPERM).
@@ -19,11 +19,10 @@ import AppKit
 ///
 /// Usage: `MishMailRelauncher <pid of MishMail> <path to MishMail.app>`
 ///
-/// Every step appends a breadcrumb to `~/Library/Logs/MishMailRelauncher.log`.
-/// This process runs headless in the half-second nobody is watching, its
+/// Every step appends a breadcrumb to `~/Library/Logs/MishMailRelauncher.log`:
+/// this process runs headless in the half-second nobody is watching, its
 /// failures leave no crash report, and macOS persists none of the usual
-/// launch-time log lines for it — the 0.4.7→0.4.8 update failed in exactly
-/// that blind spot and the postmortem had literally nothing to read.
+/// launch-time log lines for it.
 
 let logURL = FileManager.default.homeDirectoryForCurrentUser
     .appendingPathComponent("Library/Logs/MishMailRelauncher.log")
@@ -55,10 +54,10 @@ enum ISO8601DateFormat {
 
 /// True while MishMail is still up. `kill(pid, 0)` against the ground truth
 /// of the kernel's process table — 0 means alive, EPERM means alive but not
-/// ours (impossible here, same user, but alive is alive). The 0.4.6–0.4.8
-/// versions asked LaunchServices via `NSRunningApplication` instead, "purely
-/// for API niceness" — one more moving part with its own connection state, in
-/// a process young enough that nothing about its environment is settled.
+/// ours (impossible here, same user, but alive is alive). Deliberately not
+/// `NSRunningApplication`: that adds a LaunchServices connection with its own
+/// state, in a process young enough that nothing about its environment is
+/// settled.
 func isAlive(_ pid: pid_t) -> Bool {
     kill(pid, 0) == 0 || errno == EPERM
 }
@@ -68,9 +67,8 @@ crumb("start: args=\(Array(args.dropFirst())) euid=\(geteuid()) " +
       "sandboxed=\(ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil)")
 
 // Orders come from the plan file, not argv: a sandboxed MishMail cannot pass
-// arguments (macOS strips them silently — that was the whole 0.4.6–0.4.10
-// restart failure). Argv still wins when present so the helper can be
-// exercised by hand: `MishMailRelauncher <pid> <app path>`.
+// arguments (macOS strips them silently). Argv still wins when present so the
+// helper can be exercised by hand: `MishMailRelauncher <pid> <app path>`.
 let pid: pid_t
 let target: URL
 let markerURL: URL?
@@ -99,8 +97,7 @@ if args.count >= 3, let argvPid = pid_t(args[1]) {
 
 // Handshake, before anything else: MishMail refuses to swap until this file
 // exists, because a launch that is merely *requested* can still be destroyed
-// by the swap replacing this very bundle — that is how two updates in a row
-// lost their relauncher without a trace.
+// by the swap replacing this very bundle.
 if let markerURL {
     FileManager.default.createFile(atPath: markerURL.path, contents: Data())
     crumb("ready marker written: \(markerURL.path)")
