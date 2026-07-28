@@ -2326,10 +2326,15 @@ struct ComposeRequest: Identifiable {
         var q = query
         for cat in chips.category.hide {
             // Prefer denorm flags for the two categories that have them.
+            // Starred always stays visible: category chips hide tabs of mail the
+            // user is not reading, but a star is an explicit pin into the list.
             switch cat {
-            case "CATEGORY_PROMOTIONS": q = q.filter(Column("inPromotions") == false)
-            case "CATEGORY_SOCIAL": q = q.filter(Column("inSocial") == false)
-            default: q = q.filter(!Column("labelIds").like("%\(cat)%"))
+            case "CATEGORY_PROMOTIONS":
+                q = q.filter(Column("inPromotions") == false || Column("isStarred") == true)
+            case "CATEGORY_SOCIAL":
+                q = q.filter(Column("inSocial") == false || Column("isStarred") == true)
+            default:
+                q = q.filter(!Column("labelIds").like("%\(cat)%") || Column("isStarred") == true)
             }
         }
         if !chips.category.show.isEmpty {
@@ -2494,7 +2499,9 @@ struct ComposeRequest: Identifiable {
                              || Column("participants").like("%\(v.senderContains)%"))
             }
             if v.excludePromotions {
-                q = q.filter(Column("inPromotions") == false && Column("inSocial") == false)
+                // Match applyChips category-hide: starred pins through the exclusion.
+                q = q.filter((Column("inPromotions") == false && Column("inSocial") == false)
+                             || Column("isStarred") == true)
             }
             if let cat = v.category {
                 switch cat {
