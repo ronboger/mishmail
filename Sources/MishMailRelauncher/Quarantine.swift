@@ -17,19 +17,26 @@ import Foundation
 /// until every one of its items — including the nested relauncher bundle —
 /// loses the attribute.
 enum Quarantine {
-    /// Strip the root and everything under it. Untagged items are a no-op;
-    /// symlinks are cleared themselves (`XATTR_NOFOLLOW`) rather than
-    /// whatever they point at — app bundles are full of them.
-    static func strip(from root: URL) {
-        stripItem(root)
+    /// Strip the root and everything under it, returning how many items
+    /// actually had the attribute — the caller logs it, and 0 on a bundle
+    /// that should be freshly quarantined is the tell that something ran at
+    /// the wrong moment. Untagged items are a no-op; symlinks are cleared
+    /// themselves (`XATTR_NOFOLLOW`) rather than whatever they point at —
+    /// app bundles are full of them.
+    @discardableResult
+    static func strip(from root: URL) -> Int {
+        var count = stripItem(root) ? 1 : 0
         guard let items = FileManager.default.enumerator(
-            at: root, includingPropertiesForKeys: nil) else { return }
-        for case let item as URL in items {
-            stripItem(item)
+            at: root, includingPropertiesForKeys: nil) else { return count }
+        for case let item as URL in items where stripItem(item) {
+            count += 1
         }
+        return count
     }
 
-    static func stripItem(_ url: URL) {
-        _ = removexattr(url.path, "com.apple.quarantine", XATTR_NOFOLLOW)
+    /// True when the attribute existed and was removed.
+    @discardableResult
+    static func stripItem(_ url: URL) -> Bool {
+        removexattr(url.path, "com.apple.quarantine", XATTR_NOFOLLOW) == 0
     }
 }
