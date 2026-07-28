@@ -4326,15 +4326,20 @@ struct ComposeRequest: Identifiable {
     /// which also means threads snoozed *in* Gmail arrive here as archived
     /// and reappear on sync when Gmail wakes them.
     func snooze(_ thread: MailThread, until date: Date?) {
-        // Tear the picker down *before* the optimistic mutation so auto-advance
-        // publishes into a visible window (same frame as archive/trash).
-        dismissSnoozePicker()
         guard let date else {  // unsnooze: back to the inbox now
+            // Only close the picker when it was opened for *this* thread —
+            // fireDueSnoozes / Undo must not yank a picker for another row.
+            if snoozingThread?.id == thread.id {
+                dismissSnoozePicker()
+            }
             mutateThread(thread) { $0.snoozeUntil = nil; $0.inInbox = true } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"])
             }
             return
         }
+        // Tear the picker down *before* the optimistic mutation so auto-advance
+        // publishes into a visible window (same frame as archive/trash).
+        dismissSnoozePicker()
         mutateThread(thread, autoAdvanceAction: "snooze") {
             $0.snoozeUntil = date
             $0.inInbox = false
