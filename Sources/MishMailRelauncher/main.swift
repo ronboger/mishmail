@@ -72,6 +72,15 @@ guard args.count >= 3, let pid = pid_t(args[1]) else {
     exit(64)  // EX_USAGE
 }
 let target = URL(fileURLWithPath: args[2])
+
+// Handshake, before anything else: MishMail refuses to swap until this file
+// exists, because a launch that is merely *requested* can still be destroyed
+// by the swap replacing this very bundle — that is how two updates in a row
+// lost their relauncher without a trace.
+if args.count >= 4 {
+    FileManager.default.createFile(atPath: args[3], contents: Data())
+    crumb("ready marker written: \(args[3])")
+}
 crumb("watching pid \(pid), initially alive=\(isAlive(pid))")
 
 // Wait for MishMail to go. Launched before the swap, so the wait spans the

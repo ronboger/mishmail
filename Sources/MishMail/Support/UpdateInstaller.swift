@@ -195,17 +195,28 @@ enum UpdateInstaller {
     /// will not launch at all (-10810) — so after the swap there is nothing
     /// left that can start it. Launching it first is what breaks the cycle.
     ///
-    /// Awaiting the launch matters: the helper is confirmed running before
-    /// anything irreversible happens, so a failure here can still be handled
-    /// by not swapping at all.
+    /// **`openApplication` resolving is not proof the helper is executing.**
+    /// The 0.4.7→0.4.8 and 0.4.8→0.4.9 updates both swapped the instant the
+    /// await returned, and both times the helper died without running a line:
+    /// its bundle was replaced out from under a launch still in flight, and
+    /// every system retry exec'd the swapped-in quarantined copy, which macOS
+    /// refuses outright. So the launch is confirmed by handshake instead: the
+    /// helper's first act is writing a ready-marker file whose path arrives
+    /// in argv, and this returns only once that file exists. Until then the
+    /// swap has not happened and every failure still degrades safely.
     @MainActor
     static func startRelauncher(appPath app: URL) async throws {
         let helper = relauncherURL(inside: app)
         guard FileManager.default.fileExists(atPath: helper.path) else {
             throw InstallError.relauncherMissing
         }
+        // Inside this app's container tmp: the sandbox lets us read it, and
+        // the unsandboxed helper can write anywhere the user can.
+        let marker = FileManager.default.temporaryDirectory
+            .appendingPathComponent("MishMailRelauncher-ready-\(UUID().uuidString)")
         let config = NSWorkspace.OpenConfiguration()
-        config.arguments = [String(ProcessInfo.processInfo.processIdentifier), app.path]
+        config.arguments = [String(ProcessInfo.processInfo.processIdentifier),
+                            app.path, marker.path]
         // It has no UI; pulling focus to it would only flicker.
         config.activates = false
         config.createsNewApplicationInstance = true
@@ -214,5 +225,17 @@ enum UpdateInstaller {
         } catch {
             throw InstallError.relaunchFailed(error.localizedDescription)
         }
+        // Generous deadline on purpose: a first-ever launch of the helper can
+        // sit behind a Gatekeeper/XProtect scan for several seconds, which is
+        // exactly the window the old code lost the race in.
+        let deadline = Date().addingTimeInterval(10)
+        while !FileManager.default.fileExists(atPath: marker.path) {
+            guard Date() < deadline else {
+                throw InstallError.relaunchFailed(
+                    "the relauncher never signalled that it started")
+            }
+            try? await Task.sleep(for: .milliseconds(100))
+        }
+        try? FileManager.default.removeItem(at: marker)
     }
 }
