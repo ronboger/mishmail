@@ -31,7 +31,7 @@ enum HTMLBodyLayout {
     static let layoutImageClass = "mm-img-layout"
     /// Class stamped when the image failed or is blocked (no natural size).
     static let failedImageClass = "mm-img-failed"
-    /// Class stamped on nodes whose viewport-tied height was neutralized.
+    /// Class stamped on nodes whose viewport-tied min-height was neutralized.
     static let heightNeutralizedClass = "mm-h-neutralized"
 
     /// `WKScriptMessageHandler` name for continuous height reports.
@@ -49,6 +49,70 @@ enum HTMLBodyLayout {
     /// residual feedback loop must not create an unbounded SwiftUI frame.
     /// ~50k px ≈ many screens of mail; still scrollable via the outer pane.
     static let maxContentHeight = 50_000
+
+    // MARK: - Feedback freeze (pure; mirrored in JS)
+
+    /// Consecutive dH≈dVH samples required before freezing. One-shot matches
+    /// can be concurrent font reflow + frame catch-up (false positive that
+    /// would clip real content under the outer ScrollView).
+    static let feedbackHitsToFreeze = 2
+    /// Minimum positive deltas (px) to count as growth on either axis.
+    static let feedbackMinDelta: CGFloat = 2
+    /// |dH − dVH| tolerance for "content height tracks viewport growth".
+    static let feedbackDeltaTolerance: CGFloat = 4
+
+    /// Result of one feedback observation step (unit-tested; JS mirrors).
+    struct FeedbackStep: Equatable {
+        /// Updated consecutive feedback-hit count (0 when this sample is not feedback).
+        var consecutiveHits: Int
+        /// Height recorded at the start of the current feedback streak.
+        var streakBaseHeight: CGFloat?
+        /// When non-nil, freeze publishing at this height.
+        var freezeAt: CGFloat?
+    }
+
+    /// True when content height grew by roughly the same amount as the viewport
+    /// — the signature of a measure→frame→vh feedback loop.
+    static func isFeedbackGrowth(
+        previousHeight: CGFloat,
+        previousViewport: CGFloat,
+        height: CGFloat,
+        viewport: CGFloat
+    ) -> Bool {
+        guard previousHeight > 0, previousViewport > 0, viewport > 0 else { return false }
+        let dH = height - previousHeight
+        let dVH = viewport - previousViewport
+        return dH > feedbackMinDelta
+            && dVH > feedbackMinDelta
+            && abs(dH - dVH) <= feedbackDeltaTolerance
+    }
+
+    /// Advance the freeze state machine for one measure sample.
+    ///
+    /// Freezes only after `feedbackHitsToFreeze` consecutive feedback samples,
+    /// at the content height from *before* the streak began (so SwiftUI does
+    /// not expand into the loop). A non-feedback sample clears the streak.
+    static func observeFeedback(
+        previousHeight: CGFloat,
+        previousViewport: CGFloat,
+        height: CGFloat,
+        viewport: CGFloat,
+        consecutiveHits: Int,
+        streakBaseHeight: CGFloat?
+    ) -> FeedbackStep {
+        guard isFeedbackGrowth(
+            previousHeight: previousHeight,
+            previousViewport: previousViewport,
+            height: height,
+            viewport: viewport
+        ) else {
+            return FeedbackStep(consecutiveHits: 0, streakBaseHeight: nil, freezeAt: nil)
+        }
+        let base = streakBaseHeight ?? previousHeight
+        let hits = consecutiveHits + 1
+        let freeze = hits >= feedbackHitsToFreeze ? base : nil
+        return FeedbackStep(consecutiveHits: hits, streakBaseHeight: base, freezeAt: freeze)
+    }
 
     // MARK: - Dimension cap (pure; mirrored in JS)
 
@@ -141,9 +205,21 @@ enum HTMLBodyLayout {
     ///
     /// Complements `html, body { height: auto; min-height: 0 }` in dark-mode
     /// CSS. Attribute selectors catch the bulk of email markup; JS still
-    /// neutralizes computed ≈-viewport heights from stylesheets.
+    /// neutralizes computed ≈-viewport min-heights from stylesheets.
     static var antiFeedbackCSS: String {
         let neutral = heightNeutralizedClass
+        // Declaration-anchored substrings (with and without space after colon)
+        // so we do not match bare "100vh" inside e.g. 1100vh. Covers the four
+        // CSS viewport units common in modern marketing templates.
+        let vhUnits = ["vh", "dvh", "svh", "lvh"]
+        var vhRules: [String] = []
+        for unit in vhUnits {
+            for prop in ["min-height", "height"] {
+                vhRules.append("[style*=\"\(prop):100\(unit)\" i]")
+                vhRules.append("[style*=\"\(prop): 100\(unit)\" i]")
+            }
+        }
+        let vhSelector = vhRules.joined(separator: ",\n        ")
         return """
         /* Full-bleed height="100%" tables fill the WKWebView viewport; when
            the host frame tracks content height that creates infinite grow.
@@ -153,15 +229,13 @@ enum HTMLBodyLayout {
         td[height="100%"], th[height="100%"], div[height="100%"] {
           height: auto !important;
         }
-        /* Inline viewport units (common spacing variants). */
-        [style*="100vh" i], [style*="100dvh" i],
-        [style*="100svh" i], [style*="100lvh" i] {
+        /* Inline viewport units — declaration-anchored (not bare 100vh). */
+        \(vhSelector) {
           min-height: 0 !important;
           height: auto !important;
         }
         .\(neutral) {
           min-height: 0 !important;
-          height: auto !important;
         }
         """
     }
@@ -173,8 +247,8 @@ enum HTMLBodyLayout {
     /// load/error listeners and a `ResizeObserver` that reflows placeholders
     /// to the viewport and posts measured height to `mmHeight`.
     ///
-    /// Also neutralizes viewport-tied heights and freezes reports that track
-    /// frame growth so marketing mail cannot infinite-scroll the reading pane.
+    /// Also neutralizes viewport-tied min-heights and freezes reports that
+    /// track frame growth so marketing mail cannot infinite-scroll the pane.
     ///
     /// Safe to re-run: disconnects any prior observer and rebinds listeners.
     /// Idempotent class/style updates.
@@ -187,6 +261,9 @@ enum HTMLBodyLayout {
         let minH = minContentHeight
         let maxContent = maxContentHeight
         let handler = heightHandlerName
+        let hitsToFreeze = feedbackHitsToFreeze
+        let minDelta = Int(feedbackMinDelta.rounded())
+        let deltaTol = Int(feedbackDeltaTolerance.rounded())
         return """
         (function(){
           var LAYOUT='\(layout)';
@@ -197,6 +274,9 @@ enum HTMLBodyLayout {
           var MIN_H=\(minH);
           var MAX_CONTENT_H=\(maxContent);
           var HANDLER='\(handler)';
+          var HITS_TO_FREEZE=\(hitsToFreeze);
+          var MIN_DELTA=\(minDelta);
+          var DELTA_TOL=\(deltaTol);
 
           function capPair(w, h){
             w = parseInt(w, 10); h = parseInt(h, 10);
@@ -375,44 +455,56 @@ enum HTMLBodyLayout {
             return Math.ceil(Math.max(Math.min(content, MAX_CONTENT_H), MIN_H));
           }
 
-          /* Anti-feedback: if content height grows by ~the same delta as the
-             viewport, the template is still tracking the frame. Freeze at the
-             pre-growth height so SwiftUI stops expanding the card. */
-          if (typeof window.__mmLastH !== 'number') window.__mmLastH = 0;
-          if (typeof window.__mmLastVH !== 'number') window.__mmLastVH = 0;
-          if (typeof window.__mmFrozenH !== 'number') window.__mmFrozenH = 0;
-
-          function report(){
-            if (window.__mmFrozenH > 0) {
-              try {
-                if (window.webkit && webkit.messageHandlers && webkit.messageHandlers[HANDLER]) {
-                  webkit.messageHandlers[HANDLER].postMessage(window.__mmFrozenH);
-                }
-              } catch (e) {}
-              return window.__mmFrozenH;
-            }
-            var h = measure();
-            var vh = viewportHeight();
-            var lastH = window.__mmLastH;
-            var lastVH = window.__mmLastVH;
-            if (lastH > 0 && lastVH > 0 && vh > 0) {
-              var dH = h - lastH;
-              var dVH = vh - lastVH;
-              if (dH > 2 && dVH > 2 && Math.abs(dH - dVH) <= 4) {
-                window.__mmFrozenH = lastH;
-                h = lastH;
-              }
-            }
-            if (window.__mmFrozenH <= 0) {
-              window.__mmLastH = h;
-              window.__mmLastVH = vh;
-            }
+          function postHeight(h){
+            h = Math.min(Math.max(h, MIN_H), MAX_CONTENT_H);
             try {
               if (window.webkit && webkit.messageHandlers && webkit.messageHandlers[HANDLER]) {
                 webkit.messageHandlers[HANDLER].postMessage(h);
               }
             } catch (e) {}
             return h;
+          }
+
+          /* Anti-feedback state (mirrors HTMLBodyLayout.observeFeedback).
+             Freezes only after HITS_TO_FREEZE consecutive dH≈dVH samples so a
+             one-shot concurrent reflow does not clip real content. */
+          if (typeof window.__mmLastH !== 'number') window.__mmLastH = 0;
+          if (typeof window.__mmLastVH !== 'number') window.__mmLastVH = 0;
+          if (typeof window.__mmFrozenH !== 'number') window.__mmFrozenH = 0;
+          if (typeof window.__mmFeedbackHits !== 'number') window.__mmFeedbackHits = 0;
+          if (typeof window.__mmFeedbackBase !== 'number') window.__mmFeedbackBase = 0;
+
+          function isFeedbackGrowth(lastH, lastVH, h, vh){
+            if (!(lastH > 0 && lastVH > 0 && vh > 0)) return false;
+            var dH = h - lastH;
+            var dVH = vh - lastVH;
+            return dH > MIN_DELTA && dVH > MIN_DELTA && Math.abs(dH - dVH) <= DELTA_TOL;
+          }
+
+          function report(){
+            if (window.__mmFrozenH > 0) {
+              return postHeight(window.__mmFrozenH);
+            }
+            var h = measure();
+            var vh = viewportHeight();
+            var lastH = window.__mmLastH;
+            var lastVH = window.__mmLastVH;
+            if (isFeedbackGrowth(lastH, lastVH, h, vh)) {
+              if (!window.__mmFeedbackBase) window.__mmFeedbackBase = lastH;
+              window.__mmFeedbackHits = (window.__mmFeedbackHits || 0) + 1;
+              if (window.__mmFeedbackHits >= HITS_TO_FREEZE) {
+                window.__mmFrozenH = window.__mmFeedbackBase;
+                h = window.__mmFrozenH;
+              }
+            } else {
+              window.__mmFeedbackHits = 0;
+              window.__mmFeedbackBase = 0;
+            }
+            if (window.__mmFrozenH <= 0) {
+              window.__mmLastH = h;
+              window.__mmLastVH = vh;
+            }
+            return postHeight(h);
           }
 
           function onImgEvent(ev){
@@ -423,6 +515,8 @@ enum HTMLBodyLayout {
                error restarts the measure→frame loop and can oscillate. */
             if (img && img.complete && img.naturalWidth > 0) {
               window.__mmFrozenH = 0;
+              window.__mmFeedbackHits = 0;
+              window.__mmFeedbackBase = 0;
             }
             report();
           }
@@ -432,6 +526,8 @@ enum HTMLBodyLayout {
           window.__mmLastVH = 0;
           window.__mmFrozenH = 0;
           window.__mmLastNeutralVH = 0;
+          window.__mmFeedbackHits = 0;
+          window.__mmFeedbackBase = 0;
 
           neutralizeViewportHeights();
 
@@ -469,8 +565,8 @@ enum HTMLBodyLayout {
         """
     }
 
-    /// Disconnect ResizeObserver and strip layout markers. Called on recycle
-    /// before the DOM is cleared so recycled views never keep prior callbacks.
+    /// Disconnect ResizeObserver and clear freeze/feedback globals. Called on
+    /// every recycle path so parked views never keep prior callbacks/state.
     static var teardownJS: String {
         """
         (function(){
@@ -482,6 +578,8 @@ enum HTMLBodyLayout {
             window.__mmLastVH = 0;
             window.__mmFrozenH = 0;
             window.__mmLastNeutralVH = 0;
+            window.__mmFeedbackHits = 0;
+            window.__mmFeedbackBase = 0;
           } catch (e) {}
         })();
         """

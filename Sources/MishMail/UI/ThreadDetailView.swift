@@ -2432,19 +2432,32 @@ struct HTMLBodyView: NSViewRepresentable {
         }
 
         /// Keep outgoing content visible until `next` is painted (or already is).
+        /// Stop height reporting and return a view to the pool. Always runs
+        /// teardown so freeze globals / ResizeObserver cannot linger on a
+        /// recycled view (Fable #8 — was previously only on `current` dismantle).
+        private func recycle(_ webView: PassthroughWebView,
+                             removeFromHierarchy: Bool = false) {
+            webView.navigationDelegate = nil
+            webView.evaluateJavaScript(
+                HTMLBodyLayout.teardownJS, completionHandler: nil)
+            webView.removeHeightHandlerIfNeeded()
+            if removeFromHierarchy {
+                webView.removeFromSuperview()
+            }
+            HTMLWebViewPool.recycle(webView)
+        }
+
         func swap(to next: PassthroughWebView, alreadyPainted: Bool,
                   html: String, preassembled: String? = nil,
                   allowRemoteImages: Bool, fontScale: Double) {
             swapGeneration &+= 1
             guard let container else {
-                HTMLWebViewPool.recycle(next)
+                recycle(next)
                 return
             }
             // Abandon any in-flight incoming load.
             if let abandoned = incoming, abandoned !== current {
-                abandoned.navigationDelegate = nil
-                abandoned.removeHeightHandlerIfNeeded()
-                HTMLWebViewPool.recycle(abandoned)
+                recycle(abandoned)
             }
             incoming = next
             next.navigationDelegate = self
@@ -2578,17 +2591,11 @@ struct HTMLBodyView: NSViewRepresentable {
             pendingReveal = false
 
             if let incoming, incoming !== current {
-                incoming.navigationDelegate = nil
-                incoming.removeHeightHandlerIfNeeded()
-                HTMLWebViewPool.recycle(incoming)
+                recycle(incoming)
             }
             incoming = nil
             if let current {
-                current.navigationDelegate = nil
-                current.evaluateJavaScript(
-                    HTMLBodyLayout.teardownJS, completionHandler: nil)
-                current.removeHeightHandlerIfNeeded()
-                HTMLWebViewPool.recycle(current)
+                recycle(current)
             }
             self.current = nil
             container = nil
@@ -2676,10 +2683,7 @@ struct HTMLBodyView: NSViewRepresentable {
             let finishSwap = { [weak self] in
                 guard let self, self.swapGeneration == gen else { return }
                 if let previous, previous !== next {
-                    previous.navigationDelegate = nil
-                    previous.removeHeightHandlerIfNeeded()
-                    previous.removeFromSuperview()
-                    HTMLWebViewPool.recycle(previous)
+                    self.recycle(previous, removeFromHierarchy: true)
                 }
                 next.alphaValue = 1
                 self.current = next
@@ -2723,10 +2727,7 @@ struct HTMLBodyView: NSViewRepresentable {
             acceptsHeightReports = false
             // Don't leave a blank new view on top of good content.
             if let incoming, incoming === webView, current != nil {
-                incoming.navigationDelegate = nil
-                incoming.removeHeightHandlerIfNeeded()
-                incoming.removeFromSuperview()
-                HTMLWebViewPool.recycle(incoming)
+                recycle(incoming, removeFromHierarchy: true)
                 self.incoming = nil
                 pendingReveal = false
             }
@@ -2739,10 +2740,7 @@ struct HTMLBodyView: NSViewRepresentable {
             guard webView === incoming || (incoming == nil && webView === current) else { return }
             acceptsHeightReports = false
             if let incoming, incoming === webView, current != nil {
-                incoming.navigationDelegate = nil
-                incoming.removeHeightHandlerIfNeeded()
-                incoming.removeFromSuperview()
-                HTMLWebViewPool.recycle(incoming)
+                recycle(incoming, removeFromHierarchy: true)
                 self.incoming = nil
                 pendingReveal = false
             }
