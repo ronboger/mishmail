@@ -6,9 +6,11 @@ import Foundation
 /// silently collapse the list to zero while the chrome still shows.
 enum SlashSnippetPickerLayout {
     /// Cap so a long match list scrolls instead of eating the whole card.
-    static let maxListHeight: CGFloat = 200
-    /// One row: 12pt name + vertical padding 4×2 + LazyVStack spacing ~1.
-    static let rowHeight: CGFloat = 28
+    /// Kept under ~7 rows so the picker + chrome still fit the shortest
+    /// comfortable inline reply card (~320pt) with From/To/Subject present.
+    static let maxListHeight: CGFloat = 160
+    /// One row: ~15pt line of 12pt text + vertical padding 4×2 + spacing 1.
+    static let rowHeight: CGFloat = 24
     /// Inner padding around the LazyVStack (4 top + 4 bottom).
     static let listPadding: CGFloat = 8
 

@@ -189,18 +189,19 @@ struct ComposeView: View {
         let contentHeight = 16 + visualLines * lineHeight
         // Floor leaves a real writing surface on short replies (inline card
         // is taller); cap keeps footer + "…" on-screen for long drafts.
-        // Slash-active: leave room for the match list under the editor.
-        let floor: CGFloat = slashActive ? 72 : 180
-        let cap: CGFloat = slashActive ? 160 : 320
+        // Slash-active + collapsed quote: leave room for the match list.
+        // Regular compose (no quote) already flexes; don't shrink it.
+        let floor: CGFloat = (slashActive && !quotedTail.isEmpty) ? 72 : 180
+        let cap: CGFloat = (slashActive && !quotedTail.isEmpty) ? 160 : 320
         return min(max(contentHeight, floor), cap)
     }
 
     /// Body editor minimum while the quote is collapsed — matches the floor
     /// in `bodyEditorMaxHeight` so short replies don't look like a one-liner
-    /// field under a tall card of empty chrome. Shrinks while `/` is active
-    /// so the picker isn't compressed to zero height.
+    /// field under a tall card of empty chrome. Shrinks only for the reply
+    /// path where the fixed card + quote Spacer used to starve the picker.
     private var bodyEditorMinHeight: CGFloat {
-        if slashActive { return 72 }
+        if slashActive && !quotedTail.isEmpty { return 72 }
         return quotedTail.isEmpty ? 120 : 180
     }
 

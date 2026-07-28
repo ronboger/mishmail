@@ -27,9 +27,10 @@ final class SlashSnippetPickerLayoutTests: XCTestCase {
     func testLongListCapsAtMax() {
         let many = SlashSnippetPickerLayout.listHeight(snippetCount: 50)
         XCTAssertEqual(many, SlashSnippetPickerLayout.maxListHeight)
-        // Cap must be large enough for the starter set + a few user snippets
-        // without forcing scroll on the common case (matches prior maxHeight).
+        // Cap must fit the starter set + a few user snippets without scroll
+        // on the common case, but stay short enough for the inline reply card.
         XCTAssertGreaterThanOrEqual(SlashSnippetPickerLayout.maxListHeight, 100)
+        XCTAssertLessThanOrEqual(SlashSnippetPickerLayout.maxListHeight, 180)
     }
 
     /// Regression guard for the reply-card bug: under a short parent the
