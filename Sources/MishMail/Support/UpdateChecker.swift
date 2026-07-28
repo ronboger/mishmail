@@ -55,6 +55,11 @@ final class UpdateChecker: ObservableObject {
     /// is rare and one request is cheap, so it always looks; the hourly tick
     /// exists for the opposite case, a mail app left open for days.
     func startPeriodicChecks() {
+        // Off the main actor: it is a temp-directory scan, and nothing waits
+        // for it. An install that died before its own cleanup ran leaves tens
+        // of MB behind, and without this the app has to update again to
+        // notice.
+        Task.detached(priority: .utility) { Self.sweepStaleWorkDirectories() }
         Task { await check(quietly: true) }
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 3_600, repeats: true) { _ in
@@ -242,6 +247,7 @@ final class UpdateChecker: ObservableObject {
         // saying no still costs nothing.
         if !draftAlreadyAnswered, !confirmRestartOverOpenDraft(release) {
             status = "Update cancelled."
+            Self.removeWorkDirectory(verified.workDirectory)
             return
         }
 
@@ -278,6 +284,9 @@ final class UpdateChecker: ObservableObject {
         // Past this point the new bundle is already in place and there is no
         // going back: a failure must never read as "nothing happened".
         status = "Restarting MishMail \(release.version)…"
+        // The swap moved the bundle out of here; only the scratch directory
+        // around it is left, and nothing reads it again.
+        Self.removeWorkDirectory(verified.workDirectory)
         // Close the database before a second instance opens it. The pool is
         // WAL and multi-process safe, but the quit-path checkpoint shouldn't
         // race a fresh launch's first writes. Re-entrant, so the terminate
@@ -308,6 +317,9 @@ final class UpdateChecker: ObservableObject {
 
     struct VerifyResult {
         let appURL: URL
+        /// The scratch directory `appURL` lives in. Whoever finishes with the
+        /// bundle deletes it; nothing else may.
+        let workDirectory: URL
         let checksumVerified: Bool
         let teamID: String?
         let notarized: Bool
@@ -354,14 +366,58 @@ final class UpdateChecker: ObservableObject {
         expectedVersion: String,
         runningAppURL: URL
     ) async throws -> VerifyResult {
+        // Anything left over from an install that crashed or was abandoned in
+        // an earlier run is fair game now; the current one is about to make
+        // its own directory. Zips are tens of MB, and they used to pile up.
+        sweepStaleWorkDirectories()
+
         let (tempFile, resp) = try await URLSession.shared.download(from: zipURL)
         let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(code) else { throw UpdateError.badHTTP(code) }
 
+        return try await stageAndVerify(
+            downloadedZip: tempFile,
+            assetName: zipURL.lastPathComponent,
+            checksumURL: checksumURL,
+            expectedVersion: expectedVersion,
+            runningAppURL: runningAppURL)
+    }
+
+    /// Everything after the download: stage the zip in a fresh work directory,
+    /// check it, extract it, and return the verified bundle. On any failure the
+    /// work directory goes with it — the caller only has something to clean up
+    /// when this succeeds.
+    nonisolated static func stageAndVerify(
+        downloadedZip tempFile: URL,
+        assetName: String,
+        checksumURL: URL?,
+        expectedVersion: String,
+        runningAppURL: URL,
+        workRoot: URL = FileManager.default.temporaryDirectory
+    ) async throws -> VerifyResult {
         let fm = FileManager.default
-        let work = fm.temporaryDirectory
-            .appendingPathComponent("MishMailUpdate-\(UUID().uuidString)", isDirectory: true)
+        let work = workRoot
+            .appendingPathComponent("\(workPrefix)\(UUID().uuidString)", isDirectory: true)
         try fm.createDirectory(at: work, withIntermediateDirectories: true)
+        do {
+            return try await verify(downloadedZip: tempFile, in: work, assetName: assetName,
+                                    checksumURL: checksumURL, expectedVersion: expectedVersion,
+                                    runningAppURL: runningAppURL)
+        } catch {
+            removeWorkDirectory(work)
+            throw error
+        }
+    }
+
+    private nonisolated static func verify(
+        downloadedZip tempFile: URL,
+        in work: URL,
+        assetName: String,
+        checksumURL: URL?,
+        expectedVersion: String,
+        runningAppURL: URL
+    ) async throws -> VerifyResult {
+        let fm = FileManager.default
         let zipPath = work.appendingPathComponent("release.zip")
         if fm.fileExists(atPath: zipPath.path) { try fm.removeItem(at: zipPath) }
         try fm.moveItem(at: tempFile, to: zipPath)
@@ -372,7 +428,6 @@ final class UpdateChecker: ObservableObject {
             let sumsCode = (sumsResp as? HTTPURLResponse)?.statusCode ?? 0
             guard (200..<300).contains(sumsCode) else { throw UpdateError.badHTTP(sumsCode) }
             let text = String(data: sumsData, encoding: .utf8) ?? ""
-            let assetName = zipURL.lastPathComponent
             guard let expected = parseChecksum(text, assetName: assetName) else {
                 throw UpdateError.checksumMissingForAsset
             }
@@ -384,6 +439,10 @@ final class UpdateChecker: ObservableObject {
         let extractDir = work.appendingPathComponent("extract", isDirectory: true)
         try fm.createDirectory(at: extractDir, withIntermediateDirectories: true)
         try unzip(zipPath, into: extractDir)
+        // The extracted bundle is what everything downstream uses, so the
+        // archive is dead weight from here on — including on the
+        // reveal-in-Finder path, which keeps the rest of this directory.
+        try? fm.removeItem(at: zipPath)
 
         guard let appURL = findApp(in: extractDir) else { throw UpdateError.noAppInArchive }
         try verifyCodeSignature(of: appURL)
@@ -405,8 +464,40 @@ final class UpdateChecker: ObservableObject {
         // Deliberately not quarantined here: an in-place install has already
         // cleared stronger checks than Gatekeeper would apply. Only the
         // manual-install fallback tags it (see `revealForManualInstall`).
-        return VerifyResult(appURL: appURL, checksumVerified: checksumVerified,
+        return VerifyResult(appURL: appURL, workDirectory: work,
+                            checksumVerified: checksumVerified,
                             teamID: trust.teamID, notarized: trust.notarized)
+    }
+
+    // MARK: - Scratch directory
+
+    nonisolated static let workPrefix = "MishMailUpdate-"
+
+    /// Deletes a work directory and everything in it. Missing is success.
+    nonisolated static func removeWorkDirectory(_ url: URL) {
+        try? FileManager.default.removeItem(at: url)
+    }
+
+    /// Sweeps work directories abandoned by earlier runs. Recent ones are left
+    /// alone: another window's install may be using one right now, and its
+    /// files are the only copy of the update.
+    nonisolated static func sweepStaleWorkDirectories(
+        in root: URL = FileManager.default.temporaryDirectory,
+        olderThan age: TimeInterval = 86_400,
+        now: Date = Date()
+    ) {
+        let fm = FileManager.default
+        let keys: [URLResourceKey] = [.isDirectoryKey, .creationDateKey, .contentModificationDateKey]
+        guard let entries = try? fm.contentsOfDirectory(
+            at: root, includingPropertiesForKeys: keys, options: [.skipsHiddenFiles])
+        else { return }
+        for url in entries where url.lastPathComponent.hasPrefix(workPrefix) {
+            guard let values = try? url.resourceValues(forKeys: Set(keys)),
+                  values.isDirectory == true else { continue }
+            let stamp = values.contentModificationDate ?? values.creationDate ?? now
+            guard now.timeIntervalSince(stamp) > age else { continue }
+            removeWorkDirectory(url)
+        }
     }
 
     // MARK: - Checksums
