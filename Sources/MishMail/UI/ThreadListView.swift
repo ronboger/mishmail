@@ -476,12 +476,17 @@ struct ThreadListView: View {
                 Button("Clear reminder") { store.setReminder(thread, after: nil) }
             }
         }
-        if let email = store.senderEmail(of: thread) {
+        if let email = store.senderEmail(of: thread),
+           let vipAction = ParticipantMenuVIP.action(
+               email: email,
+               vipEmails: store.vipEmails,
+               ownEmails: store.ownEmailAddresses) {
             Divider()
-            if store.vipEmails.contains(email) {
-                Button("Remove \(email) from VIPs") { store.removeVIP(email) }
-            } else {
-                Button("Add \(email) to VIPs") { store.addVIP(email) }
+            Button(ParticipantMenuVIP.title(for: vipAction)) {
+                switch vipAction {
+                case .add(let e): store.addVIP(e)
+                case .remove(let e): store.removeVIP(e)
+                }
             }
         }
         Divider()

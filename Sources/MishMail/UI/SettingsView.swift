@@ -1283,7 +1283,7 @@ private struct VIPManager: View {
                         }
                     }
                     if store.vipEmails.isEmpty {
-                        Text("No VIP senders yet — add one above, paste a list below, or right-click any thread → Add sender to VIPs.")
+                        Text("No VIP senders yet — add one above, paste a list below, click a sender name in a message, or right-click any thread → Add sender to VIPs.")
                             .foregroundStyle(.secondary)
                     }
                 }
@@ -1298,7 +1298,7 @@ private struct VIPManager: View {
                                setGroup: { store.setVIPGroup(email, group: $0) })
                     }
                     if store.vipEmails.isEmpty {
-                        Text("No VIP senders yet — add one above, paste a list below, or right-click any thread → Add sender to VIPs.")
+                        Text("No VIP senders yet — add one above, paste a list below, click a sender name in a message, or right-click any thread → Add sender to VIPs.")
                             .foregroundStyle(.secondary)
                     }
                 }

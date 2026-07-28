@@ -1,9 +1,12 @@
 import Foundation
 
-/// Whether the participant (sender/recipient) click menu should offer
-/// Add/Remove VIP for a given address. Mirrors the thread-list context
-/// menu, but lives here so the message-header menu and tests share one
-/// rule: never VIP your own accounts, only addresses that look real.
+/// Whether a sender menu (message-header participant click, or thread-list
+/// context menu) should offer Add/Remove VIP for a given address.
+///
+/// Shared so both menus apply the same rule: never VIP your own addresses
+/// (accounts ∪ send-as aliases, via the caller's `ownEmails` set), only
+/// addresses that look real. Stricter than the old thread-list path, which
+/// offered VIP even for your own From.
 enum ParticipantMenuVIP {
     enum Action: Equatable {
         case add(email: String)

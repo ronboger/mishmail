@@ -44,6 +44,28 @@ final class ParticipantMenuVIPTests: XCTestCase {
             email: "alias@work.com", vipEmails: vips, ownEmails: own))
     }
 
+    /// Call-site contract: pass `store.ownEmailAddresses` (accounts ∪ send-as),
+    /// not account ids alone. A send-as alias in that set must never be VIP'd —
+    /// this is the gap Fable caught when the UI only fed account ids.
+    func testSendAsAliasInOwnSetIsExcluded() {
+        // Simulates MailStore.ownEmailAddresses shape for one mailbox + alias.
+        let ownIncludingSendAs: Set<String> = ["me@example.com", "alias@work.com"]
+        XCTAssertNil(ParticipantMenuVIP.action(
+            email: "alias@work.com",
+            vipEmails: [],
+            ownEmails: ownIncludingSendAs))
+        // Incomplete set (account ids only) would incorrectly offer Add — lock
+        // that the pure rule alone can't fix a bad call site; the UI must pass
+        // the full own set.
+        XCTAssertEqual(
+            ParticipantMenuVIP.action(
+                email: "alias@work.com",
+                vipEmails: [],
+                ownEmails: ["me@example.com"]),
+            .add(email: "alias@work.com"),
+            "without the alias in ownEmails the rule offers Add — wiring must use ownEmailAddresses")
+    }
+
     // MARK: - Normalization
 
     func testEmailIsLowercasedAndTrimmed() {

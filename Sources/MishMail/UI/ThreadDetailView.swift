@@ -2027,7 +2027,9 @@ struct MessageCard: View {
         let email = MessageParser.emailAddress(raw)
         let name = MessageParser.displayName(fromHeader: raw)
         let showEmail = name.lowercased() != email.lowercased()
-        let ownEmails = Set(store.accounts.map { $0.id.lowercased() })
+        // Canonical "is this me" set (accounts ∪ send-as aliases) — same as
+        // reply-all / participant labeling elsewhere in this file.
+        let ownEmails = store.ownEmailAddresses
         let vipAction = ParticipantMenuVIP.action(
             email: email,
             vipEmails: store.vipEmails,
