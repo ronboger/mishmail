@@ -264,6 +264,7 @@ final class MailStore {
     var selectedView: MailboxView = .inbox {
         didSet {
             readStateKeepIds.removeAll()
+            starStateKeepIds.removeAll()
             resetListWindow()
         }
     }
@@ -1215,6 +1216,7 @@ struct ComposeRequest: Identifiable {
         clearSelection()
         clearCheckedThreads()
         readStateKeepIds.removeAll()
+        starStateKeepIds.removeAll()
         reloadThreads()
     }
 
@@ -1289,6 +1291,30 @@ struct ComposeRequest: Identifiable {
         // is:unread result and auto-marking it read doesn't yank the row.
         let search = committedSearch.trimmingCharacters(in: .whitespaces)
         if !search.isEmpty, SearchQuery.parse(search).unread != nil { return true }
+        return false
+    }
+
+    // Threads just unstarred while a star-gated list was active (category hide
+    // pin-through, Starred mailbox, starredOnly saved view, is:starred search).
+    // Stay listed so triage can continue; cleared on view/filter change.
+    @ObservationIgnored
+    private var starStateKeepIds: Set<String> = []
+
+    private var starStateFilterActive: Bool {
+        if !chips.category.hide.isEmpty { return true }
+        if case .starred = selectedView { return true }
+        if case .saved(let id, _) = selectedView,
+           let v = savedViews.first(where: { $0.id == id }) {
+            if v.starredOnly { return true }
+            if v.excludePromotions { return true }
+            if let chipsJSON = v.chipsJSON,
+               let saved = try? JSONDecoder().decode(FilterChips.self, from: chipsJSON),
+               !saved.category.hide.isEmpty {
+                return true
+            }
+        }
+        let search = committedSearch.trimmingCharacters(in: .whitespaces)
+        if !search.isEmpty, SearchQuery.parse(search).starred { return true }
         return false
     }
 
@@ -1935,7 +1961,9 @@ struct ComposeRequest: Identifiable {
         let chips = chips
         let activeAccount = activeAccountId
         if !readStateFilterActive { readStateKeepIds.removeAll() }
+        if !starStateFilterActive { starStateKeepIds.removeAll() }
         let keepIds = Array(readStateKeepIds)
+        let starKeepIds = Array(starStateKeepIds)
         let allLabels = labelsByAccount.values.flatMap { $0 }
         let savedViewsSnapshot = savedViews
         let activeVIP = activeVIPEmails
@@ -2014,7 +2042,11 @@ struct ComposeRequest: Identifiable {
                                          || keepIds.contains(Column("id")))
                         }
                         if parsed.starred {
-                            q = q.filter(Column("isStarred") == true)
+                            // starKeepIds: just-unstarred threads stay under
+                            // is:starred until the search is cleared (read-state
+                            // keepIds parity).
+                            q = q.filter(Column("isStarred") == true
+                                         || starKeepIds.contains(Column("id")))
                         }
                         if let after = parsed.after {
                             q = q.filter(Column("lastDate") >= after)
@@ -2051,12 +2083,13 @@ struct ComposeRequest: Identifiable {
                         return try q.order(Column("lastDate").desc, Column("id").desc)
                             .limit(fetchLimit).fetchAll(db)
                     } else {
-                        var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
+                        var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot,
+                                                    keepIds: keepIds, starKeepIds: starKeepIds)
                         if chips.showArchived || chips.showSent {
                             // Widen from inbox-only before layering the other chips.
                             q = MailStore.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
                         }
-                        q = MailStore.applyChips(q, chips, keepIds: keepIds)
+                        q = MailStore.applyChips(q, chips, keepIds: keepIds, starKeepIds: starKeepIds)
                         if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
                         let inbound = MailStore.usesInboundSort(for: view)
                         let key = ThreadListPaging.sortDateSQL(inboundSort: inbound)
@@ -2211,6 +2244,7 @@ struct ComposeRequest: Identifiable {
         let chips = chips
         let activeAccount = activeAccountId
         let keepIds = Array(readStateKeepIds)
+        let starKeepIds = Array(starStateKeepIds)
         let savedViewsSnapshot = savedViews
         let activeVIP = activeVIPEmails
         let pool = db
@@ -2227,11 +2261,12 @@ struct ComposeRequest: Identifiable {
                 .pageLoadMore, meta: "probe"
             ) {
                 try await pool.read { db -> (page: [MailThread], hasMore: Bool) in
-                    var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot, keepIds: keepIds)
+                    var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot,
+                                                keepIds: keepIds, starKeepIds: starKeepIds)
                     if chips.showArchived || chips.showSent {
                         q = MailStore.widen(q, for: view, archived: chips.showArchived, sent: chips.showSent)
                     }
-                    q = MailStore.applyChips(q, chips, keepIds: keepIds)
+                    q = MailStore.applyChips(q, chips, keepIds: keepIds, starKeepIds: starKeepIds)
                     if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
                     let inbound = MailStore.usesInboundSort(for: view)
                     let key = ThreadListPaging.sortDateSQL(inboundSort: inbound)
@@ -2320,12 +2355,15 @@ struct ComposeRequest: Identifiable {
     /// `keepIds` are threads that must stay visible even if they no longer match
     /// the read-state chip (e.g. a thread you just marked read under an
     /// unread-only filter), so the row doesn't vanish under your cursor.
+    /// `starKeepIds` are the same idea for star-gated membership: just-unstarred
+    /// threads under category hide / starred-only filters.
     // nonisolated: pure query builder — safe to call from DatabasePool.read.
     nonisolated static func applyChips(_ query: QueryInterfaceRequest<MailThread>, _ chips: FilterChips,
-                           keepIds: [String] = []) -> QueryInterfaceRequest<MailThread> {
+                           keepIds: [String] = [],
+                           starKeepIds: [String] = []) -> QueryInterfaceRequest<MailThread> {
         var q = query
-        // Category-tab hide; starred pins through (see CategoryHide).
-        q = CategoryHide.apply(q, hide: chips.category.hide)
+        // Category-tab hide; starred (+ sticky keep) pins through (see CategoryHide).
+        q = CategoryHide.apply(q, hide: chips.category.hide, keepIds: starKeepIds)
         if !chips.category.show.isEmpty {
             // Contains any of the selected categories. Denorm for promo/social;
             // labelIds LIKE for Updates/Forums (no denorm columns yet).
@@ -2414,7 +2452,8 @@ struct ComposeRequest: Identifiable {
     }
 
     nonisolated private static func baseQuery(for view: MailboxView, savedViews: [SavedView],
-                                  keepIds: [String] = []) -> QueryInterfaceRequest<MailThread> {
+                                  keepIds: [String] = [],
+                                  starKeepIds: [String] = []) -> QueryInterfaceRequest<MailThread> {
         var q = MailThread.all()
         let now = Date()
         func notSnoozed(_ q: QueryInterfaceRequest<MailThread>) -> QueryInterfaceRequest<MailThread> {
@@ -2436,7 +2475,8 @@ struct ComposeRequest: Identifiable {
                          && Column("inInbox") == true
                          && Column("inSocial") == true)
         case .starred:
-            q = q.filter(Column("isStarred") == true && Column("inTrash") == false)
+            q = q.filter((Column("isStarred") == true || starKeepIds.contains(Column("id")))
+                         && Column("inTrash") == false)
         case .snoozed:
             q = q.filter(Column("snoozeUntil") != nil && Column("snoozeUntil") > now && Column("inTrash") == false)
         case .labels:
@@ -2472,8 +2512,11 @@ struct ComposeRequest: Identifiable {
             if let chips = v.chipsJSON.flatMap({ try? JSONDecoder().decode(FilterChips.self, from: $0) }) {
                 if !chips.showArchived { q = notSnoozed(q.filter(Column("inInbox") == true)) }
                 if let a = v.accountId { q = q.filter(Column("accountId") == a) }
-                if v.starredOnly { q = q.filter(Column("isStarred") == true) }
-                q = applyChips(q, chips, keepIds: keepIds)
+                if v.starredOnly {
+                    q = q.filter(Column("isStarred") == true
+                                 || starKeepIds.contains(Column("id")))
+                }
+                q = applyChips(q, chips, keepIds: keepIds, starKeepIds: starKeepIds)
                 break
             }
             // Legacy path: views built in the ViewEditor form (structured fields).
@@ -2481,14 +2524,17 @@ struct ComposeRequest: Identifiable {
             if let a = v.accountId { q = q.filter(Column("accountId") == a) }
             if let label = v.labelId { q = filterThreads(q, matchingLabelIds: [label]) }
             if v.unreadOnly { q = q.filter(Column("isUnread") == true || keepIds.contains(Column("id"))) }
-            if v.starredOnly { q = q.filter(Column("isStarred") == true) }
+            if v.starredOnly {
+                q = q.filter(Column("isStarred") == true
+                             || starKeepIds.contains(Column("id")))
+            }
             if v.hasAttachmentOnly { q = q.filter(Column("hasAttachment") == true) }
             if !v.senderContains.isEmpty {
                 q = q.filter(Column("fromDisplay").like("%\(v.senderContains)%")
                              || Column("participants").like("%\(v.senderContains)%"))
             }
             if v.excludePromotions {
-                q = CategoryHide.applyExcludePromotions(q)
+                q = CategoryHide.applyExcludePromotions(q, keepIds: starKeepIds)
             }
             if let cat = v.category {
                 switch cat {
@@ -3917,6 +3963,13 @@ struct ComposeRequest: Identifiable {
         for id in ids { readStateKeepIds.insert(id) }
     }
 
+    /// Pin just-unstarred threads so category-hide / Starred / is:starred lists
+    /// do not yank the row mid-triage. Same call-before-mutate rule as read.
+    private func pinStarStateKeep(_ ids: [String]) {
+        guard starStateFilterActive else { return }
+        for id in ids { starStateKeepIds.insert(id) }
+    }
+
     private func restoreSelectionFocus(_ id: String?) {
         guard let id else { return }
         selectThread(id, intent: .restoreFocus)
@@ -3926,8 +3979,8 @@ struct ComposeRequest: Identifiable {
     /// async DB reload. Drops the row when it no longer belongs in the current
     /// view (archive from inbox, trash, etc.) so selection advance works.
     ///
-    /// Leave-list always wins over `readStateKeepIds`: stickiness only keeps
-    /// mark-read rows under is:unread, and must not block trash/archive
+    /// Leave-list always wins over read/star keepIds: stickiness only keeps
+    /// mark-read / unstar rows under filters, and must not block trash/archive
     /// auto-advance (otherwise the row sticks until async reload, advance
     /// sees it still present, and selection ends up empty).
     private func applyOptimisticThreadUpdate(_ updated: MailThread) {
@@ -3954,7 +4007,10 @@ struct ComposeRequest: Identifiable {
         switch plan.effect {
         case .remove:
             threads.remove(at: idx)
-            if plan.sideEffects.dropKeepId { readStateKeepIds.remove(updated.id) }
+            if plan.sideEffects.dropKeepId {
+                readStateKeepIds.remove(updated.id)
+                starStateKeepIds.remove(updated.id)
+            }
             if plan.sideEffects.dropChecked { checkedThreadIds.remove(updated.id) }
         case .updateInPlace:
             threads[idx] = updated
@@ -3998,6 +4054,10 @@ struct ComposeRequest: Identifiable {
         let search = committedSearch.trimmingCharacters(in: .whitespaces)
         if !search.isEmpty {
             let parsed = SearchQuery.parse(search)
+            // is:starred stickiness: a just-unstarred pin stays until search clears.
+            if parsed.starred, !t.isStarred, !starStateKeepIds.contains(t.id) {
+                return true
+            }
             return !parsed.includesLocation(inTrash: t.inTrash, inSpam: t.inSpam)
         }
         if t.inTrash {
@@ -4019,7 +4079,8 @@ struct ComposeRequest: Identifiable {
         case .social:
             return t.inSpam || !t.inInbox || !t.inSocial
         case .starred:
-            return !t.isStarred
+            // Sticky keep after unstar so triage can continue in Starred.
+            return !t.isStarred && !starStateKeepIds.contains(t.id)
         case .snoozed:
             guard let until = t.snoozeUntil else { return true }
             return until <= Date()
@@ -4262,6 +4323,8 @@ struct ComposeRequest: Identifiable {
 
     func toggleStar(_ thread: MailThread) {
         let starring = !thread.isStarred
+        // Pin before mutate so optimistic leave-list and reload both see the id.
+        if !starring { pinStarStateKeep([thread.id]) }
         mutateThread(thread) { $0.isStarred = starring } remote: { client, id in
             try await client.modifyThread(id: id, add: starring ? ["STARRED"] : [],
                                           remove: starring ? [] : ["STARRED"])
@@ -4273,6 +4336,7 @@ struct ComposeRequest: Identifiable {
         let targets = checkedThreadsInOrder
         guard !targets.isEmpty else { return }
         let starring = targets.contains { !$0.isStarred }
+        if !starring { pinStarStateKeep(targets.map(\.id)) }
         mutateThreads(targets, local: { $0.isStarred = starring }, remote: { client, id in
             try await client.modifyThread(id: id, add: starring ? ["STARRED"] : [],
                                           remove: starring ? [] : ["STARRED"])

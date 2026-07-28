@@ -51,9 +51,10 @@ final class StarredCategoryFilterTests: XCTestCase {
 
     private func subjects(
         _ db: Database,
-        hide: Set<String>
+        hide: Set<String>,
+        keepIds: [String] = []
     ) throws -> [String] {
-        let q = CategoryHide.apply(MailThread.all(), hide: hide)
+        let q = CategoryHide.apply(MailThread.all(), hide: hide, keepIds: keepIds)
         return try q.order(Column("subject").asc).fetchAll(db).map(\.subject)
     }
 
@@ -190,5 +191,102 @@ final class StarredCategoryFilterTests: XCTestCase {
         }
         XCTAssertEqual(got, ["Starred inbox promo"],
                        "star pin-through must not resurrect trash or archive")
+    }
+
+    // MARK: - Unstar stickiness (keepIds)
+
+    func testJustUnstarredPromoStaysWithKeepIds() throws {
+        // Product: unstarring a category-pinned row must not yank it mid-triage.
+        let db = try makeDB()
+        try db.write { db in
+            try makeThread(id: "p1", subject: "Was starred promo",
+                           isStarred: false, inPromotions: true,
+                           labelIds: "INBOX CATEGORY_PROMOTIONS").insert(db)
+            try makeThread(id: "p2", subject: "Still hidden promo",
+                           isStarred: false, inPromotions: true,
+                           labelIds: "INBOX CATEGORY_PROMOTIONS").insert(db)
+            try makeThread(id: "i1", subject: "Primary",
+                           isStarred: false,
+                           labelIds: "INBOX").insert(db)
+        }
+
+        let hide: Set<String> = ["CATEGORY_PROMOTIONS"]
+        let without = try db.read { try subjects($0, hide: hide) }
+        XCTAssertEqual(without, ["Primary"],
+                       "unstarred promo without keepIds is filtered out")
+
+        let withKeep = try db.read {
+            try subjects($0, hide: hide, keepIds: ["a:p1"])
+        }
+        XCTAssertEqual(withKeep, ["Primary", "Was starred promo"],
+                       "keepIds holds the just-unstarred promo in the list")
+    }
+
+    func testJustUnstarredUpdatesForumsStayWithKeepIds() throws {
+        let db = try makeDB()
+        try db.write { db in
+            try makeThread(id: "u1", subject: "Was starred update",
+                           isStarred: false,
+                           labelIds: "INBOX CATEGORY_UPDATES").insert(db)
+            try makeThread(id: "f1", subject: "Was starred forum",
+                           isStarred: false,
+                           labelIds: "INBOX CATEGORY_FORUMS").insert(db)
+        }
+
+        let hide: Set<String> = ["CATEGORY_UPDATES", "CATEGORY_FORUMS"]
+        let got = try db.read {
+            try subjects($0, hide: hide, keepIds: ["a:u1", "a:f1"])
+        }
+        XCTAssertEqual(got, ["Was starred forum", "Was starred update"])
+    }
+
+    func testLegacyExcludePromotionsKeepsUnstarredWithKeepIds() throws {
+        let db = try makeDB()
+        try db.write { db in
+            try makeThread(id: "p1", subject: "Was starred promo",
+                           isStarred: false, inPromotions: true).insert(db)
+            try makeThread(id: "s1", subject: "Hidden social",
+                           isStarred: false, inSocial: true).insert(db)
+            try makeThread(id: "i1", subject: "Primary",
+                           isStarred: false).insert(db)
+        }
+
+        let got = try db.read { db -> [String] in
+            try CategoryHide.applyExcludePromotions(MailThread.all(),
+                                                    keepIds: ["a:p1"])
+                .order(Column("subject").asc)
+                .fetchAll(db)
+                .map(\.subject)
+        }
+        XCTAssertEqual(got, ["Primary", "Was starred promo"])
+    }
+
+    func testKeepIdsDoNotResurrectTrashOrArchive() throws {
+        // Stickiness only widens category hide — mailbox scope still wins.
+        let db = try makeDB()
+        try db.write { db in
+            try makeThread(id: "t1", subject: "Trashed unstarred promo",
+                           isStarred: false, inPromotions: true,
+                           inInbox: false, inTrash: true,
+                           labelIds: "TRASH CATEGORY_PROMOTIONS").insert(db)
+            try makeThread(id: "a1", subject: "Archived unstarred promo",
+                           isStarred: false, inPromotions: true,
+                           inInbox: false, inTrash: false,
+                           labelIds: "CATEGORY_PROMOTIONS").insert(db)
+            try makeThread(id: "p1", subject: "Inbox unstarred keep",
+                           isStarred: false, inPromotions: true,
+                           inInbox: true, inTrash: false,
+                           labelIds: "INBOX CATEGORY_PROMOTIONS").insert(db)
+        }
+
+        let got = try db.read { db -> [String] in
+            var q = MailThread.all()
+                .filter(Column("inInbox") == true && Column("inTrash") == false)
+            q = CategoryHide.apply(q, hide: ["CATEGORY_PROMOTIONS"],
+                                   keepIds: ["a:t1", "a:a1", "a:p1"])
+            return try q.order(Column("subject").asc).fetchAll(db).map(\.subject)
+        }
+        XCTAssertEqual(got, ["Inbox unstarred keep"],
+                       "keepIds must not resurrect trash/archive past mailbox scope")
     }
 }
