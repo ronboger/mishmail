@@ -66,20 +66,44 @@ func isAlive(_ pid: pid_t) -> Bool {
 let args = CommandLine.arguments
 crumb("start: args=\(Array(args.dropFirst())) euid=\(geteuid()) " +
       "sandboxed=\(ProcessInfo.processInfo.environment["APP_SANDBOX_CONTAINER_ID"] != nil)")
-guard args.count >= 3, let pid = pid_t(args[1]) else {
-    crumb("exit 64: bad usage")
-    FileHandle.standardError.write(Data("usage: MishMailRelauncher <pid> <app path>\n".utf8))
-    exit(64)  // EX_USAGE
+
+// Orders come from the plan file, not argv: a sandboxed MishMail cannot pass
+// arguments (macOS strips them silently — that was the whole 0.4.6–0.4.10
+// restart failure). Argv still wins when present so the helper can be
+// exercised by hand: `MishMailRelauncher <pid> <app path>`.
+let pid: pid_t
+let target: URL
+let markerURL: URL?
+if args.count >= 3, let argvPid = pid_t(args[1]) {
+    pid = argvPid
+    target = URL(fileURLWithPath: args[2])
+    markerURL = args.count >= 4 ? URL(fileURLWithPath: args[3]) : nil
+    crumb("plan from argv")
+} else {
+    let temp = Relaunch.containerTemp(home: FileManager.default.homeDirectoryForCurrentUser)
+    let planURL = Relaunch.planURL(inTemp: temp)
+    guard let data = try? Data(contentsOf: planURL),
+          let plan = try? JSONDecoder().decode(Relaunch.Plan.self, from: data) else {
+        crumb("exit 64: no argv and no readable plan at \(planURL.path)")
+        FileHandle.standardError.write(
+            Data("usage: MishMailRelauncher <pid> <app path>  (or a plan file)\n".utf8))
+        exit(64)  // EX_USAGE
+    }
+    pid = plan.pid
+    target = URL(fileURLWithPath: plan.appPath)
+    markerURL = Relaunch.markerURL(inTemp: temp, nonce: plan.nonce)
+    // Consumed: a crashed later attempt must not replay this run's orders.
+    try? FileManager.default.removeItem(at: planURL)
+    crumb("plan from \(planURL.path): pid=\(plan.pid) target=\(plan.appPath)")
 }
-let target = URL(fileURLWithPath: args[2])
 
 // Handshake, before anything else: MishMail refuses to swap until this file
 // exists, because a launch that is merely *requested* can still be destroyed
 // by the swap replacing this very bundle — that is how two updates in a row
 // lost their relauncher without a trace.
-if args.count >= 4 {
-    FileManager.default.createFile(atPath: args[3], contents: Data())
-    crumb("ready marker written: \(args[3])")
+if let markerURL {
+    FileManager.default.createFile(atPath: markerURL.path, contents: Data())
+    crumb("ready marker written: \(markerURL.path)")
 }
 crumb("watching pid \(pid), initially alive=\(isAlive(pid))")
 

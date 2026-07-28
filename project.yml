@@ -11,7 +11,11 @@ targets:
   MishMail:
     type: application
     platform: macOS
-    sources: [Sources/MishMail]
+    sources:
+      - Sources/MishMail
+      # The app↔relauncher contract (plan file paths and format); compiled
+      # into both targets so the two sides can never skew.
+      - Sources/MishMailRelauncher/Relaunch.swift
     dependencies:
       - package: GRDB
       # Embedded at Contents/Library/MishMailRelauncher.app and signed on copy.
@@ -44,7 +48,7 @@ targets:
         # lost the ability to strip quarantine (its whole job).
         MISHMAIL_APP_ENTITLEMENTS: Sources/MishMail/MishMail.entitlements
         CODE_SIGN_ENTITLEMENTS: $(MISHMAIL_APP_ENTITLEMENTS)
-        MARKETING_VERSION: 0.4.10
+        MARKETING_VERSION: 0.4.11
         CURRENT_PROJECT_VERSION: 3
         SWIFT_VERSION: 5.10
         GENERATE_INFOPLIST_FILE: true
@@ -123,6 +127,7 @@ targets:
       # The relauncher's quarantine stripping, testable here because the test
       # runner is unsandboxed — the same reason the strip lives in the helper.
       - Sources/MishMailRelauncher/Quarantine.swift
+      - Sources/MishMailRelauncher/Relaunch.swift
       - Sources/MishMail/Gmail
       - Sources/MishMail/Store/Database.swift
       - Sources/MishMail/Store/SidebarCounts.swift

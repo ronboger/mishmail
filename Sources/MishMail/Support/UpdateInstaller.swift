@@ -195,28 +195,39 @@ enum UpdateInstaller {
     /// will not launch at all (-10810) — so after the swap there is nothing
     /// left that can start it. Launching it first is what breaks the cycle.
     ///
-    /// **`openApplication` resolving is not proof the helper is executing.**
-    /// The 0.4.7→0.4.8 and 0.4.8→0.4.9 updates both swapped the instant the
-    /// await returned, and both times the helper died without running a line:
-    /// its bundle was replaced out from under a launch still in flight, and
-    /// every system retry exec'd the swapped-in quarantined copy, which macOS
-    /// refuses outright. So the launch is confirmed by handshake instead: the
-    /// helper's first act is writing a ready-marker file whose path arrives
-    /// in argv, and this returns only once that file exists. Until then the
-    /// swap has not happened and every failure still degrades safely.
+    /// **No argv, and that is the hard-won part.** macOS silently strips
+    /// `OpenConfiguration.arguments` when the launching process is sandboxed:
+    /// the 0.4.9→0.4.10 breadcrumbs show the helper starting with `args=[]`
+    /// and exiting 64 within 3ms, which is how every earlier update's restart
+    /// died — a healthy helper that was never told what to do. Everything
+    /// travels through a *plan file* instead, written where the helper can
+    /// derive the path on its own: this app's container tmp, reachable
+    /// unsandboxed via the fixed bundle id (`Relaunch.planURL(home:)` derives
+    /// the same path on both sides).
+    ///
+    /// **`openApplication` resolving is not proof the helper is executing**
+    /// either — a launch still in flight dies when the swap replaces its
+    /// bundle, and the system's retries then exec the swapped-in quarantined
+    /// copy, which macOS refuses outright. So the helper confirms by
+    /// handshake: its first act is writing the ready marker named by the
+    /// plan's nonce, and this returns only once that marker exists. Until
+    /// then the swap has not happened and every failure degrades safely.
     @MainActor
     static func startRelauncher(appPath app: URL) async throws {
         let helper = relauncherURL(inside: app)
         guard FileManager.default.fileExists(atPath: helper.path) else {
             throw InstallError.relauncherMissing
         }
-        // Inside this app's container tmp: the sandbox lets us read it, and
-        // the unsandboxed helper can write anywhere the user can.
-        let marker = FileManager.default.temporaryDirectory
-            .appendingPathComponent("MishMailRelauncher-ready-\(UUID().uuidString)")
+        let nonce = UUID().uuidString
+        let temp = FileManager.default.temporaryDirectory
+        let plan = Relaunch.Plan(pid: ProcessInfo.processInfo.processIdentifier,
+                                 appPath: app.path, nonce: nonce)
+        do {
+            try JSONEncoder().encode(plan).write(to: Relaunch.planURL(inTemp: temp))
+        } catch {
+            throw InstallError.relaunchFailed("couldn't write the relauncher plan")
+        }
         let config = NSWorkspace.OpenConfiguration()
-        config.arguments = [String(ProcessInfo.processInfo.processIdentifier),
-                            app.path, marker.path]
         // It has no UI; pulling focus to it would only flicker.
         config.activates = false
         config.createsNewApplicationInstance = true
@@ -227,7 +238,8 @@ enum UpdateInstaller {
         }
         // Generous deadline on purpose: a first-ever launch of the helper can
         // sit behind a Gatekeeper/XProtect scan for several seconds, which is
-        // exactly the window the old code lost the race in.
+        // exactly the window openApplication's early return used to hide.
+        let marker = Relaunch.markerURL(inTemp: temp, nonce: nonce)
         let deadline = Date().addingTimeInterval(10)
         while !FileManager.default.fileExists(atPath: marker.path) {
             guard Date() < deadline else {
