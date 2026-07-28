@@ -210,29 +210,70 @@ final class StarUnstarStickinessTests: XCTestCase {
     /// Mirrors `MailStore.starStateFilterActive` without AppKit.
     private func starFilterActive(
         hide: Set<String> = [],
+        labelId: String? = nil,
         viewIsStarred: Bool = false,
+        viewLabelIsStarred: Bool = false,
         savedStarredOnly: Bool = false,
-        savedExcludePromotions: Bool = false,
+        savedExcludePromotionsLegacy: Bool = false,
         search: String = ""
     ) -> Bool {
         if !hide.isEmpty { return true }
+        if labelId == "STARRED" { return true }
         if viewIsStarred { return true }
-        if savedStarredOnly || savedExcludePromotions { return true }
+        if viewLabelIsStarred { return true }
+        if savedStarredOnly || savedExcludePromotionsLegacy { return true }
         let s = search.trimmingCharacters(in: .whitespaces)
-        if !s.isEmpty, SearchQuery.parse(s).starred { return true }
+        if !s.isEmpty {
+            let parsed = SearchQuery.parse(s)
+            if parsed.starred { return true }
+            if parsed.labels.contains(where: {
+                $0.caseInsensitiveCompare("starred") == .orderedSame
+            }) { return true }
+        }
         return false
     }
 
     func testStarStateFilterGate() {
         XCTAssertFalse(starFilterActive())
         XCTAssertTrue(starFilterActive(hide: ["CATEGORY_PROMOTIONS"]))
+        XCTAssertTrue(starFilterActive(labelId: "STARRED"))
         XCTAssertTrue(starFilterActive(viewIsStarred: true))
+        XCTAssertTrue(starFilterActive(viewLabelIsStarred: true))
         XCTAssertTrue(starFilterActive(savedStarredOnly: true))
-        XCTAssertTrue(starFilterActive(savedExcludePromotions: true))
+        XCTAssertTrue(starFilterActive(savedExcludePromotionsLegacy: true))
         XCTAssertTrue(starFilterActive(search: "is:starred"))
         XCTAssertTrue(starFilterActive(search: "from:alice is:starred"))
+        XCTAssertTrue(starFilterActive(search: "label:starred"))
+        XCTAssertTrue(starFilterActive(search: "label:STARRED"))
         XCTAssertFalse(starFilterActive(search: "is:unread"))
         XCTAssertFalse(starFilterActive(search: "invoice"))
+        XCTAssertFalse(starFilterActive(search: "label:work"))
+    }
+
+    func testLabelStarredFilterKeepIds() throws {
+        // Mirrors MailStore.filterThreads STARRED + starKeepIds SQL.
+        let db = try makeDB()
+        try db.write { db in
+            try makeThread(id: "s1", subject: "Just unstarred",
+                           isStarred: false).insert(db)
+            try makeThread(id: "s2", subject: "Still starred",
+                           isStarred: true).insert(db)
+        }
+
+        let without = try db.read { db -> [String] in
+            try MailThread.all()
+                .filter(sql: "isStarred = 1")
+                .order(Column("subject").asc).fetchAll(db).map(\.subject)
+        }
+        XCTAssertEqual(without, ["Still starred"])
+
+        let withKeep = try db.read { db -> [String] in
+            try MailThread.all()
+                .filter(sql: "(isStarred = 1 OR id IN (?))",
+                        arguments: ["a:s1"])
+                .order(Column("subject").asc).fetchAll(db).map(\.subject)
+        }
+        XCTAssertEqual(withKeep, ["Just unstarred", "Still starred"])
     }
 
     /// Optimistic leave-list for Starred: unstarred + keep stays; without leave.

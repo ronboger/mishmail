@@ -1302,19 +1302,33 @@ struct ComposeRequest: Identifiable {
 
     private var starStateFilterActive: Bool {
         if !chips.category.hide.isEmpty { return true }
+        if chips.labelId == "STARRED" { return true }
         if case .starred = selectedView { return true }
+        if case .label(_, let labelId, _) = selectedView, labelId == "STARRED" {
+            return true
+        }
         if case .saved(let id, _) = selectedView,
            let v = savedViews.first(where: { $0.id == id }) {
             if v.starredOnly { return true }
-            if v.excludePromotions { return true }
+            if v.labelId == "STARRED" { return true }
             if let chipsJSON = v.chipsJSON,
-               let saved = try? JSONDecoder().decode(FilterChips.self, from: chipsJSON),
-               !saved.category.hide.isEmpty {
+               let saved = try? JSONDecoder().decode(FilterChips.self, from: chipsJSON) {
+                if !saved.category.hide.isEmpty { return true }
+                if saved.labelId == "STARRED" { return true }
+            } else if v.excludePromotions {
+                // Legacy path only — chipsJSON views use category.hide instead.
                 return true
             }
         }
         let search = committedSearch.trimmingCharacters(in: .whitespaces)
-        if !search.isEmpty, SearchQuery.parse(search).starred { return true }
+        if !search.isEmpty {
+            let parsed = SearchQuery.parse(search)
+            if parsed.starred { return true }
+            // label:starred resolves to the STARRED system label.
+            if parsed.labels.contains(where: {
+                $0.caseInsensitiveCompare("starred") == .orderedSame
+            }) { return true }
+        }
         return false
     }
 
@@ -2062,7 +2076,8 @@ struct ComposeRequest: Identifiable {
                                 .filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
                                 .map(\.gmailLabelId)
                             if ids.isEmpty { ids = [name.uppercased()] }
-                            q = MailStore.filterThreads(q, matchingLabelIds: ids)
+                            q = MailStore.filterThreads(q, matchingLabelIds: ids,
+                                                        starKeepIds: starKeepIds)
                         }
                         if parsed.hasAttachment { q = q.filter(Column("hasAttachment") == true) }
                         // Gmail search excludes trash/spam unless in:trash / in:spam /
@@ -2401,7 +2416,8 @@ struct ComposeRequest: Identifiable {
                     q = q.filter(!Column("labelIds").like("%\(labelId)%"))
                 }
             } else {
-                q = filterThreads(q, matchingLabelIds: [labelId])
+                q = filterThreads(q, matchingLabelIds: [labelId],
+                                  starKeepIds: starKeepIds)
             }
         }
         if chips.hasAttachmentOnly { q = q.filter(Column("hasAttachment") == true) }
@@ -2502,7 +2518,7 @@ struct ComposeRequest: Identifiable {
             q = notSnoozed(q.filter(Column("accountId") == a && Column("inInbox") == true && Column("inTrash") == false))
         case .label(let a, let labelId, _):
             q = q.filter(Column("accountId") == a)
-            q = filterThreads(q, matchingLabelIds: [labelId])
+            q = filterThreads(q, matchingLabelIds: [labelId], starKeepIds: starKeepIds)
         case .saved(let id, _):
             guard let v = savedViews.first(where: { $0.id == id }) else { break }
             q = q.filter(Column("inTrash") == false)
@@ -2522,7 +2538,9 @@ struct ComposeRequest: Identifiable {
             // Legacy path: views built in the ViewEditor form (structured fields).
             if !v.showArchived { q = notSnoozed(q.filter(Column("inInbox") == true)) }
             if let a = v.accountId { q = q.filter(Column("accountId") == a) }
-            if let label = v.labelId { q = filterThreads(q, matchingLabelIds: [label]) }
+            if let label = v.labelId {
+                q = filterThreads(q, matchingLabelIds: [label], starKeepIds: starKeepIds)
+            }
             if v.unreadOnly { q = q.filter(Column("isUnread") == true || keepIds.contains(Column("id"))) }
             if v.starredOnly {
                 q = q.filter(Column("isStarred") == true
@@ -2551,9 +2569,11 @@ struct ComposeRequest: Identifiable {
 
     /// Match threads that have any of `labelIds`. User labels (`Label_*`) use
     /// the `thread_label` junction; system / category labels keep LIKE / denorm.
+    /// `starKeepIds` widen the STARRED system-label case (just-unstarred stickiness).
     nonisolated static func filterThreads(
         _ q: QueryInterfaceRequest<MailThread>,
-        matchingLabelIds ids: [String]
+        matchingLabelIds ids: [String],
+        starKeepIds: [String] = []
     ) -> QueryInterfaceRequest<MailThread> {
         guard !ids.isEmpty else { return q }
         let user = ids.filter { $0.hasPrefix("Label_") }
@@ -2569,7 +2589,14 @@ struct ComposeRequest: Identifiable {
         }
         for s in system {
             switch s {
-            case "STARRED": parts.append("isStarred = 1")
+            case "STARRED":
+                if starKeepIds.isEmpty {
+                    parts.append("isStarred = 1")
+                } else {
+                    let placeholders = starKeepIds.map { _ in "?" }.joined(separator: ",")
+                    parts.append("(isStarred = 1 OR id IN (\(placeholders)))")
+                    args.append(contentsOf: starKeepIds)
+                }
             case "INBOX": parts.append("inInbox = 1")
             case "TRASH": parts.append("inTrash = 1")
             case "SENT": parts.append("inSent = 1")
