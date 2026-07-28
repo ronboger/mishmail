@@ -2324,19 +2324,8 @@ struct ComposeRequest: Identifiable {
     nonisolated static func applyChips(_ query: QueryInterfaceRequest<MailThread>, _ chips: FilterChips,
                            keepIds: [String] = []) -> QueryInterfaceRequest<MailThread> {
         var q = query
-        for cat in chips.category.hide {
-            // Prefer denorm flags for the two categories that have them.
-            // Starred always stays visible: category chips hide tabs of mail the
-            // user is not reading, but a star is an explicit pin into the list.
-            switch cat {
-            case "CATEGORY_PROMOTIONS":
-                q = q.filter(Column("inPromotions") == false || Column("isStarred") == true)
-            case "CATEGORY_SOCIAL":
-                q = q.filter(Column("inSocial") == false || Column("isStarred") == true)
-            default:
-                q = q.filter(!Column("labelIds").like("%\(cat)%") || Column("isStarred") == true)
-            }
-        }
+        // Category-tab hide; starred pins through (see CategoryHide).
+        q = CategoryHide.apply(q, hide: chips.category.hide)
         if !chips.category.show.isEmpty {
             // Contains any of the selected categories. Denorm for promo/social;
             // labelIds LIKE for Updates/Forums (no denorm columns yet).
@@ -2499,9 +2488,7 @@ struct ComposeRequest: Identifiable {
                              || Column("participants").like("%\(v.senderContains)%"))
             }
             if v.excludePromotions {
-                // Match applyChips category-hide: starred pins through the exclusion.
-                q = q.filter((Column("inPromotions") == false && Column("inSocial") == false)
-                             || Column("isStarred") == true)
+                q = CategoryHide.applyExcludePromotions(q)
             }
             if let cat = v.category {
                 switch cat {
@@ -3250,7 +3237,9 @@ struct ComposeRequest: Identifiable {
     private func currentUnreadInboxIds() async -> Set<String> {
         let pool = db
         return Set((try? await pool.read { db -> [String] in
-            // Prefer denormalized category flags when present (schema v11+).
+            // Primary-tab unread only. Starred promo/social can appear in the
+            // inbox *list* (CategoryHide pin-through) but do not notify — a
+            // star is a list pin, not a reclassification into Primary.
             try MailThread
                 .filter(Column("isUnread") == true)
                 .filter(Column("inInbox") == true)

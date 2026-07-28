@@ -5,10 +5,7 @@ import GRDB
 /// filter bar must not drop starred threads. A star is an explicit pin — those
 /// rows stay in the main list even when their Gmail category is filtered out.
 ///
-/// MailStore is AppKit-bound and not compiled into this test target, so
-/// `applyCategoryHide` mirrors the category-hide branch of
-/// `MailStore.applyChips` (and the legacy `excludePromotions` path in
-/// `baseQuery`). Update this copy if that SQL changes.
+/// Calls production `CategoryHide` SQL directly (hostless test target).
 final class StarredCategoryFilterTests: XCTestCase {
 
     // MARK: - Fixtures
@@ -29,19 +26,20 @@ final class StarredCategoryFilterTests: XCTestCase {
         isStarred: Bool,
         inPromotions: Bool = false,
         inSocial: Bool = false,
+        inInbox: Bool = true,
+        inTrash: Bool = false,
         labelIds: String = "INBOX"
     ) -> MailThread {
         var t = MailThread(
             id: "a:\(id)", accountId: "a@x.com", gmailThreadId: id,
             subject: subject, snippet: "sn", fromDisplay: "F",
             lastDate: Date(), isUnread: false, isStarred: isStarred,
-            inInbox: true, inTrash: false,
+            inInbox: inInbox, inTrash: inTrash,
             labelIds: labelIds, snoozeUntil: nil, participants: "F",
             messageCount: 1, hasAttachment: false, reminderAt: nil)
         t.inPromotions = inPromotions
         t.inSocial = inSocial
-        // Keep isStarred as set — syncFlagsFromLabelIds would re-derive from
-        // labelIds and wipe an intentional star when STARRED is not in the blob.
+        // Keep STARRED in the label blob when starring for realistic fixtures.
         if isStarred {
             let labels = Set(t.labelIds.split(separator: " ").map(String.init))
             if !labels.contains("STARRED") {
@@ -51,38 +49,11 @@ final class StarredCategoryFilterTests: XCTestCase {
         return t
     }
 
-    /// Mirrors `MailStore.applyChips` category-hide only.
-    private func applyCategoryHide(
-        _ query: QueryInterfaceRequest<MailThread>,
-        hide: Set<String>
-    ) -> QueryInterfaceRequest<MailThread> {
-        var q = query
-        for cat in hide {
-            switch cat {
-            case "CATEGORY_PROMOTIONS":
-                q = q.filter(Column("inPromotions") == false || Column("isStarred") == true)
-            case "CATEGORY_SOCIAL":
-                q = q.filter(Column("inSocial") == false || Column("isStarred") == true)
-            default:
-                q = q.filter(!Column("labelIds").like("%\(cat)%") || Column("isStarred") == true)
-            }
-        }
-        return q
-    }
-
-    /// Mirrors the legacy saved-view `excludePromotions` path in `baseQuery`.
-    private func applyExcludePromotions(
-        _ query: QueryInterfaceRequest<MailThread>
-    ) -> QueryInterfaceRequest<MailThread> {
-        query.filter((Column("inPromotions") == false && Column("inSocial") == false)
-                     || Column("isStarred") == true)
-    }
-
     private func subjects(
         _ db: Database,
         hide: Set<String>
     ) throws -> [String] {
-        let q = applyCategoryHide(MailThread.all(), hide: hide)
+        let q = CategoryHide.apply(MailThread.all(), hide: hide)
         return try q.order(Column("subject").asc).fetchAll(db).map(\.subject)
     }
 
@@ -168,7 +139,7 @@ final class StarredCategoryFilterTests: XCTestCase {
         }
 
         let got = try db.read { db -> [String] in
-            try applyExcludePromotions(MailThread.all())
+            try CategoryHide.applyExcludePromotions(MailThread.all())
                 .order(Column("subject").asc)
                 .fetchAll(db)
                 .map(\.subject)
@@ -189,5 +160,35 @@ final class StarredCategoryFilterTests: XCTestCase {
                                     "CATEGORY_UPDATES", "CATEGORY_FORUMS"])
         }
         XCTAssertEqual(got, ["Primary starred", "Primary unstarred"])
+    }
+
+    func testStarDoesNotOverrideMailboxScope() throws {
+        // CategoryHide only pins past category tabs. Trash/archive still drop
+        // the row once the full inbox base query is applied.
+        let db = try makeDB()
+        try db.write { db in
+            try makeThread(id: "t1", subject: "Starred trashed promo",
+                           isStarred: true, inPromotions: true,
+                           inInbox: false, inTrash: true,
+                           labelIds: "TRASH CATEGORY_PROMOTIONS STARRED").insert(db)
+            try makeThread(id: "a1", subject: "Starred archived promo",
+                           isStarred: true, inPromotions: true,
+                           inInbox: false, inTrash: false,
+                           labelIds: "CATEGORY_PROMOTIONS STARRED").insert(db)
+            try makeThread(id: "p1", subject: "Starred inbox promo",
+                           isStarred: true, inPromotions: true,
+                           inInbox: true, inTrash: false,
+                           labelIds: "INBOX CATEGORY_PROMOTIONS STARRED").insert(db)
+        }
+
+        let got = try db.read { db -> [String] in
+            // Mirror inbox baseQuery + CategoryHide (applyChips path).
+            var q = MailThread.all()
+                .filter(Column("inInbox") == true && Column("inTrash") == false)
+            q = CategoryHide.apply(q, hide: ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"])
+            return try q.order(Column("subject").asc).fetchAll(db).map(\.subject)
+        }
+        XCTAssertEqual(got, ["Starred inbox promo"],
+                       "star pin-through must not resurrect trash or archive")
     }
 }

@@ -131,6 +131,7 @@ targets:
       - Sources/MishMail/Gmail
       - Sources/MishMail/Store/Database.swift
       - Sources/MishMail/Store/SidebarCounts.swift
+      - Sources/MishMail/Store/CategoryHide.swift
       - Sources/MishMail/Store/ThreadLabels.swift
       - Sources/MishMail/Support/ContactMiner.swift
       - Sources/MishMail/Support/ComposeLinks.swift

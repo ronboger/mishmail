@@ -19,6 +19,9 @@ enum SidebarCounts {
             if thread.inSocial {
                 result.insert("social")
             }
+            // Primary badge only — not starred pin-through. Starred promo/social
+            // can show in the inbox list (CategoryHide) but still count under
+            // their category tab, not the inbox unread badge.
             if !thread.inPromotions && !thread.inSocial {
                 result.insert("inbox")
             }
@@ -48,6 +51,8 @@ enum SidebarCounts {
         badgeAccount: String?,
         now: Date = Date()
     ) throws -> (counts: [String: Int], badge: Int) {
+        // Primary-tab unread only (matches memberships). Starred category mail
+        // is list-pinned via CategoryHide but does not inflate this badge.
         let inbox = try count(db, account: activeAccount, where: """
             isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
             AND inPromotions = 0 AND inSocial = 0
