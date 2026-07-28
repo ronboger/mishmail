@@ -238,6 +238,45 @@ final class SelectionAdvanceTests: XCTestCase {
         XCTAssertEqual(stay.sideEffects, .none)
     }
 
+    /// Regression: snooze must leave the inbox immediately (like archive/trash)
+    /// so auto-advance can open the neighbor in the same update. If the row
+    /// only drops after the ~140 ms reconciliation, the handoff feels laggy.
+    func testSnoozeFromInboxLeavesListLikeArchive() {
+        let now = Date()
+        let until = now.addingTimeInterval(3600)
+        // After snooze: inInbox = false, snoozeUntil set.
+        XCTAssertTrue(ThreadListOptimistic.leavesInboxList(
+            inInbox: false, inSpam: false, snoozeUntil: until,
+            showArchived: false, now: now))
+        // After archive: inInbox = false, no snooze.
+        XCTAssertTrue(ThreadListOptimistic.leavesInboxList(
+            inInbox: false, inSpam: false, snoozeUntil: nil,
+            showArchived: false, now: now))
+        // Still in inbox and not snoozed → stay.
+        XCTAssertFalse(ThreadListOptimistic.leavesInboxList(
+            inInbox: true, inSpam: false, snoozeUntil: nil,
+            showArchived: false, now: now))
+        // showArchived keeps both archive and snooze visible until reload.
+        XCTAssertFalse(ThreadListOptimistic.leavesInboxList(
+            inInbox: false, inSpam: false, snoozeUntil: until,
+            showArchived: true, now: now))
+        // Plan must remove so keepIds cannot pin the row under is:unread.
+        let plan = ThreadListOptimistic.plan(leavesCurrentList: true)
+        XCTAssertEqual(plan.effect, .remove)
+        XCTAssertTrue(plan.sideEffects.dropKeepId)
+    }
+
+    /// Snooze auto-advance must open the neighbor immediately — same policy
+    /// that fixed the "delete feels slow" lag for trash/archive.
+    func testSnoozeAdvanceOpensNeighborImmediately() {
+        XCTAssertTrue(DetailOpenPolicy.opensImmediately(
+            openedThreadId: "snoozed-id", listedIds: ["a", "c"]))
+        XCTAssertEqual(
+            SelectionAdvance.neighborId(in: ["a", "snoozed-id", "c"],
+                                        removing: "snoozed-id"),
+            "c")
+    }
+
     func testUndoInsertionRestoresDescendingListOrder() {
         let now = Date()
         let newest = fixtureThread(id: "c", date: now)

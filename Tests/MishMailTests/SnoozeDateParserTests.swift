@@ -17,6 +17,20 @@ final class SnoozeDateParserTests: XCTestCase {
         XCTAssertEqual([c.month, c.day, c.hour], [7, 8, 8])
     }
 
+    /// Undo toast must reuse the shared formatter (no DateFormatter alloc on
+    /// the triage hot path) and stay readable for tomorrow vs later dates.
+    func testUndoLabelUsesSharedFormat() {
+        // `format` uses Calendar.isDateInTomorrow relative to wall-clock now,
+        // not the fixture `now` used by the parser suggestion tests.
+        let wall = Date()
+        let tomorrow = Calendar.current.date(byAdding: .day, value: 1, to: wall)!
+        let at9 = Calendar.current.date(bySettingHour: 9, minute: 0, second: 0, of: tomorrow)!
+        let label = SnoozeDateParser.undoLabel(until: at9)
+        XCTAssertEqual(label, "Snoozed until \(SnoozeDateParser.format(at9))")
+        XCTAssertTrue(label.hasPrefix("Snoozed until "))
+        XCTAssertTrue(label.contains("tomorrow"), label)
+    }
+
     func testWeekdayPrefixWithTime() {
         let c = comps(first("fri 3pm"))
         XCTAssertEqual([c.month, c.day, c.hour], [7, 10, 15])

@@ -182,4 +182,11 @@ enum SnoozeDateParser {
         }
         return date.formatted(.dateTime.weekday(.abbreviated).month(.abbreviated).day()) + " \(time)"
     }
+
+    /// Undo-toast label for a confirmed snooze. Shared so the hot path never
+    /// allocates a `DateFormatter` and the wording stays consistent with the
+    /// picker captions.
+    static func undoLabel(until date: Date) -> String {
+        "Snoozed until \(format(date))"
+    }
 }

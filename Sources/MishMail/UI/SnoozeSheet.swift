@@ -113,6 +113,9 @@ struct DatePickSheet: View {
     }
 
     private func choose(_ option: Option) {
+        // Pick first: for snooze, `pick` clears the sheet item without
+        // animation and runs auto-advance in the same update. `dismiss()`
+        // remains as a fallback for non-binding presenters (schedule-send).
         if let action = option.action { pick(action) }
         dismiss()
     }

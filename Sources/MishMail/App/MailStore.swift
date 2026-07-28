@@ -4006,14 +4006,13 @@ struct ComposeRequest: Identifiable {
         }
         switch selectedView {
         case .inbox, .account:
-            if chips.showArchived { return false }
-            if let until = t.snoozeUntil, until > Date() { return true }
-            if t.inSpam { return true }
-            if !t.inInbox {
-                if chips.showSent && t.labelIds.contains("SENT") { return false }
-                return true
-            }
-            return false
+            return ThreadListOptimistic.leavesInboxList(
+                inInbox: t.inInbox,
+                inSpam: t.inSpam,
+                snoozeUntil: t.snoozeUntil,
+                showArchived: chips.showArchived,
+                showSent: chips.showSent,
+                labelIds: t.labelIds)
         case .promotions:
             // Gmail-aligned: inbox promotions only, never spam/trash.
             return t.inSpam || !t.inInbox || !t.inPromotions
@@ -4309,6 +4308,17 @@ struct ComposeRequest: Identifiable {
         }
     }
 
+    /// Drop the snooze sheet without its dismiss animation. Archive/trash are
+    /// single-key and hand off in the same update; leaving the sheet up for
+    /// the default sheet animation deferred the reading-pane swap until the
+    /// modal finished closing (~200–300 ms), which felt like a slow advance.
+    func dismissSnoozePicker() {
+        guard snoozingThread != nil else { return }
+        var t = Transaction()
+        t.disablesAnimations = true
+        withTransaction(t) { snoozingThread = nil }
+    }
+
     /// Snooze mirrors what Gmail's own snooze looks like over the API: the
     /// thread loses INBOX while sleeping and gets it back when the date
     /// passes (or on unsnooze), so other Gmail clients agree with us.
@@ -4316,6 +4326,9 @@ struct ComposeRequest: Identifiable {
     /// which also means threads snoozed *in* Gmail arrive here as archived
     /// and reappear on sync when Gmail wakes them.
     func snooze(_ thread: MailThread, until date: Date?) {
+        // Tear the picker down *before* the optimistic mutation so auto-advance
+        // publishes into a visible window (same frame as archive/trash).
+        dismissSnoozePicker()
         guard let date else {  // unsnooze: back to the inbox now
             mutateThread(thread) { $0.snoozeUntil = nil; $0.inInbox = true } remote: { client, id in
                 try await client.modifyThread(id: id, add: ["INBOX"])
@@ -4328,9 +4341,9 @@ struct ComposeRequest: Identifiable {
         } remote: { client, id in
             try await client.modifyThread(id: id, remove: ["INBOX"])
         }
-        let formatter = DateFormatter()
-        formatter.dateFormat = Calendar.current.isDateInTomorrow(date) ? "'tomorrow' h a" : "MMM d, h a"
-        offerUndo("Snoozed until \(formatter.string(from: date))") { [weak self] in
+        // Reuse the shared formatter path — allocating DateFormatter on the
+        // triage hot path is needlessly expensive on the main thread.
+        offerUndo(SnoozeDateParser.undoLabel(until: date)) { [weak self] in
             guard let self else { return }
             self.snooze(thread, until: nil)
             self.undoAction = nil

@@ -170,11 +170,33 @@ enum DetailOpenPolicy {
 
 /// In-memory list effect of an optimistic thread mutation.
 ///
-/// Leave-list mutations (trash / archive out of inbox / spam) always remove
-/// the row, even when the id is sticky under a read-state filter. Keep-ids
-/// only pin mark-read/unread so the reading pane doesn't go blank — they must
-/// not block trash/archive auto-advance under `is:unread`.
+/// Leave-list mutations (trash / archive out of inbox / spam / snooze) always
+/// remove the row, even when the id is sticky under a read-state filter.
+/// Keep-ids only pin mark-read/unread so the reading pane doesn't go blank —
+/// they must not block trash/archive/snooze auto-advance under `is:unread`.
 enum ThreadListOptimistic {
+    /// Inbox-style leave-list check for a thread after a local mutation.
+    /// Mirrors the `.inbox` / `.account` branch of `MailStore.threadLeavesCurrentList`
+    /// so snooze/archive auto-advance can be unit-tested without AppKit.
+    static func leavesInboxList(
+        inInbox: Bool,
+        inSpam: Bool,
+        snoozeUntil: Date?,
+        showArchived: Bool,
+        showSent: Bool = false,
+        labelIds: String = "",
+        now: Date = Date()
+    ) -> Bool {
+        if showArchived { return false }
+        if let until = snoozeUntil, until > now { return true }
+        if inSpam { return true }
+        if !inInbox {
+            if showSent && labelIds.split(separator: " ").contains("SENT") { return false }
+            return true
+        }
+        return false
+    }
+
     enum Effect: Equatable {
         case updateInPlace
         case remove
