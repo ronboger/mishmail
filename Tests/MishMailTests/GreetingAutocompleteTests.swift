@@ -89,6 +89,18 @@ final class GreetingAutocompleteTests: XCTestCase {
             authoredBody: "Hi", caretUTF16: 1, firstName: "Alice"))
     }
 
+    func testCaretPastHeadDoesNotClampIntoGreeting() {
+        // Empty authored head + caret inside the quoted tail (UTF-16 offset
+        // past head length). Must not clamp to end-of-head and offer Hi Name.
+        XCTAssertNil(GreetingAutocomplete.suggestion(
+            authoredBody: "", caretUTF16: 5, firstName: "Alice"))
+        XCTAssertNil(GreetingAutocomplete.suggestion(
+            authoredBody: "Hi", caretUTF16: 40, firstName: "Alice"))
+        // Negative caret is also not "at end".
+        XCTAssertNil(GreetingAutocomplete.suggestion(
+            authoredBody: "", caretUTF16: -1, firstName: "Alice"))
+    }
+
     func testMultilineHeadHidesGhost() {
         XCTAssertNil(GreetingAutocomplete.suggestion(
             authoredBody: "Hi\n", caretUTF16: 3, firstName: "Alice"))

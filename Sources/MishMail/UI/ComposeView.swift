@@ -1473,6 +1473,11 @@ struct ComposeView: View {
     private var greetingSuggestion: GreetingAutocomplete.Suggestion? {
         guard bodyFocused, !slashActive else { return nil }
         let head = String(body_[..<authoredHeadEnd])
+        let headUTF16 = (head as NSString).length
+        // Same trap as slashToken: bodyCaretUTF16 is full-body. A caret inside
+        // an expanded quote is > headUTF16 — never clamp it back to the head
+        // or ghost/Tab fire mid-quote.
+        guard bodyCaretUTF16 >= 0, bodyCaretUTF16 <= headUTF16 else { return nil }
         return GreetingAutocomplete.suggestion(
             authoredBody: head,
             caretUTF16: bodyCaretUTF16,

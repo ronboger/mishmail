@@ -48,10 +48,11 @@ enum GreetingAutocomplete {
         guard !authoredBody.contains("\n") else { return nil }
 
         let ns = authoredBody as NSString
-        let caret = max(0, min(caretUTF16, ns.length))
-        // Only while typing at the end of the head — mid-word caret moves
-        // and selections never show ghost text.
-        guard caret == ns.length else { return nil }
+        // Do not clamp: a caret past the authored head (inside an expanded
+        // reply quote) must not pretend it sits at end-of-head, or ghost/Tab
+        // hijack mid-quote. Callers pass the head-only string + full-body
+        // caret; equality with head length is the "typing the greeting" gate.
+        guard caretUTF16 == ns.length else { return nil }
 
         if authoredBody.isEmpty {
             return Suggestion(full: preferred, ghost: preferred)
