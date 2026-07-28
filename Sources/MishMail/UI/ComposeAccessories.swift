@@ -68,10 +68,12 @@ struct SlashSnippetPicker: View {
                         }
                         .padding(4)
                     }
-                    // Tall enough that the default starter set (~2) and a
-                    // handful of user snippets are all visible without scroll;
-                    // longer lists still scroll with the selection.
-                    .frame(maxHeight: 200)
+                    // Fixed height (not maxHeight-only): under a short reply
+                    // card the trailing Spacer + body minHeight would compress
+                    // a flexible ScrollView to 0, leaving header/footer chrome
+                    // with no rows. Cap still scrolls long match lists.
+                    .frame(height: SlashSnippetPickerLayout.listHeight(
+                        snippetCount: snippets.count))
                     .onChange(of: selectionId) { scrollToSelection(proxy) }
                     .onChange(of: query) { scrollToSelection(proxy) }
                     .onChange(of: snippets.map(\.listId)) { scrollToSelection(proxy) }
