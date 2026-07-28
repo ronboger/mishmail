@@ -170,7 +170,9 @@ struct ComposeView: View {
     /// without internal scroll — the "…" pill stays just under the text
     /// instead of clipping into it. Cap high enough for longer drafts so
     /// the card footer stays on-screen; floor so an empty reply still has
-    /// a usable writing surface.
+    /// a usable writing surface. When the `/` picker is open, floor/cap
+    /// drop so the match list keeps a real footprint in the fixed-height
+    /// inline reply card.
     private var bodyEditorMaxHeight: CGFloat {
         guard !quotedTail.isEmpty else { return .infinity }
         // 14pt body font + 5pt lineSpacing ≈ 19pt per line; +16 for the
@@ -187,14 +189,20 @@ struct ComposeView: View {
         let contentHeight = 16 + visualLines * lineHeight
         // Floor leaves a real writing surface on short replies (inline card
         // is taller); cap keeps footer + "…" on-screen for long drafts.
-        return min(max(contentHeight, 180), 320)
+        // Slash-active + collapsed quote: leave room for the match list.
+        // Regular compose (no quote) already flexes; don't shrink it.
+        let floor: CGFloat = (slashActive && !quotedTail.isEmpty) ? 72 : 180
+        let cap: CGFloat = (slashActive && !quotedTail.isEmpty) ? 160 : 320
+        return min(max(contentHeight, floor), cap)
     }
 
     /// Body editor minimum while the quote is collapsed — matches the floor
     /// in `bodyEditorMaxHeight` so short replies don't look like a one-liner
-    /// field under a tall card of empty chrome.
+    /// field under a tall card of empty chrome. Shrinks only for the reply
+    /// path where the fixed card + quote Spacer used to starve the picker.
     private var bodyEditorMinHeight: CGFloat {
-        quotedTail.isEmpty ? 120 : 180
+        if slashActive && !quotedTail.isEmpty { return 72 }
+        return quotedTail.isEmpty ? 120 : 180
     }
 
     /// Focuses the body editor. Setting the FocusState synchronously in
@@ -867,12 +875,15 @@ struct ComposeView: View {
 
             // The `/` picker renders directly under the editor, where the
             // cursor is, so it reads as results for what you're typing.
+            // layoutPriority keeps it above the quote-area Spacer when the
+            // fixed-height inline reply card is short.
             if slashActive {
                 SlashSnippetPicker(snippets: slashMatches,
                                    query: slashToken?.query ?? "",
                                    selectionId: slashSelectionId,
                                    choose: { insertSlashSnippet($0) })
                     .padding(.top, 4)
+                    .layoutPriority(1)
                     .transition(.opacity)
             }
 
@@ -893,7 +904,11 @@ struct ComposeView: View {
                 .buttonStyle(.plain)
                 .help(request.forward ? "Show forwarded message" : "Show quoted text")
                 .padding(.bottom, 8)
-                Spacer(minLength: 0)
+                // Expanding Spacer would eat the picker's list height inside
+                // the fixed card; only fill leftover space when `/` is idle.
+                if !slashActive {
+                    Spacer(minLength: 0)
+                }
             } else if quoteStartInBody != nil {
                 // The quote has been inlined; let the user tuck it back
                 // behind the "…" pill (Gmail's collapse control).

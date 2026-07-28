@@ -163,6 +163,7 @@ targets:
       - Sources/MishMail/Support/SnippetInsertion.swift
       - Sources/MishMail/Support/SnippetMatch.swift
       - Sources/MishMail/Support/GreetingAutocomplete.swift
+      - Sources/MishMail/Support/SlashSnippetPickerLayout.swift
       - Sources/MishMail/Support/UpdateChecker.swift
       - Sources/MishMail/Support/UpdateInstaller.swift
       - Sources/MishMail/Support/HTMLBodyCSP.swift
