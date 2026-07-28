@@ -47,7 +47,7 @@ final class UpdateVerifySmokeTests: XCTestCase {
     /// Prefer Release, then Debug products under the project's DerivedData.
     /// Resolve from this source file so cwd (often not the repo root under
     /// xcodebuild) doesn't matter.
-    private static func builtAppURL() -> URL? {
+    static func builtAppURL() -> URL? {
         // …/Tests/MishMailTests/ThisFile.swift → repo root
         let repo = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
