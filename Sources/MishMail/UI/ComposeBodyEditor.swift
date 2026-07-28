@@ -24,6 +24,9 @@ struct ComposeBodyEditor: NSViewRepresentable {
     /// compose's `/` snippet trigger so the token ends at the caret, not the
     /// end of the body — multi-snippet and mid-message `/` depend on this.
     @Binding var caretUTF16: Int
+    /// Gmail-style grey suffix drawn after the caret (greeting autocomplete).
+    /// Not part of the model string — Tab in ComposeView commits it.
+    var ghostText: String = ""
     var formatTarget: ComposeBodyFormatTarget?
     var fontSize: CGFloat = 14
 
@@ -70,6 +73,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
         textView.onFocusChange = { [weak coord = context.coordinator] focused in
             coord?.isFocused.wrappedValue = focused
         }
+        textView.ghostText = ghostText
         context.coordinator.bindFormatTarget()
         Coordinator.highlight(textView, fontSize: fontSize)
 
@@ -113,6 +117,10 @@ struct ComposeBodyEditor: NSViewRepresentable {
             // mutation inside it can't leak a binding write mid-update.
             Coordinator.highlight(textView, fontSize: fontSize)
             coord.isProgrammaticUpdate = false
+        }
+
+        if textView.ghostText != ghostText {
+            textView.ghostText = ghostText
         }
 
         // Only programmatically *take* focus (e.g. focusBody after prefill).
@@ -409,6 +417,13 @@ final class OverlayComposeScrollView: NSScrollView {
 final class ComposeBodyTextView: NSTextView {
     var onFormat: ((ComposeBodyEditor.FormatAction) -> Void)?
     var onFocusChange: ((Bool) -> Void)?
+    /// Grey ghost suffix after the caret (greeting autocomplete). Drawn only;
+    /// never part of `string` / the SwiftUI binding.
+    var ghostText: String = "" {
+        didSet {
+            if oldValue != ghostText { needsDisplay = true }
+        }
+    }
 
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
@@ -420,6 +435,74 @@ final class ComposeBodyTextView: NSTextView {
         let ok = super.resignFirstResponder()
         if ok { onFocusChange?(false) }
         return ok
+    }
+
+    override func draw(_ dirtyRect: NSRect) {
+        super.draw(dirtyRect)
+        drawGhostText()
+    }
+
+    /// Gmail-style tertiary label ghost after a zero-length caret.
+    private func drawGhostText() {
+        guard !ghostText.isEmpty else { return }
+        let sel = selectedRange()
+        guard sel.length == 0 else { return }
+        guard let lm = layoutManager, let tc = textContainer else { return }
+        lm.ensureLayout(for: tc)
+        let font = self.font ?? NSFont.systemFont(ofSize: 14)
+        let attrs: [NSAttributedString.Key: Any] = [
+            .font: font,
+            .foregroundColor: NSColor.tertiaryLabelColor,
+        ]
+        let origin = textContainerOrigin
+        let charIndex = min(sel.location, (string as NSString).length)
+        let drawPoint: NSPoint
+        if (string as NSString).length == 0 {
+            // Empty body: first glyph isn't laid out yet — pin to the
+            // container's top-leading content origin.
+            drawPoint = NSPoint(
+                x: origin.x + tc.lineFragmentPadding,
+                y: origin.y)
+        } else {
+            // Caret at end: glyphIndexForCharacter returns the last glyph;
+            // use the caret rect from the layout manager's extra line fragment
+            // when past the last character.
+            let length = (string as NSString).length
+            if charIndex >= length {
+                var used = lm.usedRect(for: tc)
+                if lm.extraLineFragmentUsedRect.height > 0 {
+                    used = lm.extraLineFragmentUsedRect
+                    drawPoint = NSPoint(x: origin.x + used.minX,
+                                        y: origin.y + used.minY)
+                } else {
+                    // Same line as last glyph — place after its max X.
+                    let lastChar = max(0, length - 1)
+                    let g = lm.glyphIndexForCharacter(at: lastChar)
+                    var lineRange = NSRange()
+                    let line = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: &lineRange)
+                    let loc = lm.location(forGlyphAt: g)
+                    let glyphW = lm.boundingRect(forGlyphRange: NSRange(location: g, length: 1),
+                                                 in: tc).width
+                    drawPoint = NSPoint(x: origin.x + loc.x + glyphW,
+                                        y: origin.y + line.minY)
+                }
+            } else {
+                let g = lm.glyphIndexForCharacter(at: charIndex)
+                var lineRange = NSRange()
+                let line = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: &lineRange)
+                let loc = lm.location(forGlyphAt: g)
+                drawPoint = NSPoint(x: origin.x + loc.x, y: origin.y + line.minY)
+            }
+        }
+        // Flipped view: draw(at:) treats y as the top of the string's box when
+        // using NSStringDrawing with default (we center within line height).
+        let size = (ghostText as NSString).size(withAttributes: attrs)
+        let lineH = lm.extraLineFragmentRect.height > 0
+            ? lm.extraLineFragmentRect.height
+            : font.boundingRectForFont.height
+        let y = drawPoint.y + max(0, (lineH - size.height) / 2)
+        (ghostText as NSString).draw(at: NSPoint(x: drawPoint.x, y: y),
+                                    withAttributes: attrs)
     }
 
     /// `scrollRangeToVisible` (caret after Return) can nudge the clip view

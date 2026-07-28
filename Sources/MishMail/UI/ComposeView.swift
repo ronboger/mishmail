@@ -837,8 +837,11 @@ struct ComposeView: View {
             Divider()
 
             // Markdown source editor: live highlight + ⌘B/⌘I/… shortcuts.
+            // ghostText: Gmail-style "Hi {name}," grey suffix at the start of
+            // a thread; Tab (via slashKeyMonitor) commits it into the body.
             ComposeBodyEditor(text: $body_, isFocused: $bodyFocused,
                               caretUTF16: $bodyCaretUTF16,
+                              ghostText: greetingGhostText,
                               formatTarget: formatTarget, fontSize: 14)
                 .padding(.top, 10)
                 .padding(.bottom, 6)
@@ -1447,6 +1450,53 @@ struct ComposeView: View {
         return SnippetInsertion.slashToken(in: head, caretUTF16: bodyCaretUTF16)
     }
 
+    /// First To recipient's first name for greeting autocomplete. Prefers a
+    /// mined contact display name when the token is a bare address.
+    private var greetingRecipientFirstName: String {
+        let token = toTokens.first
+            ?? (toDraft.contains("@")
+                ? toDraft.trimmingCharacters(in: .whitespacesAndNewlines)
+                : nil)
+        guard let token, !token.isEmpty else { return "" }
+        var (name, email) = person(from: token)
+        let emailKey = email.lowercased()
+        if let contact = store.contacts.first(where: {
+            $0.email.caseInsensitiveCompare(emailKey) == .orderedSame
+        }), !contact.name.isEmpty {
+            name = contact.name
+        }
+        return GreetingAutocomplete.firstName(of: name)
+    }
+
+    /// Live Hi/Hey/Hello ghost at the start of a thread. Hidden while the
+    /// `/` picker owns the body or the body isn't focused.
+    private var greetingSuggestion: GreetingAutocomplete.Suggestion? {
+        guard bodyFocused, !slashActive else { return nil }
+        let head = String(body_[..<authoredHeadEnd])
+        return GreetingAutocomplete.suggestion(
+            authoredBody: head,
+            caretUTF16: bodyCaretUTF16,
+            firstName: greetingRecipientFirstName)
+    }
+
+    /// Grey suffix passed into the body editor (empty when no suggestion).
+    private var greetingGhostText: String {
+        greetingSuggestion?.ghost ?? ""
+    }
+
+    /// Tab accept for the greeting ghost. Returns true when it handled Tab.
+    @discardableResult
+    private func acceptGreetingSuggestion() -> Bool {
+        guard let suggestion = greetingSuggestion else { return false }
+        let head = String(body_[..<authoredHeadEnd])
+        let headUTF16 = (head as NSString).length
+        let result = GreetingAutocomplete.applying(
+            suggestion, toBody: body_, authoredHeadEndUTF16: headUTF16)
+        setBody(result.body, caretUTF16: result.caretUTF16)
+        bodyFocused = true
+        return true
+    }
+
     /// Whether the `/` picker should be showing: body focused, a live slash
     /// token, and not Esc-dismissed. Independent of whether anything matches,
     /// so the picker can show its empty/no-match state (confirming the trigger
@@ -1481,7 +1531,8 @@ struct ComposeView: View {
     }
 
     /// Routes compose-body chords the NSTextView would otherwise swallow:
-    /// ⌘K → link sheet; ↑/↓/Return/Tab/Esc → `/` picker while it's showing.
+    /// ⌘K → link sheet; ↑/↓/Return/Tab/Esc → `/` picker while it's showing;
+    /// Tab → greeting ghost accept when a Hi/Hey suggestion is live.
     /// Unmodified keys only for the picker — ⌘-Return (send) and friends pass.
     private func installSlashKeyMonitor() {
         guard slashKeyMonitor == nil else { return }
@@ -1498,6 +1549,11 @@ struct ComposeView: View {
                 return nil
             }
             guard mods.isEmpty else { return event }
+            // Greeting Tab must run before the slash-picker gate: when the
+            // picker is up it owns Tab, but otherwise Tab accepts "Hi Name,".
+            if !slashActive, event.keyCode == 48, acceptGreetingSuggestion() {
+                return nil
+            }
             guard slashActive else { return event }
             // Esc: ContentView owns dismiss via slashPickerVisible (installs
             // first, FIFO). This branch is a backup if that gate is stale.
