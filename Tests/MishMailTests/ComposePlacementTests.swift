@@ -209,6 +209,20 @@ final class ComposePlacementTests: XCTestCase {
                        accuracy: 0.001)
     }
 
+    func testMeasuredInlineChromeFillsHostExactly() {
+        // Trailing-anchored overlay and leading-inset math agree only when
+        // leading + width + trailing == host.width. Lock that contract so a
+        // future change cannot reintroduce under-list overflow.
+        let host = CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        let pane = CGRect(x: 800, y: 0, width: 400, height: 800)
+        let chrome = ComposePlacement.cardChrome(
+            presentation: .inline, minimized: false,
+            host: host, pane: pane, layoutMode: .threePane)
+        XCTAssertEqual(
+            chrome.leading + chrome.width + chrome.trailingPadding,
+            host.width, accuracy: 0.001)
+    }
+
     func testInlineReservedHeightIncludesCardAndPadding() {
         XCTAssertEqual(ComposePlacement.inlineReservedHeight,
                        ComposePlacement.inlineCardHeight

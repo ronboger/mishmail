@@ -142,12 +142,11 @@ enum ComposePlacement {
     static let preferredFloatingWidth: CGFloat = 620
     /// Minimized strip width before host clamp.
     static let preferredMinimizedWidth: CGFloat = 300
-    /// Smallest comfortable expanded card; may shrink further if the host
-    /// cannot provide it (prefer readable over clipping under the list).
-    static let minUsableCardWidth: CGFloat = 280
     /// Floating card trailing / bottom gutter from the window edge.
     static let floatingTrailingPadding: CGFloat = 16
     static let floatingBottomPadding: CGFloat = 16
+    /// Split card width inside the draft column (column − both gutters).
+    static var minSplitCardWidth: CGFloat { minSplitComposeWidth - splitPadding * 2 }
 
     /// Horizontal placement for the compose overlay card.
     struct CardChrome: Equatable {
@@ -218,13 +217,15 @@ enum ComposePlacement {
             let colHost = hostMeasured ? hostW : preferredFloatingWidth * 2
             let col = splitComposeWidth(hostWidth: colHost)
             // Card sits in the right column with pad on both sides.
+            // Clamp against both gutters so a narrow host never loses the
+            // leading inset (overlay is trailing-anchored).
             var width = max(0, col - pad * 2)
             if hostMeasured {
-                width = min(width, max(0, hostW - pad))
+                width = min(width, max(0, hostW - pad * 2))
             }
-            // Keep a usable floor only when the host can provide it.
-            if width < 320, hostMeasured, hostW - pad >= 320 {
-                width = 320
+            let floor = minSplitCardWidth
+            if width < floor, hostMeasured, hostW - pad * 2 >= floor {
+                width = floor
             }
             return CardChrome(leading: 0, width: width, trailingPadding: pad)
         }

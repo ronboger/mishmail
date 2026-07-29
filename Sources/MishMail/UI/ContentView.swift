@@ -504,7 +504,7 @@ struct ContentView: View {
             : split ? max(composeHostFrame.height - splitPad * 2, 400)
             : (inline ? inlineHeight : 500)
         HStack(spacing: 0) {
-            if inline || chrome.leading > 0 {
+            if inline {
                 Spacer()
                     .frame(width: chrome.leading)
             }
