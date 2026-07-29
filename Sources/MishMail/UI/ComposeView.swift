@@ -1060,7 +1060,7 @@ struct ComposeView: View {
                             .font(.system(size: 12.5, weight: .medium))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 12)
-                            .frame(height: 22)
+                            .frame(height: ComposeDraftStatusLayout.rowHeight)
                             .background(UnevenRoundedRectangle(
                                 topLeadingRadius: 6, bottomLeadingRadius: 6,
                                 bottomTrailingRadius: 0, topTrailingRadius: 0)
@@ -1083,7 +1083,7 @@ struct ComposeView: View {
                             .font(.system(size: 9, weight: .bold))
                             .foregroundStyle(.white)
                             .padding(.horizontal, 7)
-                            .frame(height: 22)
+                            .frame(height: ComposeDraftStatusLayout.rowHeight)
                             .background(UnevenRoundedRectangle(
                                 topLeadingRadius: 0, bottomLeadingRadius: 0,
                                 bottomTrailingRadius: 6, topTrailingRadius: 6)
