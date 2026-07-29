@@ -14,9 +14,10 @@ final class UndoToastTests: XCTestCase {
     /// Undo-send keeps its own longer window; the toast chrome duration is
     /// independent so archive/trash can stay snappy.
     func testDisplayDurationIsShorterThanUndoSendWindow() {
-        // Undo-send delay is the actual send hold; toast chrome must not
-        // match or exceed that by default (regression: both used to be long).
-        XCTAssertLessThan(UndoToast.displayDuration, 10)
+        // MailStore.undoSendWindow is 10 (not imported into this hostless
+        // target). Toast chrome must stay well under that send hold.
+        let undoSendWindow: TimeInterval = 10
+        XCTAssertLessThan(UndoToast.displayDuration, undoSendWindow)
     }
 
     /// Animation keys off presence, not identity — nil vs non-nil only.
@@ -26,6 +27,13 @@ final class UndoToastTests: XCTestCase {
         // Distinct stand-ins still present — callers must not re-animate on
         // label/id changes when something is already showing.
         XCTAssertTrue(UndoToast.isPresented("Moved to Trash" as String?))
+    }
+
+    /// Send-then-archive: when the short toast ends, cancel-send must return
+    /// if the 10s window is still open.
+    func testRestoreSendUndoWhenPending() {
+        XCTAssertTrue(UndoToast.shouldRestoreSendUndo(pendingSend: true))
+        XCTAssertFalse(UndoToast.shouldRestoreSendUndo(pendingSend: false))
     }
 }
 

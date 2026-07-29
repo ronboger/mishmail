@@ -15,4 +15,10 @@ enum UndoToast {
     static func isPresented(_ action: Any?) -> Bool {
         action != nil
     }
+
+    /// After a short triage toast expires, restore "Sending…" if undo-send
+    /// is still live so cancel-send is not orphaned by an intervening archive.
+    static func shouldRestoreSendUndo(pendingSend: Bool) -> Bool {
+        pendingSend
+    }
 }

@@ -4250,7 +4250,20 @@ struct ComposeRequest: Identifiable {
         undoTimer?.invalidate()
         undoTimer = Timer.scheduledTimer(withTimeInterval: UndoToast.displayDuration,
                                          repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.undoAction = nil }
+            Task { @MainActor in self?.clearOrRestoreUndoToast() }
+        }
+    }
+
+    /// Drop a short triage toast, or put "Sending…" back if undo-send is
+    /// still live (archive-after-send must not orphan the cancel-send chord).
+    private func clearOrRestoreUndoToast() {
+        undoTimer = nil
+        if UndoToast.shouldRestoreSendUndo(pendingSend: pendingSend != nil) {
+            undoAction = UndoAction(label: "Sending…") { [weak self] in
+                self?.cancelPendingSend()
+            }
+        } else {
+            undoAction = nil
         }
     }
 

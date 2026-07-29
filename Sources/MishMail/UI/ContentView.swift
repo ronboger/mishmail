@@ -822,12 +822,16 @@ private extension ContentView {
             // ⌘Z undoes the pending toast action (archive/trash/send…). Bare
             // `z` is the rebindable single-key below; this chord is the macOS
             // standard and must not rely on a SwiftUI button shortcut (those
-            // often miss when the toast has just appeared). Never steal text
-            // undo while expanded compose owns typing.
+            // often miss when the toast has just appeared). Match the bare-key
+            // overlay guards (palette / label picker / view editor) so ⌘Z and
+            // `z` agree. Never steal text undo while expanded compose owns typing.
             if mods == .command,
                !event.modifierFlags.contains(.shift),
                event.charactersIgnoringModifiers?.lowercased() == "z",
                store.undoAction != nil,
+               !store.showCommandPalette,
+               !store.showLabelPicker,
+               store.editingView == nil,
                ComposeKeyOwnership.allowsMailboxKeys(
                    hasRequest: store.composeRequest != nil,
                    minimized: store.composeMinimized,
