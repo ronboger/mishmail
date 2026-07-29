@@ -85,8 +85,21 @@ final class GreetingAutocompleteTests: XCTestCase {
             GreetingAutocomplete.tone(ofPreviousBody: "Hello Ron,\n\nI hope this finds you well."),
             .formal)
         XCTAssertEqual(
+            GreetingAutocomplete.tone(ofPreviousBody: "Hello"),
+            .formal)
+        XCTAssertEqual(
+            GreetingAutocomplete.tone(ofPreviousBody: "Hello!"),
+            .formal)
+        XCTAssertEqual(
             GreetingAutocomplete.tone(ofPreviousBody: "Thanks.\n\nBest regards,\nAlice"),
             .formal)
+    }
+
+    func testToneDoesNotTreatPartyAsCasualTy() {
+        // Dropped the "ty!" marker so "party!" / "warranty!" stay neutral.
+        XCTAssertEqual(
+            GreetingAutocomplete.tone(ofPreviousBody: "The warranty! expires soon."),
+            .neutral)
     }
 
     func testToneNeutralDefaultAndHi() {

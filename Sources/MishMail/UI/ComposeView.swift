@@ -87,6 +87,9 @@ struct ComposeView: View {
     @State private var replacingDraft: Message?
     /// Notion-style footer status after typing.
     @State private var draftStatus: DraftSaveStatus = .idle
+    /// Cached warmness of the reply target (Hey vs Hi vs Hello). Computed once
+    /// in `prefill` — not on every body keystroke (stripping HTML is not free).
+    @State private var greetingTone: GreetingAutocomplete.Tone = .neutral
     /// Debounced "save soon" timer (typing).
     @State private var autosaveTask: Task<Void, Never>?
     /// Serialized persist chain (latest-wins after in-flight completes).
@@ -1406,6 +1409,10 @@ struct ComposeView: View {
         // cursor lands at the top. Shape must match ReplyComposer.plainQuote
         // exactly so send can upgrade to Gmail-style HTML when untouched.
         quotedTail = ReplyComposer.plainQuote(of: original)
+        // Tone once per compose — greeting ghost re-reads this on each keystroke.
+        let body = MessageParser.replyQuotableText(
+            text: original.bodyText, html: original.bodyHTML)
+        greetingTone = GreetingAutocomplete.tone(ofPreviousBody: body)
         focusBody()
     }
 
@@ -1535,14 +1542,6 @@ struct ComposeView: View {
         })?.name
         return GreetingAutocomplete.recipientFirstName(
             token: token, contactName: contactName)
-    }
-
-    /// Warmth of the message being replied to — steers Hey vs Hi vs Hello.
-    private var greetingTone: GreetingAutocomplete.Tone {
-        guard let original else { return .neutral }
-        let body = MessageParser.replyQuotableText(
-            text: original.bodyText, html: original.bodyHTML)
-        return GreetingAutocomplete.tone(ofPreviousBody: body)
     }
 
     /// Live Hi/Hey/Hello ghost at the start of a thread. Hidden while the

@@ -118,7 +118,9 @@ enum GreetingAutocomplete {
             || open == "yo" || open.hasPrefix("yo,") || open.hasPrefix("yo!") {
             return .casual
         }
-        if open.hasPrefix("dear ") || open.hasPrefix("hello ") || open.hasPrefix("hello,")
+        if open.hasPrefix("dear ") || open.hasPrefix("dear,") || open.hasPrefix("dear:")
+            || open == "hello" || open.hasPrefix("hello ") || open.hasPrefix("hello,")
+            || open.hasPrefix("hello!")
             || open.hasPrefix("good morning") || open.hasPrefix("good afternoon")
             || open.hasPrefix("good evening") {
             return .formal
@@ -132,9 +134,10 @@ enum GreetingAutocomplete {
         var casual = 0
         var formal = 0
 
-        // Casual body markers.
+        // Casual body markers. Avoid short substrings that hit normal words
+        // (e.g. "ty!" inside "party!" / "warranty!").
         for token in ["lol", "haha", "hahaha", "lmao", "omg", "gonna", "wanna",
-                      "thx", "ty!", "thanks!", "can't wait", "so excited"] {
+                      "thx", "thanks!", "can't wait", "so excited"] {
             if sample.contains(token) { casual += 1 }
         }
         if sample.contains("!!") { casual += 1 }
