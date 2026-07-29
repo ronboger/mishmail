@@ -120,16 +120,122 @@ enum ComposePlacement {
     /// Map host + reading-pane frames → leading inset and card width.
     /// Returns nil when either frame is still zero (layout not ready) so the
     /// caller can fall back to a layout-mode estimate.
+    ///
+    /// Width never exceeds the pane's inner width (after side padding). A
+    /// previous `max(minWidth, …)` floor could make the card wider than the
+    /// pane on short columns; the trailing-aligned overlay then hid the left
+    /// edge under the thread list.
     static func inlineMetrics(host: CGRect, pane: CGRect,
-                              sidePadding: CGFloat = inlineSidePadding,
-                              minWidth: CGFloat = 280) -> InlineMetrics? {
+                              sidePadding: CGFloat = inlineSidePadding) -> InlineMetrics? {
         guard host.width > 1, host.height > 1,
               pane.width > 1, pane.height > 1 else { return nil }
         let leading = max(0, pane.minX - host.minX) + sidePadding
         // Prefer the pane's own width so split-view chrome (sidebar/list)
         // never leaks under the card even if host includes them.
-        let width = max(minWidth, pane.width - sidePadding * 2)
+        let width = max(0, pane.width - sidePadding * 2)
         return InlineMetrics(leading: leading, width: width)
+    }
+
+    // MARK: Card chrome (single choke-point for on-screen fit)
+
+    /// Preferred floating / unmeasured-inline card width (Notion/Gmail dock).
+    static let preferredFloatingWidth: CGFloat = 620
+    /// Minimized strip width before host clamp.
+    static let preferredMinimizedWidth: CGFloat = 300
+    /// Smallest comfortable expanded card; may shrink further if the host
+    /// cannot provide it (prefer readable over clipping under the list).
+    static let minUsableCardWidth: CGFloat = 280
+    /// Floating card trailing / bottom gutter from the window edge.
+    static let floatingTrailingPadding: CGFloat = 16
+    static let floatingBottomPadding: CGFloat = 16
+
+    /// Horizontal placement for the compose overlay card.
+    struct CardChrome: Equatable {
+        /// Leading inset from the host's leading edge (0 for floating/split).
+        var leading: CGFloat
+        /// Card width (already clamped to fit the host when measured).
+        var width: CGFloat
+        /// Trailing padding outside the card to the host's trailing edge.
+        var trailingPadding: CGFloat
+    }
+
+    /// Resolve leading / width / trailing pad so the card stays fully on-screen.
+    ///
+    /// Callers pass the already-`resolvedPresentation` value (inline demoted
+    /// to floating when the pane is too short). Height stays elsewhere.
+    static func cardChrome(
+        presentation: ComposePresentation,
+        minimized: Bool,
+        host: CGRect,
+        pane: CGRect,
+        layoutMode: MailLayoutMode
+    ) -> CardChrome {
+        let hostW = host.width
+        let hostMeasured = hostW > 1
+
+        if minimized {
+            let trail = floatingTrailingPadding
+            let width = clampWidth(preferredMinimizedWidth,
+                                   maxAllowed: hostMeasured ? hostW - trail : nil)
+            return CardChrome(leading: 0, width: width, trailingPadding: trail)
+        }
+
+        switch presentation {
+        case .floating:
+            let trail = floatingTrailingPadding
+            let width = clampWidth(preferredFloatingWidth,
+                                   maxAllowed: hostMeasured ? hostW - trail : nil)
+            return CardChrome(leading: 0, width: width, trailingPadding: trail)
+
+        case .inline:
+            let side = inlineSidePadding
+            let measured = inlineMetrics(host: host, pane: pane, sidePadding: side)
+            var leading = measured?.leading
+                ?? fallbackLeadingInset(layoutMode: layoutMode)
+            var width = measured?.width ?? preferredFloatingWidth
+            if hostMeasured {
+                // Fit inside the host: shrink width first, then pull leading in
+                // if a stale/large fallback still overflows.
+                let maxWidth = max(0, hostW - side - max(0, leading))
+                width = min(width, maxWidth)
+                if leading + width + side > hostW {
+                    leading = max(0, hostW - width - side)
+                }
+                // When the pane is known, pin into it (symmetric 12pt gutters)
+                // rather than trusting a fallback that can sit under the list.
+                if pane.width > 1, pane.height > 1 {
+                    let paneLeading = max(0, pane.minX - host.minX) + side
+                    let paneInner = max(0, pane.width - side * 2)
+                    leading = paneLeading
+                    width = min(paneInner, max(0, hostW - leading - side))
+                }
+            }
+            return CardChrome(leading: leading, width: max(0, width),
+                              trailingPadding: side)
+
+        case .split:
+            let pad = splitPadding
+            let colHost = hostMeasured ? hostW : preferredFloatingWidth * 2
+            let col = splitComposeWidth(hostWidth: colHost)
+            // Card sits in the right column with pad on both sides.
+            var width = max(0, col - pad * 2)
+            if hostMeasured {
+                width = min(width, max(0, hostW - pad))
+            }
+            // Keep a usable floor only when the host can provide it.
+            if width < 320, hostMeasured, hostW - pad >= 320 {
+                width = 320
+            }
+            return CardChrome(leading: 0, width: width, trailingPadding: pad)
+        }
+    }
+
+    /// Preferred width, never exceeding `maxAllowed` when the host is known.
+    /// May drop below `minUsableCardWidth` when the host is pathologically narrow.
+    private static func clampWidth(_ preferred: CGFloat,
+                                   maxAllowed: CGFloat?) -> CGFloat {
+        guard let maxAllowed else { return preferred }
+        return max(0, min(preferred, maxAllowed))
     }
 
     // MARK: Side-by-side (split) compose
@@ -149,10 +255,13 @@ enum ComposePlacement {
     }
 
     /// Rough leading inset when PreferenceKey frames are not yet available.
+    /// Matches `NavigationSplitView` ideal column widths in ContentView
+    /// (sidebar 240, list 560) so a first-frame fallback does not place the
+    /// card under the list.
     static func fallbackLeadingInset(layoutMode: MailLayoutMode) -> CGFloat {
         switch layoutMode {
         case .threadFocus: return inlineSidePadding
-        case .threePane: return 240 + 480
+        case .threePane: return 240 + 560
         case .compactDetail, .list: return 220
         }
     }

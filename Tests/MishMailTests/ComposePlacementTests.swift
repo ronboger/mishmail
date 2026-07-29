@@ -100,10 +100,113 @@ final class ComposePlacementTests: XCTestCase {
     func testFallbackLeadingInsetByLayoutMode() {
         XCTAssertEqual(ComposePlacement.fallbackLeadingInset(layoutMode: .threadFocus),
                        ComposePlacement.inlineSidePadding)
+        // Matches NavigationSplitView ideals: sidebar 240 + list 560.
         XCTAssertEqual(ComposePlacement.fallbackLeadingInset(layoutMode: .threePane),
-                       240 + 480)
+                       240 + 560)
         XCTAssertEqual(ComposePlacement.fallbackLeadingInset(layoutMode: .compactDetail),
                        220)
+    }
+
+    func testInlineMetricsNeverExceedsPane() {
+        // Short reading pane: width must stay inside the pane (no minWidth floor
+        // that overflows into the list under a trailing-aligned overlay).
+        let host = CGRect(x: 0, y: 0, width: 1_000, height: 700)
+        let pane = CGRect(x: 800, y: 0, width: 200, height: 700)
+        let metrics = ComposePlacement.inlineMetrics(host: host, pane: pane)
+        XCTAssertNotNil(metrics)
+        XCTAssertEqual(metrics!.width,
+                       200 - ComposePlacement.inlineSidePadding * 2,
+                       accuracy: 0.001)
+        XCTAssertLessThanOrEqual(metrics!.width, pane.width)
+    }
+
+    func testFloatingWidthShrinksToHost() {
+        let host = CGRect(x: 0, y: 0, width: 500, height: 700)
+        let chrome = ComposePlacement.cardChrome(
+            presentation: .floating, minimized: false,
+            host: host, pane: .zero, layoutMode: .list)
+        XCTAssertEqual(chrome.trailingPadding,
+                       ComposePlacement.floatingTrailingPadding)
+        XCTAssertLessThanOrEqual(
+            chrome.width + chrome.trailingPadding, host.width + 0.001)
+        XCTAssertLessThan(chrome.width,
+                          ComposePlacement.preferredFloatingWidth)
+    }
+
+    func testFloatingKeepsPreferredOnWideHost() {
+        let host = CGRect(x: 0, y: 0, width: 1_400, height: 900)
+        let chrome = ComposePlacement.cardChrome(
+            presentation: .floating, minimized: false,
+            host: host, pane: .zero, layoutMode: .threePane)
+        XCTAssertEqual(chrome.width,
+                       ComposePlacement.preferredFloatingWidth,
+                       accuracy: 0.001)
+        XCTAssertEqual(chrome.leading, 0, accuracy: 0.001)
+    }
+
+    func testInlineCardFitsHostWhenLeadingLarge() {
+        // Three-pane-ish: list+sidebar leave a 360pt pane on a 1_100 host.
+        let host = CGRect(x: 0, y: 0, width: 1_100, height: 800)
+        let pane = CGRect(x: 740, y: 0, width: 360, height: 800)
+        let chrome = ComposePlacement.cardChrome(
+            presentation: .inline, minimized: false,
+            host: host, pane: pane, layoutMode: .threePane)
+        XCTAssertGreaterThanOrEqual(chrome.leading, 0)
+        XCTAssertLessThanOrEqual(
+            chrome.leading + chrome.width + chrome.trailingPadding,
+            host.width + 0.001)
+        // Fully inside the reading pane (symmetric side padding).
+        let cardMinX = host.minX + chrome.leading
+        let cardMaxX = cardMinX + chrome.width
+        XCTAssertGreaterThanOrEqual(cardMinX, pane.minX - 0.001)
+        XCTAssertLessThanOrEqual(cardMaxX, pane.maxX + 0.001)
+    }
+
+    func testInlineFallbackClampsOnCompactHost() {
+        // Metrics unavailable (zero pane): fallback leading + 620 must still
+        // fit the host instead of sliding under the list.
+        let host = CGRect(x: 0, y: 0, width: 900, height: 700)
+        let chrome = ComposePlacement.cardChrome(
+            presentation: .inline, minimized: false,
+            host: host, pane: .zero, layoutMode: .compactDetail)
+        XCTAssertLessThanOrEqual(
+            chrome.leading + chrome.width + chrome.trailingPadding,
+            host.width + 0.001)
+        XCTAssertGreaterThan(chrome.width, 0)
+    }
+
+    func testMinimizedWidthClamps() {
+        let host = CGRect(x: 0, y: 0, width: 280, height: 600)
+        let chrome = ComposePlacement.cardChrome(
+            presentation: .floating, minimized: true,
+            host: host, pane: .zero, layoutMode: .list)
+        XCTAssertLessThanOrEqual(
+            chrome.width + chrome.trailingPadding, host.width + 0.001)
+    }
+
+    func testSymmetricInlineSideInsets() {
+        let host = CGRect(x: 100, y: 50, width: 1_200, height: 800)
+        let pane = CGRect(x: 100 + 240 + 560, y: 50, width: 400, height: 800)
+        let chrome = ComposePlacement.cardChrome(
+            presentation: .inline, minimized: false,
+            host: host, pane: pane, layoutMode: .threePane)
+        let side = ComposePlacement.inlineSidePadding
+        let cardMinX = host.minX + chrome.leading
+        let cardMaxX = cardMinX + chrome.width
+        XCTAssertEqual(cardMinX - pane.minX, side, accuracy: 0.001)
+        XCTAssertEqual(pane.maxX - cardMaxX, side, accuracy: 0.001)
+        XCTAssertEqual(chrome.trailingPadding, side, accuracy: 0.001)
+    }
+
+    func testUnmeasuredHostKeepsPreferredFloatingWidth() {
+        // First frame before PreferenceKeys fire: keep the historical 620 so
+        // we don't flash a zero-width card; clamp kicks in once host is known.
+        let chrome = ComposePlacement.cardChrome(
+            presentation: .floating, minimized: false,
+            host: .zero, pane: .zero, layoutMode: .list)
+        XCTAssertEqual(chrome.width,
+                       ComposePlacement.preferredFloatingWidth,
+                       accuracy: 0.001)
     }
 
     func testInlineReservedHeightIncludesCardAndPadding() {

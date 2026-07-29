@@ -487,32 +487,32 @@ struct ContentView: View {
         let minimized = store.composeMinimized
         let presentation = ComposePlacement.resolvedPresentation(
             request.presentation, paneHeight: readingPaneFrame.height)
+        // Minimized always docks like floating regardless of presentation.
+        let chromePresentation: ComposePresentation = minimized ? .floating : presentation
         let inline = presentation == .inline && !minimized
         let split = presentation == .split && !minimized
-        let measured = ComposePlacement.inlineMetrics(
-            host: composeHostFrame, pane: readingPaneFrame)
-        let inlineLeading = measured?.leading
-            ?? ComposePlacement.fallbackLeadingInset(layoutMode: layoutMode)
-        let inlineWidth = measured?.width
+        let chrome = ComposePlacement.cardChrome(
+            presentation: chromePresentation,
+            minimized: minimized,
+            host: composeHostFrame,
+            pane: readingPaneFrame,
+            layoutMode: layoutMode)
         let splitPad = ComposePlacement.splitPadding
-        let splitWidth = ComposePlacement.splitComposeWidth(
-            hostWidth: composeHostFrame.width)
-        let cardWidth: CGFloat = minimized ? 300
-            : split ? max(splitWidth - splitPad * 2, 320)
-            : (inline ? (inlineWidth ?? 620) : 620)
         let inlineHeight = ComposePlacement.effectiveInlineCardHeight(
             paneHeight: readingPaneFrame.height)
         let cardHeight: CGFloat = minimized ? 40
             : split ? max(composeHostFrame.height - splitPad * 2, 400)
             : (inline ? inlineHeight : 500)
         HStack(spacing: 0) {
-            if inline {
+            if inline || chrome.leading > 0 {
                 Spacer()
-                    .frame(width: inlineLeading)
+                    .frame(width: chrome.leading)
             }
             ComposeView(request: request)
                 .id(request.id)
-                .frame(width: cardWidth, height: cardHeight)
+                // topLeading: an over-wide child must not center-clip under
+                // clipShape (footer fixedSize / long tokens on narrow cards).
+                .frame(width: chrome.width, height: cardHeight, alignment: .topLeading)
                 .background(Color(nsColor: .windowBackgroundColor))
                 .clipShape(RoundedRectangle(cornerRadius: minimized ? PMRadius.md : PMRadius.lg))
                 .pmCardElevation(cornerRadius: minimized ? PMRadius.md : PMRadius.lg,
@@ -523,11 +523,14 @@ struct ContentView: View {
         }
         .padding(inline
                  ? EdgeInsets(top: 0, leading: 0,
-                              bottom: ComposePlacement.inlineBottomPadding, trailing: 0)
+                              bottom: ComposePlacement.inlineBottomPadding,
+                              trailing: chrome.trailingPadding)
                  : split
                  ? EdgeInsets(top: splitPad, leading: 0,
-                              bottom: splitPad, trailing: splitPad)
-                 : EdgeInsets(top: 0, leading: 0, bottom: 16, trailing: 16))
+                              bottom: splitPad, trailing: chrome.trailingPadding)
+                 : EdgeInsets(top: 0, leading: 0,
+                              bottom: ComposePlacement.floatingBottomPadding,
+                              trailing: chrome.trailingPadding))
     }
 
     /// True when expanded inline compose is open for the selected thread —
