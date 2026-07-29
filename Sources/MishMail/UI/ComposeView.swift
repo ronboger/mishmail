@@ -1520,21 +1520,29 @@ struct ComposeView: View {
     }
 
     /// First To recipient's first name for greeting autocomplete. Prefers a
-    /// mined contact display name when the token is a bare address.
+    /// mined contact display name when usable; never returns an email-shaped
+    /// string (bare-address contacts used to poison this with `John@host`).
     private var greetingRecipientFirstName: String {
         let token = toTokens.first
             ?? (toDraft.contains("@")
                 ? toDraft.trimmingCharacters(in: .whitespacesAndNewlines)
                 : nil)
         guard let token, !token.isEmpty else { return "" }
-        var (name, email) = person(from: token)
+        let (_, email) = GreetingAutocomplete.person(from: token)
         let emailKey = email.lowercased()
-        if let contact = store.contacts.first(where: {
+        let contactName = store.contacts.first(where: {
             $0.email.caseInsensitiveCompare(emailKey) == .orderedSame
-        }), !contact.name.isEmpty {
-            name = contact.name
-        }
-        return GreetingAutocomplete.firstName(of: name)
+        })?.name
+        return GreetingAutocomplete.recipientFirstName(
+            token: token, contactName: contactName)
+    }
+
+    /// Warmth of the message being replied to — steers Hey vs Hi vs Hello.
+    private var greetingTone: GreetingAutocomplete.Tone {
+        guard let original else { return .neutral }
+        let body = MessageParser.replyQuotableText(
+            text: original.bodyText, html: original.bodyHTML)
+        return GreetingAutocomplete.tone(ofPreviousBody: body)
     }
 
     /// Live Hi/Hey/Hello ghost at the start of a thread. Hidden while the
@@ -1550,7 +1558,8 @@ struct ComposeView: View {
         return GreetingAutocomplete.suggestion(
             authoredBody: head,
             caretUTF16: bodyCaretUTF16,
-            firstName: greetingRecipientFirstName)
+            firstName: greetingRecipientFirstName,
+            tone: greetingTone)
     }
 
     /// Grey suffix passed into the body editor (empty when no suggestion).
@@ -1817,17 +1826,7 @@ struct ComposeView: View {
     /// Name + email from a recipient token ("Alice <a@x.com>" or bare address,
     /// deriving a friendly name from the local part: john.doe → John Doe).
     private func person(from token: String) -> (name: String, email: String) {
-        if let lt = token.firstIndex(of: "<"), let gt = token.firstIndex(of: ">"), lt < gt {
-            return (String(token[..<lt]).trimmingCharacters(in: CharacterSet(charactersIn: " \"")),
-                    String(token[token.index(after: lt)..<gt]))
-        }
-        let email = token.trimmingCharacters(in: .whitespaces)
-        let local = email.split(separator: "@").first.map(String.init) ?? ""
-        let name = local
-            .split(whereSeparator: { $0 == "." || $0 == "_" || $0 == "-" })
-            .map { $0.prefix(1).uppercased() + $0.dropFirst() }
-            .joined(separator: " ")
-        return (name, email)
+        GreetingAutocomplete.person(from: token)
     }
 
     private func saveCurrentAsSnippet() {

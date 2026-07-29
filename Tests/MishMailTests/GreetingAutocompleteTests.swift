@@ -9,15 +9,122 @@ final class GreetingAutocompleteTests: XCTestCase {
         XCTAssertEqual(GreetingAutocomplete.firstName(of: "  Bob  "), "Bob")
         XCTAssertEqual(GreetingAutocomplete.firstName(of: ""), "")
         XCTAssertEqual(GreetingAutocomplete.firstName(of: "   "), "")
+        // Tabs / non-breaking-ish whitespace, not only literal space.
+        XCTAssertEqual(GreetingAutocomplete.firstName(of: "Ann\tLee"), "Ann")
     }
 
-    // MARK: - empty body → default Hi
+    // MARK: - usable names / recipient resolution
+
+    func testUsablePersonNameRejectsEmailShaped() {
+        XCTAssertTrue(GreetingAutocomplete.isUsablePersonName("Alice"))
+        XCTAssertTrue(GreetingAutocomplete.isUsablePersonName("John Doe"))
+        XCTAssertFalse(GreetingAutocomplete.isUsablePersonName(""))
+        XCTAssertFalse(GreetingAutocomplete.isUsablePersonName("   "))
+        XCTAssertFalse(GreetingAutocomplete.isUsablePersonName("John@ormoni.bio"))
+        XCTAssertFalse(GreetingAutocomplete.isUsablePersonName("john@x.com"))
+    }
+
+    func testRecipientFirstNamePrefersContactOverLocalPart() {
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "john@ormoni.bio", contactName: "John Casey"),
+            "John")
+    }
+
+    func testRecipientFirstNameRejectsEmailShapedContact() {
+        // The bug in the screenshot: contact.name was the bare address
+        // (MessageParser.displayName on a From without angle brackets), and
+        // greeting used it wholesale → "Hi John@ormoni.bio,".
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "John@ormoni.bio", contactName: "John@ormoni.bio"),
+            "John")
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "john@ormoni.bio", contactName: "john@ormoni.bio"),
+            "John")
+    }
+
+    func testRecipientFirstNameFromAngleBracketToken() {
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "Alice Smith <alice@x.com>", contactName: nil),
+            "Alice")
+    }
+
+    func testRecipientFirstNameEmptyWhenNothingUsable() {
+        // Local part is empty-ish after parse? Bare "@host" is junk.
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "@x.com", contactName: nil),
+            "")
+    }
+
+    func testPersonFromBareLocalPartTitleCases() {
+        let p = GreetingAutocomplete.person(from: "john.doe@x.com")
+        XCTAssertEqual(p.name, "John Doe")
+        XCTAssertEqual(p.email, "john.doe@x.com")
+    }
+
+    // MARK: - tone
+
+    func testToneCasualFromHeyOpener() {
+        XCTAssertEqual(
+            GreetingAutocomplete.tone(ofPreviousBody: "Hey Ron,\n\nQuick question."),
+            .casual)
+        XCTAssertEqual(
+            GreetingAutocomplete.tone(ofPreviousBody: "yo — are you free?"),
+            .casual)
+    }
+
+    func testToneFormalFromDearOrHello() {
+        XCTAssertEqual(
+            GreetingAutocomplete.tone(ofPreviousBody: "Dear Ron,\n\nPlease find attached."),
+            .formal)
+        XCTAssertEqual(
+            GreetingAutocomplete.tone(ofPreviousBody: "Hello Ron,\n\nI hope this finds you well."),
+            .formal)
+        XCTAssertEqual(
+            GreetingAutocomplete.tone(ofPreviousBody: "Thanks.\n\nBest regards,\nAlice"),
+            .formal)
+    }
+
+    func testToneNeutralDefaultAndHi() {
+        XCTAssertEqual(GreetingAutocomplete.tone(ofPreviousBody: ""), .neutral)
+        XCTAssertEqual(
+            GreetingAutocomplete.tone(ofPreviousBody: "Hi Ron,\n\nFollowing up on the deck."),
+            .neutral)
+        XCTAssertEqual(
+            GreetingAutocomplete.tone(ofPreviousBody: "Can we move the meeting to 3pm?"),
+            .neutral)
+    }
+
+    func testToneCasualFromBodySignals() {
+        XCTAssertEqual(
+            GreetingAutocomplete.tone(ofPreviousBody: "Hi!\n\nlol that was funny haha"),
+            .casual)
+    }
+
+    // MARK: - empty body → tone-aware default
 
     func testEmptyBodySuggestsHiName() {
         let s = GreetingAutocomplete.suggestion(
             authoredBody: "", caretUTF16: 0, firstName: "Alice")
         XCTAssertEqual(s?.full, "Hi Alice, ")
         XCTAssertEqual(s?.ghost, "Hi Alice, ")
+    }
+
+    func testEmptyBodyCasualSuggestsHey() {
+        let s = GreetingAutocomplete.suggestion(
+            authoredBody: "", caretUTF16: 0, firstName: "Alice", tone: .casual)
+        XCTAssertEqual(s?.full, "Hey Alice, ")
+        XCTAssertEqual(s?.ghost, "Hey Alice, ")
+    }
+
+    func testEmptyBodyFormalSuggestsHello() {
+        let s = GreetingAutocomplete.suggestion(
+            authoredBody: "", caretUTF16: 0, firstName: "Alice", tone: .formal)
+        XCTAssertEqual(s?.full, "Hello Alice, ")
     }
 
     func testEmptyFirstNameYieldsNil() {
@@ -27,6 +134,12 @@ final class GreetingAutocompleteTests: XCTestCase {
             authoredBody: "H", caretUTF16: 1, firstName: "  "))
     }
 
+    func testEmailShapedFirstNameYieldsNil() {
+        // Defense in depth: even if a caller passes a bad first name, no ghost.
+        XCTAssertNil(GreetingAutocomplete.suggestion(
+            authoredBody: "", caretUTF16: 0, firstName: "John@ormoni.bio"))
+    }
+
     // MARK: - prefix matching
 
     func testPartialHiOpener() {
@@ -34,6 +147,12 @@ final class GreetingAutocompleteTests: XCTestCase {
             authoredBody: "H", caretUTF16: 1, firstName: "Alice")
         XCTAssertEqual(s?.full, "Hi Alice, ")
         XCTAssertEqual(s?.ghost, "i Alice, ")
+    }
+
+    func testAmbiguousHPrefersHeyWhenCasual() {
+        let s = GreetingAutocomplete.suggestion(
+            authoredBody: "H", caretUTF16: 1, firstName: "Ron", tone: .casual)
+        XCTAssertEqual(s?.full, "Hey Ron, ")
     }
 
     func testHiWithSpaceSuggestsName() {

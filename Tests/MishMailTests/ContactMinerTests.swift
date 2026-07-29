@@ -152,6 +152,55 @@ final class ContactMinerTests: XCTestCase {
         XCTAssertEqual(ranked[0].name, "")
     }
 
+    /// Bare From headers keep original casing in displayName while emails are
+    /// lowercased — the old `name == email` check missed that and left
+    /// "John@ormoni.bio" as the contact display name (→ "Hi John@ormoni.bio,").
+    func testCasedBareAddressNotStoredAsDisplayName() {
+        var weights: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(
+            messages: [msg(rowid: 1, from: "John@ormoni.bio")],
+            into: &weights,
+            excluding: [])
+        XCTAssertEqual(weights["john@ormoni.bio"]?.name, "")
+        let ranked = ContactMiner.ranked(from: weights)
+        XCTAssertEqual(ranked.first?.name, "")
+        XCTAssertEqual(ranked.first?.email, "john@ormoni.bio")
+    }
+
+    func testEmailShapedNameNeverWinsOverRealName() {
+        var weights: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(
+            messages: [
+                msg(rowid: 1, from: "John <john@ormoni.bio>"),
+                // Longer but unusable — must not replace "John".
+                msg(rowid: 2, from: "John@ormoni.bio"),
+            ],
+            into: &weights,
+            excluding: [])
+        XCTAssertEqual(weights["john@ormoni.bio"]?.name, "John")
+    }
+
+    func testRankedScrubsLegacyEmailShapedNames() {
+        // Older weight maps may still hold email-as-name until a full rebuild.
+        let legacy: ContactMiner.WeightMap = [
+            "john@ormoni.bio": (name: "John@ormoni.bio", weight: 3),
+            "alice@x.com": (name: "Alice Smith", weight: 1),
+        ]
+        let ranked = ContactMiner.ranked(from: legacy)
+        let byEmail = Dictionary(uniqueKeysWithValues: ranked.map { ($0.email, $0.name) })
+        XCTAssertEqual(byEmail["john@ormoni.bio"], "")
+        XCTAssertEqual(byEmail["alice@x.com"], "Alice Smith")
+    }
+
+    func testIsUsableDisplayName() {
+        XCTAssertTrue(ContactMiner.isUsableDisplayName("Alice", email: "a@x.com"))
+        XCTAssertFalse(ContactMiner.isUsableDisplayName("", email: "a@x.com"))
+        XCTAssertFalse(ContactMiner.isUsableDisplayName("a@x.com", email: "a@x.com"))
+        XCTAssertFalse(ContactMiner.isUsableDisplayName("A@X.COM", email: "a@x.com"))
+        XCTAssertFalse(ContactMiner.isUsableDisplayName("John@ormoni.bio",
+                                                       email: "john@ormoni.bio"))
+    }
+
     func testEmptyAndJunkHeadersSkipped() {
         var weights: ContactMiner.WeightMap = [:]
         ContactMiner.merge(
