@@ -283,10 +283,21 @@ struct ContentView: View {
                 HStack(spacing: 14) {
                     Text(undo.label)
                         .font(.system(size: 14, weight: .medium))
-                    Button("Undo") { undo.undo() }
-                        .buttonStyle(.borderedProminent)
-                        .controlSize(.large)
-                        .keyboardShortcut("z", modifiers: .command)
+                    Button {
+                        undo.undo()
+                    } label: {
+                        HStack(spacing: 6) {
+                            Text("Undo")
+                            // Rebindable single-key (default `z`); ⌘Z is also
+                            // wired in the key monitor for the standard chord.
+                            Text(store.keyBindings.key(for: .undo))
+                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                .opacity(0.75)
+                        }
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .help("Undo (\(store.keyBindings.key(for: .undo)) or ⌘Z)")
                 }
                 .padding(.horizontal, 22).padding(.vertical, 13)
                 .background(.regularMaterial, in: Capsule())
@@ -303,7 +314,9 @@ struct ContentView: View {
                     .transition(.move(edge: .bottom).combined(with: .opacity))
             }
         }
-        .animation(PMMotion.feedback, value: store.undoAction?.id)
+        // Presence only — not `undoAction?.id` — so rapid keyboard archive/
+        // trash updates the label in place instead of re-sliding every time.
+        .animation(PMMotion.feedback, value: UndoToast.isPresented(store.undoAction))
         .animation(PMMotion.feedback, value: store.notice)
         .sheet(item: bound.editingView) { view in
             ViewEditor(view: view)
@@ -804,6 +817,30 @@ private extension ContentView {
             }
             if mods == .control, event.charactersIgnoringModifiers == "f" {
                 store.showFilterMenu.toggle()
+                return nil
+            }
+            // ⌘Z undoes the pending toast action (archive/trash/send…). Bare
+            // `z` is the rebindable single-key below; this chord is the macOS
+            // standard and must not rely on a SwiftUI button shortcut (those
+            // often miss when the toast has just appeared). Match the bare-key
+            // overlay guards (palette / label picker / view editor) so ⌘Z and
+            // `z` agree. Never steal text undo while expanded compose owns typing.
+            if mods == .command,
+               !event.modifierFlags.contains(.shift),
+               event.charactersIgnoringModifiers?.lowercased() == "z",
+               store.undoAction != nil,
+               !store.showCommandPalette,
+               !store.showLabelPicker,
+               !store.showShortcutsHelp,
+               store.editingView == nil,
+               ComposeKeyOwnership.allowsMailboxKeys(
+                   hasRequest: store.composeRequest != nil,
+                   minimized: store.composeMinimized,
+                   finishing: store.composeFinishing),
+               !(TextFocus.isEditing(event.window?.firstResponder)
+                 && ComposeKeyOwnership.textFocusBlocksMailboxKeys(
+                     finishing: store.composeFinishing)) {
+                store.perform(.undo)
                 return nil
             }
             if store.showCommandPalette, event.keyCode == 53 {  // esc
