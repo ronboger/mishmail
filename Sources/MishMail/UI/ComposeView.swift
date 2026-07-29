@@ -200,41 +200,24 @@ struct ComposeView: View {
     /// While the quote is collapsed, size the body editor to the authored
     /// text so a normal reply (greeting + a few lines + sign-off) fits
     /// without internal scroll — the "…" pill stays just under the text
-    /// instead of clipping into it. Cap high enough for longer drafts so
-    /// the card footer stays on-screen; floor so an empty reply still has
-    /// a usable writing surface. When the `/` picker is open, floor/cap
-    /// drop so the match list keeps a real footprint in the fixed-height
-    /// inline reply card.
+    /// instead of floating in empty chrome. Math lives in
+    /// `ComposeBodyLayout` (unit-tested): modest empty floor, content+slack
+    /// when typing, slash band for the `/` picker.
     private var bodyEditorMaxHeight: CGFloat {
-        guard !quotedTail.isEmpty else { return .infinity }
-        // 14pt body font + 5pt lineSpacing ≈ 19pt per line; +16 for the
-        // editor's top/bottom padding around the first/last fragment.
-        let lineHeight: CGFloat = 19
-        // Card is 620pt wide with ~14pt chrome; ~72 chars fit at 14pt.
-        let charsPerLine = 72
-        var visualLines: CGFloat = 0
-        for line in body_.components(separatedBy: "\n") {
-            let len = max(line.count, 1)
-            visualLines += CGFloat((len + charsPerLine - 1) / charsPerLine)
-        }
-        if visualLines < 1 { visualLines = 1 }
-        let contentHeight = 16 + visualLines * lineHeight
-        // Floor leaves a real writing surface on short replies (inline card
-        // is taller); cap keeps footer + "…" on-screen for long drafts.
-        // Slash-active + collapsed quote: leave room for the match list.
-        // Regular compose (no quote) already flexes; don't shrink it.
-        let floor: CGFloat = (slashActive && !quotedTail.isEmpty) ? 72 : 180
-        let cap: CGFloat = (slashActive && !quotedTail.isEmpty) ? 160 : 320
-        return min(max(contentHeight, floor), cap)
+        ComposeBodyLayout.editorHeights(
+            body: body_,
+            hasCollapsedQuote: !quotedTail.isEmpty,
+            slashActive: slashActive).max
     }
 
-    /// Body editor minimum while the quote is collapsed — matches the floor
-    /// in `bodyEditorMaxHeight` so short replies don't look like a one-liner
-    /// field under a tall card of empty chrome. Shrinks only for the reply
-    /// path where the fixed card + quote Spacer used to starve the picker.
+    /// Body editor minimum — mirrors `bodyEditorMaxHeight` so short replies
+    /// hug content (no 180pt void under two lines) while empty replies keep
+    /// a usable writing surface.
     private var bodyEditorMinHeight: CGFloat {
-        if slashActive && !quotedTail.isEmpty { return 72 }
-        return quotedTail.isEmpty ? 120 : 180
+        ComposeBodyLayout.editorHeights(
+            body: body_,
+            hasCollapsedQuote: !quotedTail.isEmpty,
+            slashActive: slashActive).min
     }
 
     /// Focuses the body editor. Setting the FocusState synchronously in
