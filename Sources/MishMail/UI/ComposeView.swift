@@ -135,13 +135,25 @@ struct ComposeView: View {
     /// Undo `beginFinish` when the action can't complete (e.g. empty To:).
     private func abortFinish() {
         didFinish = false
-        store.composeFinishing = false
+        // Only clear the flag if this card is still the mounted request —
+        // a newer compose opened during finish already reset it.
+        if store.composeRequest?.id == request.id {
+            store.composeFinishing = false
+        }
+        // beginFinish resigned focus so mailbox keys would work; put the
+        // caret back so the re-enabled card is usable without a click.
+        focusBody()
     }
 
+    /// Dismiss this card only if it is still the store's active request.
+    /// Finish tasks await persist and can outlive a user who opened a new
+    /// compose via `g i` + reply (or `c`) during the finish window — a bare
+    /// clear would yank the new card mid-typing.
     private func close() {
         didFinish = true
         autosaveTask?.cancel()
         autosaveTask = nil
+        guard store.composeRequest?.id == request.id else { return }
         // clearComposeRequest (not a bare nil) flushes a queued mailto: from
         // an external link that waited on this expanded draft; also clears
         // composeFinishing.
@@ -1057,6 +1069,9 @@ struct ComposeView: View {
                 // right cluster keeps Send + status fully visible; clip hides
                 // overflow format icons rather than pushing Send off-card.
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                // contentShape + clipped: hide overflow format icons and keep
+                // them from receiving clicks in the gap beside the right cluster.
+                .contentShape(Rectangle())
                 .clipped()
                 .layoutPriority(0)
 

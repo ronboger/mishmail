@@ -1,7 +1,12 @@
 import CoreGraphics
 import Foundation
 
-/// Pure layout rules for the compose footer.
+/// Pure layout contract for the compose footer (documented + unit-tested).
+///
+/// The live SwiftUI structure in `ComposeView` enforces this with a left
+/// cluster (`.frame(minWidth: 0).clipped()`, layoutPriority 0) and a right
+/// cluster (`.fixedSize()`, layoutPriority 1). These helpers encode the same
+/// numbers for regression tests — they are not called from the view.
 ///
 /// The footer packs many fixed-size controls (Snippets, format bar, draft
 /// status, Send). On a normal card those together exceed the inner width once
