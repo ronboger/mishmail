@@ -4,7 +4,11 @@ import GRDB
 /// Regression: unstarring a thread that was only visible because of star
 /// pin-through (category hide, Starred mailbox, is:starred search, starredOnly
 /// saved views) used to drop the row immediately. Users often still want to
-/// work the thread — keepIds hold it until the view/filter changes.
+/// work the thread — keepIds hold it.
+///
+/// Exit policy (see `StarStickiness`):
+/// - **Session** (Starred / is:starred / starredOnly): until view/filter change.
+/// - **Thread** (category hide only): while selected or multi-checked.
 ///
 /// Mirrors production SQL from `CategoryHide`, `.starred` baseQuery, and the
 /// committed-search `is:starred` branch (hostless test target has no AppKit
@@ -207,7 +211,7 @@ final class StarUnstarStickinessTests: XCTestCase {
 
     // MARK: - Gate (when pin should arm)
 
-    /// Mirrors `MailStore.starStateFilterActive` without AppKit.
+    /// Production `StarStickiness.policy` — pin arms when policy != .none.
     private func starFilterActive(
         hide: Set<String> = [],
         labelId: String? = nil,
@@ -217,20 +221,14 @@ final class StarUnstarStickinessTests: XCTestCase {
         savedExcludePromotionsLegacy: Bool = false,
         search: String = ""
     ) -> Bool {
-        if !hide.isEmpty { return true }
-        if labelId == "STARRED" { return true }
-        if viewIsStarred { return true }
-        if viewLabelIsStarred { return true }
-        if savedStarredOnly || savedExcludePromotionsLegacy { return true }
-        let s = search.trimmingCharacters(in: .whitespaces)
-        if !s.isEmpty {
-            let parsed = SearchQuery.parse(s)
-            if parsed.starred { return true }
-            if parsed.labels.contains(where: {
-                $0.caseInsensitiveCompare("starred") == .orderedSame
-            }) { return true }
-        }
-        return false
+        StarStickiness.policy(
+            committedSearch: search,
+            chipsHide: hide,
+            chipsLabelId: labelId,
+            viewIsStarred: viewIsStarred,
+            viewLabelIsStarred: viewLabelIsStarred,
+            savedStarredOnly: savedStarredOnly,
+            savedExcludePromotionsLegacy: savedExcludePromotionsLegacy) != .none
     }
 
     func testStarStateFilterGate() {
@@ -248,6 +246,8 @@ final class StarUnstarStickinessTests: XCTestCase {
         XCTAssertFalse(starFilterActive(search: "is:unread"))
         XCTAssertFalse(starFilterActive(search: "invoice"))
         XCTAssertFalse(starFilterActive(search: "label:work"))
+        // Hide chips under a plain search no longer arm (search replaces filters).
+        XCTAssertFalse(starFilterActive(hide: ["CATEGORY_UPDATES"], search: "invoice"))
     }
 
     func testLabelStarredFilterKeepIds() throws {

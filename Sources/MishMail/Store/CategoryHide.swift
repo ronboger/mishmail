@@ -8,8 +8,9 @@ import GRDB
 /// unstarred mail in that tab; a star is an explicit pin and always survives.
 ///
 /// `keepIds` are threads that were just unstarred under an active hide (or
-/// other star-gated list) and must stay visible until the view/filter changes
-/// — same stickiness idea as read-state keepIds under `is:unread`.
+/// other star-gated list). Under category hide, pins are thread-long (drop
+/// when selection leaves); under Starred / is:starred they are session-long
+/// (until view/filter change). See `StarStickiness`.
 enum CategoryHide {
     /// Hide the given Gmail categories (`CATEGORY_PROMOTIONS`, …), keeping
     /// starred threads (and stickied `keepIds`) visible. Prefer denorm flags

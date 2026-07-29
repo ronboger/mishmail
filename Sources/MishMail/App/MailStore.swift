@@ -273,9 +273,23 @@ final class MailStore {
     /// (which would rebuild the reading-pane tree, sidebar, and every view
     /// observing the store). Views that read selection in `body` must observe
     /// `listFocus` — a focus-only change publishes nothing on MailStore.
+    ///
+    /// The setter is the single drop site for thread-long unstar pins (category
+    /// hide): every focus path eventually writes here (List binding →
+    /// `selectThread`, keyboard → `moveSelection`, auto-advance). Intent is
+    /// read from `pendingSelectionIntent` (set just before this write).
     var selectedThreadId: String? {
         get { listFocus.id }
-        set { listFocus.id = newValue }
+        set {
+            let old = listFocus.id
+            listFocus.id = newValue
+            guard old != newValue else { return }
+            // pendingSelectionIntent is set by setSelectionFocus before this
+            // write; List/direct paths default to .click via consumeSelectionIntent
+            // parity (drop is correct for click).
+            applyThreadLongStarPinDrops(
+                selectionIntent: pendingSelectionIntent ?? .click)
+        }
     }
     /// Narrow observation surface for list focus — injected as
     /// `@EnvironmentObject` alongside the store (which goes in as an
@@ -1223,6 +1237,8 @@ struct ComposeRequest: Identifiable {
     func clearCheckedThreads() {
         checkedThreadIds.removeAll()
         lastCheckedThreadId = nil
+        // Uncheck all: drop thread-long pins that were only retained by check.
+        applyThreadLongStarPinDrops(selectionIntent: nil)
     }
 
     /// Toggle multi-select on one thread. With `extendRange` (shift-click),
@@ -1238,6 +1254,7 @@ struct ComposeRequest: Identifiable {
                 for rid in range { checkedThreadIds.insert(rid) }
             }
             lastCheckedThreadId = id
+            applyThreadLongStarPinDrops(selectionIntent: nil)
             return
         }
         if checkedThreadIds.contains(id) {
@@ -1246,6 +1263,7 @@ struct ComposeRequest: Identifiable {
             checkedThreadIds.insert(id)
         }
         lastCheckedThreadId = id
+        applyThreadLongStarPinDrops(selectionIntent: nil)
     }
 
     /// Gmail `x`: toggle check on the focused conversation.
@@ -1296,40 +1314,101 @@ struct ComposeRequest: Identifiable {
 
     // Threads just unstarred while a star-gated list was active (category hide
     // pin-through, Starred mailbox, starredOnly saved view, is:starred search).
-    // Stay listed so triage can continue; cleared on view/filter change.
+    // Session policy: stay until view/filter change. Thread policy (category
+    // hide only): stay while selected or multi-checked; leave-thread drops pin.
     @ObservationIgnored
     private var starStateKeepIds: Set<String> = []
 
     private var starStateFilterActive: Bool {
-        if !chips.category.hide.isEmpty { return true }
-        if chips.labelId == "STARRED" { return true }
-        if case .starred = selectedView { return true }
+        currentStarStickinessPolicy() != .none
+    }
+
+    /// Effective category-hide set for the list currently on screen.
+    /// Inbox/account use live chips; saved views use their chipsJSON (or
+    /// legacy excludePromotions) because baseQuery does not read store.chips.
+    private var effectiveCategoryHide: Set<String> {
+        if case .saved(let id, _) = selectedView,
+           let v = savedViews.first(where: { $0.id == id }) {
+            if let data = v.chipsJSON,
+               let saved = try? JSONDecoder().decode(FilterChips.self, from: data) {
+                return saved.category.hide
+            }
+            if v.excludePromotions {
+                return ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"]
+            }
+            return []
+        }
+        return chips.category.hide
+    }
+
+    private func currentStarStickinessPolicy() -> StarStickinessPolicy {
+        var viewIsStarred = false
+        var viewLabelIsStarred = false
+        var savedStarredOnly = false
+        var savedHide: Set<String> = []
+        var savedLabelId: String?
+        var savedExcludePromotionsLegacy = false
+
+        if case .starred = selectedView { viewIsStarred = true }
         if case .label(_, let labelId, _) = selectedView, labelId == "STARRED" {
-            return true
+            viewLabelIsStarred = true
         }
         if case .saved(let id, _) = selectedView,
            let v = savedViews.first(where: { $0.id == id }) {
-            if v.starredOnly { return true }
-            if v.labelId == "STARRED" { return true }
-            if let chipsJSON = v.chipsJSON,
-               let saved = try? JSONDecoder().decode(FilterChips.self, from: chipsJSON) {
-                if !saved.category.hide.isEmpty { return true }
-                if saved.labelId == "STARRED" { return true }
+            savedStarredOnly = v.starredOnly
+            savedLabelId = v.labelId
+            if let data = v.chipsJSON,
+               let saved = try? JSONDecoder().decode(FilterChips.self, from: data) {
+                savedHide = saved.category.hide
+                if saved.labelId == "STARRED" { savedLabelId = "STARRED" }
             } else if v.excludePromotions {
-                // Legacy path only — chipsJSON views use category.hide instead.
-                return true
+                savedExcludePromotionsLegacy = true
             }
         }
-        let search = committedSearch.trimmingCharacters(in: .whitespaces)
-        if !search.isEmpty {
-            let parsed = SearchQuery.parse(search)
-            if parsed.starred { return true }
-            // label:starred resolves to the STARRED system label.
-            if parsed.labels.contains(where: {
-                $0.caseInsensitiveCompare("starred") == .orderedSame
-            }) { return true }
+
+        return StarStickiness.policy(
+            committedSearch: committedSearch,
+            chipsHide: chips.category.hide,
+            chipsLabelId: chips.labelId,
+            viewIsStarred: viewIsStarred,
+            viewLabelIsStarred: viewLabelIsStarred,
+            savedStarredOnly: savedStarredOnly,
+            savedHide: savedHide,
+            savedLabelId: savedLabelId,
+            savedExcludePromotionsLegacy: savedExcludePromotionsLegacy)
+    }
+
+    /// Drop thread-long unstar pins that are no longer selected or checked,
+    /// and optimistically remove rows that only stayed via that pin.
+    private func applyThreadLongStarPinDrops(
+        selectionIntent: ThreadSelectionIntent?
+    ) {
+        let policy = currentStarStickinessPolicy()
+        let toDrop = StarStickiness.idsToDrop(
+            keepIds: starStateKeepIds,
+            selectedId: selectedThreadId,
+            checkedIds: checkedThreadIds,
+            policy: policy,
+            selectionIntent: selectionIntent)
+        guard !toDrop.isEmpty else { return }
+        for id in toDrop { starStateKeepIds.remove(id) }
+
+        let hide = effectiveCategoryHide
+        threads.removeAll { t in
+            guard toDrop.contains(t.id) else { return false }
+            let leaves = StarStickiness.leavesDueToCategoryHide(
+                hide: hide,
+                inPromotions: t.inPromotions,
+                inSocial: t.inSocial,
+                labelIds: t.labelIds,
+                isStarred: t.isStarred,
+                isKept: starStateKeepIds.contains(t.id))
+            if leaves {
+                checkedThreadIds.remove(t.id)
+                return true
+            }
+            return false
         }
-        return false
     }
 
     /// Tracked so termination can cancel and await it; the body can still be
@@ -4117,13 +4196,24 @@ struct ComposeRequest: Identifiable {
         }
         switch selectedView {
         case .inbox, .account:
-            return ThreadListOptimistic.leavesInboxList(
+            if ThreadListOptimistic.leavesInboxList(
                 inInbox: t.inInbox,
                 inSpam: t.inSpam,
                 snoozeUntil: t.snoozeUntil,
                 showArchived: chips.showArchived,
                 showSent: chips.showSent,
-                labelIds: t.labelIds)
+                labelIds: t.labelIds) {
+                return true
+            }
+            // Category-hide pin-through: unstarred hidden-category mail leaves
+            // once the sticky keep is gone (leave-thread drop or never pinned).
+            return StarStickiness.leavesDueToCategoryHide(
+                hide: chips.category.hide,
+                inPromotions: t.inPromotions,
+                inSocial: t.inSocial,
+                labelIds: t.labelIds,
+                isStarred: t.isStarred,
+                isKept: starStateKeepIds.contains(t.id))
         case .promotions:
             // Gmail-aligned: inbox promotions only, never spam/trash.
             return t.inSpam || !t.inInbox || !t.inPromotions
