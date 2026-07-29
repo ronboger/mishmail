@@ -1937,15 +1937,14 @@ struct ComposeView: View {
         close()
     }
 
-    /// Drop a queued / in-flight draft persist when Send packages content from
-    /// the editor. Cancelling the Task stops a not-yet-started performPersist;
-    /// a createDraft already on the wire may still complete (URLSession) —
-    /// `performPersist` then deletes that draft when `didFinish` is set.
-    /// Discard still awaits idle so it can delete the real draft id.
+    /// Drop a *debounced* autosave when Send packages content from the editor.
+    /// Do not cancel an in-flight `persistTask`: `createDraft` may still land
+    /// at Gmail after cancel, leaving an orphan with no delete path. Leave the
+    /// task running; `performPersist` checks `didFinish` and deletes a late
+    /// draft (or skips the upload if finish landed first). Discard still awaits
+    /// idle so it can delete the real draft id.
     private func cancelInFlightPersist() {
         autosaveTask?.cancel()
         autosaveTask = nil
-        persistTask?.cancel()
-        persistTask = nil
     }
 }
