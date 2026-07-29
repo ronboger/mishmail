@@ -196,6 +196,7 @@ targets:
       - Sources/MishMail/Support/OpenFromSearch.swift
       - Sources/MishMail/Support/HistoryFetchFormat.swift
       - Sources/MishMail/Support/ThreadListCursor.swift
+      - Sources/MishMail/Support/ThreadRowPillChrome.swift
       - Sources/MishMail/Support/NeighborPrefetch.swift
       - Sources/MishMail/Support/ThreadRefresh.swift
       - Sources/MishMail/Support/ThreadDetailCache.swift

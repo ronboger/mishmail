@@ -1415,11 +1415,13 @@ struct ThreadRow: View, Equatable {
 
                 // On-device AI triage bucket, once the thread has been sorted.
                 if let category = model.category {
+                    let tint = Color.aiCategory(category)
+                    let chrome = ThreadRowPillChrome.forFocused(model.isFocused)
                     Text(category)
                         .font(.system(size: 10.5 * fontScale, weight: .medium))
-                        .foregroundStyle(Color.aiCategory(category))
+                        .foregroundStyle(chrome.usesLightForeground ? Color.white : tint)
                         .padding(.horizontal, 6).padding(.vertical, 2)
-                        .background(Color.aiCategory(category).opacity(0.14), in: Capsule())
+                        .background(tint.opacity(chrome.fillOpacity), in: Capsule())
                         .fixedSize()
                 }
 
@@ -1512,15 +1514,18 @@ struct ThreadRow: View, Equatable {
         return marker + Text(", ").foregroundColor(.secondary) + names
     }
 
-    /// Notion-style label pill: tinted text on a soft capsule of its color.
+    /// Notion-style label pill: soft tinted capsule when idle; light text on a
+    /// stronger tint fill when the row is selected so the chip stays legible
+    /// on the blue list highlight.
     private func labelPill(_ chip: ThreadRowLabelChip) -> some View {
         let tint = chip.colorHex.flatMap(Color.hexString) ?? Color.stable(for: chip.name)
+        let chrome = ThreadRowPillChrome.forFocused(model.isFocused)
         return Text(chip.name)
             .font(.system(size: 10.5 * fontScale, weight: .medium))
             .lineLimit(1)
-            .foregroundStyle(tint)
+            .foregroundStyle(chrome.usesLightForeground ? Color.white : tint)
             .padding(.horizontal, 8).padding(.vertical, 2.5)
-            .background(tint.opacity(0.16), in: Capsule())
+            .background(tint.opacity(chrome.fillOpacity), in: Capsule())
     }
 
     private func hoverButton(_ icon: String, filled: Bool = false, action: @escaping () -> Void) -> some View {
