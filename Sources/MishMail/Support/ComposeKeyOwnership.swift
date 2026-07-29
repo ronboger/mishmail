@@ -4,9 +4,10 @@ import Foundation
 ///
 /// Expanded compose normally owns typing and stands mailbox shortcuts down
 /// (`g i`, j/k, e, …). After Send / discard / save-and-close claims finish,
-/// the card stays mounted briefly while an in-flight draft persist completes
-/// — during that window the user already hit Send and expects `g i` to work,
-/// not type into a locked body or no-op.
+/// the card may stay mounted briefly (or a lagging AppKit focus re-steal can
+/// leave the body editable) — during that window the user already hit Send
+/// and expects mailbox keys (`e` archive, `g i`, …) to work, not type into a
+/// locked body or no-op behind `TextFocus.isEditing`.
 enum ComposeKeyOwnership {
     /// Expanded compose still owns text chords and blocks mailbox single keys.
     static func claimsTyping(hasRequest: Bool,
@@ -23,5 +24,16 @@ enum ComposeKeyOwnership {
         !claimsTyping(hasRequest: hasRequest,
                       minimized: minimized,
                       finishing: finishing)
+    }
+
+    /// Whether an editable first responder should still block mailbox keys.
+    ///
+    /// Mid-finish (`composeFinishing`) must bypass `TextFocus.isEditing`:
+    /// `beginFinish` resigns focus and disables the form, but a pending
+    /// `focusBody` / `updateNSView` re-focus can re-steal an editable body
+    /// before unmount — that used to swallow post-Send `e` until the card
+    /// finally closed.
+    static func textFocusBlocksMailboxKeys(finishing: Bool) -> Bool {
+        !finishing
     }
 }

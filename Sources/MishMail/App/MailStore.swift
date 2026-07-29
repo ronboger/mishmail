@@ -474,9 +474,9 @@ final class MailStore {
     /// Compose card is collapsed to a title strip (Notion Mail-style). Draft
     /// state stays mounted; inbox shortcuts work again while minimized.
     var composeMinimized = false
-    /// Send / discard / save-and-close claimed the card and is awaiting an
-    /// in-flight draft persist before unmounting. UI is locked; mailbox keys
-    /// (`g i`, …) work again so a post-Send go-to is not swallowed.
+    /// Send / discard / save-and-close claimed the card. Send unmounts in the
+    /// same turn; discard/save may still await draft persist. UI is locked;
+    /// mailbox keys (`e`, `g i`, …) work again and bypass a lagging text focus.
     var composeFinishing = false
     /// ComposeView publishes whether the `/` snippet picker is showing so the
     /// ContentView Esc ladder can dismiss it without relying on local-monitor

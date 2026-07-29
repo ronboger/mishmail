@@ -969,18 +969,29 @@ private extension ContentView {
                     return nil
                 }
             }
+            let finishingCompose = store.composeFinishing
+            let textEditing = TextFocus.isEditing(event.window?.firstResponder)
+            // Mid-finish: a lagging re-focus can leave the body first responder
+            // after beginFinish resigned it. Drop that focus and still run
+            // mailbox keys (post-Send `e` archive must not wait on unmount).
+            if finishingCompose, textEditing {
+                event.window?.makeFirstResponder(nil)
+            }
             guard mods.isEmpty,
                   !store.showCommandPalette,
                   !store.showLabelPicker,
                   ComposeKeyOwnership.allowsMailboxKeys(
                       hasRequest: store.composeRequest != nil,
                       minimized: store.composeMinimized,
-                      finishing: store.composeFinishing),
+                      finishing: finishingCompose),
                   store.editingView == nil,
                   // Only *editable* text stands the shortcuts down. Selectable
                   // read-only text (the whole conversation) must not — see
-                  // TextFocus.
-                  !TextFocus.isEditing(event.window?.firstResponder)
+                  // TextFocus. Mid-finish bypasses this (see
+                  // textFocusBlocksMailboxKeys).
+                  !(textEditing
+                    && ComposeKeyOwnership.textFocusBlocksMailboxKeys(
+                        finishing: finishingCompose))
             else { return event }
             // Gmail's `/`: jump focus to the sidebar search field. A
             // collapsed sidebar has no field to focus — reveal it first and

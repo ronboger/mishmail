@@ -117,8 +117,9 @@ struct ComposeView: View {
     /// another finish is already in flight.
     ///
     /// Also yields the keyboard: resign text focus and mark
-    /// `store.composeFinishing` so mailbox keys (`g i`, …) work while we wait
-    /// on an in-flight draft persist before unmounting.
+    /// `store.composeFinishing` so mailbox keys (`e`, `g i`, …) work while a
+    /// discard/save path still awaits persist — Send itself unmounts without
+    /// that wait.
     @discardableResult
     private func beginFinish() -> Bool {
         guard !didFinish else { return false }
@@ -236,8 +237,15 @@ struct ComposeView: View {
     /// Focuses the body editor. Setting the FocusState synchronously in
     /// onAppear fires before the TextEditor is ready and gets dropped —
     /// same trick as AddressField's autoFocus, delayed a beat.
+    ///
+    /// Never re-arm focus after `beginFinish` — a delayed re-steal on an
+    /// still-editable body would make `TextFocus.isEditing` swallow mailbox
+    /// keys (post-Send archive) until the card unmounts.
     private func focusBody() {
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { bodyFocused = true }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
+            guard !didFinish else { return }
+            bodyFocused = true
+        }
     }
 
     /// Inlines the collapsed quote into the editor, making it editable.
@@ -1889,31 +1897,42 @@ struct ComposeView: View {
     }
 
     private func send() {
-        // Claim finish before any await so a second click / ⌘↩ can't queue
-        // two sends while we wait on in-flight autosave (N1).
+        // Claim finish before any work so a second click / ⌘↩ can't double-queue.
+        // Unmount immediately: do not wait on an in-flight createDraft round-trip
+        // (that made post-Send `e` archive feel stuck behind Gmail). Body comes
+        // from the editor; liveDraft is the last *completed* autosave id.
         guard beginFinish() else { return }
-        Task { @MainActor in
-            await awaitPersistIdle()
-            guard let pending = buildPendingSend() else {
-                // Not sendable (empty To:) — re-enable the card.
-                abortFinish()
-                return
-            }
-            store.queueSend(pending)
-            close()
+        cancelInFlightPersist()
+        guard let pending = buildPendingSend() else {
+            // Not sendable (empty To:) — re-enable the card.
+            abortFinish()
+            return
         }
+        store.queueSend(pending)
+        close()
     }
 
     private func scheduleSend(at date: Date) {
         guard beginFinish() else { return }
-        Task { @MainActor in
-            await awaitPersistIdle()
-            guard let pending = buildPendingSend() else {
-                abortFinish()
-                return
-            }
-            store.scheduleSend(pending, at: date)
-            close()
+        cancelInFlightPersist()
+        guard let pending = buildPendingSend() else {
+            abortFinish()
+            return
         }
+        store.scheduleSend(pending, at: date)
+        close()
+    }
+
+    /// Drop a queued / in-flight draft persist when Send packages content from
+    /// the editor. Cancelling the Task stops a not-yet-started performPersist;
+    /// a createDraft already on the wire may still complete (URLSession) and
+    /// leave a transient Gmail draft until the next sync — same class of orphan
+    /// as a crashed autosave. Discard still awaits idle so it can delete the
+    /// real draft id.
+    private func cancelInFlightPersist() {
+        autosaveTask?.cancel()
+        autosaveTask = nil
+        persistTask?.cancel()
+        persistTask = nil
     }
 }
