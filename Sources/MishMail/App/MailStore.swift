@@ -1383,6 +1383,9 @@ struct ComposeRequest: Identifiable {
     private func applyThreadLongStarPinDrops(
         selectionIntent: ThreadSelectionIntent?
     ) {
+        // Key-repeat j/k hits the selection setter every step; skip policy
+        // work (and saved-view JSON decode) when nothing is pinned.
+        guard !starStateKeepIds.isEmpty else { return }
         let policy = currentStarStickinessPolicy()
         let toDrop = StarStickiness.idsToDrop(
             keepIds: starStateKeepIds,
@@ -1396,18 +1399,13 @@ struct ComposeRequest: Identifiable {
         let hide = effectiveCategoryHide
         threads.removeAll { t in
             guard toDrop.contains(t.id) else { return false }
-            let leaves = StarStickiness.leavesDueToCategoryHide(
+            return StarStickiness.leavesDueToCategoryHide(
                 hide: hide,
                 inPromotions: t.inPromotions,
                 inSocial: t.inSocial,
                 labelIds: t.labelIds,
                 isStarred: t.isStarred,
                 isKept: starStateKeepIds.contains(t.id))
-            if leaves {
-                checkedThreadIds.remove(t.id)
-                return true
-            }
-            return false
         }
     }
 
@@ -4095,9 +4093,15 @@ struct ComposeRequest: Identifiable {
 
     /// Pin just-unstarred threads so category-hide / Starred / is:starred lists
     /// do not yank the row mid-triage. Same call-before-mutate rule as read.
+    /// Under thread-long policy, only selected / multi-checked ids retain a
+    /// pin (unstar on a non-focused row leaves immediately — no orphan pin
+    /// waiting for an unrelated selection change).
     private func pinStarStateKeep(_ ids: [String]) {
         guard starStateFilterActive else { return }
         for id in ids { starStateKeepIds.insert(id) }
+        if currentStarStickinessPolicy() == .thread {
+            applyThreadLongStarPinDrops(selectionIntent: nil)
+        }
     }
 
     private func restoreSelectionFocus(_ id: String?) {

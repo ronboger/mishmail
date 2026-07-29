@@ -246,4 +246,16 @@ final class StarStickinessPolicyTests: XCTestCase {
             labelIds: "INBOX CATEGORY_UPDATES",
             isStarred: false, isKept: false))
     }
+
+    /// Unstar of a non-selected, non-checked id under thread policy: drop
+    /// immediately (no orphan pin waiting for an unrelated click).
+    func testUnselectedUnstarDropsImmediatelyUnderThreadPolicy() {
+        let drop = StarStickiness.idsToDrop(
+            keepIds: ["orphan"],
+            selectedId: "other",
+            checkedIds: [],
+            policy: .thread,
+            selectionIntent: nil)
+        XCTAssertEqual(drop, ["orphan"])
+    }
 }
