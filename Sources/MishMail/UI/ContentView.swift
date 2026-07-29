@@ -831,6 +831,7 @@ private extension ContentView {
                store.undoAction != nil,
                !store.showCommandPalette,
                !store.showLabelPicker,
+               !store.showShortcutsHelp,
                store.editingView == nil,
                ComposeKeyOwnership.allowsMailboxKeys(
                    hasRequest: store.composeRequest != nil,
