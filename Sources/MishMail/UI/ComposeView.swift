@@ -144,6 +144,9 @@ struct ComposeView: View {
         if store.composeRequest?.id == request.id {
             store.composeFinishing = false
         }
+        // Send cancels autosave before packaging; re-arm so unsaved content
+        // still lands in Drafts if the user keeps editing after abort.
+        if hasContent { scheduleAutosave() }
         // beginFinish resigned focus so mailbox keys would work; put the
         // caret back so the re-enabled card is usable without a click.
         focusBody()
@@ -427,6 +430,9 @@ struct ComposeView: View {
         for source in pendingSources {
             atts = ((try? await store.loadAttachments(for: source)) ?? []) + atts
         }
+        // Send unmounts without awaiting this task; drop a late createDraft so
+        // we don't upload a draft the user already sent.
+        if didFinish { return }
         // Demo: never claim "Draft saved" — close uses non-silent for the notice.
         if store.demoMode {
             if !silent {
@@ -446,6 +452,13 @@ struct ComposeView: View {
                                           silent: silent,
                                           syncAfter: syncAfter)
         if let saved {
+            // createDraft was already on the wire when Send cancelled the task:
+            // delete the just-created draft so Gmail Drafts doesn't keep sent
+            // content (PendingSend.replacingDraft is the older completed id).
+            if didFinish {
+                await store.deleteUnderlyingDraft(saved, silent: true)
+                return
+            }
             replacingDraft = saved
             lastSavedFingerprint = fingerprint
             if silent { didSilentSave = true }
@@ -453,7 +466,8 @@ struct ComposeView: View {
             // Content may have changed during the network round-trip — chain
             // one more silent save so we don't leave an older body as "the"
             // draft. Only after success (failed saves must not recurse).
-            if silent, hasContent, contentFingerprint != lastSavedFingerprint {
+            if silent, !didFinish, hasContent,
+               contentFingerprint != lastSavedFingerprint {
                 await performPersist(silent: true, syncAfter: false)
             }
         } else {
@@ -1925,10 +1939,9 @@ struct ComposeView: View {
 
     /// Drop a queued / in-flight draft persist when Send packages content from
     /// the editor. Cancelling the Task stops a not-yet-started performPersist;
-    /// a createDraft already on the wire may still complete (URLSession) and
-    /// leave a transient Gmail draft until the next sync — same class of orphan
-    /// as a crashed autosave. Discard still awaits idle so it can delete the
-    /// real draft id.
+    /// a createDraft already on the wire may still complete (URLSession) —
+    /// `performPersist` then deletes that draft when `didFinish` is set.
+    /// Discard still awaits idle so it can delete the real draft id.
     private func cancelInFlightPersist() {
         autosaveTask?.cancel()
         autosaveTask = nil

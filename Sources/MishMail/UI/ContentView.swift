@@ -971,12 +971,6 @@ private extension ContentView {
             }
             let finishingCompose = store.composeFinishing
             let textEditing = TextFocus.isEditing(event.window?.firstResponder)
-            // Mid-finish: a lagging re-focus can leave the body first responder
-            // after beginFinish resigned it. Drop that focus and still run
-            // mailbox keys (post-Send `e` archive must not wait on unmount).
-            if finishingCompose, textEditing {
-                event.window?.makeFirstResponder(nil)
-            }
             guard mods.isEmpty,
                   !store.showCommandPalette,
                   !store.showLabelPicker,
@@ -993,6 +987,11 @@ private extension ContentView {
                     && ComposeKeyOwnership.textFocusBlocksMailboxKeys(
                         finishing: finishingCompose))
             else { return event }
+            // After the guards: mid-finish with a lagging body focus — resign
+            // so the key is not also typed into a finishing draft.
+            if finishingCompose, textEditing {
+                event.window?.makeFirstResponder(nil)
+            }
             // Gmail's `/`: jump focus to the sidebar search field. A
             // collapsed sidebar has no field to focus — reveal it first and
             // focus once the column is installed.
