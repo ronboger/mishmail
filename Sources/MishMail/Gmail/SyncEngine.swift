@@ -118,10 +118,54 @@ actor SyncEngine {
             UserDefaults.standard.set(true, forKey: starKey)
         }
 
+        // One-shot repair: older caches can hold a full body with hasAttachment=0
+        // and zero attachment rows (metadata-wipe era, incomplete backfill, etc.).
+        // Gmail's has:attachment list is the source of truth for which locals need
+        // a full re-parse; filterMissingGmailIds never revisits existing ids.
+        let attachKey = Self.attachmentRepairDefaultsKey(accountId: accountId)
+        if !UserDefaults.standard.bool(forKey: attachKey) {
+            progress?("Repairing missing attachments…")
+            let touchedKeys = try await repairMissingAttachments(
+                limit: windowLimit, progress: progress)
+            try await deriveThreads(for: touchedKeys)
+            UserDefaults.standard.set(true, forKey: attachKey)
+        }
+
         account.lastSyncAt = Date()
         let updated = account
         try await db.write { db in try updated.update(db) }
         return drainContentChange()
+    }
+
+    /// UserDefaults key for the one-shot has:attachment repair pass.
+    static func attachmentRepairDefaultsKey(accountId: String) -> String {
+        "backfill.attachments.\(accountId)"
+    }
+
+    /// True when this account has already completed the attachment repair pass.
+    static func attachmentRepairCompleted(accountId: String,
+                                          defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: attachmentRepairDefaultsKey(accountId: accountId))
+    }
+
+    /// Pure policy for whether the reading pane should re-fetch a message that
+    /// has a body but no attachment rows. Unit-tested.
+    ///
+    /// - Cached `hasAttachment == true` with an empty chip list is always
+    ///   worth repairing (wiped attachment table / denorm drift).
+    /// - After the one-shot sync repair finishes for the account, skip opens
+    ///   where `hasAttachment` is false — those are almost certainly clean
+    ///   attachment-free mail, and re-fetching every one would thrash the API.
+    /// - Before that pass, allow open-time recovery so stale rows (Criocore /
+    ///   Let's chat) heal as soon as the user opens them.
+    static func shouldRecoverAttachments(
+        hasAttachmentFlag: Bool,
+        localAttachmentCount: Int,
+        accountRepairCompleted: Bool
+    ) -> Bool {
+        guard localAttachmentCount == 0 else { return false }
+        if hasAttachmentFlag { return true }
+        return !accountRepairCompleted
     }
 
     /// Recomputes every thread row for this account from its messages.
@@ -270,6 +314,79 @@ actor SyncEngine {
             sql: "SELECT id FROM message WHERE id IN (\(placeholders))",
             arguments: StatementArguments(localIds)))
         return unique.filter { !existingLocal.contains("\(accountId):\($0)") }
+    }
+
+    /// gmailIds from `listed` that exist locally for `accountId` with
+    /// `hasAttachment = 0`. Those rows need a full re-fetch when Gmail says
+    /// they have attachments. Dedupes preserving first-seen order.
+    static func filterGmailIdsNeedingAttachmentRepair(
+        _ db: Database, accountId: String, listed: [String]
+    ) throws -> [String] {
+        guard !listed.isEmpty else { return [] }
+        var seen = Set<String>()
+        let unique = listed.filter { seen.insert($0).inserted }
+        let localIds = unique.map { "\(accountId):\($0)" }
+        let placeholders = localIds.map { _ in "?" }.joined(separator: ",")
+        let needsRepair = try Set(String.fetchAll(
+            db,
+            sql: """
+                SELECT id FROM message
+                WHERE id IN (\(placeholders)) AND hasAttachment = 0
+                """,
+            arguments: StatementArguments(localIds)))
+        return unique.filter { needsRepair.contains("\(accountId):\($0)") }
+    }
+
+    /// Re-downloads Gmail `has:attachment` messages that are cached locally
+    /// without attachment rows / hasAttachment. Returns touched thread keys.
+    @discardableResult
+    private func repairMissingAttachments(
+        limit: Int,
+        progress: (@Sendable (String) -> Void)?
+    ) async throws -> Set<String> {
+        // Intersect the account window with has:attachment so we don't pull
+        // years of attachment mail outside the configured sync horizon.
+        let query: String = {
+            if let window = windowQuery {
+                return "has:attachment \(window)"
+            }
+            return "has:attachment"
+        }()
+        var touchedKeys = Set<String>()
+        var writeBuffer: [PendingUpsert] = []
+        writeBuffer.reserveCapacity(Self.writeChunkSize)
+        var pageToken: String?
+        var listed = 0
+        var repaired = 0
+        repeat {
+            let page = try await client.listMessages(
+                query: query, pageToken: pageToken, maxResults: 100)
+            let listedIds = (page.messages ?? []).map(\.id)
+            listed += listedIds.count
+            let needRepair = try await db.read { [accountId] db in
+                try Self.filterGmailIdsNeedingAttachmentRepair(
+                    db, accountId: accountId, listed: listedIds)
+            }
+            if !needRepair.isEmpty {
+                let report = try await client.getMessages(ids: needRepair, format: "full")
+                for msg in report.messages {
+                    let (message, attachments) = MessageParser.parse(
+                        msg, accountId: accountId)
+                    writeBuffer.append(PendingUpsert(
+                        message: message, attachments: attachments, headersOnly: false))
+                    if writeBuffer.count >= Self.writeChunkSize {
+                        try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                    }
+                }
+                repaired += report.messages.count
+                if repaired > 0 {
+                    progress?("Repaired attachments on \(repaired) messages…")
+                }
+            }
+            pageToken = page.nextPageToken
+        } while pageToken != nil && listed < limit
+        try await flushUpserts(&writeBuffer, into: &touchedKeys)
+        return touchedKeys
     }
 
     // MARK: - Incremental

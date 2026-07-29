@@ -77,6 +77,8 @@ struct ThreadDetailView: View {
     @State private var cidPreInlineBytesById: [String: Int] = [:]
     /// Avoid re-fetching the same message for Content-ID recovery every expand.
     @State private var cidResolveAttempted: Set<String> = []
+    /// Avoid re-fetching the same message for missing-attachment recovery every expand.
+    @State private var attachmentRecoverAttempted: Set<String> = []
     /// Only one sent message owns a live body renderer at a time. This keeps
     /// HTML-heavy threads from accumulating WKWebViews and helper processes.
     @State private var expandedMessageId: String?
@@ -787,7 +789,9 @@ struct ThreadDetailView: View {
     private func loadBodyIfNeeded(id: String) {
         guard let idx = messages.firstIndex(where: { $0.id == id }) else { return }
         guard Self.needsBodyLoad(messages[idx]) else {
-            // Body already present (newest message, cache hit) — still try CID.
+            // Body already present (newest message, cache hit) — still try CID
+            // and missing-attachment recovery.
+            recoverAttachmentsIfNeeded(id: id)
             resolveCIDImagesIfNeeded(id: id)
             return
         }
@@ -800,7 +804,51 @@ struct ThreadDetailView: View {
             else { return }
             messages[currentIdx] = loaded.message
             bodyPrepByMessageId[id] = loaded.prep
+            recoverAttachmentsIfNeeded(id: id)
             resolveCIDImagesIfNeeded(id: id)
+        }
+    }
+
+    /// Full re-fetch when this card has no attachment chips but Gmail may still
+    /// have files (stale body-without-attachments cache). Session-once per id.
+    private func recoverAttachmentsIfNeeded(id: String) {
+        guard !attachmentRecoverAttempted.contains(id) else { return }
+        guard let msg = messages.first(where: { $0.id == id }) else { return }
+        let localCount = (attachmentsByMessageId[id] ?? []).count
+        guard SyncEngine.shouldRecoverAttachments(
+            hasAttachmentFlag: msg.hasAttachment,
+            localAttachmentCount: localCount,
+            accountRepairCompleted: SyncEngine.attachmentRepairCompleted(
+                accountId: msg.accountId)
+        ) else { return }
+        attachmentRecoverAttempted.insert(id)
+        Task {
+            guard let result = await store.recoverAttachmentsIfNeeded(
+                message: msg, localAttachmentCount: localCount)
+            else { return }
+            await MainActor.run {
+                guard splitMode || store.openedThreadId == thread.id else { return }
+                if let idx = messages.firstIndex(where: { $0.id == id }) {
+                    var merged = result.message
+                    // Keep any session CID-inlined HTML if we already resolved it.
+                    if let inlined = cidInlinedHTMLById[id] {
+                        merged.bodyHTML = inlined
+                    }
+                    messages[idx] = merged
+                    if cidInlinedHTMLById[id] == nil {
+                        bodyPrepByMessageId[id] = MessageHTMLPrepBuilder.prep(
+                            bodyText: merged.bodyText,
+                            bodyHTML: merged.bodyHTML,
+                            fontScale: fontScale)
+                    }
+                }
+                attachmentsByMessageId[id] = result.attachments
+                threadAttachments = messages.flatMap { m in
+                    (attachmentsByMessageId[m.id] ?? []).map {
+                        (message: m, attachment: $0)
+                    }
+                }
+            }
         }
     }
 
@@ -873,9 +921,10 @@ struct ThreadDetailView: View {
         }
         aiSummary = nil; summaryError = nil; summarizing = false
         // Newest sent is expanded by default and may already be hydrated —
-        // kick CID resolve without waiting for a second expand.
+        // kick attachment recovery + CID resolve without waiting for a second expand.
         if let focus = ThreadRefresh.initialScrolledMessageId(in: messages)
             ?? lastNonDraftId {
+            recoverAttachmentsIfNeeded(id: focus)
             resolveCIDImagesIfNeeded(id: focus)
         }
     }

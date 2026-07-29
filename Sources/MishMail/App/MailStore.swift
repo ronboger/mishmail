@@ -5311,7 +5311,9 @@ struct ComposeRequest: Identifiable {
             didRefetch: didRefetch, refreshedMessage: refreshed)
     }
 
-    /// Full-format re-fetch + upsert so Content-IDs land on attachment rows.
+    /// Full-format re-fetch + upsert so Content-IDs land on attachment rows
+    /// and missing file attachments are recovered. Re-derives the thread so
+    /// `hasAttachment` / paperclip denorm match the repaired message.
     private func refetchMessageFull(_ message: Message) async -> (message: Message, attachments: [AttachmentRow])? {
         do {
             let g = try await client(for: message.accountId)
@@ -5321,6 +5323,8 @@ struct ComposeRequest: Identifiable {
                 _ = try SyncEngine.upsertPending(
                     db,
                     items: [.init(message: parsed, attachments: atts, headersOnly: false)])
+                try SyncEngine.deriveThreads(
+                    db, for: [parsed.threadId], accountId: message.accountId)
             }
             applyThreadContentChange(.threads([message.threadId]))
             await threadDetailRepository.drop(threadId: message.threadId)
@@ -5330,6 +5334,29 @@ struct ComposeRequest: Identifiable {
         } catch {
             return nil
         }
+    }
+
+    /// Result of an open-time full re-fetch that may recover missing attachments.
+    struct AttachmentRecoveryResult: Sendable {
+        let message: Message
+        let attachments: [AttachmentRow]
+    }
+
+    /// Re-fetch full payload when the reading pane has no attachment rows but
+    /// the message may still carry files on Gmail (stale cache). Returns nil
+    /// when policy says skip or the network call fails.
+    func recoverAttachmentsIfNeeded(
+        message: Message,
+        localAttachmentCount: Int
+    ) async -> AttachmentRecoveryResult? {
+        let repaired = SyncEngine.attachmentRepairCompleted(accountId: message.accountId)
+        guard SyncEngine.shouldRecoverAttachments(
+            hasAttachmentFlag: message.hasAttachment,
+            localAttachmentCount: localAttachmentCount,
+            accountRepairCompleted: repaired
+        ) else { return nil }
+        guard let pair = await refetchMessageFull(message) else { return nil }
+        return AttachmentRecoveryResult(message: pair.message, attachments: pair.attachments)
     }
 
     /// Bytes for one attachment (calendar ICS parse, single-file open).
