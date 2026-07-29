@@ -1548,13 +1548,22 @@ struct ThreadRow: View, Equatable {
 }
 
 /// Notion Mail-style categories popover: contains / does-not-contain mode,
-/// selected categories as removable chips, checkboxes, and a clear action.
+/// a 2×2 grid of tappable category pills (all visible — no horizontal scroll),
+/// and a clear action.
 struct CategoriesPopover: View {
     @Environment(MailStore.self) var store
 
     private var filter: Binding<CategoryFilter> {
         Binding(get: { store.chips.category }, set: { store.chips.category = $0 })
     }
+
+    /// Stable display order for the four Gmail categories.
+    private static let categoryOrder = [
+        "CATEGORY_PROMOTIONS",
+        "CATEGORY_SOCIAL",
+        "CATEGORY_UPDATES",
+        "CATEGORY_FORUMS",
+    ]
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
@@ -1570,48 +1579,13 @@ struct CategoriesPopover: View {
                 Spacer()
             }
 
-            // Selected categories as removable chips.
-            if filter.wrappedValue.isActive {
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        ForEach(filter.wrappedValue.categories.sorted(), id: \.self) { cat in
-                            HStack(spacing: 4) {
-                                Circle().fill(Color.category(cat)).frame(width: 6, height: 6)
-                                Text(CategoryFilter.names[cat] ?? cat)
-                                    .font(.caption).lineLimit(1).fixedSize()
-                                Button {
-                                    filter.wrappedValue.categories.remove(cat)
-                                } label: {
-                                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
-                                }
-                                .buttonStyle(.plain).foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal, 7).padding(.vertical, 3)
-                            .background(Color.category(cat).opacity(0.15), in: Capsule())
-                        }
-                    }
-                    .padding(6)
-                }
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .background(RoundedRectangle(cornerRadius: 6).strokeBorder(Color.notionAccent.opacity(0.6)))
-            }
-
-            VStack(alignment: .leading, spacing: 6) {
-                ForEach(Array(CategoryFilter.names.keys.sorted()), id: \.self) { cat in
-                    Toggle(isOn: Binding(
-                        get: { filter.wrappedValue.categories.contains(cat) },
-                        set: { on in
-                            if on { filter.wrappedValue.categories.insert(cat) }
-                            else { filter.wrappedValue.categories.remove(cat) }
-                        }
-                    )) {
-                        HStack(spacing: 6) {
-                            Circle().fill(Color.category(cat)).frame(width: 8, height: 8)
-                            Text(CategoryFilter.names[cat] ?? cat)
-                        }
-                    }
-                    .toggleStyle(NotionCheckStyle())
-                    .font(.system(size: 12))
+            // 2×2 grid — every category is one click away, no chip strip to scroll.
+            LazyVGrid(columns: [
+                GridItem(.flexible(), spacing: 6),
+                GridItem(.flexible(), spacing: 6),
+            ], spacing: 6) {
+                ForEach(Self.categoryOrder, id: \.self) { cat in
+                    categoryPill(cat)
                 }
             }
 
@@ -1628,6 +1602,48 @@ struct CategoriesPopover: View {
             .buttonStyle(.plain)
         }
         .padding(12)
-        .frame(width: 250)
+        .frame(width: 260)
+    }
+
+    private func categoryPill(_ cat: String) -> some View {
+        let on = filter.wrappedValue.categories.contains(cat)
+        let name = CategoryFilter.names[cat] ?? cat
+        return Button {
+            if on { filter.wrappedValue.categories.remove(cat) }
+            else { filter.wrappedValue.categories.insert(cat) }
+        } label: {
+            HStack(spacing: 6) {
+                Circle().fill(Color.category(cat)).frame(width: 8, height: 8)
+                Text(name)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .minimumScaleFactor(0.85)
+                Spacer(minLength: 2)
+                if on {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 10, weight: .semibold))
+                        .foregroundStyle(Color.notionAccent)
+                }
+            }
+            .padding(.horizontal, 8).padding(.vertical, 7)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .fill(on ? Color.category(cat).opacity(0.16)
+                             : Color.primary.opacity(0.05))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 7, style: .continuous)
+                    .strokeBorder(on ? Color.category(cat).opacity(0.45)
+                                     : Color.primary.opacity(0.08),
+                                  lineWidth: 1)
+            )
+            .contentShape(RoundedRectangle(cornerRadius: 7, style: .continuous))
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .help(on
+              ? "Stop \(filter.wrappedValue.exclude ? "excluding" : "requiring") \(name)"
+              : "\(filter.wrappedValue.exclude ? "Exclude" : "Require") \(name)")
     }
 }

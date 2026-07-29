@@ -1994,6 +1994,9 @@ struct ComposeRequest: Identifiable {
             case .account(let id): return id
             }
         }()
+        // Primary badge tracks the inbox category hide set (Updates/Forums),
+        // not only the fixed promo/social tab split.
+        let inboxHideCategories = inboxBadgeHideCategories
         let pool = db
 
         threadReloadTask?.cancel()
@@ -2119,7 +2122,8 @@ struct ComposeRequest: Identifiable {
                 }
                 let (counts, badge) = try PerfMetrics.measure(.reloadCounts) {
                     try MailStore.fetchSidebarCounts(
-                        db: db, activeAccount: activeAccount, badgeAccount: badgeAccount)
+                        db: db, activeAccount: activeAccount, badgeAccount: badgeAccount,
+                        hideCategories: inboxHideCategories)
                 }
                 return ReloadPayload(threads: page, vipHits: vipHits,
                                      counts: counts, badge: badge, hasMore: hasMore)
@@ -2685,9 +2689,11 @@ struct ComposeRequest: Identifiable {
             case .account(let id): return id
             }
         }()
+        let hideCategories = inboxBadgeHideCategories
         let (local, badgeTotal): ([String: Int], Int) = (try? db.read { db in
             try Self.fetchSidebarCounts(db: db, activeAccount: activeAccount,
-                                        badgeAccount: badgeAccount)
+                                        badgeAccount: badgeAccount,
+                                        hideCategories: hideCategories)
         }) ?? ([:], 0)
 
         // Local counts only — same denorm filters as the visible lists
@@ -2699,14 +2705,31 @@ struct ComposeRequest: Identifiable {
 
     /// Sidebar counts + dock badge. Delegates to `SidebarCounts` (shared with
     /// unit tests). Safe off MainActor.
+    ///
+    /// `hideCategories` is the inbox "do not contain" set so Updates/Forums
+    /// excluded from the list do not inflate the primary unread badge.
     nonisolated static func fetchSidebarCounts(
         db: Database,
         activeAccount: String?,
         badgeAccount: String?,
-        now: Date = Date()
+        now: Date = Date(),
+        hideCategories: Set<String> = []
     ) throws -> (counts: [String: Int], badge: Int) {
         try SidebarCounts.fetch(db: db, activeAccount: activeAccount,
-                                badgeAccount: badgeAccount, now: now)
+                                badgeAccount: badgeAccount, now: now,
+                                hideCategories: hideCategories)
+    }
+
+    /// Inbox category hide used for the primary unread / dock badge.
+    /// Live chips when the user is on inbox (or a per-account inbox); otherwise
+    /// the persisted inbox pick so the badge still matches what Inbox shows.
+    private var inboxBadgeHideCategories: Set<String> {
+        switch selectedView {
+        case .inbox, .account:
+            return chips.category.hide
+        default:
+            return FilterChips.initial(for: .inbox).category.hide
+        }
     }
 
     /// Full messages including bodies — used by compose / reply / forward.
@@ -3943,8 +3966,9 @@ struct ComposeRequest: Identifiable {
     ) {
         if let activeAccountId, old.accountId != activeAccountId { return }
         let now = Date()
-        let before = SidebarCounts.memberships(of: old, now: now)
-        let after = SidebarCounts.memberships(of: updated, now: now)
+        let hide = inboxBadgeHideCategories
+        let before = SidebarCounts.memberships(of: old, now: now, hideCategories: hide)
+        let after = SidebarCounts.memberships(of: updated, now: now, hideCategories: hide)
         for key in before.subtracting(after) {
             unreadCounts[key] = max(0, (unreadCounts[key] ?? 0) - 1)
         }

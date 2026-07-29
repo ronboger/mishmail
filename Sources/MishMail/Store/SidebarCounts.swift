@@ -7,10 +7,27 @@ import GRDB
 /// (no AppKit). Prefer per-predicate `COUNT(*)` over a full-table
 /// `SUM(CASE…)` so SQLite can use partial indexes from migration v21.
 enum SidebarCounts {
+    /// Gmail categories that have no dedicated sidebar tab. When the inbox
+    /// filter hides them (`CategoryFilter.hide`), the primary unread badge
+    /// must drop them too — otherwise the counter still looks like Updates
+    /// (etc.) are in the list. Promo/Social always route to their own badges
+    /// regardless of the hide set.
+    static let primaryHideableCategories: Set<String> = [
+        "CATEGORY_UPDATES",
+        "CATEGORY_FORUMS",
+    ]
+
     /// In-memory counterpart of the SQL predicates below. Optimistic thread
     /// actions use this to keep sidebar badges in the same frame as the row;
     /// the coalesced database reconciliation remains the source of truth.
-    static func memberships(of thread: MailThread, now: Date = Date()) -> Set<String> {
+    ///
+    /// `hideCategories` is the inbox "do not contain" set (Updates/Forums
+    /// only affect the primary badge; promo/social always tab-split).
+    static func memberships(
+        of thread: MailThread,
+        now: Date = Date(),
+        hideCategories: Set<String> = []
+    ) -> Set<String> {
         var result = Set<String>()
         if thread.isUnread && !thread.inTrash && !thread.inSpam && thread.inInbox {
             if thread.inPromotions {
@@ -21,8 +38,10 @@ enum SidebarCounts {
             }
             // Primary badge only — not starred pin-through. Starred promo/social
             // can show in the inbox list (CategoryHide) but still count under
-            // their category tab, not the inbox unread badge.
-            if !thread.inPromotions && !thread.inSocial {
+            // their category tab, not the inbox unread badge. Hidden Updates/
+            // Forums likewise stay out of the primary badge (no tab for them).
+            if !thread.inPromotions && !thread.inSocial
+                && !isHiddenFromPrimary(thread, hide: hideCategories) {
                 result.insert("inbox")
             }
         }
@@ -41,21 +60,50 @@ enum SidebarCounts {
         return result
     }
 
+    /// Whether a non-promo/non-social thread is excluded from the primary
+    /// badge by the inbox category hide set.
+    static func isHiddenFromPrimary(_ thread: MailThread, hide: Set<String>) -> Bool {
+        let labels = Set(thread.labels)
+        for cat in hide where primaryHideableCategories.contains(cat) {
+            if labels.contains(cat) { return true }
+        }
+        return false
+    }
+
+    /// SQL fragment (AND-joined) excluding hideable categories present in
+    /// `hide`. Empty when none apply. Uses the same `labelIds LIKE` token
+    /// style as `CategoryHide` for Updates/Forums.
+    static func primaryHideSQL(hide: Set<String>) -> String {
+        var parts: [String] = []
+        for cat in hide.sorted() where primaryHideableCategories.contains(cat) {
+            // labelIds is space-separated; bound tokens are fixed Gmail ids
+            // (not user text), so interpolating is safe and matches CategoryHide.
+            parts.append("labelIds NOT LIKE '%\(cat)%'")
+        }
+        return parts.isEmpty ? "" : " AND " + parts.joined(separator: " AND ")
+    }
+
     /// `activeAccount`/`badgeAccount` nil = every account.
     /// Safe off MainActor. Sole source of truth for sidebar unread — do not
     /// merge Gmail `labelInfo` / CATEGORY_* totals (those include spam +
     /// archived and disagree with list filters).
+    ///
+    /// `hideCategories` is the inbox category-hide set (typically from
+    /// `FilterChips` for the inbox view). Promo/Social always stay out of
+    /// the primary badge; Updates/Forums drop out only when hidden.
     static func fetch(
         db: Database,
         activeAccount: String?,
         badgeAccount: String?,
-        now: Date = Date()
+        now: Date = Date(),
+        hideCategories: Set<String> = []
     ) throws -> (counts: [String: Int], badge: Int) {
+        let hideSQL = primaryHideSQL(hide: hideCategories)
         // Primary-tab unread only (matches memberships). Starred category mail
         // is list-pinned via CategoryHide but does not inflate this badge.
         let inbox = try count(db, account: activeAccount, where: """
             isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-            AND inPromotions = 0 AND inSocial = 0
+            AND inPromotions = 0 AND inSocial = 0\(hideSQL)
             """)
         let promotions = try count(db, account: activeAccount, where: """
             isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
@@ -86,7 +134,7 @@ enum SidebarCounts {
         } else {
             badge = try count(db, account: badgeAccount, where: """
                 isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-                AND inPromotions = 0 AND inSocial = 0
+                AND inPromotions = 0 AND inSocial = 0\(hideSQL)
                 """)
         }
 

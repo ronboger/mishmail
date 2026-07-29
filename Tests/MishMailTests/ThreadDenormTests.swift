@@ -179,13 +179,23 @@ final class ThreadDenormTests: XCTestCase {
                               starred: Bool = false, drafts: Bool = false,
                               promotions: Bool = false, social: Bool = false,
                               spam: Bool = false,
-                              snooze: Date? = nil, reminder: Date? = nil) throws {
+                              snooze: Date? = nil, reminder: Date? = nil,
+                              labelIds: String? = nil) throws {
+        let labels = labelIds ?? {
+            var parts = ["INBOX"]
+            if promotions { parts.append("CATEGORY_PROMOTIONS") }
+            if social { parts.append("CATEGORY_SOCIAL") }
+            if starred { parts.append("STARRED") }
+            if drafts { parts.append("DRAFT") }
+            if spam { parts.append("SPAM") }
+            return parts.joined(separator: " ")
+        }()
         let t = MailThread(
             id: "\(account):\(id)", accountId: account, gmailThreadId: id,
             subject: "s", snippet: "sn", fromDisplay: "F",
             lastDate: Date(), isUnread: unread, isStarred: starred,
             inInbox: inbox, inTrash: trash,
-            labelIds: "INBOX", snoozeUntil: snooze, participants: "F",
+            labelIds: labels, snoozeUntil: snooze, participants: "F",
             messageCount: 1, hasAttachment: false, reminderAt: reminder,
             inSent: false, inDrafts: drafts, inPromotions: promotions,
             inSocial: social, inSpam: spam, fromEmail: "f@x.com")
@@ -263,6 +273,92 @@ final class ThreadDenormTests: XCTestCase {
         XCTAssertEqual(counts["promotions"], 1, "only in-inbox non-spam promotions")
         XCTAssertEqual(counts["social"], 1, "only in-inbox non-spam social")
         XCTAssertEqual(counts["inbox"], 0, "category mail stays out of primary inbox badge")
+    }
+
+    /// When the inbox filter hides Updates/Forums, the primary badge must
+    /// match the list (exclude those categories) — not still count them as
+    /// primary just because they aren't promo/social.
+    func testPrimaryBadgeRespectsUpdatesForumsHide() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try Account(id: "a@x.com", displayName: "A", historyId: nil,
+                        lastSyncAt: nil, senderName: "").insert(db)
+            try self.insertThread(db, id: "primary", account: "a@x.com",
+                                  unread: true, inbox: true)
+            try self.insertThread(db, id: "updates", account: "a@x.com",
+                                  unread: true, inbox: true,
+                                  labelIds: "INBOX CATEGORY_UPDATES")
+            try self.insertThread(db, id: "forums", account: "a@x.com",
+                                  unread: true, inbox: true,
+                                  labelIds: "INBOX CATEGORY_FORUMS")
+            try self.insertThread(db, id: "both", account: "a@x.com",
+                                  unread: true, inbox: true,
+                                  labelIds: "INBOX CATEGORY_UPDATES CATEGORY_FORUMS")
+            // Promo still routes to its own tab even when also in hide set.
+            try self.insertThread(db, id: "promo", account: "a@x.com",
+                                  unread: true, inbox: true, promotions: true)
+        }
+
+        let noHide = try q.read {
+            try SidebarCounts.fetch(db: $0, activeAccount: nil, badgeAccount: nil)
+        }
+        XCTAssertEqual(noHide.counts["inbox"], 4,
+                       "primary + updates + forums + both without hide")
+        XCTAssertEqual(noHide.badge, 4)
+        XCTAssertEqual(noHide.counts["promotions"], 1)
+
+        let hideUpdates = try q.read {
+            try SidebarCounts.fetch(
+                db: $0, activeAccount: nil, badgeAccount: nil,
+                hideCategories: ["CATEGORY_UPDATES"])
+        }
+        XCTAssertEqual(hideUpdates.counts["inbox"], 2,
+                       "primary + forums remain; updates and both drop")
+        XCTAssertEqual(hideUpdates.badge, 2)
+
+        let hideAll = try q.read {
+            try SidebarCounts.fetch(
+                db: $0, activeAccount: nil, badgeAccount: nil,
+                hideCategories: [
+                    "CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL",
+                    "CATEGORY_UPDATES", "CATEGORY_FORUMS",
+                ])
+        }
+        XCTAssertEqual(hideAll.counts["inbox"], 1,
+                       "only true-primary mail; promo still on its tab")
+        XCTAssertEqual(hideAll.badge, 1)
+        XCTAssertEqual(hideAll.counts["promotions"], 1)
+    }
+
+    func testMembershipsRespectUpdatesHide() {
+        let now = Date()
+        var updates = MailThread(
+            id: "a:u", accountId: "a", gmailThreadId: "u",
+            subject: "s", snippet: "sn", fromDisplay: "F",
+            lastDate: now, isUnread: true, isStarred: false,
+            inInbox: true, inTrash: false,
+            labelIds: "INBOX CATEGORY_UPDATES",
+            snoozeUntil: nil, participants: "F", messageCount: 1,
+            hasAttachment: false, reminderAt: nil)
+        XCTAssertEqual(
+            SidebarCounts.memberships(of: updates, now: now),
+            ["inbox"],
+            "updates count as primary when not hidden")
+        XCTAssertEqual(
+            SidebarCounts.memberships(
+                of: updates, now: now,
+                hideCategories: ["CATEGORY_UPDATES"]),
+            [],
+            "hidden updates leave the primary badge")
+
+        // Starred updates still leave the primary badge when hidden (same as
+        // promo tab-split: list pin does not inflate the inbox counter).
+        updates.isStarred = true
+        XCTAssertEqual(
+            SidebarCounts.memberships(
+                of: updates, now: now,
+                hideCategories: ["CATEGORY_UPDATES"]),
+            ["starred"])
     }
 
     // MARK: - VIP any-message matching
