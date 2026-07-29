@@ -1069,9 +1069,8 @@ struct ComposeView: View {
                 // right cluster keeps Send + status fully visible; clip hides
                 // overflow format icons rather than pushing Send off-card.
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
-                // contentShape + clipped: hide overflow format icons and keep
-                // them from receiving clicks in the gap beside the right cluster.
-                .contentShape(Rectangle())
+                // Visual clip only (SwiftUI .clipped does not block hit tests).
+                // Right cluster is drawn later so Send still wins overlapping hits.
                 .clipped()
                 .layoutPriority(0)
 
