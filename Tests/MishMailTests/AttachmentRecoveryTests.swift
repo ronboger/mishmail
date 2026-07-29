@@ -85,6 +85,20 @@ final class AttachmentRecoveryTests: XCTestCase {
         XCTAssertEqual(need, [], "other account's row must not trigger repair here")
     }
 
+    // MARK: - AttachmentRepairReport completion gate
+
+    func testRepairReportCompletedCleanlyMeansFlagSafe() {
+        // Pure structural pin: only a clean report is allowed to set the
+        // one-shot flag (rate-limit exhaustion / listed-cap truncation must not).
+        let clean = SyncEngine.AttachmentRepairReport(
+            touchedKeys: ["t1"], completedCleanly: true)
+        let dirty = SyncEngine.AttachmentRepairReport(
+            touchedKeys: ["t1"], completedCleanly: false)
+        XCTAssertTrue(clean.completedCleanly)
+        XCTAssertFalse(dirty.completedCleanly)
+        XCTAssertNotEqual(clean.completedCleanly, dirty.completedCleanly)
+    }
+
     // MARK: - shouldRecoverAttachments policy
 
     func testRecoverWhenFlagTrueButRowsEmpty() {

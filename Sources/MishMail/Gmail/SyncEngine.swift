@@ -122,13 +122,17 @@ actor SyncEngine {
         // and zero attachment rows (metadata-wipe era, incomplete backfill, etc.).
         // Gmail's has:attachment list is the source of truth for which locals need
         // a full re-parse; filterMissingGmailIds never revisits existing ids.
+        // Flag is only set when every page completed without retry exhaustion so
+        // a rate-limited pass does not permanently strand unrepaired rows.
         let attachKey = Self.attachmentRepairDefaultsKey(accountId: accountId)
         if !UserDefaults.standard.bool(forKey: attachKey) {
             progress?("Repairing missing attachments…")
-            let touchedKeys = try await repairMissingAttachments(
+            let report = try await repairMissingAttachments(
                 limit: windowLimit, progress: progress)
-            try await deriveThreads(for: touchedKeys)
-            UserDefaults.standard.set(true, forKey: attachKey)
+            try await deriveThreads(for: report.touchedKeys)
+            if report.completedCleanly {
+                UserDefaults.standard.set(true, forKey: attachKey)
+            }
         }
 
         account.lastSyncAt = Date()
@@ -337,56 +341,87 @@ actor SyncEngine {
         return unique.filter { needsRepair.contains("\(accountId):\($0)") }
     }
 
+    /// Outcome of one-shot attachment repair: which threads changed, and
+    /// whether every listed page finished without retry exhaustion / truncation.
+    struct AttachmentRepairReport: Sendable {
+        var touchedKeys: Set<String>
+        /// True only when both sweeps finished (`pageToken == nil`) and no
+        /// getMessages ids were retry-exhausted — safe to set the completed flag.
+        var completedCleanly: Bool
+    }
+
     /// Re-downloads Gmail `has:attachment` messages that are cached locally
-    /// without attachment rows / hasAttachment. Returns touched thread keys.
-    @discardableResult
+    /// without attachment rows / hasAttachment.
+    ///
+    /// Two sweeps: (1) in-window `has:attachment`, (2) all-time starred
+    /// `has:attachment` so starred mail kept outside the window is not stranded
+    /// after the completed flag is set.
     private func repairMissingAttachments(
         limit: Int,
         progress: (@Sendable (String) -> Void)?
-    ) async throws -> Set<String> {
-        // Intersect the account window with has:attachment so we don't pull
-        // years of attachment mail outside the configured sync horizon.
-        let query: String = {
-            if let window = windowQuery {
-                return "has:attachment \(window)"
-            }
-            return "has:attachment"
-        }()
+    ) async throws -> AttachmentRepairReport {
         var touchedKeys = Set<String>()
         var writeBuffer: [PendingUpsert] = []
         writeBuffer.reserveCapacity(Self.writeChunkSize)
-        var pageToken: String?
-        var listed = 0
         var repaired = 0
-        repeat {
-            let page = try await client.listMessages(
-                query: query, pageToken: pageToken, maxResults: 100)
-            let listedIds = (page.messages ?? []).map(\.id)
-            listed += listedIds.count
-            let needRepair = try await db.read { [accountId] db in
-                try Self.filterGmailIdsNeedingAttachmentRepair(
-                    db, accountId: accountId, listed: listedIds)
+        var exhausted = 0
+        var completedCleanly = true
+
+        // Windowed corpus + starred-all-time (starred mail is retained outside
+        // the prune window and must not be skipped by the one-shot flag).
+        let queries: [String] = {
+            var qs: [String] = []
+            if let window = windowQuery {
+                qs.append("has:attachment \(window)")
+            } else {
+                qs.append("has:attachment")
             }
-            if !needRepair.isEmpty {
-                let report = try await client.getMessages(ids: needRepair, format: "full")
-                for msg in report.messages {
-                    let (message, attachments) = MessageParser.parse(
-                        msg, accountId: accountId)
-                    writeBuffer.append(PendingUpsert(
-                        message: message, attachments: attachments, headersOnly: false))
-                    if writeBuffer.count >= Self.writeChunkSize {
-                        try await flushUpserts(&writeBuffer, into: &touchedKeys)
-                    }
+            qs.append("has:attachment is:starred")
+            return qs
+        }()
+
+        for query in queries {
+            var pageToken: String?
+            var listed = 0
+            repeat {
+                let page = try await client.listMessages(
+                    query: query, pageToken: pageToken, maxResults: 100)
+                let listedIds = (page.messages ?? []).map(\.id)
+                listed += listedIds.count
+                let needRepair = try await db.read { [accountId] db in
+                    try Self.filterGmailIdsNeedingAttachmentRepair(
+                        db, accountId: accountId, listed: listedIds)
                 }
-                repaired += report.messages.count
-                if repaired > 0 {
+                if !needRepair.isEmpty {
+                    let report = try await client.getMessages(
+                        ids: needRepair, format: "full")
+                    exhausted += report.retryExhaustedIds.count
+                    for msg in report.messages {
+                        let (message, attachments) = MessageParser.parse(
+                            msg, accountId: accountId)
+                        writeBuffer.append(PendingUpsert(
+                            message: message, attachments: attachments,
+                            headersOnly: false))
+                        if writeBuffer.count >= Self.writeChunkSize {
+                            try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                        }
+                    }
+                    repaired += report.messages.count
                     progress?("Repaired attachments on \(repaired) messages…")
                 }
-            }
-            pageToken = page.nextPageToken
-        } while pageToken != nil && listed < limit
+                pageToken = page.nextPageToken
+                if listed >= limit && pageToken != nil {
+                    // Hit the listed-id cap with more pages remaining — do not
+                    // claim the pass finished cleanly.
+                    completedCleanly = false
+                    break
+                }
+            } while pageToken != nil
+        }
         try await flushUpserts(&writeBuffer, into: &touchedKeys)
-        return touchedKeys
+        if exhausted > 0 { completedCleanly = false }
+        return AttachmentRepairReport(
+            touchedKeys: touchedKeys, completedCleanly: completedCleanly)
     }
 
     // MARK: - Incremental
