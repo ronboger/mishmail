@@ -164,7 +164,8 @@ struct ThreadListView: View {
                     .font(.system(size: 12 * fontScale, weight: .semibold))
                     .foregroundStyle(tint)
                     .padding(.horizontal, 8).padding(.vertical, 2)
-                    .background(tint.opacity(0.16), in: Capsule())
+                    .background(tint.opacity(ThreadRowPillChrome.softTint.fillOpacity),
+                                in: Capsule())
                 Text("\(count)")
                     .font(.system(size: 11 * fontScale).monospacedDigit())
                     .foregroundStyle(.secondary)
@@ -1417,9 +1418,11 @@ struct ThreadRow: View, Equatable {
                 if let category = model.category {
                     let tint = Color.aiCategory(category)
                     let chrome = ThreadRowPillChrome.forFocused(model.isFocused)
+                    // AI palette is mid/dark semantic colors — white on selection.
+                    let fg: Color = chrome == .onSelection ? .white : tint
                     Text(category)
                         .font(.system(size: 10.5 * fontScale, weight: .medium))
-                        .foregroundStyle(chrome.usesLightForeground ? Color.white : tint)
+                        .foregroundStyle(fg)
                         .padding(.horizontal, 6).padding(.vertical, 2)
                         .background(tint.opacity(chrome.fillOpacity), in: Capsule())
                         .fixedSize()
@@ -1514,16 +1517,22 @@ struct ThreadRow: View, Equatable {
         return marker + Text(", ").foregroundColor(.secondary) + names
     }
 
-    /// Notion-style label pill: soft tinted capsule when idle; light text on a
-    /// stronger tint fill when the row is selected so the chip stays legible
-    /// on the blue list highlight.
+    /// Notion-style label pill: soft tinted capsule when idle; high-contrast
+    /// text on a stronger tint fill when selected so the chip stays legible
+    /// on the blue list highlight (white on dark tints, near-black on pale).
     private func labelPill(_ chip: ThreadRowLabelChip) -> some View {
         let tint = chip.colorHex.flatMap(Color.hexString) ?? Color.stable(for: chip.name)
         let chrome = ThreadRowPillChrome.forFocused(model.isFocused)
+        let fg: Color = {
+            guard chrome == .onSelection else { return tint }
+            // Missing/malformed hex → stable mid-tone colors → white title.
+            let light = ThreadRowPillChrome.selectionUsesLightForeground(hex: chip.colorHex) ?? true
+            return light ? .white : Color.black.opacity(0.85)
+        }()
         return Text(chip.name)
             .font(.system(size: 10.5 * fontScale, weight: .medium))
             .lineLimit(1)
-            .foregroundStyle(chrome.usesLightForeground ? Color.white : tint)
+            .foregroundStyle(fg)
             .padding(.horizontal, 8).padding(.vertical, 2.5)
             .background(tint.opacity(chrome.fillOpacity), in: Capsule())
     }
