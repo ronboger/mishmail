@@ -61,6 +61,21 @@ final class GreetingAutocompleteTests: XCTestCase {
             "Jordan")
     }
 
+    func testRecipientFirstNameFallsBackWhenHeaderIsRole() {
+        // Shared-mailbox From, but contact has the real person.
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "ops@company.com",
+                contactName: "Priya Sharma",
+                headerName: "Support"),
+            "Priya")
+    }
+
+    func testUsablePersonNameRejectsRFC2047EncodedWords() {
+        XCTAssertFalse(GreetingAutocomplete.isUsablePersonName(
+            "=?UTF-8?B?Sm9obiBDYXNleQ==?="))
+    }
+
     func testRecipientFirstNameRejectsEmailShapedContact() {
         // The bug in the screenshot: contact.name was the bare address
         // (MessageParser.displayName on a From without angle brackets), and

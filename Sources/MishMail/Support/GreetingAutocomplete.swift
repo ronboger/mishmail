@@ -48,8 +48,8 @@ enum GreetingAutocomplete {
     }
 
     /// Role / shared-mailbox labels that must not become "Hi Backoffice,".
-    /// Matched case-insensitively against a full display name or its first token
-    /// / email local-part (dots/underscores/hyphens split into tokens).
+    /// Matched case-insensitively against a full display name or any token of
+    /// it / the email local-part (whitespace, dots, underscores, hyphens split).
     static let genericMailboxLabels: Set<String> = [
         "backoffice", "back-office", "back_office",
         "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply", "do_not_reply",
@@ -71,6 +71,9 @@ enum GreetingAutocomplete {
         // Full addresses and "John@host" local+domain tokens must not become
         // "Hi John@ormoni.bio," — contacts used to store those as display names.
         if n.contains("@") { return false }
+        // Undecoded RFC 2047 encoded-words (`=?UTF-8?B?...?=`) must not leak
+        // into the ghost if a From header ever arrives un-decoded.
+        if n.contains("=?") { return false }
         if isGenericMailboxLabel(n) { return false }
         return true
     }
