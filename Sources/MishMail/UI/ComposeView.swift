@@ -748,7 +748,8 @@ struct ComposeView: View {
         // Always reserve the longest status width so idle → "Draft saved"
         // does not insert space into the footer (that reflow grew the card
         // chrome slightly and used to wrap "Snippets"). Hidden sizer keeps
-        // layout; painted text is trailing-aligned next to Send.
+        // layout; painted text is trailing-aligned so it sits next to trash
+        // (which stays glued to Send — see right-cluster order).
         ZStack(alignment: .trailing) {
             Text(ComposeDraftStatusLayout.widthSizerLabel)
                 .font(.system(size: ComposeDraftStatusLayout.fontSize))
@@ -1031,7 +1032,7 @@ struct ComposeView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
-            // Priority split: right cluster (trash + draft status + Send) is
+            // Priority split: right cluster (draft status + trash + Send) is
             // fixedSize so it never clips under the card's topLeading frame;
             // left tools (attach / snippets / format) take only the remainder
             // and may clip when the card is tight. A single HStack of fixedSize
@@ -1082,7 +1083,16 @@ struct ComposeView: View {
                 .clipped()
                 .layoutPriority(0)
 
+                // Order: reserved status | trash | Send. Status width stays
+                // reserved (no idle→saved reflow) but sits *left* of trash so
+                // trash stays glued to Send — status-between-them left a large
+                // empty hole when idle (screenshot).
                 HStack(spacing: 10) {
+                    // Notion-style draft status — dismiss is the header ✕
+                    // (and Esc). Slot always sized; paint only after typing.
+                    draftStatusLabel
+                        .padding(.horizontal, 4)
+
                     Button {
                         // Discard: delete the live autosave chain (not only editDraft).
                         discardAndClose()
@@ -1091,10 +1101,6 @@ struct ComposeView: View {
                     }
                     .buttonStyle(.plain)
                     .help(liveDraft != nil ? "Discard (deletes this draft)" : "Discard without saving")
-                    // Notion-style draft status where "Close" used to sit — dismiss
-                    // is the header ✕ (and Esc). Status only after the user types.
-                    draftStatusLabel
-                        .padding(.horizontal, 4)
 
                     // Split send button: Send now | schedule menu. Drawn by hand
                     // so both halves match; the presets are a native menu (a

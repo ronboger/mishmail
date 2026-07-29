@@ -2,8 +2,21 @@ import XCTest
 
 final class ComposeFooterLayoutTests: XCTestCase {
 
+    /// Regression: status between trash and Send left a large idle hole in
+    /// the footer. Status must lead; trash stays adjacent to Send.
+    func testTrashAdjacentToSendNotSeparatedByStatus() {
+        XCTAssertEqual(
+            ComposeFooterLayout.rightClusterOrder,
+            ["status", "trash", "send"])
+        XCTAssertTrue(ComposeFooterLayout.trashAdjacentToSend())
+        XCTAssertNotEqual(
+            ComposeFooterLayout.rightClusterOrder,
+            ["trash", "status", "send"],
+            "status-between trash and Send is the screenshot bug")
+    }
+
     /// When the card is narrower than left+right ideals, left tools shrink
-    /// first so trash / draft status / Send stay fully visible.
+    /// first so draft status / trash / Send stay fully visible.
     func testLeftToolsYieldWidthToRightCluster() {
         let card: CGFloat = 400
         let right: CGFloat = 220
@@ -45,7 +58,8 @@ final class ComposeFooterLayoutTests: XCTestCase {
     /// width.
     func testDefaultFloatingInnerWidthFitsRightCluster() {
         let cardInner = ComposePlacement.preferredFloatingWidth - 28
-        // trash (~24) + status sizer (~95+8) + Send+chevron (~80) + gaps ≈ 220
+        // status sizer (~95+8) + trash (~24) + Send+chevron (~80) + gaps ≈ 220
+        // (status is left of trash so trash/Send stay adjacent)
         let rightCluster: CGFloat = 220
         XCTAssertTrue(
             ComposeFooterLayout.rightClusterFits(cardInnerWidth: cardInner,
