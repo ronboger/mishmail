@@ -44,6 +44,14 @@ final class ComposeBodyLayoutTests: XCTestCase {
         XCTAssertLessThan(h.max, 180)
     }
 
+    func testSlashWithoutCollapsedQuoteIsIgnored() {
+        // Guard order: no-quote wins; slash band only when quote is collapsed.
+        let h = ComposeBodyLayout.editorHeights(
+            body: "/snip", hasCollapsedQuote: false, slashActive: true)
+        XCTAssertEqual(h.min, ComposeBodyLayout.noQuoteMin)
+        XCTAssertEqual(h.max, .infinity)
+    }
+
     // MARK: - empty vs short reply (the screenshot bug)
 
     func testEmptyCollapsedQuoteUsesModestFloor() {
@@ -63,10 +71,26 @@ final class ComposeBodyLayoutTests: XCTestCase {
         XCTAssertEqual(h.max, ComposeBodyLayout.emptyFloor)
     }
 
+    /// First keystroke / last delete must not snap the editor frame.
+    /// Empty floor holds until content + slack exceeds it.
+    func testEmptyToOneCharDoesNotJump() {
+        let empty = ComposeBodyLayout.editorHeights(
+            body: "", hasCollapsedQuote: true, slashActive: false)
+        let one = ComposeBodyLayout.editorHeights(
+            body: "A", hasCollapsedQuote: true, slashActive: false)
+        XCTAssertEqual(empty.max, one.max)
+        XCTAssertEqual(one.max, ComposeBodyLayout.emptyFloor)
+        // Content alone would be shorter — floor is what prevents the snap.
+        XCTAssertLessThan(
+            ComposeBodyLayout.contentHeight(body: "A")
+                + ComposeBodyLayout.contentSlack,
+            ComposeBodyLayout.emptyFloor)
+    }
+
     /// Regression: the Revel scheduling reply was ~2–3 lines but reserved
-    /// 180pt, leaving the "…" pill mid-void. Short authored bodies must hug
-    /// content well under that old floor.
-    func testShortReplyHugsContentUnderOldFloor() {
+    /// 180pt, leaving the "…" pill mid-void. Short authored bodies stay at
+    /// the modest emptyFloor (still well under the old 180).
+    func testShortReplyUnderOldFloor() {
         let body = """
         August is open! When is good for you?
 
@@ -76,24 +100,35 @@ final class ComposeBodyLayoutTests: XCTestCase {
             body: body, hasCollapsedQuote: true, slashActive: false)
         XCTAssertEqual(h.min, h.max)
         XCTAssertLessThan(h.max, 180)
-        // At least content + slack; not collapsed to a one-liner strip.
-        let expected = min(
-            max(ComposeBodyLayout.contentHeight(body: body)
-                + ComposeBodyLayout.contentSlack,
-                ComposeBodyLayout.nonEmptyFloor),
-            ComposeBodyLayout.collapsedCap)
-        XCTAssertEqual(h.max, expected)
-        XCTAssertGreaterThan(h.max, ComposeBodyLayout.nonEmptyFloor)
+        // Content + slack is under emptyFloor → held at emptyFloor (no hug snap).
+        let contentPlusSlack = ComposeBodyLayout.contentHeight(body: body)
+            + ComposeBodyLayout.contentSlack
+        XCTAssertLessThan(contentPlusSlack, ComposeBodyLayout.emptyFloor)
+        XCTAssertEqual(h.max, ComposeBodyLayout.emptyFloor)
+    }
+
+    func testHugsOnceContentExceedsFloor() {
+        // Enough lines that content + slack clears emptyFloor.
+        let lines = (0..<8).map { "line \($0)" }.joined(separator: "\n")
+        let contentPlusSlack = ComposeBodyLayout.contentHeight(body: lines)
+            + ComposeBodyLayout.contentSlack
+        XCTAssertGreaterThan(contentPlusSlack, ComposeBodyLayout.emptyFloor)
+
+        let h = ComposeBodyLayout.editorHeights(
+            body: lines, hasCollapsedQuote: true, slashActive: false)
+        XCTAssertEqual(h.max, min(contentPlusSlack, ComposeBodyLayout.collapsedCap))
+        XCTAssertGreaterThan(h.max, ComposeBodyLayout.emptyFloor)
     }
 
     func testGrowsWithAuthoredLinesUntilCap() {
-        let short = ComposeBodyLayout.editorHeights(
-            body: "one line", hasCollapsedQuote: true, slashActive: false)
         let mid = ComposeBodyLayout.editorHeights(
             body: (0..<8).map { "line \($0)" }.joined(separator: "\n"),
             hasCollapsedQuote: true, slashActive: false)
-        XCTAssertGreaterThan(mid.max, short.max)
-        XCTAssertLessThanOrEqual(mid.max, ComposeBodyLayout.collapsedCap)
+        let more = ComposeBodyLayout.editorHeights(
+            body: (0..<12).map { "line \($0)" }.joined(separator: "\n"),
+            hasCollapsedQuote: true, slashActive: false)
+        XCTAssertGreaterThan(more.max, mid.max)
+        XCTAssertLessThanOrEqual(more.max, ComposeBodyLayout.collapsedCap)
     }
 
     func testLongBodyCaps() {

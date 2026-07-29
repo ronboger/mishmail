@@ -5,9 +5,10 @@ import Foundation
 ///
 /// Short replies used a fixed 180pt floor even for two-line drafts, so the
 /// Gmail-style "…" pill sat in a large empty void under the text. Size the
-/// editor to authored content (modest empty-body floor, content+slack when
-/// typing) so the pill sits just under the last line; the card's trailing
-/// Spacer still absorbs leftover chrome below the pill.
+/// editor to authored content once it exceeds a modest floor (and keep that
+/// floor for empty / short drafts so the first keystroke doesn't snap the
+/// frame). The card's trailing Spacer still absorbs leftover chrome below
+/// the pill.
 enum ComposeBodyLayout {
     /// 14pt body font + ~5pt line spacing.
     static let lineHeight: CGFloat = 19
@@ -15,12 +16,13 @@ enum ComposeBodyLayout {
     static let editorPadding: CGFloat = 16
     /// Card is ~620pt wide with ~14pt chrome; ~72 chars fit at 14pt.
     static let charsPerLine = 72
-    /// Breathing room under the last line before the "…" pill.
+    /// Breathing room under the last line before the "…" pill (non-empty).
     static let contentSlack: CGFloat = 8
-    /// Empty reply still needs a real writing surface (≈4–5 lines).
+    /// Floor for empty *and* short drafts (≈4–5 lines). Also the empty-body
+    /// writing surface — non-empty bodies stay at least this tall until
+    /// content + slack exceeds it, so first keystroke / last delete never
+    /// jump the frame (100 → 43 → 100).
     static let emptyFloor: CGFloat = 100
-    /// Defensive floor for non-empty bodies (at least ~one line + padding).
-    static let nonEmptyFloor: CGFloat = 40
     /// Cap keeps footer + "…" on-screen for long drafts in a fixed card.
     static let collapsedCap: CGFloat = 320
     /// Slash-active floors/caps leave room for the match list.
@@ -48,9 +50,9 @@ enum ComposeBodyLayout {
     ///
     /// - No collapsed quote: min `noQuoteMin`, max unbounded (flex with card).
     /// - Slash picker open: fixed low band so the match list keeps height.
-    /// - Empty body + quote: fixed `emptyFloor` writing surface.
-    /// - Authored body + quote: content height + slack, capped (hugs text so
-    ///   "…" sits under the last line instead of mid-void).
+    /// - Empty / short body + quote: at least `emptyFloor` (usable surface,
+    ///   no first-keystroke snap).
+    /// - Longer authored body + quote: content height + slack, capped.
     static func editorHeights(body: String,
                               hasCollapsedQuote: Bool,
                               slashActive: Bool)
@@ -61,11 +63,15 @@ enum ComposeBodyLayout {
         if slashActive {
             return (slashFloor, slashCap)
         }
+        let raw: CGFloat
         if isBodyEmpty(body) {
-            return (emptyFloor, emptyFloor)
+            raw = emptyFloor
+        } else {
+            raw = contentHeight(body: body) + contentSlack
         }
-        let h = min(max(contentHeight(body: body) + contentSlack, nonEmptyFloor),
-                    collapsedCap)
+        // Floor at emptyFloor so empty ↔ one-char never jumps; hug once
+        // content grows past the writing surface.
+        let h = min(max(raw, emptyFloor), collapsedCap)
         return (h, h)
     }
 }
