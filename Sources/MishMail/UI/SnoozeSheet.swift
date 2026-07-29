@@ -1,10 +1,10 @@
 import SwiftUI
 import AppKit
 
-/// Notion-style date picker sheet shared by snooze and schedule-send: type a
-/// natural-language date ("tomorrow", "fri 3pm", "in 2 weeks", "aug 12") and
-/// pick from live suggestions, or choose a preset. Fully keyboard-driven:
-/// ↑/↓ move, Return picks, Esc cancels.
+/// Notion-style date picker shared by snooze (window overlay) and schedule-send
+/// (sheet): type a natural-language date ("tomorrow", "fri 3pm", "in 2 weeks",
+/// "aug 12") and pick from live suggestions, or choose a preset. Fully
+/// keyboard-driven: ↑/↓ move, Return picks, Esc cancels.
 struct DatePickSheet: View {
     struct Preset {
         let title: String
@@ -21,6 +21,10 @@ struct DatePickSheet: View {
     /// Reject typed suggestions at or before this instant (send times must
     /// be in the future; snooze accepts whatever the parser offers).
     var minDate: Date?
+    /// Overlay presenters (snooze) must clear their own state — environment
+    /// `dismiss` is a no-op outside a sheet. Sheet presenters (schedule-send)
+    /// leave this nil and rely on `dismiss()`.
+    var onCancel: (() -> Void)? = nil
     let pick: (Date?) -> Void
 
     @State private var query = ""
@@ -36,26 +40,12 @@ struct DatePickSheet: View {
     }
 
     private var options: [Option] {
-        var list: [Option] = []
-        if query.trimmingCharacters(in: .whitespaces).isEmpty {
-            list = presets.map {
-                Option(title: $0.title, detail: SnoozeDateParser.format($0.date), action: $0.date)
-            }
-        } else {
-            list = SnoozeDateParser.suggestions(for: query)
-                .filter { s in minDate.map { s.date > $0 } ?? true }
-                .map { s in
-                    let parts = s.label.components(separatedBy: "  ·  ")
-                    return Option(title: parts.first ?? s.label,
-                                  detail: parts.count > 1 ? parts[1] : "",
-                                  action: s.date)
-                }
-        }
-        if let clearOption {
-            list.append(Option(title: clearOption.title, detail: clearOption.detail,
-                               action: .some(nil)))
-        }
-        return list
+        DatePickRows.rows(
+            query: query,
+            presets: presets.map { ($0.title, $0.date) },
+            clearOption: clearOption,
+            minDate: minDate
+        ).map { Option(title: $0.title, detail: $0.detail, action: $0.action) }
     }
 
     var body: some View {
@@ -106,6 +96,8 @@ struct DatePickSheet: View {
         .padding(12)
         .frame(width: 340)
         .onAppear {
+            // Focus in the same turn so the first typed character lands in
+            // the field — no sheet-presentation race to wait out.
             fieldFocused = true
             installKeys()
         }
@@ -113,16 +105,20 @@ struct DatePickSheet: View {
     }
 
     private func choose(_ option: Option) {
-        // Pick first: for snooze, `pick` clears the sheet item without
+        // Pick first: for snooze, `pick` clears the overlay item without
         // animation and runs auto-advance in the same update. `dismiss()`
-        // remains as a fallback for non-binding presenters (schedule-send).
+        // remains as a fallback for sheet presenters (schedule-send).
         if let action = option.action { pick(action) }
         dismiss()
     }
 
-    /// The sheet owns the keyboard while it's up (the main window's monitor
-    /// stands down or passes text-field events through): ↑/↓ move the
-    /// highlight even while typing, Return picks, Esc closes.
+    private func cancel() {
+        onCancel?()
+        dismiss()
+    }
+
+    /// Owns ↑/↓/Return/Esc while open. ContentView's monitor stands down
+    /// when `snoozingThread != nil` so these events aren't double-handled.
     private func installKeys() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -137,7 +133,7 @@ struct DatePickSheet: View {
                 if options.indices.contains(highlight) { choose(options[highlight]) }
                 return nil
             case 53:  // esc
-                dismiss()
+                cancel()
                 return nil
             default:
                 return event
@@ -151,10 +147,14 @@ struct DatePickSheet: View {
     }
 }
 
-/// Snooze flavor of the shared picker. Passing nil to `snooze` unsnoozes.
+/// Snooze flavor of the shared picker, presented as a window overlay (not a
+/// modal sheet) so options appear in the same frame as the `b` keypress —
+/// same pattern as LabelPicker / CommandPalette. Passing nil to `snooze`
+/// unsnoozes.
 struct SnoozeSheet: View {
     let current: Date?
     let snooze: (Date?) -> Void
+    let cancel: () -> Void
 
     /// Daypart-aware list (this morning after midnight, drop evening past 6pm, …).
     private var presets: [DatePickSheet.Preset] {
@@ -162,11 +162,22 @@ struct SnoozeSheet: View {
     }
 
     var body: some View {
-        DatePickSheet(
-            placeholder: "When? — try \"tomorrow\", \"fri 3pm\", \"aug 12\"",
-            presets: presets,
-            clearOption: current != nil ? ("Unsnooze", "back to inbox") : nil,
-            footnote: current.map { "Currently snoozed until \(SnoozeDateParser.format($0))" },
-            pick: snooze)
+        ZStack(alignment: .top) {
+            Color.black.opacity(0.2)
+                .ignoresSafeArea()
+                .onTapGesture(perform: cancel)
+
+            DatePickSheet(
+                placeholder: "When? — try \"tomorrow\", \"fri 3pm\", \"aug 12\"",
+                presets: presets,
+                clearOption: current != nil ? ("Unsnooze", "back to inbox") : nil,
+                footnote: current.map { "Currently snoozed until \(SnoozeDateParser.format($0))" },
+                onCancel: cancel,
+                pick: snooze
+            )
+            .background(.regularMaterial, in: RoundedRectangle(cornerRadius: PMRadius.lg))
+            .pmCardElevation(cornerRadius: PMRadius.lg, intense: true)
+            .padding(.top, 120)
+        }
     }
 }

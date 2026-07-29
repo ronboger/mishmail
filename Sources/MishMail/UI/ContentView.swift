@@ -308,9 +308,6 @@ struct ContentView: View {
         .sheet(item: bound.editingView) { view in
             ViewEditor(view: view)
         }
-        .sheet(item: bound.snoozingThread) { thread in
-            SnoozeSheet(current: thread.snoozeUntil) { store.snooze(thread, until: $0) }
-        }
         .alert(
             "Delete this draft?",
             isPresented: Binding(
@@ -330,12 +327,23 @@ struct ContentView: View {
         .sheet(isPresented: bound.showLabelOrganizer) {
             LabelOrganizer()
         }
+        // Snooze is an overlay (not a .sheet): modal sheet presentation on
+        // macOS costs ~200–300 ms of window chrome + animation, so the
+        // presets felt laggy after `b`. LabelPicker / CommandPalette already
+        // use this pattern for the same reason.
         .overlay {
             if store.showCommandPalette {
                 CommandPalette()
             }
             if store.showLabelPicker {
                 LabelPicker(picker: store.labelPicker)
+            }
+            if let thread = store.snoozingThread {
+                SnoozeSheet(
+                    current: thread.snoozeUntil,
+                    snooze: { store.snooze(thread, until: $0) },
+                    cancel: { store.dismissSnoozePicker() }
+                )
             }
         }
         // Wide command-K-style search panel, floated at the window level so it
@@ -680,7 +688,7 @@ private extension ContentView {
             guard let store else { return event }
             // Settings is capturing a key for rebinding — don't run shortcuts.
             if store.keyBindings.capturing { return event }
-            // The snooze sheet runs its own monitor (↑/↓/Return/Esc while
+            // The snooze overlay runs its own monitor (↑/↓/Return/Esc while
             // typing a date) — everything must pass through untouched.
             if store.snoozingThread != nil { return event }
             // ⇧⌘↩ toggles side-by-side compose (conversation | draft). Runs

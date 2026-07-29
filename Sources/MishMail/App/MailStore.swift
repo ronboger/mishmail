@@ -503,7 +503,7 @@ final class MailStore {
     var editingAccountLabels = false
     var showLabelPicker = false
     var showLabelOrganizer = false
-    var snoozingThread: MailThread?   // custom snooze date sheet
+    var snoozingThread: MailThread?   // custom snooze date overlay
     /// Draft message pending the "Delete this draft?" alert (per-message so
     /// multi-draft threads discard the card that was clicked, not always the newest).
     var confirmingDraftDelete: Message?
@@ -4524,10 +4524,10 @@ struct ComposeRequest: Identifiable {
         }
     }
 
-    /// Drop the snooze sheet without its dismiss animation. Archive/trash are
-    /// single-key and hand off in the same update; leaving the sheet up for
-    /// the default sheet animation deferred the reading-pane swap until the
-    /// modal finished closing (~200–300 ms), which felt like a slow advance.
+    /// Drop the snooze overlay immediately. Archive/trash are single-key and
+    /// hand off in the same update; any residual presentation animation would
+    /// still defer the reading-pane swap after a pick, so clear without
+    /// animation even though the picker is no longer a modal sheet.
     func dismissSnoozePicker() {
         guard snoozingThread != nil else { return }
         var t = Transaction()
