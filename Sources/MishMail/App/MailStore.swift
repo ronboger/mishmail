@@ -4248,7 +4248,8 @@ struct ComposeRequest: Identifiable {
     private func offerUndo(_ label: String, undo: @escaping () -> Void) {
         undoAction = UndoAction(label: label, undo: undo)
         undoTimer?.invalidate()
-        undoTimer = Timer.scheduledTimer(withTimeInterval: 6, repeats: false) { [weak self] _ in
+        undoTimer = Timer.scheduledTimer(withTimeInterval: UndoToast.displayDuration,
+                                         repeats: false) { [weak self] _ in
             Task { @MainActor in self?.undoAction = nil }
         }
     }
