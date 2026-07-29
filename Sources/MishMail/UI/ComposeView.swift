@@ -712,33 +712,42 @@ struct ComposeView: View {
 
     @ViewBuilder
     private var draftStatusLabel: some View {
-        // Status text is fixed-size so it never wraps or steals width by
-        // compressing the left cluster (which used to wrap "Snippets").
-        switch draftStatus {
-        case .idle:
-            EmptyView()
-        case .saving:
-            Text("Saving…")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
+        // Always reserve the longest status width so idle → "Draft saved"
+        // does not insert space into the footer (that reflow grew the card
+        // chrome slightly and used to wrap "Snippets"). Hidden sizer keeps
+        // layout; painted text is trailing-aligned next to Send.
+        ZStack(alignment: .trailing) {
+            Text(ComposeDraftStatusLayout.widthSizerLabel)
+                .font(.system(size: ComposeDraftStatusLayout.fontSize))
                 .lineLimit(1)
-                .fixedSize()
-                .accessibilityIdentifier("draftStatusSaving")
-        case .saved:
-            Text("Draft saved")
-                .font(.system(size: 12))
-                .foregroundStyle(.secondary)
-                .lineLimit(1)
-                .fixedSize()
-                .accessibilityIdentifier("draftStatusSaved")
-        case .failed:
-            Text("Draft not saved")
-                .font(.system(size: 12))
-                .foregroundStyle(.red.opacity(0.85))
-                .lineLimit(1)
-                .fixedSize()
-                .accessibilityIdentifier("draftStatusFailed")
+                .hidden()
+                .accessibilityHidden(true)
+
+            switch draftStatus {
+            case .idle:
+                EmptyView()
+            case .saving:
+                Text(ComposeDraftStatusLayout.savingLabel)
+                    .font(.system(size: ComposeDraftStatusLayout.fontSize))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("draftStatusSaving")
+            case .saved:
+                Text(ComposeDraftStatusLayout.savedLabel)
+                    .font(.system(size: ComposeDraftStatusLayout.fontSize))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .accessibilityIdentifier("draftStatusSaved")
+            case .failed:
+                Text(ComposeDraftStatusLayout.failedLabel)
+                    .font(.system(size: ComposeDraftStatusLayout.fontSize))
+                    .foregroundStyle(.red.opacity(0.85))
+                    .lineLimit(1)
+                    .accessibilityIdentifier("draftStatusFailed")
+            }
         }
+        .frame(height: ComposeDraftStatusLayout.rowHeight)
+        .fixedSize(horizontal: true, vertical: false)
     }
 
     private var closeGlyph: some View {
