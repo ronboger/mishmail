@@ -698,9 +698,14 @@ private extension ContentView {
             if event.keyCode == 53 {
                 let isSettings = event.window?.identifier?.rawValue
                     .contains("Settings") == true
-                let composeExpanded = store.composeRequest != nil
-                    && !store.composeMinimized
+                // Mid-finish (Send awaiting persist) is not "expanded" for Esc:
+                // save-and-close already ran; don't re-queue it.
+                let composeExpanded = ComposeKeyOwnership.claimsTyping(
+                    hasRequest: store.composeRequest != nil,
+                    minimized: store.composeMinimized,
+                    finishing: store.composeFinishing)
                 let isSplit = store.composeRequest?.presentation == .split
+                    && !store.composeFinishing
                 switch ComposeEsc.intent(
                     isSettingsWindow: isSettings,
                     slashPickerVisible: store.slashPickerVisible,
@@ -738,9 +743,13 @@ private extension ContentView {
             // Expanded compose + typing: every chord belongs to the text system
             // / compose handlers (⌘K insert-link, ⌃F/⌃K caret motion, …), not
             // app-level shortcuts. Minimized compose resigns focus so inbox
-            // keys work again (Notion Mail-style). Esc for compose is handled
-            // above so it is not trapped here.
-            if store.composeRequest != nil, !store.composeMinimized,
+            // keys work again (Notion Mail-style). Mid-finish (Send awaiting
+            // persist) also yields so `g i` is not typed into the body. Esc
+            // for compose is handled above so it is not trapped here.
+            if ComposeKeyOwnership.claimsTyping(
+                    hasRequest: store.composeRequest != nil,
+                    minimized: store.composeMinimized,
+                    finishing: store.composeFinishing),
                event.window?.firstResponder is NSText {
                 return event
             }
@@ -755,8 +764,10 @@ private extension ContentView {
             // must never fall through to focus when no compose is open.
             if mods == .command, event.keyCode == 36,
                !event.modifierFlags.contains(.shift) {
-                let composeClaimsReturn = store.composeRequest != nil
-                    && !store.composeMinimized
+                let composeClaimsReturn = ComposeKeyOwnership.claimsTyping(
+                    hasRequest: store.composeRequest != nil,
+                    minimized: store.composeMinimized,
+                    finishing: store.composeFinishing)
                 if !composeClaimsReturn, store.selectedThreadId != nil {
                     store.threadFocusMode.toggle()
                     if store.threadFocusMode, !fullWindowThreads {
@@ -886,9 +897,12 @@ private extension ContentView {
             // to the list; otherwise it closes the reading pane (Notion
             // Mail-style) but KEEPS the selection, so you stay where you are.
             // Expanded compose / view editor keep their own Esc behavior;
-            // minimized compose does not block Esc (close is via the strip ×).
+            // minimized / mid-finish compose does not block Esc.
             if event.keyCode == 53,
-               (store.composeRequest == nil || store.composeMinimized),
+               ComposeKeyOwnership.allowsMailboxKeys(
+                   hasRequest: store.composeRequest != nil,
+                   minimized: store.composeMinimized,
+                   finishing: store.composeFinishing),
                store.editingView == nil {
                 // The global monitor also fires for the Settings window. There,
                 // Esc should close Settings and return to the mailbox — not
@@ -948,7 +962,10 @@ private extension ContentView {
             guard mods.isEmpty,
                   !store.showCommandPalette,
                   !store.showLabelPicker,
-                  (store.composeRequest == nil || store.composeMinimized),
+                  ComposeKeyOwnership.allowsMailboxKeys(
+                      hasRequest: store.composeRequest != nil,
+                      minimized: store.composeMinimized,
+                      finishing: store.composeFinishing),
                   store.editingView == nil,
                   // Only *editable* text stands the shortcuts down. Selectable
                   // read-only text (the whole conversation) must not — see

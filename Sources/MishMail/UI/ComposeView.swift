@@ -112,18 +112,30 @@ struct ComposeView: View {
     /// Claim the finish path immediately (before any await) so Send / Esc /
     /// Discard / Schedule can't re-enter and double-queue. Returns false if
     /// another finish is already in flight.
+    ///
+    /// Also yields the keyboard: resign text focus and mark
+    /// `store.composeFinishing` so mailbox keys (`g i`, …) work while we wait
+    /// on an in-flight draft persist before unmounting.
     @discardableResult
     private func beginFinish() -> Bool {
         guard !didFinish else { return false }
         didFinish = true
         autosaveTask?.cancel()
         autosaveTask = nil
+        bodyFocused = false
+        showSnippets = false
+        showLinkSheet = false
+        showScheduleSheet = false
+        store.composeFinishing = true
+        store.slashPickerVisible = false
+        NSApp.keyWindow?.makeFirstResponder(nil)
         return true
     }
 
     /// Undo `beginFinish` when the action can't complete (e.g. empty To:).
     private func abortFinish() {
         didFinish = false
+        store.composeFinishing = false
     }
 
     private func close() {
@@ -131,7 +143,8 @@ struct ComposeView: View {
         autosaveTask?.cancel()
         autosaveTask = nil
         // clearComposeRequest (not a bare nil) flushes a queued mailto: from
-        // an external link that waited on this expanded draft.
+        // an external link that waited on this expanded draft; also clears
+        // composeFinishing.
         store.clearComposeRequest()
     }
 
@@ -998,107 +1011,125 @@ struct ComposeView: View {
                 .transition(.move(edge: .bottom).combined(with: .opacity))
             }
 
+            // Priority split: right cluster (trash + draft status + Send) is
+            // fixedSize so it never clips under the card's topLeading frame;
+            // left tools (attach / snippets / format) take only the remainder
+            // and may clip when the card is tight. A single HStack of fixedSize
+            // children used to overflow and cut "Saving…" mid-word + Send.
             HStack(spacing: 10) {
-                footerButton("paperclip", help: "Attach files") { showFilePicker = true }
+                HStack(spacing: 10) {
+                    footerButton("paperclip", help: "Attach files") { showFilePicker = true }
 
-                footerButton("link", help: "Insert link (⌘K)") { openLinkSheet() }
+                    footerButton("link", help: "Insert link (⌘K)") { openLinkSheet() }
 
-                Button {
-                    withAnimation(.easeOut(duration: 0.12)) { showSnippets.toggle() }
-                } label: {
-                    HStack(spacing: 4) {
-                        Image(systemName: "text.badge.plus")
-                        Text("Snippets")
-                            .font(.system(size: 12))
-                            .lineLimit(1)
-                    }
-                    .foregroundStyle(showSnippets ? Color.notionAccent : Color.secondary)
-                }
-                .buttonStyle(.plain)
-                // Same as Send: never wrap/compress when "Draft saved" appears.
-                .fixedSize()
-                .keyboardShortcut("/", modifiers: .command)
-                .help("Insert a saved snippet (⌘/)")
-
-                // Available for replies, forwards, and new mail — the draft is
-                // generated locally and streamed into the body.
-                footerButton(drafting ? "hourglass" : "sparkles",
-                             help: "Draft with local AI (Ollama)") { draftWithAI() }
-                    .disabled(drafting)
-
-                // Markdown format strip (bold/italic/headers/math…). Link is
-                // the dedicated button above (⌘K sheet); bar routes the rest.
-                ComposeFormatBar { action in
-                    if action == .link { openLinkSheet() }
-                    else { formatTarget.run(action) }
-                }
-                .padding(.leading, 2)
-
-                Spacer()
-
-                Button {
-                    // Discard: delete the live autosave chain (not only editDraft).
-                    discardAndClose()
-                } label: {
-                    Image(systemName: "trash").foregroundStyle(.secondary)
-                }
-                .buttonStyle(.plain)
-                .help(liveDraft != nil ? "Discard (deletes this draft)" : "Discard without saving")
-                // Notion-style draft status where "Close" used to sit — dismiss
-                // is the header ✕ (and Esc). Status only after the user types.
-                draftStatusLabel
-                    .padding(.horizontal, 4)
-
-                // Split send button: Send now | schedule menu. Drawn by hand
-                // so both halves match; the presets are a native menu (a
-                // popover can fail to present from the docked card's edge).
-                HStack(spacing: 1) {
                     Button {
-                        send()
+                        withAnimation(.easeOut(duration: 0.12)) { showSnippets.toggle() }
                     } label: {
-                        Text("Send")
-                            .font(.system(size: 12.5, weight: .medium))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 12)
-                            .frame(height: ComposeDraftStatusLayout.rowHeight)
-                            .background(UnevenRoundedRectangle(
-                                topLeadingRadius: 6, bottomLeadingRadius: 6,
-                                bottomTrailingRadius: 0, topTrailingRadius: 0)
-                                .fill(Color.notionAccent))
-                            .contentShape(Rectangle())
+                        HStack(spacing: 4) {
+                            Image(systemName: "text.badge.plus")
+                            Text("Snippets")
+                                .font(.system(size: 12))
+                                .lineLimit(1)
+                        }
+                        .foregroundStyle(showSnippets ? Color.notionAccent : Color.secondary)
                     }
                     .buttonStyle(.plain)
-                    .disabled(didFinish)
-                    // Never compress to "Se…" when the footer gets crowded.
+                    // Same as Send: never wrap/compress when "Draft saved" appears.
                     .fixedSize()
-                    .keyboardShortcut(.return, modifiers: .command)
-                    .help("Send (10s undo window)")
+                    .keyboardShortcut("/", modifiers: .command)
+                    .help("Insert a saved snippet (⌘/)")
 
-                    // Opens the same natural-language picker as snooze —
-                    // presets plus "type a date" — instead of a menu.
+                    // Available for replies, forwards, and new mail — the draft is
+                    // generated locally and streamed into the body.
+                    footerButton(drafting ? "hourglass" : "sparkles",
+                                 help: "Draft with local AI (Ollama)") { draftWithAI() }
+                        .disabled(drafting)
+
+                    // Markdown format strip (bold/italic/headers/math…). Link is
+                    // the dedicated button above (⌘K sheet); bar routes the rest.
+                    ComposeFormatBar { action in
+                        if action == .link { openLinkSheet() }
+                        else { formatTarget.run(action) }
+                    }
+                    .padding(.leading, 2)
+                }
+                // minWidth 0 lets the left cluster shrink below its ideal so the
+                // right cluster keeps Send + status fully visible; clip hides
+                // overflow format icons rather than pushing Send off-card.
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                .clipped()
+                .layoutPriority(0)
+
+                HStack(spacing: 10) {
                     Button {
-                        showScheduleSheet = true
+                        // Discard: delete the live autosave chain (not only editDraft).
+                        discardAndClose()
                     } label: {
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .bold))
-                            .foregroundStyle(.white)
-                            .padding(.horizontal, 7)
-                            .frame(height: ComposeDraftStatusLayout.rowHeight)
-                            .background(UnevenRoundedRectangle(
-                                topLeadingRadius: 0, bottomLeadingRadius: 0,
-                                bottomTrailingRadius: 6, topTrailingRadius: 6)
-                                .fill(Color.notionAccent))
-                            .contentShape(Rectangle())
+                        Image(systemName: "trash").foregroundStyle(.secondary)
                     }
                     .buttonStyle(.plain)
-                    .fixedSize()
-                    .help("Schedule send")
+                    .help(liveDraft != nil ? "Discard (deletes this draft)" : "Discard without saving")
+                    // Notion-style draft status where "Close" used to sit — dismiss
+                    // is the header ✕ (and Esc). Status only after the user types.
+                    draftStatusLabel
+                        .padding(.horizontal, 4)
+
+                    // Split send button: Send now | schedule menu. Drawn by hand
+                    // so both halves match; the presets are a native menu (a
+                    // popover can fail to present from the docked card's edge).
+                    HStack(spacing: 1) {
+                        Button {
+                            send()
+                        } label: {
+                            Text("Send")
+                                .font(.system(size: 12.5, weight: .medium))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 12)
+                                .frame(height: ComposeDraftStatusLayout.rowHeight)
+                                .background(UnevenRoundedRectangle(
+                                    topLeadingRadius: 6, bottomLeadingRadius: 6,
+                                    bottomTrailingRadius: 0, topTrailingRadius: 0)
+                                    .fill(Color.notionAccent))
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(didFinish)
+                        // Never compress to "Se…" when the footer gets crowded.
+                        .fixedSize()
+                        .keyboardShortcut(.return, modifiers: .command)
+                        .help("Send (10s undo window)")
+
+                        // Opens the same natural-language picker as snooze —
+                        // presets plus "type a date" — instead of a menu.
+                        Button {
+                            showScheduleSheet = true
+                        } label: {
+                            Image(systemName: "chevron.down")
+                                .font(.system(size: 9, weight: .bold))
+                                .foregroundStyle(.white)
+                                .padding(.horizontal, 7)
+                                .frame(height: ComposeDraftStatusLayout.rowHeight)
+                                .background(UnevenRoundedRectangle(
+                                    topLeadingRadius: 0, bottomLeadingRadius: 0,
+                                    bottomTrailingRadius: 6, topTrailingRadius: 6)
+                                    .fill(Color.notionAccent))
+                                .contentShape(Rectangle())
+                        }
+                        .buttonStyle(.plain)
+                        .fixedSize()
+                        .help("Schedule send")
+                    }
+                    .opacity(cannotSend ? 0.5 : 1)
+                    .disabled(cannotSend)
                 }
-                .opacity(cannotSend ? 0.5 : 1)
-                .disabled(cannotSend)
+                .fixedSize(horizontal: true, vertical: false)
+                .layoutPriority(1)
             }
             .padding(.top, 8)
         }
+        // Lock the whole form while Send/discard awaits persist so keys aren't
+        // typed into a finishing draft (and so the card reads as non-interactive).
+        .disabled(didFinish)
     }
 
     private var cannotSend: Bool {

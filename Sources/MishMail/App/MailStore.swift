@@ -474,6 +474,10 @@ final class MailStore {
     /// Compose card is collapsed to a title strip (Notion Mail-style). Draft
     /// state stays mounted; inbox shortcuts work again while minimized.
     var composeMinimized = false
+    /// Send / discard / save-and-close claimed the card and is awaiting an
+    /// in-flight draft persist before unmounting. UI is locked; mailbox keys
+    /// (`g i`, …) work again so a post-Send go-to is not swallowed.
+    var composeFinishing = false
     /// ComposeView publishes whether the `/` snippet picker is showing so the
     /// ContentView Esc ladder can dismiss it without relying on local-monitor
     /// install order (monitors fire FIFO; an early `return nil` starves later ones).
@@ -1092,6 +1096,7 @@ struct ComposeRequest: Identifiable {
             selectedThreadId: selectedThreadId,
             readingPaneHidden: paneHidden)
         composeMinimized = false
+        composeFinishing = false
         composeRequest = req
     }
 
@@ -1140,6 +1145,7 @@ struct ComposeRequest: Identifiable {
     func clearComposeRequest() {
         composeRequest = nil
         composeMinimized = false
+        composeFinishing = false
         slashPickerVisible = false
         guard let mail = pendingMailto else { return }
         pendingMailto = nil
@@ -1521,6 +1527,7 @@ struct ComposeRequest: Identifiable {
         pendingMailto = nil
         composeRequest = nil
         composeMinimized = false
+        composeFinishing = false
         reloadAccounts()
         reloadSavedViews()
         loadVIPs()
