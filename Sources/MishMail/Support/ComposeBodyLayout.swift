@@ -42,10 +42,6 @@ enum ComposeBodyLayout {
         return editorPadding + visualLines * lineHeight
     }
 
-    static func isBodyEmpty(_ body: String) -> Bool {
-        body.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-    }
-
     /// `(minHeight, maxHeight)` for the body editor's SwiftUI frame.
     ///
     /// - No collapsed quote: min `noQuoteMin`, max unbounded (flex with card).
@@ -63,14 +59,10 @@ enum ComposeBodyLayout {
         if slashActive {
             return (slashFloor, slashCap)
         }
-        let raw: CGFloat
-        if isBodyEmpty(body) {
-            raw = emptyFloor
-        } else {
-            raw = contentHeight(body: body) + contentSlack
-        }
-        // Floor at emptyFloor so empty ↔ one-char never jumps; hug once
-        // content grows past the writing surface.
+        // Always measure content (whitespace-only newlines still count as
+        // visual lines) + slack; floor at emptyFloor so empty ↔ one-char
+        // never jumps and hug once content grows past the writing surface.
+        let raw = contentHeight(body: body) + contentSlack
         let h = min(max(raw, emptyFloor), collapsedCap)
         return (h, h)
     }

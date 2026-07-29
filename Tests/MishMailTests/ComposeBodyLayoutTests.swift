@@ -64,11 +64,27 @@ final class ComposeBodyLayoutTests: XCTestCase {
         XCTAssertLessThan(h.min, 180)
     }
 
-    func testWhitespaceOnlyBodyTreatedAsEmpty() {
+    func testWhitespaceOnlySingleLineStaysAtFloor() {
+        // Spaces/tabs only → one visual line under the floor.
         let h = ComposeBodyLayout.editorHeights(
-            body: "  \n\t\n  ", hasCollapsedQuote: true, slashActive: false)
+            body: "  \t  ", hasCollapsedQuote: true, slashActive: false)
         XCTAssertEqual(h.min, ComposeBodyLayout.emptyFloor)
         XCTAssertEqual(h.max, ComposeBodyLayout.emptyFloor)
+    }
+
+    /// Newline-only drafts still count visual lines so the frame grows
+    /// instead of scrolling inside a fixed emptyFloor.
+    func testNewlineOnlyBodyGrowsWithLines() {
+        let body = String(repeating: "\n", count: 8)
+        let h = ComposeBodyLayout.editorHeights(
+            body: body, hasCollapsedQuote: true, slashActive: false)
+        let expected = min(
+            max(ComposeBodyLayout.contentHeight(body: body)
+                + ComposeBodyLayout.contentSlack,
+                ComposeBodyLayout.emptyFloor),
+            ComposeBodyLayout.collapsedCap)
+        XCTAssertEqual(h.max, expected)
+        XCTAssertGreaterThan(h.max, ComposeBodyLayout.emptyFloor)
     }
 
     /// First keystroke / last delete must not snap the editor frame.
