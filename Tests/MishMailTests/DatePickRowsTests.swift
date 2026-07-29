@@ -83,18 +83,32 @@ final class DatePickRowsTests: XCTestCase {
     }
 
     func testMinDateFiltersPastSuggestions() {
-        // 3pm is still ahead at 10am; filter it out with minDate in the future.
-        let now = date(2026, 7, 16, 10, 0)
-        let min = date(2026, 7, 16, 16, 0)
-        let rows = DatePickRows.rows(
+        // Use Calendar.current so dates line up with SnoozeDateParser (which
+        // always anchors on the system calendar, not a test UTC calendar).
+        let cal = Calendar.current
+        let now = cal.date(from: DateComponents(year: 2026, month: 7, day: 16, hour: 10, minute: 0))!
+        // 3pm today is still ahead of 10am, but before a 4pm minDate.
+        let min = cal.date(from: DateComponents(year: 2026, month: 7, day: 16, hour: 16, minute: 0))!
+        let withoutMin = DatePickRows.rows(
+            query: "3pm",
+            presets: [],
+            clearOption: nil,
+            minDate: nil,
+            now: now
+        )
+        let withMin = DatePickRows.rows(
             query: "3pm",
             presets: [],
             clearOption: nil,
             minDate: min,
             now: now
         )
-        // "Today 3pm" is before minDate → dropped; tomorrow 3pm may remain.
-        for row in rows {
+        // Parser must offer something without a floor (Today 3pm).
+        XCTAssertFalse(withoutMin.isEmpty, "expected bare '3pm' suggestions at 10am")
+        // The today-3pm row is dropped by minDate; any survivors must be after min.
+        XCTAssertLessThan(withMin.count, withoutMin.count,
+                          "minDate should drop at least the past-relative suggestion")
+        for row in withMin {
             if case let .some(.some(date)) = row.action {
                 XCTAssertGreaterThan(date, min)
             }

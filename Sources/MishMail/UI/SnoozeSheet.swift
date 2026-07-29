@@ -21,9 +21,11 @@ struct DatePickSheet: View {
     /// Reject typed suggestions at or before this instant (send times must
     /// be in the future; snooze accepts whatever the parser offers).
     var minDate: Date?
-    /// Overlay presenters (snooze) must clear their own state — environment
-    /// `dismiss` is a no-op outside a sheet. Sheet presenters (schedule-send)
-    /// leave this nil and rely on `dismiss()`.
+    /// Overlay presenters (snooze) clear their own state via this callback.
+    /// Sheet presenters (schedule-send) leave it nil and rely on environment
+    /// `dismiss()`. Never call environment `dismiss` when this is set —
+    /// without an enclosing presentation, DismissAction can fall through to
+    /// closing the window on some macOS versions.
     var onCancel: (() -> Void)? = nil
     let pick: (Date?) -> Void
 
@@ -106,15 +108,18 @@ struct DatePickSheet: View {
 
     private func choose(_ option: Option) {
         // Pick first: for snooze, `pick` clears the overlay item without
-        // animation and runs auto-advance in the same update. `dismiss()`
-        // remains as a fallback for sheet presenters (schedule-send).
+        // animation and runs auto-advance in the same update. Only call
+        // environment `dismiss()` for sheet presenters (schedule-send).
         if let action = option.action { pick(action) }
-        dismiss()
+        if onCancel == nil { dismiss() }
     }
 
     private func cancel() {
-        onCancel?()
-        dismiss()
+        if let onCancel {
+            onCancel()
+        } else {
+            dismiss()
+        }
     }
 
     /// Owns ↑/↓/Return/Esc while open. ContentView's monitor stands down

@@ -344,6 +344,8 @@ struct ContentView: View {
                     snooze: { store.snooze(thread, until: $0) },
                     cancel: { store.dismissSnoozePicker() }
                 )
+                // Reset query/highlight if the target thread changes while open.
+                .id(thread.id)
             }
         }
         // Wide command-K-style search panel, floated at the window level so it
