@@ -1526,9 +1526,12 @@ struct ComposeView: View {
         return SnippetInsertion.slashToken(in: head, caretUTF16: bodyCaretUTF16)
     }
 
-    /// First To recipient's first name for greeting autocomplete. Prefers a
-    /// mined contact display name when usable; never returns an email-shaped
-    /// string (bare-address contacts used to poison this with `John@host`).
+    /// First To recipient's first name for greeting autocomplete.
+    ///
+    /// On reply, prefers the From display name of the message being replied to
+    /// (the last sender) when To matches that address — so we greet "John" even
+    /// when contacts only know the bare email. Role mailboxes (Backoffice,
+    /// Support, noreply) yield no suggestion rather than "Hi Backoffice,".
     private var greetingRecipientFirstName: String {
         let token = toTokens.first
             ?? (toDraft.contains("@")
@@ -1540,8 +1543,16 @@ struct ComposeView: View {
         let contactName = store.contacts.first(where: {
             $0.email.caseInsensitiveCompare(emailKey) == .orderedSame
         })?.name
+        // Last sender's From display — only when it is this To recipient.
+        var headerName: String?
+        if let original {
+            let fromEmail = MessageParser.emailAddress(original.fromHeader).lowercased()
+            if fromEmail == emailKey {
+                headerName = MessageParser.displayName(fromHeader: original.fromHeader)
+            }
+        }
         return GreetingAutocomplete.recipientFirstName(
-            token: token, contactName: contactName)
+            token: token, contactName: contactName, headerName: headerName)
     }
 
     /// Live Hi/Hey/Hello ghost at the start of a thread. Hidden while the

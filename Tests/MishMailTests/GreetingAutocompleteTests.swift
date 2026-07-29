@@ -24,11 +24,41 @@ final class GreetingAutocompleteTests: XCTestCase {
         XCTAssertFalse(GreetingAutocomplete.isUsablePersonName("john@x.com"))
     }
 
+    func testUsablePersonNameRejectsRoleMailboxes() {
+        XCTAssertFalse(GreetingAutocomplete.isUsablePersonName("Backoffice"))
+        XCTAssertFalse(GreetingAutocomplete.isUsablePersonName("backoffice"))
+        XCTAssertFalse(GreetingAutocomplete.isUsablePersonName("Customer Support"))
+        XCTAssertFalse(GreetingAutocomplete.isUsablePersonName("Support Team"))
+        XCTAssertFalse(GreetingAutocomplete.isUsablePersonName("no-reply"))
+        XCTAssertFalse(GreetingAutocomplete.isUsablePersonName("Notifications"))
+        // Real people still pass.
+        XCTAssertTrue(GreetingAutocomplete.isUsablePersonName("Jordan"))
+        XCTAssertTrue(GreetingAutocomplete.isUsablePersonName("Supportive Sue"))
+    }
+
     func testRecipientFirstNamePrefersContactOverLocalPart() {
         XCTAssertEqual(
             GreetingAutocomplete.recipientFirstName(
                 token: "john@ormoni.bio", contactName: "John Casey"),
             "John")
+    }
+
+    func testRecipientFirstNamePrefersLastSenderHeader() {
+        // Reply To is bare email; From header on the message being replied to
+        // carries the real name — prefer that over a contact local-part guess.
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "john@ormoni.bio",
+                contactName: nil,
+                headerName: "John Casey"),
+            "John")
+        // Header wins over a weaker contact when both usable.
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "j@x.com",
+                contactName: "J",
+                headerName: "Jordan Lee"),
+            "Jordan")
     }
 
     func testRecipientFirstNameRejectsEmailShapedContact() {
@@ -43,6 +73,21 @@ final class GreetingAutocompleteTests: XCTestCase {
             GreetingAutocomplete.recipientFirstName(
                 token: "john@ormoni.bio", contactName: "john@ormoni.bio"),
             "John")
+    }
+
+    func testRecipientFirstNameSuppressesBackoffice() {
+        // Shared mailbox From: "Backoffice <ops@company.com>" — no ghost.
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "ops@company.com",
+                contactName: "Backoffice",
+                headerName: "Backoffice"),
+            "")
+        // Local-part guess "Backoffice" from backoffice@… is also suppressed.
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "backoffice@company.com", contactName: nil),
+            "")
     }
 
     func testRecipientFirstNameFromAngleBracketToken() {

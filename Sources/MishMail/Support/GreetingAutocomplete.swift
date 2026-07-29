@@ -47,14 +47,47 @@ enum GreetingAutocomplete {
             .split(whereSeparator: { $0.isWhitespace }).first.map(String.init) ?? ""
     }
 
-    /// True when `name` is safe to put after Hi/Hey (not empty, not email-shaped).
+    /// Role / shared-mailbox labels that must not become "Hi Backoffice,".
+    /// Matched case-insensitively against a full display name or its first token
+    /// / email local-part (dots/underscores/hyphens split into tokens).
+    static let genericMailboxLabels: Set<String> = [
+        "backoffice", "back-office", "back_office",
+        "noreply", "no-reply", "no_reply", "donotreply", "do-not-reply", "do_not_reply",
+        "support", "help", "helpdesk", "help-desk",
+        "info", "admin", "sales", "billing", "hello", "contact", "contacts",
+        "team", "mail", "office", "ops", "hr", "finance", "accounting",
+        "notifications", "notification", "alerts", "newsletter", "news",
+        "mailer-daemon", "mailerdaemon", "postmaster", "daemon",
+        "accounts", "account", "service", "services", "customerservice",
+        "customer-service", "customersuccess", "success",
+        "robot", "bot", "system", "automated", "auto",
+    ]
+
+    /// True when `name` is safe to put after Hi/Hey (not empty, not email-shaped,
+    /// not a role/shared mailbox like Backoffice / Support / noreply).
     static func isUsablePersonName(_ name: String) -> Bool {
         let n = name.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !n.isEmpty else { return false }
         // Full addresses and "John@host" local+domain tokens must not become
         // "Hi John@ormoni.bio," — contacts used to store those as display names.
         if n.contains("@") { return false }
+        if isGenericMailboxLabel(n) { return false }
         return true
+    }
+
+    /// True for role mailboxes ("Backoffice", "Customer Support", "no-reply").
+    static func isGenericMailboxLabel(_ name: String) -> Bool {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        let lower = trimmed.lowercased()
+        if genericMailboxLabels.contains(lower) { return true }
+        // Split "Customer Support" / "no-reply" / "mailer.daemon" into tokens.
+        // Any role token is enough — "Customer Support" should not become a
+        // greeting first name even though "Customer" alone is fine.
+        let tokens = lower
+            .split(whereSeparator: { $0.isWhitespace || $0 == "." || $0 == "_" || $0 == "-" })
+            .map(String.init)
+        return tokens.contains(where: { genericMailboxLabels.contains($0) })
     }
 
     /// Name + email from a recipient token (`"Alice <a@x.com>"` or bare
@@ -81,18 +114,23 @@ enum GreetingAutocomplete {
         return (name, email)
     }
 
-    /// First name for the greeting ghost. Prefers a real contact display name;
-    /// otherwise the token's display name / local-part guess. Never returns an
-    /// email-shaped string (fixes "Hi John@ormoni.bio," when contacts only
-    /// know the bare address).
-    static func recipientFirstName(token: String, contactName: String?) -> String {
+    /// First name for the greeting ghost.
+    ///
+    /// Preference order:
+    /// 1. `headerName` — From display of the message being replied to (last
+    ///    sender). Most accurate when contacts only know the bare address.
+    /// 2. `contactName` — mined contact display name.
+    /// 3. Token display name / local-part title-case guess.
+    ///
+    /// Never returns email-shaped or role/shared mailbox labels (Backoffice,
+    /// Support, noreply, …).
+    static func recipientFirstName(token: String,
+                                   contactName: String?,
+                                   headerName: String? = nil) -> String {
         let (tokenName, _) = person(from: token)
-        if let contactName, isUsablePersonName(contactName) {
-            let first = firstName(of: contactName)
-            if isUsablePersonName(first) { return first }
-        }
-        if isUsablePersonName(tokenName) {
-            let first = firstName(of: tokenName)
+        for candidate in [headerName, contactName, tokenName] {
+            guard let candidate, isUsablePersonName(candidate) else { continue }
+            let first = firstName(of: candidate)
             if isUsablePersonName(first) { return first }
         }
         return ""
