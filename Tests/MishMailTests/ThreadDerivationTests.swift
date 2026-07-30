@@ -190,7 +190,9 @@ final class ThreadDerivationTests: XCTestCase {
         let m1 = msg(id: "m1", from: "a@b.com", daysAgo: 1)
         let existing = try XCTUnwrap(derive([m1]))
         var withState = existing
+        // Real snooze strips INBOX (mutateThread sets inInbox=false).
         withState.snoozeUntil = snooze
+        withState.inInbox = false
         withState.reminderAt = reminder
         withState.reminderSetAt = reminderSet
 
@@ -208,6 +210,7 @@ final class ThreadDerivationTests: XCTestCase {
         let existing = try XCTUnwrap(derive([old]))
         var withState = existing
         withState.snoozeUntil = snooze
+        withState.inInbox = false  // matches snooze() local mutation
 
         let reply = msg(id: "m2", from: "Qiyun <q@asu.edu>", daysAgo: 0,
                         labels: "INBOX UNREAD", unread: true)
@@ -235,6 +238,13 @@ final class ThreadDerivationTests: XCTestCase {
             existing: withState, messages: [reply, old], accountId: account))
         XCTAssertNil(SyncEngine.preservedSnoozeUntil(
             existing: nil, messages: [reply], accountId: account))
+
+        // Pre-fix ghost: inInbox already true while snoozeUntil still set.
+        var ghost = withState
+        ghost.inInbox = true
+        XCTAssertNil(SyncEngine.preservedSnoozeUntil(
+            existing: ghost, messages: [reply, old], accountId: account),
+                     "ghost inInbox+snooze must clear")
     }
 
     func testTrashedThread() throws {
@@ -466,6 +476,7 @@ final class BatchThreadDerivationTests: XCTestCase {
             try SyncEngine.deriveThreads(db, for: ["\(self.account):t1"], accountId: self.account)
             var thread = try XCTUnwrap(MailThread.fetchOne(db, key: "\(self.account):t1"))
             thread.snoozeUntil = snooze
+            thread.inInbox = false  // matches snooze() local mutation
             thread.reminderAt = reminder
             thread.reminderSetAt = reminderSet
             try thread.save(db)

@@ -825,14 +825,19 @@ actor SyncEngine {
 
     /// Local `snoozeUntil` across re-derives, with Gmail-style wake-on-reply.
     ///
-    /// MishMail snooze is client-side (API has no snooze field). Clears only
-    /// when **inbound** activity advances (`lastInboundDate` / non-own-outbound
-    /// messages) — not on draft saves, pure SENT replies, or prune→backfill
-    /// count churn. Same-message re-derives keep the sleep. Pure — unit-tested.
+    /// MishMail snooze is client-side (API has no snooze field). Clears when:
+    /// - **Inbound advances** (`lastInboundDate`) — reply while sleeping.
+    /// - **Ghost heal**: pre-fix rows kept `snoozeUntil` after a reply
+    ///   re-added INBOX (`inInbox == true` while still "sleeping"). MishMail
+    ///   snooze always strips INBOX, so that combo means already woken.
+    /// Does not clear on draft saves, pure SENT, or prune→backfill count churn.
+    /// Pure — unit-tested.
     static func preservedSnoozeUntil(
         existing: MailThread?, messages: [Message], accountId: String
     ) -> Date? {
         guard let existing, let until = existing.snoozeUntil else { return nil }
+        // Pre-fix ghost: reply restored INBOX but left snoozeUntil set.
+        if existing.inInbox { return nil }
         let inbound = lastInboundDate(messages: messages, accountId: accountId)
         guard let inbound else { return until }  // still pure outbound
         if let prior = existing.lastInboundDate {
