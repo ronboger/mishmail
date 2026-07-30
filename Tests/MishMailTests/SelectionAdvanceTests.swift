@@ -309,22 +309,24 @@ final class SelectionAdvanceTests: XCTestCase {
             1)
     }
 
-    /// Attachment recovery re-derives the thread (hasAttachment flips) but
-    /// only the in-memory list row drives the paperclip; patch by id.
-    func testReplacingRowUpdatesHasAttachmentInPlace() {
-        let stale = fixtureThread(id: "t1", date: Date(), hasAttachment: false)
+    /// Attachment recovery re-derives hasAttachment but only the in-memory
+    /// list row drives the paperclip; field-only patch by id.
+    func testPatchingHasAttachmentUpdatesPaperclipFlagInPlace() {
+        var stale = fixtureThread(id: "t1", date: Date(), hasAttachment: false)
+        stale.isStarred = true  // concurrent optimistic state must survive
         let other = fixtureThread(id: "t2", date: Date(), hasAttachment: true)
-        var recovered = stale
-        recovered.hasAttachment = true
-        let updated = ThreadListOptimistic.replacingRow(
-            recovered, in: [stale, other])
+        let updated = ThreadListOptimistic.patchingHasAttachment(
+            true, threadId: "t1", in: [stale, other])
         XCTAssertEqual(updated?.map(\.id), ["t1", "t2"])
         XCTAssertEqual(updated?[0].hasAttachment, true)
+        XCTAssertEqual(updated?[0].isStarred, true, "must not clobber other fields")
         XCTAssertEqual(updated?[1].hasAttachment, true)
+        // No-op when flag already matches — avoid redundant Observation publishes.
+        XCTAssertNil(ThreadListOptimistic.patchingHasAttachment(
+            true, threadId: "t2", in: [stale, other]))
         // Unknown id: no insert into the current window.
-        XCTAssertNil(ThreadListOptimistic.replacingRow(
-            fixtureThread(id: "absent", date: Date(), hasAttachment: true),
-            in: [stale, other]))
+        XCTAssertNil(ThreadListOptimistic.patchingHasAttachment(
+            true, threadId: "absent", in: [stale, other]))
     }
 
     /// Regression: Undo must not flash a restored row into the wrong list.

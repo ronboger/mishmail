@@ -236,16 +236,20 @@ enum ThreadListOptimistic {
         } ?? rows.endIndex
     }
 
-    /// Replace the matching list row with a re-derived thread (e.g. after
-    /// attachment recovery flips `hasAttachment` so the paperclip can appear).
-    /// Returns nil when the id is not in the current window — no insert.
-    static func replacingRow(_ thread: MailThread,
-                             in threads: [MailThread]) -> [MailThread]? {
-        guard let idx = threads.firstIndex(where: { $0.id == thread.id }) else {
+    /// Patch `hasAttachment` on the matching list row after re-derive
+    /// (attachment recovery). Only that field is written so concurrent
+    /// optimistic list state (star / unread / snooze) is not reverted by a
+    /// full row replace. Content-only — does not re-sort. Returns nil when
+    /// the id is not in the current window (no insert).
+    static func patchingHasAttachment(_ hasAttachment: Bool,
+                                      threadId: String,
+                                      in threads: [MailThread]) -> [MailThread]? {
+        guard let idx = threads.firstIndex(where: { $0.id == threadId }) else {
             return nil
         }
+        if threads[idx].hasAttachment == hasAttachment { return nil }
         var copy = threads
-        copy[idx] = thread
+        copy[idx].hasAttachment = hasAttachment
         return copy
     }
 

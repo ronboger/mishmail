@@ -5329,16 +5329,20 @@ struct ComposeRequest: Identifiable {
                     db, for: [parsed.threadId], accountId: message.accountId)
                 return try MailThread.fetchOne(db, key: parsed.threadId)
             }
-            applyThreadContentChange(.threads([message.threadId]))
+            applyThreadContentChange(.threads([parsed.threadId]))
             // List paperclip reads `threads[].hasAttachment`. Content-revision
-            // wakes the reading pane only — patch the list row here so recovery
+            // wakes the reading pane only — patch the flag here so recovery
             // that flips hasAttachment is visible without reloadThreads.
+            // Field-only patch: do not replace the whole row (would clobber
+            // concurrent star/unread/snooze optimistic state).
             if let derivedThread,
-               let updated = ThreadListOptimistic.replacingRow(
-                   derivedThread, in: threads) {
+               let updated = ThreadListOptimistic.patchingHasAttachment(
+                   derivedThread.hasAttachment,
+                   threadId: derivedThread.id,
+                   in: threads) {
                 threads = updated
             }
-            await threadDetailRepository.drop(threadId: message.threadId)
+            await threadDetailRepository.drop(threadId: parsed.threadId)
             // `parsed` still carries body fields from MessageParser (upsert only
             // clears on-row columns in the DB copy).
             return (parsed, atts)
