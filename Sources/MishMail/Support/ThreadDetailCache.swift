@@ -262,14 +262,9 @@ struct ThreadDetailPayload: Equatable {
     /// Precomputed quote trails + assembled HTML, keyed by message id.
     var bodyPrepByMessageId: [String: MessageHTMLPrep]
 
-    /// Hide pending-send drafts and discarded `DRAFT TRASH` rows so the
-    /// reading pane never shows stuck "Not sent" cards after discard.
     func suppressingDrafts(_ suppressedIds: Set<String>) -> ThreadDetailPayload {
-        let withoutPending = suppressedIds.isEmpty
-            ? messages
-            : messages.filter { !suppressedIds.contains($0.id) }
-        let visible = ForwardComposer.readingPaneMessages(withoutPending)
-        guard visible.count != messages.count || !suppressedIds.isEmpty else { return self }
+        guard !suppressedIds.isEmpty else { return self }
+        let visible = messages.filter { !suppressedIds.contains($0.id) }
         let visibleIds = Set(visible.map(\.id))
         return ThreadDetailPayload(
             messages: visible,

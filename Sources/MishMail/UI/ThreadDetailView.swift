@@ -194,11 +194,11 @@ struct ThreadDetailView: View {
                         .padding(.horizontal)
                     }
 
-                    ForEach(ForwardComposer.readingPaneMessages(messages)) { message in
+                    ForEach(messages) { message in
                         if ForwardComposer.isLiveDraft(message.labelIds) {
-                            // Drafts are not ordinary messages: no quote trail, no
-                            // Reply/Forward, clear "not sent" chrome. Edit lives on
-                            // the card so you don't have to scroll to the top.
+                            // Live unsent drafts only — DRAFT+TRASH (discarded)
+                            // keeps ordinary MessageCard chrome so Trash still
+                            // shows content for discarded-compose threads.
                             DraftMessageCard(
                                 message: message,
                                 onNeedBody: { loadBodyIfNeeded(id: message.id) })

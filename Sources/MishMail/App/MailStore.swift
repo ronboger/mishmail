@@ -2825,9 +2825,8 @@ struct ComposeRequest: Identifiable {
                 .fetchAll(db)
             return try Self.hydrateBodies(headers, db: db)
         }) ?? []
-        return ForwardComposer.readingPaneMessages(
-            PendingDraftVisibility.visibleMessages(
-                fetched, suppressing: suppressedDraftMessageIds))
+        return PendingDraftVisibility.visibleMessages(
+            fetched, suppressing: suppressedDraftMessageIds)
     }
 
     /// Headers + snippet only (empty body fields). Cheap open path for the
@@ -2893,9 +2892,8 @@ struct ComposeRequest: Identifiable {
                     arguments: [threadId]
                 )
             }) ?? []
-            return ForwardComposer.readingPaneMessages(
-                PendingDraftVisibility.visibleMessages(
-                    fetched, suppressing: suppressedDraftMessageIds))
+            return PendingDraftVisibility.visibleMessages(
+                fetched, suppressing: suppressedDraftMessageIds)
         }
     }
 
@@ -5135,40 +5133,32 @@ struct ComposeRequest: Identifiable {
                 await sync(accountId: draftMessage.accountId)
             }
         } catch {
-            // Local already gone — report without resurrecting the card.
+            // Local is already gone for this session. A failed remote delete
+            // can still resurrect the row on the next successful sync; the
+            // non-silent path surfaces lastError so the user knows.
             if !silent { lastError = error.localizedDescription }
         }
     }
 
     /// Drop a draft message row and re-derive (or delete) its thread so the
     /// open reading pane and denorm flags update without waiting on history.
+    /// Extracted static core is unit-tested against an in-memory DB.
     private func removeLocalDraftMessage(_ draftMessage: Message, refreshList: Bool) {
         let threadId = draftMessage.threadId
         let accountId = draftMessage.accountId
-        var threadDeleted = false
-        try? db.write { db in
-            guard try Message.fetchOne(db, key: draftMessage.id) != nil else { return }
-            _ = try Message.deleteOne(db, key: draftMessage.id)
-            let remaining = try Message
-                .filter(Column("threadId") == threadId)
-                .fetchCount(db)
-            if remaining == 0 {
-                _ = try MailThread.deleteOne(db, key: threadId)
-                try ThreadLabels.rewrite(db, threadId: threadId, labelIds: "")
-                threadDeleted = true
-            } else {
-                try SyncEngine.deriveThreads(db, for: [threadId], accountId: accountId)
-            }
-        }
+        let outcome = (try? db.write { db in
+            try SyncEngine.deleteLocalMessage(
+                db, messageId: draftMessage.id, threadId: threadId, accountId: accountId)
+        }) ?? .missing
+        guard outcome != .missing else { return }
         applyThreadContentChange(.threads([threadId]))
         Task { await threadDetailRepository.drop(threadId: threadId) }
         if refreshList {
             reloadThreads()
-        } else if threadDeleted {
+        } else if outcome == .threadDeleted {
+            // Silent paths (send / replace) leave selection alone so the
+            // follow-up sync can re-seat the thread without yanking to row 0.
             threads.removeAll { $0.id == threadId }
-            if selectedThreadId == threadId {
-                selectedThreadId = threads.first?.id
-            }
         } else if let updated = try? db.read({ try MailThread.fetchOne($0, key: threadId) }),
                   let idx = threads.firstIndex(where: { $0.id == threadId }) {
             threads[idx] = updated

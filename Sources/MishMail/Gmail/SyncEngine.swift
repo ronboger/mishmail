@@ -236,6 +236,33 @@ actor SyncEngine {
         }
     }
 
+    /// Result of removing one local message row (discard / history delete).
+    enum LocalMessageDeleteOutcome: Equatable {
+        case missing
+        case threadDeleted
+        case threadRederived
+    }
+
+    /// Drop one message by local id, then either delete an empty thread or
+    /// re-derive denorm flags. Hostless-testable; used by Discard before the
+    /// remote drafts.delete so the card never sticks on a listDrafts miss.
+    static func deleteLocalMessage(
+        _ db: Database, messageId: String, threadId: String, accountId: String
+    ) throws -> LocalMessageDeleteOutcome {
+        guard try Message.fetchOne(db, key: messageId) != nil else { return .missing }
+        _ = try Message.deleteOne(db, key: messageId)
+        let remaining = try Message
+            .filter(Column("threadId") == threadId)
+            .fetchCount(db)
+        if remaining == 0 {
+            _ = try MailThread.deleteOne(db, key: threadId)
+            try ThreadLabels.rewrite(db, threadId: threadId, labelIds: "")
+            return .threadDeleted
+        }
+        try deriveThreads(db, for: [threadId], accountId: accountId)
+        return .threadRederived
+    }
+
     /// Lists messages matching a query and downloads only the ones missing
     /// from the local cache.
     /// Server-side search: downloads messages matching a Gmail query that
