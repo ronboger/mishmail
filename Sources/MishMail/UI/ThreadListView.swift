@@ -440,7 +440,10 @@ struct ThreadListView: View {
 
     @ViewBuilder
     private func threadMenu(_ thread: MailThread) -> some View {
-        if thread.labels.contains("DRAFT") {
+        // `inDrafts` (live DRAFT only) — not labels.contains("DRAFT"), which
+        // is the historical union and stays true after discarded DRAFT+TRASH
+        // (Fund Expense / Anna). Edit/Delete would no-op on those threads.
+        if thread.inDrafts {
             Button("Edit Draft") { store.editDraft(inThread: thread) }
             Button("Delete Draft", role: .destructive) {
                 if let draft = store.newestDraft(inThread: thread.id) {
@@ -1507,13 +1510,22 @@ struct ThreadRow: View, Equatable {
     /// message is the draft shows just "Draft". Same orange as the detail
     /// pane's draft card. Concatenated Text so long names truncate at the
     /// tail and the marker never gets squeezed out.
+    ///
+    /// Uses denorm `inDrafts` (any live `DRAFT` without `TRASH`), not
+    /// `labels.contains("DRAFT")`. The historical `labelIds` union keeps
+    /// DRAFT from discarded compose attempts (`DRAFT TRASH`) forever, so
+    /// the old check left "Draft, me .. Anna" after every discard.
     private var participantsText: Text {
         let names = Text(participantsDisplay)
             .fontWeight(thread.isUnread ? .semibold : .regular)
             .foregroundColor(thread.isUnread ? Color.primary : Color.primary.opacity(0.65))
-        guard thread.labels.contains("DRAFT") else { return names }
+        let style = ThreadListDraftCue.showsMarker(
+            inDrafts: thread.inDrafts,
+            messageCount: thread.messageCount,
+            participants: participantsDisplay)
+        guard style != .none else { return names }
         let marker = Text("Draft").fontWeight(.medium).foregroundColor(.orange)
-        if thread.messageCount <= 1 || participantsDisplay.isEmpty { return marker }
+        if style == .draftOnly { return marker }
         return marker + Text(", ").foregroundColor(.secondary) + names
     }
 

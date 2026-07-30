@@ -5055,7 +5055,8 @@ struct ComposeRequest: Identifiable {
     /// Draft replies inside real conversations still open the thread.
     /// Discarded `DRAFT TRASH` rows alone are trash, not a live draft-only hop.
     func isDraftOnly(_ thread: MailThread) -> Bool {
-        guard thread.labels.contains("DRAFT") else { return false }
+        // `inDrafts` ignores discarded DRAFT+TRASH in the historical union.
+        guard thread.inDrafts else { return false }
         let msgs = messages(inThread: thread.id)
         return !msgs.isEmpty && msgs.allSatisfy { ForwardComposer.isLiveDraft($0.labelIds) }
     }
