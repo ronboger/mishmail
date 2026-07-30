@@ -3421,6 +3421,9 @@ struct ComposeRequest: Identifiable {
             // Primary-tab unread only. Starred promo/social can appear in the
             // inbox *list* (CategoryHide pin-through) but do not notify — a
             // star is a list pin, not a reclassification into Primary.
+            // Match primary badge / inbox list: skip actively snoozed rows so
+            // a sleeping unread does not notify or seed the baseline.
+            let now = Date()
             try MailThread
                 .filter(Column("isUnread") == true)
                 .filter(Column("inInbox") == true)
@@ -3428,6 +3431,7 @@ struct ComposeRequest: Identifiable {
                 .filter(Column("inSpam") == false)
                 .filter(Column("inPromotions") == false)
                 .filter(Column("inSocial") == false)
+                .filter(Column("snoozeUntil") == nil || Column("snoozeUntil") <= now)
                 .select(Column("id"), as: String.self)
                 .fetchAll(db)
         }) ?? [])

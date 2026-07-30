@@ -21,14 +21,63 @@ final class ThreadDenormTests: XCTestCase {
 
         thread.inPromotions = true
         thread.snoozeUntil = now.addingTimeInterval(3600)
+        // Actively snoozed: list-hidden from Promo/Inbox — badge must not count
+        // tab unread while sleeping (still under Snoozed + star/reminder).
         XCTAssertEqual(
             SidebarCounts.memberships(of: thread, now: now),
-            ["promotions", "starred", "reminders", "snoozed"])
+            ["starred", "reminders", "snoozed"])
 
         thread.inTrash = true
         XCTAssertEqual(
             SidebarCounts.memberships(of: thread, now: now),
             ["reminders"])
+    }
+
+    /// Regression: unread + inbox + future snooze must not inflate the
+    /// primary badge (list uses notSnoozed; badge must match). Qiyun-style
+    /// reply-on-snoozed-thread left Inbox "1" with empty is:unread.
+    func testSnoozedUnreadDoesNotInflateInboxBadge() throws {
+        let now = Date()
+        let wake = now.addingTimeInterval(86_400)
+        let q = try makeDB()
+        try q.write { db in
+            try Account(id: "a@x.com", displayName: "A", historyId: nil,
+                        lastSyncAt: nil, senderName: "").insert(db)
+            // Visible primary unread.
+            try self.insertThread(db, id: "awake", account: "a@x.com",
+                                  unread: true, inbox: true)
+            // Sleeping unread primary — list-hidden, must not badge.
+            try self.insertThread(db, id: "sleep", account: "a@x.com",
+                                  unread: true, inbox: true, snooze: wake)
+            // Sleeping promo unread — same for promotions tab badge.
+            try self.insertThread(db, id: "sleepPromo", account: "a@x.com",
+                                  unread: true, inbox: true, promotions: true,
+                                  snooze: wake)
+        }
+
+        let (counts, badge) = try q.read {
+            try SidebarCounts.fetch(db: $0, activeAccount: nil, badgeAccount: nil,
+                                    now: now)
+        }
+        XCTAssertEqual(counts["inbox"], 1, "only awake primary unread")
+        XCTAssertEqual(badge, 1)
+        XCTAssertEqual(counts["promotions"], 0, "snoozed promo leaves promo badge")
+        XCTAssertEqual(counts["snoozed"], 2)
+
+        var sleeping = MailThread(
+            id: "a:sleep", accountId: "a", gmailThreadId: "sleep",
+            subject: "s", snippet: "sn", fromDisplay: "F",
+            lastDate: now, isUnread: true, isStarred: false,
+            inInbox: true, inTrash: false, labelIds: "INBOX UNREAD",
+            snoozeUntil: wake, participants: "F", messageCount: 1,
+            hasAttachment: false, reminderAt: nil)
+        XCTAssertEqual(
+            SidebarCounts.memberships(of: sleeping, now: now),
+            ["snoozed"])
+        // Past wake time: back on the primary badge.
+        XCTAssertEqual(
+            SidebarCounts.memberships(of: sleeping, now: wake.addingTimeInterval(1)),
+            ["inbox"])
     }
 
     // MARK: - syncFlagsFromLabelIds

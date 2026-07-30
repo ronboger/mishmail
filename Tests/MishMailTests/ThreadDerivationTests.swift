@@ -180,25 +180,51 @@ final class ThreadDerivationTests: XCTestCase {
     }
 
     func testLocalStateSurvivesRederivation() throws {
-        // Snooze and reminders are local-only; a sync must not wipe them.
+        // Snooze and reminders are local-only on a same-message re-derive.
         // (reminderSetAt is the "remind if no reply" activity cutoff — losing it
         // on rederivation would make the reminder fire even after a reply.)
+        // New messages clear snooze separately (testNewMessageClearsSnooze).
         let snooze = Date(timeIntervalSinceNow: 3600)
         let reminder = Date(timeIntervalSinceNow: 7200)
         let reminderSet = Date(timeIntervalSinceNow: -600)
-        let existing = try XCTUnwrap(derive([msg(id: "m1", from: "a@b.com", daysAgo: 1)]))
+        let m1 = msg(id: "m1", from: "a@b.com", daysAgo: 1)
+        let existing = try XCTUnwrap(derive([m1]))
         var withState = existing
         withState.snoozeUntil = snooze
         withState.reminderAt = reminder
         withState.reminderSetAt = reminderSet
 
-        let rederived = try XCTUnwrap(derive(
-            [msg(id: "m2", from: "a@b.com", daysAgo: 0),
-             msg(id: "m1", from: "a@b.com", daysAgo: 1)],
-            existing: withState))
+        let rederived = try XCTUnwrap(derive([m1], existing: withState))
         XCTAssertEqual(rederived.snoozeUntil, snooze)
         XCTAssertEqual(rederived.reminderAt, reminder)
         XCTAssertEqual(rederived.reminderSetAt, reminderSet)
+    }
+
+    /// Gmail-style: a reply (or any new message) wakes a snoozed thread so it
+    /// reappears in Inbox instead of badge-only ghost unread.
+    func testNewMessageClearsSnooze() throws {
+        let snooze = Date(timeIntervalSinceNow: 86_400)
+        let old = msg(id: "m1", from: "a@b.com", daysAgo: 2)
+        let existing = try XCTUnwrap(derive([old]))
+        var withState = existing
+        withState.snoozeUntil = snooze
+
+        let reply = msg(id: "m2", from: "Qiyun <q@asu.edu>", daysAgo: 0,
+                        labels: "INBOX UNREAD", unread: true)
+        let woken = try XCTUnwrap(derive([reply, old], existing: withState))
+        XCTAssertNil(woken.snoozeUntil, "new message must clear local snooze")
+        XCTAssertTrue(woken.inInbox)
+        XCTAssertTrue(woken.isUnread)
+
+        // Pure helper: count increase or newer date clears; same snapshot keeps.
+        XCTAssertNil(SyncEngine.preservedSnoozeUntil(
+            existing: withState, messageCount: 2, newestDate: reply.date))
+        XCTAssertEqual(
+            SyncEngine.preservedSnoozeUntil(
+                existing: withState, messageCount: 1, newestDate: existing.lastDate),
+            snooze)
+        XCTAssertNil(SyncEngine.preservedSnoozeUntil(
+            existing: nil, messageCount: 1, newestDate: reply.date))
     }
 
     func testTrashedThread() throws {
@@ -414,9 +440,8 @@ final class BatchThreadDerivationTests: XCTestCase {
         XCTAssertEqual(tc?.snippet, "STALE-SHOULD-NOT-CHANGE", "untouched thread is not re-derived")
     }
 
-    /// Local-only columns (snooze/reminder) survive batched re-derivation,
-    /// the same guarantee `testLocalStateSurvivesRederivation` establishes
-    /// for the single-thread `deriveThread` path.
+    /// Local-only columns survive batched re-derivation on same-message
+    /// rederive; a *new* message wakes snooze (Gmail-style) but keeps reminders.
     func testLocalStateSurvivesBatchRederivation() throws {
         let q = try makeDB()
         try q.write { db in
@@ -439,8 +464,16 @@ final class BatchThreadDerivationTests: XCTestCase {
         // stored (sub-second-truncated) precision, not the in-memory Date.
         let stored = try q.read { db in try XCTUnwrap(MailThread.fetchOne(db, key: "\(self.account):t1")) }
 
-        // A second message lands in the same thread; batch re-derivation
-        // must preserve the local-only columns set above.
+        // Same messages re-derived: snooze + reminder both preserved.
+        try q.write { db in
+            try SyncEngine.deriveThreads(db, for: ["\(self.account):t1"], accountId: self.account)
+        }
+        let same = try q.read { db in try MailThread.fetchOne(db, key: "\(self.account):t1") }
+        XCTAssertEqual(same?.snoozeUntil, stored.snoozeUntil)
+        XCTAssertEqual(same?.reminderAt, stored.reminderAt)
+        XCTAssertEqual(same?.reminderSetAt, stored.reminderSetAt)
+
+        // New message: wake snooze (Gmail-style); reminder fields stay.
         try q.write { db in
             try self.insertMessage(db, gmailId: "m2", threadGmailId: "t1", from: "a@b.com", daysAgo: 0)
             try SyncEngine.deriveThreads(db, for: ["\(self.account):t1"], accountId: self.account)
@@ -448,7 +481,7 @@ final class BatchThreadDerivationTests: XCTestCase {
 
         let rederived = try q.read { db in try MailThread.fetchOne(db, key: "\(self.account):t1") }
         XCTAssertEqual(rederived?.messageCount, 2)
-        XCTAssertEqual(rederived?.snoozeUntil, stored.snoozeUntil)
+        XCTAssertNil(rederived?.snoozeUntil, "new message clears snooze")
         XCTAssertEqual(rederived?.reminderAt, stored.reminderAt)
         XCTAssertEqual(rederived?.reminderSetAt, stored.reminderSetAt)
     }

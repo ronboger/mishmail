@@ -17,19 +17,35 @@ enum SidebarCounts {
         "CATEGORY_FORUMS",
     ]
 
+    /// SQL AND-clause matching inbox list `notSnoozed`: no future snooze.
+    /// Bind `now` as the sole argument for this fragment.
+    static let notActivelySnoozedSQL =
+        " AND (snoozeUntil IS NULL OR snoozeUntil <= ?)"
+
+    /// True while the thread is sleeping (list-hidden from Inbox).
+    static func isActivelySnoozed(_ thread: MailThread, now: Date = Date()) -> Bool {
+        guard let until = thread.snoozeUntil else { return false }
+        return until > now
+    }
+
     /// In-memory counterpart of the SQL predicates below. Optimistic thread
     /// actions use this to keep sidebar badges in the same frame as the row;
     /// the coalesced database reconciliation remains the source of truth.
     ///
     /// `hideCategories` is the inbox "do not contain" set (Updates/Forums
     /// only affect the primary badge; promo/social always tab-split).
+    /// Actively snoozed mail is list-hidden from Inbox/Promo/Social and must
+    /// not inflate those unread badges (it still counts under Snoozed).
     static func memberships(
         of thread: MailThread,
         now: Date = Date(),
         hideCategories: Set<String> = []
     ) -> Set<String> {
         var result = Set<String>()
-        if thread.isUnread && !thread.inTrash && !thread.inSpam && thread.inInbox {
+        let sleeping = isActivelySnoozed(thread, now: now)
+        // Unread tab badges track the visible lists — not while snoozed.
+        if thread.isUnread && !thread.inTrash && !thread.inSpam && thread.inInbox
+            && !sleeping {
             if thread.inPromotions {
                 result.insert("promotions")
             }
@@ -51,7 +67,7 @@ enum SidebarCounts {
         if thread.isStarred && !thread.inTrash {
             result.insert("starred")
         }
-        if let until = thread.snoozeUntil, until > now, !thread.inTrash {
+        if sleeping && !thread.inTrash {
             result.insert("snoozed")
         }
         if thread.inDrafts && !thread.inTrash {
@@ -99,20 +115,24 @@ enum SidebarCounts {
         hideCategories: Set<String> = []
     ) throws -> (counts: [String: Int], badge: Int) {
         let hideSQL = primaryHideSQL(hide: hideCategories)
+        // Not actively snoozed — same gate as inbox list `notSnoozed`. A reply
+        // on a sleeping thread used to keep UNREAD+INBOX while list-hidden,
+        // inflating the badge with nothing visible under is:unread.
+        let awake = notActivelySnoozedSQL
         // Primary-tab unread only (matches memberships). Starred category mail
         // is list-pinned via CategoryHide but does not inflate this badge.
         let inbox = try count(db, account: activeAccount, where: """
             isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-            AND inPromotions = 0 AND inSocial = 0\(hideSQL)
-            """)
+            AND inPromotions = 0 AND inSocial = 0\(hideSQL)\(awake)
+            """, arguments: [now])
         let promotions = try count(db, account: activeAccount, where: """
             isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-            AND inPromotions = 1
-            """)
+            AND inPromotions = 1\(awake)
+            """, arguments: [now])
         let social = try count(db, account: activeAccount, where: """
             isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-            AND inSocial = 1
-            """)
+            AND inSocial = 1\(awake)
+            """, arguments: [now])
         let reminders = try count(db, account: activeAccount, where: """
             reminderAt IS NOT NULL
             """)
@@ -134,8 +154,8 @@ enum SidebarCounts {
         } else {
             badge = try count(db, account: badgeAccount, where: """
                 isUnread = 1 AND inTrash = 0 AND inSpam = 0 AND inInbox = 1
-                AND inPromotions = 0 AND inSocial = 0\(hideSQL)
-                """)
+                AND inPromotions = 0 AND inSocial = 0\(hideSQL)\(awake)
+                """, arguments: [now])
         }
 
         return ([

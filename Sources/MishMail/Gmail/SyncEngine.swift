@@ -802,7 +802,9 @@ actor SyncEngine {
             inTrash: allLabels.contains("TRASH"),
             // Full union still powers search / label chips; tab denorm is separate.
             labelIds: allLabels.sorted().joined(separator: " "),
-            snoozeUntil: existing?.snoozeUntil,
+            // Local snooze; Gmail-style wake when a new message lands.
+            snoozeUntil: preservedSnoozeUntil(
+                existing: existing, messageCount: messages.count, newestDate: newest.date),
             participants: participants.joined(separator: " .. "),
             messageCount: messages.count,
             hasAttachment: messages.contains { $0.hasAttachment },
@@ -819,6 +821,22 @@ actor SyncEngine {
             // own follow-ups never look like "they replied."
             lastInboundDate: lastInboundDate(messages: messages, accountId: accountId)
         )
+    }
+
+    /// Local `snoozeUntil` across re-derives, with Gmail-style wake-on-reply.
+    ///
+    /// MishMail snooze is client-side (API has no snooze field). A new message
+    /// (count increase or newer `lastDate`) clears the sleep so the thread
+    /// reappears in Inbox like gmail.com. Same-message re-derives keep it.
+    /// Pure — unit-tested.
+    static func preservedSnoozeUntil(
+        existing: MailThread?, messageCount: Int, newestDate: Date
+    ) -> Date? {
+        guard let existing, let until = existing.snoozeUntil else { return nil }
+        if messageCount > existing.messageCount || newestDate > existing.lastDate {
+            return nil
+        }
+        return until
     }
 
     /// Tab placement for Promotions / Social (Primary inbox hides both).
