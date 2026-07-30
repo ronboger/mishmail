@@ -68,20 +68,14 @@ enum ComposePlacement {
         switch preferred {
         case .split:
             return preferred
-        case .pane:
-            // Derived-only presentation — never store on ComposeRequest.
-            // Passthrough is defensive; if a caller ever persisted it, still
-            // demote when the pane is no longer empty.
-            guard readingPaneEmpty,
-                  shouldPaneFill(paneHeight: paneHeight, paneWidth: paneWidth)
-            else { return .floating }
-            return .pane
         case .inline:
             guard paneHeight > 1 else { return preferred }
             return effectiveInlineCardHeight(paneHeight: paneHeight) > 0
                 ? preferred
                 : .floating
-        case .floating:
+        case .floating, .pane:
+            // `.pane` is derived-only (never stored on ComposeRequest). If a
+            // caller ever persisted it, demote when the pane is no longer empty.
             guard readingPaneEmpty,
                   shouldPaneFill(paneHeight: paneHeight, paneWidth: paneWidth)
             else { return .floating }
