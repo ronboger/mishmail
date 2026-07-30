@@ -174,7 +174,9 @@ enum SnoozeDateParser {
         if keywords.contains(where: { $0.hasPrefix(s) }) { return true }
         let aliases = ["tm", "tmr", "tmrw", "tmw", "tmo", "tmoro", "td", "tdy", "tn", "tnt"]
         if aliases.contains(s) { return true }
-        if s.count >= 2, cal.weekdaySymbols.contains(where: { $0.lowercased().hasPrefix(s) }) { return true }
+        // Match the suggestion path: single-letter weekday prefixes ("s 10")
+        // must also count as date words for bare trailing hours.
+        if cal.weekdaySymbols.contains(where: { $0.lowercased().hasPrefix(s) }) { return true }
         return false
     }
 

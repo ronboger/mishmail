@@ -11,7 +11,9 @@ enum DatePickQueryInput {
     enum Outcome: Equatable {
         /// Event claimed; use the new query (may be unchanged, e.g. delete on empty).
         case consume(String)
-        /// Not a typing key — leave it for AppKit / other handlers.
+        /// Not typed into the query (control/function keys, empty payload).
+        /// The sheet monitor still swallows bare unmodified keys while
+        /// unfocused so List type-select cannot steal them.
         case passThrough
     }
 

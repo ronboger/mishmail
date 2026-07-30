@@ -174,4 +174,12 @@ final class SnoozeDateParserTests: XCTestCase {
         let c = comps(first("january"))
         XCTAssertEqual([c.year, c.month, c.day], [2027, 1, 1])
     }
+
+    func testSingleLetterWeekdayWithBareHour() {
+        // "s 10" → first matching weekday (Sunday in en_US calendar symbols)
+        // at 10:00, not an empty suggestion list.
+        let c = comps(first("s 10"))
+        XCTAssertEqual(c.hour, 10)
+        XCTAssertNotNil(c.day)
+    }
 }
