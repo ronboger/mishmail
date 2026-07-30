@@ -23,10 +23,18 @@ enum DatePickQueryInput {
             return .consume(String(query.dropLast()))
         }
         guard let characters, !characters.isEmpty,
-              !characters.unicodeScalars.contains(where: {
-                  CharacterSet.controlCharacters.contains($0)
-              })
+              !characters.unicodeScalars.contains(where: { isNonTypingScalar($0) })
         else { return .passThrough }
         return .consume(query + characters)
+    }
+
+    /// Control chars (Cc) and Apple private-use function-key glyphs
+    /// (U+F700…F8FF: left/right arrows, Home/End, F-keys, …). Those arrive in
+    /// `charactersIgnoringModifiers` but must never enter the date query —
+    /// otherwise an unfocused left-arrow silently breaks matching with no
+    /// visible cue.
+    private static func isNonTypingScalar(_ scalar: Unicode.Scalar) -> Bool {
+        if CharacterSet.controlCharacters.contains(scalar) { return true }
+        return (0xF700...0xF8FF).contains(scalar.value)
     }
 }

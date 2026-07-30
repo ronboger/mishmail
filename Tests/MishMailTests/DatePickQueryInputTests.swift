@@ -42,6 +42,19 @@ final class DatePickQueryInputTests: XCTestCase {
         )
     }
 
+    /// Real left-arrow events put U+F702 in charactersIgnoringModifiers, not
+    /// nil/empty — that private-use glyph must not enter the query.
+    func testFunctionKeyPrivateUsePassThrough() {
+        XCTAssertEqual(
+            DatePickQueryInput.handle(query: "s", keyCode: 123, characters: "\u{F702}"),
+            .passThrough
+        )
+        XCTAssertEqual(
+            DatePickQueryInput.handle(query: "s", keyCode: 124, characters: "\u{F703}"),
+            .passThrough
+        )
+    }
+
     func testNilOrEmptyCharactersPassThrough() {
         XCTAssertEqual(
             DatePickQueryInput.handle(query: "s", keyCode: 123, characters: nil),
@@ -50,6 +63,13 @@ final class DatePickQueryInputTests: XCTestCase {
         XCTAssertEqual(
             DatePickQueryInput.handle(query: "s", keyCode: 123, characters: ""),
             .passThrough
+        )
+    }
+
+    func testSpaceAppendsForMultiWordQueries() {
+        XCTAssertEqual(
+            DatePickQueryInput.handle(query: "next", keyCode: 49, characters: " "),
+            .consume("next ")
         )
     }
 }
