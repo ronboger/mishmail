@@ -11,6 +11,11 @@ enum ComposePresentation: String, Equatable {
     /// column, the draft the right. Entered from a thread-bound compose
     /// (reply / forward / reopened reply draft) via ⇧⌘↩ or the header button.
     case split
+    /// Reading-pane fill: elevated compose card that claims an empty detail
+    /// column (Superhuman-style primary surface, Gmail card chrome). Derived
+    /// at layout time from floating when the pane has no conversation — never
+    /// the preferred placement for an in-thread reply.
+    case pane
 }
 
 /// Pure placement rules for compose — kept free of MailStore so tests can
@@ -43,15 +48,61 @@ enum ComposePlacement {
         return composeThread == threadId
     }
 
-    /// Fall back to floating when the measured pane cannot show both the
-    /// conversation and a usable inline composer.
-    static func resolvedPresentation(_ preferred: ComposePresentation,
-                                     paneHeight: CGFloat) -> ComposePresentation {
-        guard preferred == .inline, paneHeight > 1 else { return preferred }
-        return effectiveInlineCardHeight(paneHeight: paneHeight) > 0
-            ? preferred
-            : .floating
+    /// Resolve the on-screen presentation from a preferred placement plus
+    /// live layout.
+    ///
+    /// - Inline demotes to floating when the pane is too short for a usable
+    ///   dock + thread strip.
+    /// - Floating promotes to pane fill when the reading pane is empty and
+    ///   large enough to host a real writing surface (empty-pane autoexpand).
+    /// - Replies stay `.inline` and never become `.pane` — the thread remains
+    ///   the primary surface.
+    /// - Split is never demoted by pane metrics (it owns the window).
+    static func resolvedPresentation(
+        _ preferred: ComposePresentation,
+        paneHeight: CGFloat,
+        readingPaneEmpty: Bool = false,
+        paneWidth: CGFloat = 0
+    ) -> ComposePresentation {
+        switch preferred {
+        case .split, .pane:
+            return preferred
+        case .inline:
+            guard paneHeight > 1 else { return preferred }
+            return effectiveInlineCardHeight(paneHeight: paneHeight) > 0
+                ? preferred
+                : .floating
+        case .floating:
+            guard readingPaneEmpty,
+                  shouldPaneFill(paneHeight: paneHeight, paneWidth: paneWidth)
+            else { return .floating }
+            return .pane
+        }
     }
+
+    /// Whether an empty reading pane is large enough for pane-fill compose.
+    static func shouldPaneFill(paneHeight: CGFloat, paneWidth: CGFloat) -> Bool {
+        paneHeight >= minPaneFillHeight && paneWidth >= minPaneFillWidth
+    }
+
+    /// Smallest empty pane that still feels like a primary writing surface.
+    static let minPaneFillHeight: CGFloat = 360
+    /// Narrowest empty pane that keeps From/To/Subject usable at full width.
+    static let minPaneFillWidth: CGFloat = 320
+    /// Inset of the pane-fill card from the reading-pane edges — keeps the
+    /// elevated card readable as compose chrome, not a full-bleed document.
+    static let paneTopPadding: CGFloat = 12
+    static let paneBottomPadding: CGFloat = 12
+    static var paneSidePadding: CGFloat { inlineSidePadding }
+
+    /// Card height when filling an empty reading pane (pane − top/bottom pad).
+    static func effectivePaneCardHeight(paneHeight: CGFloat) -> CGFloat {
+        guard paneHeight > 1 else { return preferredFloatingCardHeight }
+        return max(0, paneHeight - paneTopPadding - paneBottomPadding)
+    }
+
+    /// Historical floating card body height (ContentView chrome default).
+    static let preferredFloatingCardHeight: CGFloat = 500
 
     /// Preferred expanded inline compose card height (matches ContentView chrome).
     /// Tall enough for From/To/Subject + a usable body while the quote "…"
@@ -186,8 +237,11 @@ enum ComposePlacement {
                                    maxAllowed: hostMeasured ? hostW - trail : nil)
             return CardChrome(leading: 0, width: width, trailingPadding: trail)
 
-        case .inline:
-            let side = inlineSidePadding
+        case .inline, .pane:
+            // Pane fill reuses the inline pin (reading-column gutters) so the
+            // card reads as compose chrome inside the detail column, not a
+            // full-bleed sheet.
+            let side = presentation == .pane ? paneSidePadding : inlineSidePadding
             let measured = inlineMetrics(host: host, pane: pane, sidePadding: side)
             var leading = measured?.leading
                 ?? fallbackLeadingInset(layoutMode: layoutMode)

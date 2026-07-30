@@ -298,6 +298,100 @@ final class ComposePlacementTests: XCTestCase {
             .floating)
     }
 
+    // MARK: Empty-pane autoexpand (.pane)
+
+    func testEmptyPanePromotesFloatingToPaneFill() {
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(
+                .floating, paneHeight: 800, readingPaneEmpty: true, paneWidth: 480),
+            .pane)
+    }
+
+    func testOccupiedPaneKeepsFloatingCard() {
+        // Conversation open in the reading pane — Gmail-style dock, not fill.
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(
+                .floating, paneHeight: 800, readingPaneEmpty: false, paneWidth: 480),
+            .floating)
+    }
+
+    func testReplyInlineNeverBecomesPaneFillEvenWhenEmptyFlagSet() {
+        // Safety: empty-pane expand is only for floating preferred. Replies
+        // stay docked under the thread (or demote to floating if too short).
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(
+                .inline, paneHeight: 800, readingPaneEmpty: true, paneWidth: 480),
+            .inline)
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(
+                .inline, paneHeight: 100, readingPaneEmpty: true, paneWidth: 480),
+            .floating)
+    }
+
+    func testSplitIgnoresEmptyPaneAutoexpand() {
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(
+                .split, paneHeight: 800, readingPaneEmpty: true, paneWidth: 480),
+            .split)
+    }
+
+    func testTinyEmptyPaneStaysFloating() {
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(
+                .floating, paneHeight: 200, readingPaneEmpty: true, paneWidth: 480),
+            .floating)
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(
+                .floating, paneHeight: 800, readingPaneEmpty: true, paneWidth: 200),
+            .floating)
+    }
+
+    func testShouldPaneFillThresholds() {
+        XCTAssertTrue(ComposePlacement.shouldPaneFill(
+            paneHeight: ComposePlacement.minPaneFillHeight,
+            paneWidth: ComposePlacement.minPaneFillWidth))
+        XCTAssertFalse(ComposePlacement.shouldPaneFill(
+            paneHeight: ComposePlacement.minPaneFillHeight - 1,
+            paneWidth: ComposePlacement.minPaneFillWidth))
+        XCTAssertFalse(ComposePlacement.shouldPaneFill(
+            paneHeight: ComposePlacement.minPaneFillHeight,
+            paneWidth: ComposePlacement.minPaneFillWidth - 1))
+    }
+
+    func testPaneCardHeightUsesPaneMinusGutters() {
+        let pane: CGFloat = 700
+        let height = ComposePlacement.effectivePaneCardHeight(paneHeight: pane)
+        XCTAssertEqual(
+            height,
+            pane - ComposePlacement.paneTopPadding
+                - ComposePlacement.paneBottomPadding,
+            accuracy: 0.001)
+    }
+
+    func testPaneChromePinsToReadingColumnLikeInline() {
+        let host = CGRect(x: 0, y: 0, width: 1_200, height: 800)
+        let pane = CGRect(x: 800, y: 0, width: 400, height: 800)
+        let chrome = ComposePlacement.cardChrome(
+            presentation: .pane, minimized: false,
+            host: host, pane: pane, layoutMode: .threePane)
+        let side = ComposePlacement.paneSidePadding
+        let cardMinX = host.minX + chrome.leading
+        let cardMaxX = cardMinX + chrome.width
+        XCTAssertEqual(cardMinX - pane.minX, side, accuracy: 0.001)
+        XCTAssertEqual(pane.maxX - cardMaxX, side, accuracy: 0.001)
+        // Elevated card — not full-bleed into the list.
+        XCTAssertGreaterThan(chrome.leading, 0)
+    }
+
+    func testNewComposePreferredIsStillFloating() {
+        // preferred() does not decide pane fill — layout-time resolution does.
+        XCTAssertEqual(
+            ComposePlacement.preferred(
+                replyTo: nil, forward: false,
+                selectedThreadId: nil, readingPaneHidden: false),
+            .floating)
+    }
+
     private func message(id: String, threadId: String = "a:t1",
                          date: Date = Date()) -> Message {
         Message(

@@ -502,17 +502,27 @@ struct ContentView: View {
         }
     }
 
-    /// Floating card vs inline (reading-pane-width) vs split (right-column)
-    /// compose. One ComposeView identity so pop-out / promote keep the typed
-    /// body.
+    /// Reading column is visible but has no open conversation — floating
+    /// compose can claim it as a primary writing surface (pane fill).
+    private var readingPaneIsEmpty: Bool {
+        !effectivePaneHidden && store.openedThreadId == nil
+    }
+
+    /// Floating card vs inline vs pane-fill vs split. One ComposeView identity
+    /// so pop-out / promote keep the typed body.
     @ViewBuilder
     private func composeChrome(_ request: MailStore.ComposeRequest) -> some View {
         let minimized = store.composeMinimized
         let presentation = ComposePlacement.resolvedPresentation(
-            request.presentation, paneHeight: readingPaneFrame.height)
+            request.presentation,
+            paneHeight: readingPaneFrame.height,
+            readingPaneEmpty: readingPaneIsEmpty,
+            paneWidth: readingPaneFrame.width)
         // Minimized always docks like floating regardless of presentation.
         let chromePresentation: ComposePresentation = minimized ? .floating : presentation
         let inline = presentation == .inline && !minimized
+        let pane = presentation == .pane && !minimized
+        let pinToPane = inline || pane
         let split = presentation == .split && !minimized
         let chrome = ComposePlacement.cardChrome(
             presentation: chromePresentation,
@@ -523,11 +533,14 @@ struct ContentView: View {
         let splitPad = ComposePlacement.splitPadding
         let inlineHeight = ComposePlacement.effectiveInlineCardHeight(
             paneHeight: readingPaneFrame.height)
+        let paneHeight = ComposePlacement.effectivePaneCardHeight(
+            paneHeight: readingPaneFrame.height)
         let cardHeight: CGFloat = minimized ? 40
             : split ? max(composeHostFrame.height - splitPad * 2, 400)
-            : (inline ? inlineHeight : 500)
+            : pane ? paneHeight
+            : (inline ? inlineHeight : ComposePlacement.preferredFloatingCardHeight)
         HStack(spacing: 0) {
-            if inline {
+            if pinToPane {
                 Spacer()
                     .frame(width: chrome.leading)
             }
@@ -540,11 +553,15 @@ struct ContentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: minimized ? PMRadius.md : PMRadius.lg))
                 .pmCardElevation(cornerRadius: minimized ? PMRadius.md : PMRadius.lg,
                                  intense: true)
-            if inline {
+            if pinToPane {
                 Spacer(minLength: 0)
             }
         }
-        .padding(inline
+        .padding(pane
+                 ? EdgeInsets(top: 0, leading: 0,
+                              bottom: ComposePlacement.paneBottomPadding,
+                              trailing: chrome.trailingPadding)
+                 : inline
                  ? EdgeInsets(top: 0, leading: 0,
                               bottom: ComposePlacement.inlineBottomPadding,
                               trailing: chrome.trailingPadding)
@@ -554,10 +571,15 @@ struct ContentView: View {
                  : EdgeInsets(top: 0, leading: 0,
                               bottom: ComposePlacement.floatingBottomPadding,
                               trailing: chrome.trailingPadding))
+        // Pane fill is derived (not stored on the request); animate size when
+        // the empty-pane condition flips (e.g. open/close a conversation).
+        .animation(.spring(response: 0.3, dampingFraction: 0.85),
+                   value: presentation)
     }
 
     /// True when expanded inline compose is open for the selected thread —
     /// detail pane reserves bottom safe area so the scroll doesn't hide under it.
+    /// Pane fill sits in an empty column and must not reserve thread scroll space.
     private var reservesInlineComposeSpace: Bool {
         guard let req = store.composeRequest,
               !store.composeMinimized,
@@ -565,7 +587,9 @@ struct ContentView: View {
         return req.boundThreadId == selected
             && ComposePlacement.resolvedPresentation(
                 req.presentation,
-                paneHeight: readingPaneFrame.height
+                paneHeight: readingPaneFrame.height,
+                readingPaneEmpty: readingPaneIsEmpty,
+                paneWidth: readingPaneFrame.width
             ) == .inline
     }
 

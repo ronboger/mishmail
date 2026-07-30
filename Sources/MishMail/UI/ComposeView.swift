@@ -108,6 +108,8 @@ struct ComposeView: View {
 
     private var isInline: Bool { request.presentation == .inline }
     private var isSplit: Bool { request.presentation == .split }
+    /// Pane fill is layout-derived from floating (empty reading pane); the
+    /// request stays `.floating` so minimize / Gmail card chrome still apply.
 
     /// Draft id chain for replace / send / discard (autosave may have moved it).
     private var liveDraft: Message? { replacingDraft ?? editingDraft }
