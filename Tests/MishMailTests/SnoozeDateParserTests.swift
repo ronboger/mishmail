@@ -141,4 +141,45 @@ final class SnoozeDateParserTests: XCTestCase {
             XCTAssertGreaterThan(s.date, now)
         }
     }
+
+    /// Typing `s` after `b` should surface weekend days + September — not
+    /// leave the user with an empty suggestion list (or fall through to
+    /// type-select, which is covered by DatePickQueryInputTests).
+    func testSingleLetterSSuggestsSatSunSeptember() {
+        let labels = SnoozeDateParser.suggestions(for: "s", now: now).map { $0.label.lowercased() }
+        XCTAssertTrue(labels.contains(where: { $0.hasPrefix("saturday") }), labels.joined(separator: ", "))
+        XCTAssertTrue(labels.contains(where: { $0.hasPrefix("sunday") }), labels.joined(separator: ", "))
+        XCTAssertTrue(labels.contains(where: { $0.hasPrefix("september") }), labels.joined(separator: ", "))
+    }
+
+    func testSatAndSunWeekdayPrefixes() {
+        let sat = comps(first("sat"))
+        // Fixture now is Tuesday July 7 2026 → next Saturday is July 11.
+        XCTAssertEqual([sat.month, sat.day], [7, 11])
+        let sun = comps(first("sun"))
+        // Next Sunday is July 12.
+        XCTAssertEqual([sun.month, sun.day], [7, 12])
+    }
+
+    func testBareMonthSeptember() {
+        for q in ["sep", "sept", "september"] {
+            let c = comps(first(q))
+            // July fixture → Sept 1 2026 still ahead.
+            XCTAssertEqual([c.year, c.month, c.day, c.hour], [2026, 9, 1, 8], "\(q)")
+        }
+    }
+
+    func testBareMonthPastRollsToNextYear() {
+        // January is before July in the fixture year.
+        let c = comps(first("january"))
+        XCTAssertEqual([c.year, c.month, c.day], [2027, 1, 1])
+    }
+
+    func testSingleLetterWeekdayWithBareHour() {
+        // "s 10" → first matching weekday (Sunday in en_US calendar symbols)
+        // at 10:00, not an empty suggestion list.
+        let c = comps(first("s 10"))
+        XCTAssertEqual(c.hour, 10)
+        XCTAssertNotNil(c.day)
+    }
 }
