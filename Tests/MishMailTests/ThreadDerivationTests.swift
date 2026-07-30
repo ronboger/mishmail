@@ -200,8 +200,8 @@ final class ThreadDerivationTests: XCTestCase {
         XCTAssertEqual(rederived.reminderSetAt, reminderSet)
     }
 
-    /// Gmail-style: a reply (or any new message) wakes a snoozed thread so it
-    /// reappears in Inbox instead of badge-only ghost unread.
+    /// Gmail-style: an inbound reply wakes a snoozed thread so it reappears
+    /// in Inbox instead of badge-only ghost unread.
     func testNewMessageClearsSnooze() throws {
         let snooze = Date(timeIntervalSinceNow: 86_400)
         let old = msg(id: "m1", from: "a@b.com", daysAgo: 2)
@@ -212,19 +212,29 @@ final class ThreadDerivationTests: XCTestCase {
         let reply = msg(id: "m2", from: "Qiyun <q@asu.edu>", daysAgo: 0,
                         labels: "INBOX UNREAD", unread: true)
         let woken = try XCTUnwrap(derive([reply, old], existing: withState))
-        XCTAssertNil(woken.snoozeUntil, "new message must clear local snooze")
+        XCTAssertNil(woken.snoozeUntil, "inbound reply must clear local snooze")
         XCTAssertTrue(woken.inInbox)
         XCTAssertTrue(woken.isUnread)
 
-        // Pure helper: count increase or newer date clears; same snapshot keeps.
-        XCTAssertNil(SyncEngine.preservedSnoozeUntil(
-            existing: withState, messageCount: 2, newestDate: reply.date))
+        // Draft / pure SENT must not wake; same-snapshot keeps; nil existing → nil.
+        let draft = msg(id: "d1", from: account, daysAgo: 0, labels: "DRAFT")
         XCTAssertEqual(
             SyncEngine.preservedSnoozeUntil(
-                existing: withState, messageCount: 1, newestDate: existing.lastDate),
+                existing: withState, messages: [draft, old], accountId: account),
+            snooze, "draft save must not wake")
+        let ownSend = msg(id: "s1", from: account, daysAgo: 0, labels: "SENT")
+        XCTAssertEqual(
+            SyncEngine.preservedSnoozeUntil(
+                existing: withState, messages: [ownSend, old], accountId: account),
+            snooze, "own SENT-without-INBOX must not wake")
+        XCTAssertEqual(
+            SyncEngine.preservedSnoozeUntil(
+                existing: withState, messages: [old], accountId: account),
             snooze)
         XCTAssertNil(SyncEngine.preservedSnoozeUntil(
-            existing: nil, messageCount: 1, newestDate: reply.date))
+            existing: withState, messages: [reply, old], accountId: account))
+        XCTAssertNil(SyncEngine.preservedSnoozeUntil(
+            existing: nil, messages: [reply], accountId: account))
     }
 
     func testTrashedThread() throws {
@@ -473,15 +483,17 @@ final class BatchThreadDerivationTests: XCTestCase {
         XCTAssertEqual(same?.reminderAt, stored.reminderAt)
         XCTAssertEqual(same?.reminderSetAt, stored.reminderSetAt)
 
-        // New message: wake snooze (Gmail-style); reminder fields stay.
+        // Inbound reply: wake snooze (Gmail-style); reminder fields stay.
         try q.write { db in
-            try self.insertMessage(db, gmailId: "m2", threadGmailId: "t1", from: "a@b.com", daysAgo: 0)
+            try self.insertMessage(db, gmailId: "m2", threadGmailId: "t1",
+                                   from: "Qiyun <q@asu.edu>", daysAgo: 0,
+                                   labels: "INBOX UNREAD")
             try SyncEngine.deriveThreads(db, for: ["\(self.account):t1"], accountId: self.account)
         }
 
         let rederived = try q.read { db in try MailThread.fetchOne(db, key: "\(self.account):t1") }
         XCTAssertEqual(rederived?.messageCount, 2)
-        XCTAssertNil(rederived?.snoozeUntil, "new message clears snooze")
+        XCTAssertNil(rederived?.snoozeUntil, "inbound reply clears snooze")
         XCTAssertEqual(rederived?.reminderAt, stored.reminderAt)
         XCTAssertEqual(rederived?.reminderSetAt, stored.reminderSetAt)
     }

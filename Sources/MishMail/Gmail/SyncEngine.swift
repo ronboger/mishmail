@@ -802,9 +802,9 @@ actor SyncEngine {
             inTrash: allLabels.contains("TRASH"),
             // Full union still powers search / label chips; tab denorm is separate.
             labelIds: allLabels.sorted().joined(separator: " "),
-            // Local snooze; Gmail-style wake when a new message lands.
+            // Local snooze; Gmail-style wake on new *inbound* activity only.
             snoozeUntil: preservedSnoozeUntil(
-                existing: existing, messageCount: messages.count, newestDate: newest.date),
+                existing: existing, messages: messages, accountId: accountId),
             participants: participants.joined(separator: " .. "),
             messageCount: messages.count,
             hasAttachment: messages.contains { $0.hasAttachment },
@@ -825,18 +825,23 @@ actor SyncEngine {
 
     /// Local `snoozeUntil` across re-derives, with Gmail-style wake-on-reply.
     ///
-    /// MishMail snooze is client-side (API has no snooze field). A new message
-    /// (count increase or newer `lastDate`) clears the sleep so the thread
-    /// reappears in Inbox like gmail.com. Same-message re-derives keep it.
-    /// Pure — unit-tested.
+    /// MishMail snooze is client-side (API has no snooze field). Clears only
+    /// when **inbound** activity advances (`lastInboundDate` / non-own-outbound
+    /// messages) — not on draft saves, pure SENT replies, or prune→backfill
+    /// count churn. Same-message re-derives keep the sleep. Pure — unit-tested.
     static func preservedSnoozeUntil(
-        existing: MailThread?, messageCount: Int, newestDate: Date
+        existing: MailThread?, messages: [Message], accountId: String
     ) -> Date? {
         guard let existing, let until = existing.snoozeUntil else { return nil }
-        if messageCount > existing.messageCount || newestDate > existing.lastDate {
-            return nil
+        let inbound = lastInboundDate(messages: messages, accountId: accountId)
+        guard let inbound else { return until }  // still pure outbound
+        if let prior = existing.lastInboundDate {
+            // Strictly newer inbound → wake (reply arrived while sleeping).
+            if inbound > prior { return nil }
+            return until
         }
-        return until
+        // Was pure outbound when snoozed; first inbound wakes.
+        return nil
     }
 
     /// Tab placement for Promotions / Social (Primary inbox hides both).
