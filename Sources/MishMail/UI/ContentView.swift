@@ -502,10 +502,13 @@ struct ContentView: View {
         }
     }
 
-    /// Reading column is visible but has no open conversation — floating
-    /// compose can claim it as a primary writing surface (pane fill).
+    /// Detail column is mounted and idle — floating compose can claim it as
+    /// a primary writing surface (pane fill). Pure rule lives in
+    /// `ComposePlacement.readingPaneIsEmpty` (three-pane only).
     private var readingPaneIsEmpty: Bool {
-        !effectivePaneHidden && store.openedThreadId == nil
+        ComposePlacement.readingPaneIsEmpty(
+            layoutMode: layoutMode,
+            openedThreadId: store.openedThreadId)
     }
 
     /// Floating card vs inline vs pane-fill vs split. One ComposeView identity

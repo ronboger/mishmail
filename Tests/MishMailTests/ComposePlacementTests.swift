@@ -346,6 +346,33 @@ final class ComposePlacementTests: XCTestCase {
             .floating)
     }
 
+    func testReadingPaneIsEmptyOnlyInThreePaneWithoutOpenThread() {
+        XCTAssertTrue(ComposePlacement.readingPaneIsEmpty(
+            layoutMode: .threePane, openedThreadId: nil))
+        XCTAssertFalse(ComposePlacement.readingPaneIsEmpty(
+            layoutMode: .threePane, openedThreadId: "a:t1"))
+        // List / focus / compact have no idle detail column to claim.
+        XCTAssertFalse(ComposePlacement.readingPaneIsEmpty(
+            layoutMode: .list, openedThreadId: nil))
+        XCTAssertFalse(ComposePlacement.readingPaneIsEmpty(
+            layoutMode: .threadFocus, openedThreadId: nil))
+        XCTAssertFalse(ComposePlacement.readingPaneIsEmpty(
+            layoutMode: .compactDetail, openedThreadId: nil))
+    }
+
+    func testStoredPaneDemotesWhenPaneNoLongerEmpty() {
+        // Defensive: if .pane were ever persisted, opening a conversation
+        // must still collapse back to the floating dock.
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(
+                .pane, paneHeight: 800, readingPaneEmpty: false, paneWidth: 480),
+            .floating)
+        XCTAssertEqual(
+            ComposePlacement.resolvedPresentation(
+                .pane, paneHeight: 800, readingPaneEmpty: true, paneWidth: 480),
+            .pane)
+    }
+
     func testShouldPaneFillThresholds() {
         XCTAssertTrue(ComposePlacement.shouldPaneFill(
             paneHeight: ComposePlacement.minPaneFillHeight,
@@ -356,6 +383,10 @@ final class ComposePlacementTests: XCTestCase {
         XCTAssertFalse(ComposePlacement.shouldPaneFill(
             paneHeight: ComposePlacement.minPaneFillHeight,
             paneWidth: ComposePlacement.minPaneFillWidth - 1))
+        // Floor matches split draft column so pane-fill never undershoots
+        // the side-by-side measure.
+        XCTAssertEqual(ComposePlacement.minPaneFillWidth,
+                       ComposePlacement.minSplitComposeWidth)
     }
 
     func testPaneCardHeightUsesPaneMinusGutters() {

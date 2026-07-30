@@ -14,7 +14,8 @@ enum ComposePresentation: String, Equatable {
     /// Reading-pane fill: elevated compose card that claims an empty detail
     /// column (Superhuman-style primary surface, Gmail card chrome). Derived
     /// at layout time from floating when the pane has no conversation — never
-    /// the preferred placement for an in-thread reply.
+    /// stored on `ComposeRequest` and never the preferred placement for an
+    /// in-thread reply.
     case pane
 }
 
@@ -65,8 +66,16 @@ enum ComposePlacement {
         paneWidth: CGFloat = 0
     ) -> ComposePresentation {
         switch preferred {
-        case .split, .pane:
+        case .split:
             return preferred
+        case .pane:
+            // Derived-only presentation — never store on ComposeRequest.
+            // Passthrough is defensive; if a caller ever persisted it, still
+            // demote when the pane is no longer empty.
+            guard readingPaneEmpty,
+                  shouldPaneFill(paneHeight: paneHeight, paneWidth: paneWidth)
+            else { return .floating }
+            return .pane
         case .inline:
             guard paneHeight > 1 else { return preferred }
             return effectiveInlineCardHeight(paneHeight: paneHeight) > 0
@@ -80,6 +89,19 @@ enum ComposePlacement {
         }
     }
 
+    /// Whether the detail column is mounted and idle (no open conversation).
+    ///
+    /// Pane fill only makes sense in three-pane layout: `.list` /
+    /// `.threadFocus` have no detail column, and `.compactDetail` always has
+    /// an open conversation. Do not rely on PreferenceKey frames alone —
+    /// stale frames can linger after the detail column unmounts.
+    static func readingPaneIsEmpty(
+        layoutMode: MailLayoutMode,
+        openedThreadId: String?
+    ) -> Bool {
+        layoutMode == .threePane && openedThreadId == nil
+    }
+
     /// Whether an empty reading pane is large enough for pane-fill compose.
     static func shouldPaneFill(paneHeight: CGFloat, paneWidth: CGFloat) -> Bool {
         paneHeight >= minPaneFillHeight && paneWidth >= minPaneFillWidth
@@ -87,10 +109,15 @@ enum ComposePlacement {
 
     /// Smallest empty pane that still feels like a primary writing surface.
     static let minPaneFillHeight: CGFloat = 360
-    /// Narrowest empty pane that keeps From/To/Subject usable at full width.
-    static let minPaneFillWidth: CGFloat = 320
+    /// Narrowest empty pane that keeps From/To/Subject usable (matches the
+    /// split draft-column floor so the card is never thinner than side-by-side).
+    static let minPaneFillWidth: CGFloat = minSplitComposeWidth
     /// Inset of the pane-fill card from the reading-pane edges — keeps the
     /// elevated card readable as compose chrome, not a full-bleed document.
+    ///
+    /// Top is applied by shortening card height (bottom-trailing overlay); the
+    /// bottom EdgeInsets pad is `paneBottomPadding`. Host and pane bottoms
+    /// must align for the top gutter to equal `paneTopPadding`.
     static let paneTopPadding: CGFloat = 12
     static let paneBottomPadding: CGFloat = 12
     static var paneSidePadding: CGFloat { inlineSidePadding }
