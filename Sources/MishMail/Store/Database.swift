@@ -130,6 +130,11 @@ struct Message: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     var labelIds: String
     var isUnread: Bool
     var hasAttachment: Bool
+    /// Gmail `Authentication-Results` verdict (v29): true = aligned DMARC
+    /// pass, false = no DMARC pass / explicit failure, nil = not recorded
+    /// (pre-v29 rows). Guards VIP auto-load of remote images against
+    /// From-header spoofing.
+    var senderAuth: Bool? = nil
 }
 
 /// Off-row body storage (v24). Keeps fat HTML off the `message` row so header
@@ -1262,6 +1267,15 @@ final class AppDatabase: @unchecked Sendable {
         m.registerMigration("v28") { db in
             try db.alter(table: "attachment") { t in
                 t.add(column: "contentId", .text)
+            }
+        }
+
+        // Per-message Gmail Authentication-Results verdict for remote-image
+        // policy (VIP auto-load fails closed on explicit auth failure).
+        // NULL for pre-v29 rows: unjudged, keeps prior behavior.
+        m.registerMigration("v29") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "senderAuth", .boolean)
             }
         }
         return m

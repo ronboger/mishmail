@@ -30,7 +30,7 @@ enum RemoteImagePolicy: String, CaseIterable, Identifiable {
         case .ask:
             return "Each message shows Load images (and the thread can load all at once). Remote images can track opens."
         case .vip:
-            return "HTTPS images load automatically only from VIP senders. Other messages still need a click."
+            return "HTTPS images load automatically only from VIP senders that pass Gmail's authentication checks. Other messages still need a click."
         case .always:
             return "HTTPS images load in every message."
         }
@@ -38,18 +38,28 @@ enum RemoteImagePolicy: String, CaseIterable, Identifiable {
 
     /// Whether this message may fetch remote images without a further click.
     /// `messageOptIn` / `threadOptIn` are explicit UI loads for this session.
+    ///
+    /// `senderAuthenticated` is the verdict parsed from Gmail's own
+    /// `Authentication-Results` header at ingest: the `From:` header itself
+    /// is unauthenticated, so under `.vip` anything but an aligned DMARC pass
+    /// blocks auto-load (a spoofed VIP address must not fire tracking pixels).
+    /// `nil` (rows synced before the verdict was stored — i.e. every existing
+    /// mailbox) also blocks: failing closed costs one explicit click per
+    /// message, and both per-message and per-thread opt-ins always win.
     static func allows(
         policy: RemoteImagePolicy,
         senderEmail: String,
         vipEmails: Set<String>,
         messageOptIn: Bool,
-        threadOptIn: Bool
+        threadOptIn: Bool,
+        senderAuthenticated: Bool? = nil
     ) -> Bool {
         if messageOptIn || threadOptIn { return true }
         switch policy {
         case .ask: return false
         case .always: return true
         case .vip:
+            guard senderAuthenticated == true else { return false }
             let email = senderEmail.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
             return !email.isEmpty && vipEmails.contains(email)
         }

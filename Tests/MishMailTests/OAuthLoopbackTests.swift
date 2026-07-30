@@ -1,4 +1,5 @@
 import XCTest
+import Network
 
 /// Integration smoke for the OAuth loopback catcher — no Google credentials
 /// required. Hits 127.0.0.1 the same way the browser redirect does.
@@ -111,5 +112,32 @@ final class OAuthLoopbackTests: XCTestCase {
                 XCTFail("wrong OAuthError: \(error)")
             }
         }
+    }
+
+    /// A redirect whose request line arrives in more than one segment must
+    /// still be accepted: the listener accumulates until the first CRLF
+    /// instead of judging the first fragment (which used to drop real
+    /// sign-ins as if they were probes).
+    func testFragmentedRequestLineStillAccepted() async throws {
+        let state = "frag-state-\(UUID().uuidString)"
+        let expectedCode = "frag-code-\(UUID().uuidString)"
+        let service = OAuthService()
+        let (port, codeTask) = try service.startLoopbackListener(expectedState: state)
+        try await Task.sleep(for: .milliseconds(50))
+
+        let conn = NWConnection(
+            host: .ipv4(.loopback),
+            port: NWEndpoint.Port(rawValue: port)!,
+            using: .tcp)
+        conn.start(queue: .global())
+        // Send the request line in two writes with a beat between them.
+        conn.send(content: Data("GET /oauth2/call".utf8), completion: .idempotent)
+        try await Task.sleep(for: .milliseconds(80))
+        conn.send(content: Data("back?code=\(expectedCode)&state=\(state) HTTP/1.1\r\nHost: 127.0.0.1\r\n\r\n".utf8),
+                  completion: .idempotent)
+
+        let code = try await codeTask.value
+        XCTAssertEqual(code, expectedCode)
+        conn.cancel()
     }
 }

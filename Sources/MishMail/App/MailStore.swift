@@ -2883,7 +2883,8 @@ struct ComposeRequest: Identifiable {
                         SELECT id, accountId, gmailId, threadId, fromHeader, toHeader, ccHeader,
                                bccHeader, subject, date, snippet,
                                '' AS bodyText, NULL AS bodyHTML,
-                               messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment
+                               messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment,
+                               senderAuth
                         FROM message
                         WHERE threadId = ?
                         ORDER BY date
@@ -5417,6 +5418,9 @@ struct ComposeRequest: Identifiable {
         if fm.fileExists(atPath: url.path) {
             let values = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
             if values.isRegularFile == true, values.isSymbolicLink != true {
+                // Re-assert owner-only: copies cached by an older build may
+                // still be 0644 inside a 0755 tree.
+                try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
                 Self.markQuarantined(url)
                 return url
             }
@@ -5425,7 +5429,19 @@ struct ComposeRequest: Identifiable {
         let data = try await downloadAttachment(attachment, message: message)
         try fm.createDirectory(at: dir, withIntermediateDirectories: true,
                                attributes: [.posixPermissions: 0o700])
+        // createDirectory's attributes only apply to directories it creates;
+        // tighten any tree an older build left at 0755.
+        var ancestor = dir
+        for _ in 0..<3 {
+            try? fm.setAttributes([.posixPermissions: 0o700], ofItemAtPath: ancestor.path)
+            ancestor.deleteLastPathComponent()
+        }
         try data.write(to: url, options: .atomic)
+        // Owner-only before the file leaves our hands. A same-user process
+        // could still swap bytes between this validation and LaunchServices'
+        // open (inherent temp-file race); user-only perms plus the quarantine
+        // tag re-applied on every open bound what that buys an attacker.
+        try? fm.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
         let written = try url.resourceValues(forKeys: [.isRegularFileKey, .isSymbolicLinkKey])
         guard written.isRegularFile == true, written.isSymbolicLink != true else {
             try? fm.removeItem(at: url)

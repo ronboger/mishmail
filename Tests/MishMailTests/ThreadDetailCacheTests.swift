@@ -341,6 +341,24 @@ final class ThreadDetailCacheTests: XCTestCase {
             hasAttachment: false)
     }
 
+    /// The VIP remote-image gate reads `message.senderAuth` from the pane's
+    /// Message. The initial frame comes from fetchPayload's custom SELECT,
+    /// which must project the column explicitly — otherwise the verdict is
+    /// nil on every auto-expanded message and the gate never engages.
+    func testFetchPayloadProjectsSenderAuth() async throws {
+        let pool = try makeMailPool()
+        try await pool.write { db in
+            var message = self.fixtureMessage(id: "m1", labels: "INBOX")
+            message.senderAuth = false
+            _ = try SyncEngine.upsertPending(
+                db, items: [.init(message: message, attachments: [])])
+        }
+        let payload = try await pool.read { db in
+            try ThreadDetailRepository.fetchPayload(threadId: "thread", db: db)
+        }
+        XCTAssertEqual(payload.messages.map(\.senderAuth), [false])
+    }
+
     private func fixtureAttachment(messageId: String) -> AttachmentRow {
         AttachmentRow(
             id: nil, messageId: messageId, gmailAttachmentId: "att",

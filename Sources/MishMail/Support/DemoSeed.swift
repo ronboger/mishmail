@@ -13,6 +13,14 @@ import GRDB
 enum DemoSeed {
     private static let defaultsKey = "demoModeEnabled"
 
+    /// Two deliberately different notions of "demo" live here:
+    /// - `isActive` (env var OR this persisted flag) drives the fictional
+    ///   inbox itself, including onboarding's "Try demo inbox" in a real,
+    ///   signed build — where adding a real account must stay possible.
+    /// - The account-add / fixture-key guards key ONLY off the env var
+    ///   (`AppDatabase.usesFixtureDatabaseKey`), so an ad-hoc `make run`
+    ///   process can never touch real OAuth data while a signed build's
+    ///   demo inbox can still be replaced by a real account.
     static var isActive: Bool {
         ProcessInfo.processInfo.environment["MISHMAIL_DEMO"] == "1"
             || UserDefaults.standard.bool(forKey: defaultsKey)

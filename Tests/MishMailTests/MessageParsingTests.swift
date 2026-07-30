@@ -147,6 +147,93 @@ final class MessageParsingTests: XCTestCase {
         try JSONDecoder().decode(GMessage.self, from: Data(json.utf8))
     }
 
+    // MARK: - Authentication-Results verdict (VIP remote-image gate)
+
+    private func authMessage(_ headers: [(String, String)]) throws -> GMessage {
+        let headerJSON = headers
+            .map { #"{"name": "\#($0.0)", "value": "\#($0.1)"}"# }
+            .joined(separator: ", ")
+        return try decodeGMessage("""
+        {"id": "m1", "threadId": "t1", "payload": {"mimeType": "text/plain",
+         "headers": [\(headerJSON)], "body": {"data": ""}}}
+        """)
+    }
+
+    func testSenderAuthenticatedVerdicts() throws {
+        // An aligned DMARC pass authenticates the visible sender.
+        let pass = try authMessage([("Authentication-Results",
+            "mx.google.com; spf=pass smtp.mailfrom=x.com; dkim=pass; dmarc=pass")])
+        XCTAssertEqual(MessageParser.senderAuthenticated(pass), true)
+        XCTAssertEqual(MessageParser.parse(pass, accountId: "a@x.com").0.senderAuth, true)
+
+        // SPF/DKIM passing for an attacker-controlled domain does NOT
+        // authenticate the visible From: — only DMARC alignment does.
+        let unaligned = try authMessage([("Authentication-Results",
+            "mx.google.com; spf=pass smtp.mailfrom=evil.example; dkim=pass header.i=@evil.example; dmarc=fail")])
+        XCTAssertEqual(MessageParser.senderAuthenticated(unaligned), false)
+        XCTAssertEqual(MessageParser.parse(unaligned, accountId: "a@x.com").0.senderAuth, false)
+
+        // Everything failing → explicit failure.
+        let fail = try authMessage([("Authentication-Results",
+            "mx.google.com; spf=fail smtp.mailfrom=evil.com; dkim=fail; dmarc=fail")])
+        XCTAssertEqual(MessageParser.senderAuthenticated(fail), false)
+
+        // No header at all → unknown, not a failure.
+        let absent = try authMessage([("From", "jane@x.com")])
+        XCTAssertNil(MessageParser.senderAuthenticated(absent))
+        XCTAssertNil(MessageParser.parse(absent, accountId: "a@x.com").0.senderAuth)
+    }
+
+    /// Google echoes attacker-controlled bytes verbatim in the header value
+    /// (envelope sender, free-text comments), so a bare substring match on
+    /// "dmarc=pass" would pass on a forged local part or comment text. The
+    /// verdict must be a boundary-checked method token, comments stripped.
+    func testSenderAuthenticatedRejectsEmbeddedTokens() throws {
+        // Forged envelope sender: literal "dmarc=pass" in the local part,
+        // real verdict is dmarc=fail.
+        let forgedLocalPart = try authMessage([("Authentication-Results",
+            #"mx.google.com; spf=pass smtp.mailfrom=\"dmarc=pass\"@evil.example; dmarc=fail"#)])
+        XCTAssertEqual(MessageParser.senderAuthenticated(forgedLocalPart), false)
+
+        // Token smuggled in a parenthesized comment.
+        let commentToken = try authMessage([("Authentication-Results",
+            "mx.google.com; dmarc=fail (google.com: dmarc=pass text) header.from=evil.example")])
+        XCTAssertEqual(MessageParser.senderAuthenticated(commentToken), false)
+
+        // bestguesspass (Google's no-record value) is NOT a pass.
+        let bestGuess = try authMessage([("Authentication-Results",
+            "mx.google.com; spf=pass; dmarc=bestguesspass header.from=x.com")])
+        XCTAssertEqual(MessageParser.senderAuthenticated(bestGuess), false)
+
+        // dmarc=p=pass (policy record echo) is not the method verdict.
+        let policyEcho = try authMessage([("Authentication-Results",
+            "mx.google.com; dmarc=fail; dmarc=p=pass header.from=x.com")])
+        XCTAssertEqual(MessageParser.senderAuthenticated(policyEcho), false)
+
+        // Whitespace variants of a real pass still qualify.
+        let spaced = try authMessage([("Authentication-Results",
+            "mx.google.com; spf=pass;  dmarc = pass  header.from=x.com")])
+        XCTAssertEqual(MessageParser.senderAuthenticated(spaced), true)
+    }
+
+    /// Google prepends its own verdict at delivery, so only the FIRST
+    /// Authentication-Results header counts — a forwarded message's inner
+    /// "spf=pass" must not launder a failing outer verdict, and an inner
+    /// failure must not condemn a passing one.
+    func testSenderAuthenticatedUsesFirstHeaderOnly() throws {
+        let forgedInner = try authMessage([
+            ("Authentication-Results", "mx.google.com; spf=fail; dkim=fail; dmarc=fail"),
+            ("Authentication-Results", "inner.example; spf=pass dkim=pass"),
+        ])
+        XCTAssertEqual(MessageParser.senderAuthenticated(forgedInner), false)
+
+        let failingInner = try authMessage([
+            ("Authentication-Results", "mx.google.com; spf=pass; dmarc=pass"),
+            ("Authentication-Results", "inner.example; spf=fail"),
+        ])
+        XCTAssertEqual(MessageParser.senderAuthenticated(failingInner), true)
+    }
+
     private func b64url(_ s: String) -> String { Data(s.utf8).base64URLEncoded() }
 
     func testParseMultipartMessageWithAttachment() throws {

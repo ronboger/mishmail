@@ -41,9 +41,52 @@ enum MessageParser {
             referencesHeader: header("References"),
             labelIds: labels.joined(separator: " "),
             isUnread: labels.contains("UNREAD"),
-            hasAttachment: !attachments.isEmpty
+            hasAttachment: !attachments.isEmpty,
+            senderAuth: senderAuthenticated(g)
         )
         return (message, attachments)
+    }
+
+    /// Verdict from Gmail's own `Authentication-Results` header: true only on
+    /// an aligned `dmarc=pass`, false when the header is present without one,
+    /// nil when absent (legacy rows, unusual payloads).
+    ///
+    /// SPF/DKIM alone do NOT authenticate the visible sender: a spoofer
+    /// passes both for their *own* domain (`spf=pass
+    /// smtp.mailfrom=evil.example`) while `From:` names the victim. DMARC is
+    /// the alignment check that binds the authenticated identifiers to the
+    /// From domain, so it is the bar. Senders whose domains publish no DMARC
+    /// record judge as failures — safe direction: their images need one
+    /// explicit click. (`dmarc=bestguesspass`, Google's no-record value,
+    /// correctly does not qualify.)
+    ///
+    /// Two trust details: only the FIRST such header counts (Gmail prepends
+    /// its own at delivery; headers deeper in the list can be forwarded
+    /// copies — though mail added via `users.messages.insert`/import can
+    /// carry an attacker-authored first header, so this is a guard, not a
+    /// guarantee). And the match is a boundary-checked method token after
+    /// stripping parenthesized comments, because Google echoes attacker bytes
+    /// verbatim in the same value (`smtp.mailfrom=` envelope sender) — a
+    /// quoted local part like `"dmarc=pass"@evil.example` must not satisfy it.
+    static func senderAuthenticated(_ g: GMessage) -> Bool? {
+        guard let raw = g.payload?.headers?
+            .first(where: {
+                $0.name.caseInsensitiveCompare("Authentication-Results") == .orderedSame
+            })?
+            .value else { return nil }
+        var results = raw.lowercased()
+        // Parenthesized CFWS comments can hold attacker-influenced text.
+        while let range = results.range(of: #"\([^()]*\)"#, options: .regularExpression) {
+            results.removeSubrange(range)
+        }
+        guard let verdict = results.range(
+            of: #"(?:^|;)\s*dmarc\s*=\s*([a-z0-9-]+)"#,
+            options: .regularExpression) else { return false }
+        let value = results[verdict]
+            .split(separator: "=", maxSplits: 1)
+            .last?
+            .trimmingCharacters(in: .whitespaces)
+        return value == "pass"
     }
 
     private static func partHeader(_ part: GMessage.Part, _ name: String) -> String? {

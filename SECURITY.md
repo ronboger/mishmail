@@ -31,4 +31,6 @@ The threat model and mitigations are summarized in the
 [Security section of the README](README.md#security).
 
 A 2026-07 source review (findings SEC-001–003, all fixed) lives in
-[docs/security-review.md](docs/security-review.md).
+[docs/security-review.md](docs/security-review.md); a second pass later that
+month (SEC-004–007, all fixed) lives in
+[docs/security-review-2026-07-29.md](docs/security-review-2026-07-29.md).

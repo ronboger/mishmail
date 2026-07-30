@@ -1549,14 +1549,16 @@ struct MessageCard: View {
         RemoteImagePolicy(rawValue: remoteImagePolicyRaw) ?? .ask
     }
 
-    /// Policy + VIP list + per-message / per-thread opt-in.
+    /// Policy + VIP list + per-message / per-thread opt-in. VIP auto-load is
+    /// gated on Gmail's auth verdict so a spoofed From: can't fire trackers.
     private var allowRemoteImages: Bool {
         RemoteImagePolicy.allows(
             policy: remoteImagePolicy,
             senderEmail: MessageParser.emailAddress(message.fromHeader),
             vipEmails: store.vipEmails,
             messageOptIn: loadRemoteImages,
-            threadOptIn: loadImagesForThread)
+            threadOptIn: loadImagesForThread,
+            senderAuthenticated: message.senderAuth)
     }
 
     var body: some View {

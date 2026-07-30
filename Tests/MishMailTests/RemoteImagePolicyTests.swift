@@ -17,15 +17,44 @@ final class RemoteImagePolicyTests: XCTestCase {
 
     func testVIPAllowsOnlyListedSenders() {
         let vips: Set<String> = ["friend@x.com"]
+        // .vip fails closed without an auth verdict: only an aligned DMARC
+        // pass (senderAuthenticated == true) lets a VIP auto-load.
+        XCTAssertFalse(RemoteImagePolicy.allows(
+            policy: .vip, senderEmail: "friend@x.com", vipEmails: vips,
+            messageOptIn: false, threadOptIn: false,
+            senderAuthenticated: nil))
         XCTAssertTrue(RemoteImagePolicy.allows(
             policy: .vip, senderEmail: "friend@x.com", vipEmails: vips,
-            messageOptIn: false, threadOptIn: false))
+            messageOptIn: false, threadOptIn: false,
+            senderAuthenticated: true))
         XCTAssertTrue(RemoteImagePolicy.allows(
             policy: .vip, senderEmail: "Friend@X.com", vipEmails: vips,
-            messageOptIn: false, threadOptIn: false))
+            messageOptIn: false, threadOptIn: false,
+            senderAuthenticated: true))
         XCTAssertFalse(RemoteImagePolicy.allows(
             policy: .vip, senderEmail: "stranger@x.com", vipEmails: vips,
-            messageOptIn: false, threadOptIn: false))
+            messageOptIn: false, threadOptIn: false,
+            senderAuthenticated: true))
+    }
+
+    /// The From: header is spoofable, so VIP auto-load fails closed on an
+    /// explicit Gmail Authentication-Results failure — a forged VIP address
+    /// must not fire tracking pixels. An explicit click always wins.
+    func testVIPBlocksAuthFailure() {
+        let vips: Set<String> = ["friend@x.com"]
+        XCTAssertFalse(RemoteImagePolicy.allows(
+            policy: .vip, senderEmail: "friend@x.com", vipEmails: vips,
+            messageOptIn: false, threadOptIn: false,
+            senderAuthenticated: false))
+        // An explicit click still wins over an auth failure.
+        XCTAssertTrue(RemoteImagePolicy.allows(
+            policy: .vip, senderEmail: "friend@x.com", vipEmails: vips,
+            messageOptIn: true, threadOptIn: false,
+            senderAuthenticated: false))
+        XCTAssertTrue(RemoteImagePolicy.allows(
+            policy: .vip, senderEmail: "friend@x.com", vipEmails: vips,
+            messageOptIn: false, threadOptIn: true,
+            senderAuthenticated: false))
     }
 
     func testAlwaysAllowsEveryone() {

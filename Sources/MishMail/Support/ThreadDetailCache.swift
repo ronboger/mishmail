@@ -436,7 +436,8 @@ actor ThreadDetailRepository {
                 SELECT id, accountId, gmailId, threadId, fromHeader, toHeader, ccHeader,
                        bccHeader, subject, date, snippet,
                        '' AS bodyText, NULL AS bodyHTML,
-                       messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment
+                       messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment,
+                       senderAuth
                 FROM message
                 WHERE threadId = ?
                 ORDER BY date

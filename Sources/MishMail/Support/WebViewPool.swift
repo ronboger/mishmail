@@ -53,13 +53,16 @@ enum HTMLWebViewPool {
     private static var free: [PassthroughWebView] = []
     private static var prerendered: [String: PassthroughWebView] = [:]
     private static var ledger = HTMLWebViewPoolLedger(capacity: capacity)
+    /// Bumped by `drain()`. Pending post-wipe park callbacks capture it and
+    /// refuse to repopulate a pool that memory pressure explicitly emptied.
+    private static var generation = 0
 
     static func makeConfiguration() -> WKWebViewConfiguration {
         let config = WKWebViewConfiguration()
         config.defaultWebpagePreferences.allowsContentJavaScript = false
-        // Per-view ephemeral store: recycled views keep their store, but a
-        // view only ever renders one message at a time and the store dies
-        // with the view — never shared across live views.
+        // Per-view ephemeral store, wiped on every recycle (clearForReuse):
+        // one message's remote-image cookies never accompany the next
+        // message's requests, and the store dies with the view regardless.
         config.websiteDataStore = .nonPersistent()
         // Per-element contrast from effective background (before first paint).
         // App-injected user scripts run even with allowsContentJavaScript off;
@@ -93,29 +96,33 @@ enum HTMLWebViewPool {
         return prerendered[poolKey] != nil
     }
 
-    /// Dequeue a recycled/empty view or create a new one. May steal the oldest
-    /// pre-render when the free list is empty so total parked stay bounded.
+    /// Dequeue a recycled/empty view or create a new one. May evict the
+    /// oldest pre-render when the free list is empty: the evicted view wipes
+    /// and re-parks as a free slot (net parked count unchanged — the caller
+    /// gets a fresh view rather than one mid-wipe).
     ///
-    /// Stolen pre-renders still show foreign HTML until the async blank load
-    /// commits — they are flagged `hasForeignContent` so attachers hide them.
-    /// Free-list views were already cleared when parked and are not flagged.
+    /// Free-list views are flagged `hasForeignContent` from clearForReuse:
+    /// the blank load is async and may not have committed yet, so the
+    /// previous document could still be the live DOM. Attachers keep flagged
+    /// views hidden until own paint.
     static func dequeue() -> PassthroughWebView {
         lock.lock()
         let acquire = ledger.acquireForDequeue()
         switch acquire {
         case .free:
-            // Still flagged from clearForReuse when parked: the blank load is
-            // async and may not have committed yet, so the previous document
-            // (possibly an unopened neighbor's pre-render) could still be the
-            // live DOM. Attachers keep flagged views hidden until own paint.
             let view = free.popLast()!
             lock.unlock()
             return view
         case .stolenPrerender(let key):
             let view = prerendered.removeValue(forKey: key)!
+            let gen = generation
             lock.unlock()
-            clearForReuse(view)
-            return view
+            // The stolen view holds another message's DOM *and* network
+            // state; the wipe (including the data-store removal) is async.
+            // Hand out a fresh view now and park the stolen one only after
+            // its wipe completes, so no load ever races the deletion.
+            clearForReuse(view) { parkFreeIfRoom(view, generation: gen) }
+            return PassthroughWebView(frame: .zero, configuration: makeConfiguration())
         case .createNew:
             lock.unlock()
             return PassthroughWebView(frame: .zero, configuration: makeConfiguration())
@@ -172,11 +179,26 @@ enum HTMLWebViewPool {
     /// reuses its `WKUserContentController`, and double-adding a handler name
     /// crashes. Layout teardown JS runs first so ResizeObservers from the
     /// previous message cannot fire into a deallocated coordinator.
+    ///
+    /// Parking waits for the data-store wipe inside clearForReuse: a dequeued
+    /// view never shares cookies/cache with the message it previously held.
     static func recycle(_ webView: WKWebView) {
-        clearForReuse(webView)
-        guard let view = webView as? PassthroughWebView else { return }
+        lock.lock()
+        let gen = generation
+        lock.unlock()
+        clearForReuse(webView) {
+            guard let view = webView as? PassthroughWebView else { return }
+            parkFreeIfRoom(view, generation: gen)
+        }
+    }
+
+    /// Park a wiped view on the free list, room permitting. Only called from
+    /// `clearForReuse`'s post-wipe completion, and only honored when the pool
+    /// hasn't been drained since the wipe started.
+    private static func parkFreeIfRoom(_ view: PassthroughWebView, generation gen: Int) {
         lock.lock()
         defer { lock.unlock() }
+        guard gen == generation else { return }
         // A superseded swap and its completion handler can both try to
         // recycle the same view — never park the same instance twice.
         guard !free.contains(where: { $0 === view }),
@@ -200,9 +222,11 @@ enum HTMLWebViewPool {
     }
 
     /// Release warm spares under memory pressure or app exit. Active message
-    /// views are untouched.
+    /// views are untouched. Bumps the generation so wipe completions already
+    /// in flight cannot refill the pool after it was explicitly emptied.
     static func drain() {
         lock.lock()
+        generation += 1
         let drained = free + Array(prerendered.values)
         free.removeAll()
         prerendered.removeAll()
@@ -211,8 +235,21 @@ enum HTMLWebViewPool {
         withExtendedLifetime(drained) {}
     }
 
-    /// Wipe navigation state and DOM so the view is safe to reuse or drop.
-    private static func clearForReuse(_ webView: WKWebView) {
+    /// Wipe navigation state, DOM, and network state so the view is safe to
+    /// reuse or drop. `completion` fires after the data-store removal lands —
+    /// callers that park the view for reuse must park from there, never
+    /// before (a dequeued view's first load must not race the deletion);
+    /// callers dropping the view pass nil.
+    private static func clearForReuse(_ webView: WKWebView, completion: (() -> Void)? = nil) {
+        // Flag FIRST: the blank load and data-store removal below are async,
+        // and their completion can run (and re-park the view) on the main
+        // queue before this function returns on another thread. Until the
+        // blank load commits, the previous document is still the live DOM —
+        // attachers hide flagged views until their own content paints;
+        // cleared in attach()/swap().
+        if let view = webView as? PassthroughWebView {
+            view.hasForeignContent = true
+        }
         webView.stopLoading()
         webView.navigationDelegate = nil
         // A pooled view must never stay parented to a live container —
@@ -228,11 +265,12 @@ enum HTMLWebViewPool {
         }
         webView.configuration.userContentController.removeAllContentRuleLists()
         webView.loadHTMLString("", baseURL: nil)
-        // The blank load above is async: until it commits, the previous
-        // document is still the live DOM. Flag the view so attachers hide it
-        // until its own content paints; cleared in attach()/swap().
-        if let view = webView as? PassthroughWebView {
-            view.hasForeignContent = true
-        }
+        // Wipe network state too: the per-view ephemeral store keeps cookies/
+        // cache otherwise, and a reused view must not carry one message's (or
+        // one account's) remote-image state into the next message's loads.
+        // Parked pre-renders keep their store on purpose — same message.
+        webView.configuration.websiteDataStore.removeData(
+            ofTypes: WKWebsiteDataStore.allWebsiteDataTypes(),
+            modifiedSince: .distantPast) { completion?() }
     }
 }

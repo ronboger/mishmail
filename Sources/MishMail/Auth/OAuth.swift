@@ -262,7 +262,7 @@ final class OAuthService {
             }
             listener.newConnectionHandler = { conn in
                 conn.start(queue: .global())
-                conn.receive(minimumIncompleteLength: 1, maximumLength: 16 * 1024) { data, _, _, _ in
+                Self.receiveRequestLine(on: conn, into: Data()) { data in
                     // Browsers open speculative connections and request
                     // /favicon.ico; ignore anything that isn't the actual
                     // OAuth redirect instead of tearing the listener down.
@@ -345,6 +345,38 @@ final class OAuthService {
     /// bare `/` Google sometimes normalizes empty paths to.
     static func isOAuthCallbackPath(_ path: String) -> Bool {
         path == "/oauth2/callback" || path == "/" || path.isEmpty
+    }
+
+    /// Reads a connection until the HTTP request line's CRLF arrives, then
+    /// hands the accumulated bytes (which may include following headers) to
+    /// `completion`. Yields `nil` for connections that close, error, or pass
+    /// 16 KB without completing a line — the caller cancels those as probes
+    /// and keeps listening. (A bare-LF request line never completes — fine:
+    /// browsers always send CRLF, and the old code tolerated LF only for
+    /// raw-`nc` testing.)
+    ///
+    /// A single `receive` can fire on a fragment of the request (its minimum
+    /// is one byte), and the parser only ever needs the first line; without
+    /// this loop a redirect delivered in more than one segment was mistaken
+    /// for a probe and the legitimate sign-in was dropped.
+    private static func receiveRequestLine(
+        on conn: NWConnection,
+        into buffer: Data,
+        completion: @escaping (Data?) -> Void
+    ) {
+        let crlf = Data([0x0D, 0x0A])
+        let maxBytes = 16 * 1024
+        conn.receive(minimumIncompleteLength: 1, maximumLength: maxBytes) { data, _, isComplete, error in
+            var buffer = buffer
+            if let data { buffer.append(data) }
+            if buffer.range(of: crlf) != nil {
+                completion(buffer)
+            } else if error == nil, !isComplete, buffer.count < maxBytes {
+                receiveRequestLine(on: conn, into: buffer, completion: completion)
+            } else {
+                completion(nil)
+            }
+        }
     }
 
     // MARK: - PKCE helpers

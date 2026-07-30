@@ -17,6 +17,7 @@ final class DatabaseMigrationTests: XCTestCase {
             let messageCols = try db.columns(in: "message").map(\.name)
             XCTAssertTrue(messageCols.contains("bccHeader"), "v4 must add bccHeader")
             XCTAssertTrue(messageCols.contains("hasAttachment"))
+            XCTAssertTrue(messageCols.contains("senderAuth"), "v29 must add senderAuth")
             let accountCols = try db.columns(in: "account").map(\.name)
             XCTAssertTrue(accountCols.contains("senderName"), "v3 must add senderName")
             let threadCols = try db.columns(in: "thread").map(\.name)
@@ -105,6 +106,17 @@ final class DatabaseMigrationTests: XCTestCase {
         XCTAssertNotNil(message)
         XCTAssertEqual(message?.bccHeader, "")
         XCTAssertEqual(message?.subject, "Old mail")
+
+        // v29: pre-existing rows carry no Authentication-Results verdict
+        // (NULL = unjudged, VIP auto-load keeps prior behavior), and the new
+        // column round-trips through the model.
+        XCTAssertNil(message?.senderAuth)
+        if var message {
+            message.senderAuth = false
+            try q.write { db in try message.save(db) }
+            let reloaded = try q.read { db in try Message.fetchOne(db, key: "ron@x.com:m1") }
+            XCTAssertEqual(reloaded?.senderAuth, false)
+        }
     }
 
     /// A label created before v10 survives the upgrade and gains the color
