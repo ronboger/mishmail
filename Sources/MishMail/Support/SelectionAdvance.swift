@@ -236,6 +236,19 @@ enum ThreadListOptimistic {
         } ?? rows.endIndex
     }
 
+    /// Replace the matching list row with a re-derived thread (e.g. after
+    /// attachment recovery flips `hasAttachment` so the paperclip can appear).
+    /// Returns nil when the id is not in the current window — no insert.
+    static func replacingRow(_ thread: MailThread,
+                             in threads: [MailThread]) -> [MailThread]? {
+        guard let idx = threads.firstIndex(where: { $0.id == thread.id }) else {
+            return nil
+        }
+        var copy = threads
+        copy[idx] = thread
+        return copy
+    }
+
     /// Whether Undo should re-insert an absent `updateInPlace` thread into the
     /// current in-memory list. Skip when the list cannot own this row: a
     /// filtered account that isn't the thread's, or a committed `/` search

@@ -5313,20 +5313,31 @@ struct ComposeRequest: Identifiable {
 
     /// Full-format re-fetch + upsert so Content-IDs land on attachment rows
     /// and missing file attachments are recovered. Re-derives the thread so
-    /// `hasAttachment` / paperclip denorm match the repaired message.
+    /// `hasAttachment` / paperclip denorm match the repaired message, and
+    /// patches the in-memory list row so the paperclip appears without a
+    /// full list reload.
     private func refetchMessageFull(_ message: Message) async -> (message: Message, attachments: [AttachmentRow])? {
         do {
             let g = try await client(for: message.accountId)
                 .getMessage(id: message.gmailId, format: "full")
             let (parsed, atts) = MessageParser.parse(g, accountId: message.accountId)
-            try await db.write { db in
+            let derivedThread: MailThread? = try await db.write { db in
                 _ = try SyncEngine.upsertPending(
                     db,
                     items: [.init(message: parsed, attachments: atts, headersOnly: false)])
                 try SyncEngine.deriveThreads(
                     db, for: [parsed.threadId], accountId: message.accountId)
+                return try MailThread.fetchOne(db, key: parsed.threadId)
             }
             applyThreadContentChange(.threads([message.threadId]))
+            // List paperclip reads `threads[].hasAttachment`. Content-revision
+            // wakes the reading pane only — patch the list row here so recovery
+            // that flips hasAttachment is visible without reloadThreads.
+            if let derivedThread,
+               let updated = ThreadListOptimistic.replacingRow(
+                   derivedThread, in: threads) {
+                threads = updated
+            }
             await threadDetailRepository.drop(threadId: message.threadId)
             // `parsed` still carries body fields from MessageParser (upsert only
             // clears on-row columns in the DB copy).

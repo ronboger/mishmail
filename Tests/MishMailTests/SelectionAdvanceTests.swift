@@ -309,6 +309,24 @@ final class SelectionAdvanceTests: XCTestCase {
             1)
     }
 
+    /// Attachment recovery re-derives the thread (hasAttachment flips) but
+    /// only the in-memory list row drives the paperclip; patch by id.
+    func testReplacingRowUpdatesHasAttachmentInPlace() {
+        let stale = fixtureThread(id: "t1", date: Date(), hasAttachment: false)
+        let other = fixtureThread(id: "t2", date: Date(), hasAttachment: true)
+        var recovered = stale
+        recovered.hasAttachment = true
+        let updated = ThreadListOptimistic.replacingRow(
+            recovered, in: [stale, other])
+        XCTAssertEqual(updated?.map(\.id), ["t1", "t2"])
+        XCTAssertEqual(updated?[0].hasAttachment, true)
+        XCTAssertEqual(updated?[1].hasAttachment, true)
+        // Unknown id: no insert into the current window.
+        XCTAssertNil(ThreadListOptimistic.replacingRow(
+            fixtureThread(id: "absent", date: Date(), hasAttachment: true),
+            in: [stale, other]))
+    }
+
     /// Regression: Undo must not flash a restored row into the wrong list.
     /// Active-account filter and committed search both scope ownership;
     /// reconciliation reloads the correct context (~140ms).
@@ -340,14 +358,15 @@ final class SelectionAdvanceTests: XCTestCase {
     }
 
     private func fixtureThread(id: String, date: Date,
-                               inboundDate: Date? = nil) -> MailThread {
+                               inboundDate: Date? = nil,
+                               hasAttachment: Bool = false) -> MailThread {
         MailThread(
             id: id, accountId: "a", gmailThreadId: id,
             subject: id, snippet: "", fromDisplay: "F",
             lastDate: date, isUnread: false, isStarred: false,
             inInbox: true, inTrash: false, labelIds: "INBOX",
             snoozeUntil: nil, participants: "F", messageCount: 1,
-            hasAttachment: false, reminderAt: nil,
+            hasAttachment: hasAttachment, reminderAt: nil,
             lastInboundDate: inboundDate)
     }
 }
