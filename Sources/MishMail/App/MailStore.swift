@@ -3423,8 +3423,10 @@ struct ComposeRequest: Identifiable {
             // star is a list pin, not a reclassification into Primary.
             // Match primary badge / inbox list: skip actively snoozed rows so
             // a sleeping unread does not notify or seed the baseline.
+            // Explicit return: multi-statement closure (let now) loses Swift's
+            // single-expression implicit return.
             let now = Date()
-            try MailThread
+            return try MailThread
                 .filter(Column("isUnread") == true)
                 .filter(Column("inInbox") == true)
                 .filter(Column("inTrash") == false)
