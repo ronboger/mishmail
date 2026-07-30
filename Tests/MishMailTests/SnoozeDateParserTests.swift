@@ -182,4 +182,95 @@ final class SnoozeDateParserTests: XCTestCase {
         XCTAssertEqual(c.hour, 10)
         XCTAssertNotNil(c.day)
     }
+
+    // MARK: - Broader suggestion coverage
+
+    func testLaterTodayAliasAndPrefix() {
+        // Fixture is 10:00 → later today lands on afternoon (13:00).
+        for q in ["l", "later", "later today", "lt"] {
+            let c = comps(first(q))
+            XCTAssertEqual([c.day, c.hour], [7, 13], "\(q)")
+        }
+    }
+
+    func testEndOfDayAliases() {
+        for q in ["eod", "end of day", "end"] {
+            let labels = SnoozeDateParser.suggestions(for: q, now: now).map { $0.label.lowercased() }
+            XCTAssertTrue(labels.contains(where: { $0.contains("end of day") }),
+                          "\(q) → \(labels.joined(separator: ", "))")
+        }
+        let c = comps(first("eod"))
+        // Evening = 18:00 today (still ahead of 10:00).
+        XCTAssertEqual([c.day, c.hour], [7, 18])
+    }
+
+    func testEndOfWeekAndMonthAliases() {
+        let eow = comps(first("eow"))
+        // Next Friday after Tue Jul 7 2026 is Jul 10 at evening.
+        XCTAssertEqual([eow.month, eow.day, eow.hour], [7, 10, 18])
+        let eom = comps(first("eom"))
+        // Last day of July 2026.
+        XCTAssertEqual([eom.month, eom.day], [7, 31])
+    }
+
+    func testInPrefixLadder() {
+        let labels = SnoozeDateParser.suggestions(for: "in", now: now).map { $0.label.lowercased() }
+        XCTAssertTrue(labels.contains(where: { $0.hasPrefix("in 1 hour") }), labels.joined(separator: ", "))
+        XCTAssertTrue(labels.contains(where: { $0.hasPrefix("in 1 day") }), labels.joined(separator: ", "))
+        XCTAssertTrue(labels.contains(where: { $0.hasPrefix("in 1 week") }), labels.joined(separator: ", "))
+    }
+
+    func testSingleLetterISuggestsRelative() {
+        let labels = SnoozeDateParser.suggestions(for: "i", now: now).map { $0.label.lowercased() }
+        XCTAssertFalse(labels.isEmpty, "i should offer the in-… ladder")
+        XCTAssertTrue(labels.contains(where: { $0.contains("hour") || $0.contains("day") }),
+                      labels.joined(separator: ", "))
+    }
+
+    func testCompactRelativeDurations() {
+        let h = comps(first("2h"))
+        XCTAssertEqual(h.hour, 12)  // 10:00 + 2h
+        let d = comps(first("3d"))
+        XCTAssertEqual([d.month, d.day, d.hour], [7, 10, 8])
+        let w = comps(first("1w"))
+        XCTAssertEqual([w.month, w.day], [7, 14])
+    }
+
+    func testBareUnitWords() {
+        let hour = comps(first("hour"))
+        XCTAssertEqual(hour.hour, 11)  // +1h from 10:00
+        let day = comps(first("day"))
+        XCTAssertEqual([day.month, day.day], [7, 8])
+        // "h" alone → in 1 hour
+        let h = comps(first("h"))
+        XCTAssertEqual(h.hour, 11)
+    }
+
+    func testInNWithPartialUnit() {
+        let c = comps(first("in 2 da"))
+        XCTAssertEqual([c.month, c.day, c.hour], [7, 9, 8])
+    }
+
+    func testBareTwoDaysWithoutIn() {
+        let c = comps(first("2 days"))
+        XCTAssertEqual([c.month, c.day, c.hour], [7, 9, 8])
+    }
+
+    func testWeekendAlias() {
+        let c = comps(first("wknd"))
+        // Next Saturday after Tue Jul 7 → Jul 11.
+        XCTAssertEqual([c.month, c.day], [7, 11])
+    }
+
+    func testSingleLetterESuggestsEndOf() {
+        let labels = SnoozeDateParser.suggestions(for: "e", now: now).map { $0.label.lowercased() }
+        XCTAssertTrue(labels.contains(where: { $0.contains("end of day") }), labels.joined(separator: ", "))
+        XCTAssertTrue(labels.contains(where: { $0.contains("end of week") }), labels.joined(separator: ", "))
+    }
+
+    func testSingleLetterFStillFridayAndFebruary() {
+        let labels = SnoozeDateParser.suggestions(for: "f", now: now).map { $0.label.lowercased() }
+        XCTAssertTrue(labels.contains(where: { $0.hasPrefix("friday") }), labels.joined(separator: ", "))
+        XCTAssertTrue(labels.contains(where: { $0.hasPrefix("february") }), labels.joined(separator: ", "))
+    }
 }

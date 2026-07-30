@@ -42,8 +42,51 @@ enum SnoozeDateParser {
             cal.nextDate(after: now, matching: DateComponents(weekday: weekday),
                          matchingPolicy: .nextTime)!
         }
+        func addHours(_ n: Int) -> Date? {
+            cal.date(byAdding: .hour, value: n, to: now)
+        }
+        func addDays(_ n: Int, hour: Int = 8) -> Date? {
+            guard let day = cal.date(byAdding: .day, value: n, to: now) else { return nil }
+            return at(day, hour)
+        }
+        /// Soonest useful "later today": afternoon if still ahead, else evening,
+        /// else tomorrow morning (nothing left in the day).
+        func laterToday() -> Date? {
+            let afternoon = at(now, SnoozePresets.afternoonHour)
+            if let afternoon, afternoon > now { return afternoon }
+            let evening = at(now, SnoozePresets.eveningHour)
+            if let evening, evening > now { return evening }
+            return addDays(1, hour: SnoozePresets.morningHour)
+        }
+        func endOfDay() -> Date? {
+            let evening = at(now, SnoozePresets.eveningHour)
+            if let evening, evening > now { return evening }
+            return addDays(1, hour: SnoozePresets.eveningHour)
+        }
+        func endOfWeek() -> Date? {
+            // Friday evening this week if still ahead; otherwise next Friday.
+            let weekday = cal.component(.weekday, from: now)
+            if weekday == 6, // Friday
+               let evening = at(now, SnoozePresets.eveningHour), evening > now {
+                return evening
+            }
+            return at(nextWeekday(6), SnoozePresets.eveningHour)
+        }
+        func endOfMonth() -> Date? {
+            let dayRange = cal.range(of: .day, in: .month, for: now)!
+            var comps = cal.dateComponents([.year, .month], from: now)
+            comps.day = dayRange.count
+            guard let last = cal.date(from: comps), let dated = at(last) else { return nil }
+            if dated > now { return dated }
+            // Already past this month's end → last day of next month.
+            guard let nextMonth = cal.date(byAdding: .month, value: 1, to: last) else { return nil }
+            let nextRange = cal.range(of: .day, in: .month, for: nextMonth)!
+            var nextComps = cal.dateComponents([.year, .month], from: nextMonth)
+            nextComps.day = nextRange.count
+            return cal.date(from: nextComps).flatMap { at($0) }
+        }
 
-        // Bare time ("3pm", "at 17:30") → today, or tomorrow if already past.
+        // Bare time ("3pm", "at 17:30", bare "morning") → today, or tomorrow if past.
         if datePart.isEmpty, time != nil {
             let today = at(now)
             add("Today", today)
@@ -52,11 +95,13 @@ enum SnoozeDateParser {
             }
         }
 
-        // Keywords, prefix-matched.
+        // Keywords, prefix-matched (and aliases that don't share a prefix).
         let keywords: [(String, () -> Date?)] = [
             ("today", { at(now) }),
             ("tonight", { at(now, 20) }),
-            ("tomorrow", { at(cal.date(byAdding: .day, value: 1, to: now)!) }),
+            ("tomorrow", { addDays(1) }),
+            ("later today", { laterToday() }),
+            ("later", { laterToday() }),
             ("next week", { at(nextWeekday(2)) }),          // Monday
             ("next month", {
                 let comps = cal.dateComponents([.year, .month], from: cal.date(byAdding: .month, value: 1, to: now)!)
@@ -64,36 +109,55 @@ enum SnoozeDateParser {
             }),
             ("weekend", { at(nextWeekday(7)) }),            // Saturday
             ("this weekend", { at(nextWeekday(7)) }),
+            ("end of day", { endOfDay() }),
+            ("end of week", { endOfWeek() }),
+            ("end of month", { endOfMonth() }),
         ]
-        // Common abbreviations that don't prefix-match the full word
-        // ("tm"/"tmrw" → tomorrow, "td" → today).
         let aliases: [String: [String]] = [
             "tomorrow": ["tm", "tmr", "tmrw", "tmw", "tmo", "tmoro"],
             "today": ["td", "tdy"],
             "tonight": ["tn", "tnt"],
+            "later today": ["lt"],
+            "later": ["l8r"],
+            "end of day": ["eod"],
+            "end of week": ["eow"],
+            "end of month": ["eom"],
+            "weekend": ["wknd"],
+            "next week": ["nw"],
+            "next month": ["nm"],
         ]
         func matchesKeyword(_ word: String) -> Bool {
             word.hasPrefix(datePart) || (aliases[word]?.contains(datePart) ?? false)
         }
         for (word, make) in keywords where matchesKeyword(word) {
-            add(word.capitalized, make())
+            // "later" and "later today" share a date — prefer the longer label
+            // when both match (e.g. "lat" / "later").
+            let title: String = {
+                switch word {
+                case "later": return "Later today"
+                case "end of day", "end of week", "end of month":
+                    return word.split(separator: " ").map(\.capitalized).joined(separator: " ")
+                default:
+                    return word.capitalized
+                }
+            }()
+            add(title, make())
         }
 
         // Weekday names, prefix-matched from the first character ("s" →
-        // Saturday/Sunday, "fri" → Friday). Single-letter noise is fine —
-        // results are capped at 5 and keywords already fire on one letter.
+        // Saturday/Sunday, "fri" → Friday).
         let symbols = cal.weekdaySymbols  // Sunday-first
         for (i, name) in symbols.enumerated() where name.lowercased().hasPrefix(datePart) {
             add(name, at(nextWeekday(i + 1)))
         }
 
-        // "in N days/hours/weeks/months"
-        if let m = text.wholeMatch(of: /in (\d+) ?(hour|day|week|month)s?/) {
-            let n = Int(m.1)!
-            let unit: Calendar.Component = ["hour": .hour, "day": .day, "week": .weekOfYear, "month": .month][String(m.2)]!
-            let target = cal.date(byAdding: unit, value: n, to: now)!
-            add("In \(n) \(m.2)\(n == 1 ? "" : "s")", unit == .hour ? target : at(target))
-        }
+        // Relative durations: "in 2 weeks", "2 days", "3h", "in 1 h", and
+        // bare unit prefixes ("hour" → in 1 hour) so single-letter typing
+        // surfaces something useful for h/d/w and partial "in".
+        addRelativeSuggestions(
+            text: text, datePart: datePart, now: now, calendar: cal,
+            add: add, at: at, addHours: addHours, addDays: addDays
+        )
 
         // "aug 12" / "12 aug" / "8/12", each optionally with a year
         // ("aug 17 2027", "8/12/27"). Without a year we roll to next year
@@ -143,6 +207,123 @@ enum SnoozeDateParser {
         return Array(results.prefix(5))
     }
 
+    /// Relative-duration suggestions: full "in 2 weeks", compact "3h"/"2d"/"1w",
+    /// unit prefixes ("hour"), and an incomplete "in" / "in 2" ladder so the
+    /// first keystrokes after `b` still show something useful.
+    private static func addRelativeSuggestions(
+        text: String,
+        datePart: String,
+        now: Date,
+        calendar cal: Calendar,
+        add: (String, Date?) -> Void,
+        at: (Date, Int) -> Date?,
+        addHours: (Int) -> Date?,
+        addDays: (Int, Int) -> Date?
+    ) {
+        // Compact: "2h", "3d", "1w", "2mo" (mo = month; bare "m" stays month-name).
+        if let m = text.wholeMatch(of: /(\d+)\s*(h|hr|hrs|d|w|wk|wks|mo)s?/) {
+            let n = Int(m.1)!
+            switch String(m.2) {
+            case "h", "hr", "hrs":
+                add("In \(n) hour\(n == 1 ? "" : "s")", addHours(n))
+            case "d":
+                add("In \(n) day\(n == 1 ? "" : "s")", addDays(n, 8))
+            case "w", "wk", "wks":
+                add("In \(n) week\(n == 1 ? "" : "s")",
+                    cal.date(byAdding: .weekOfYear, value: n, to: now).flatMap { at($0, 8) })
+            case "mo":
+                add("In \(n) month\(n == 1 ? "" : "s")",
+                    cal.date(byAdding: .month, value: n, to: now).flatMap { at($0, 8) })
+            default: break
+            }
+        }
+
+        // "in 2 weeks" / "2 days" / "in 2 da" (unit prefix-matched).
+        if let m = text.wholeMatch(of: /(?:in )?(\d+)\s*([a-z]*)/),
+           let unit = resolveUnitPrefix(String(m.2)), !String(m.2).isEmpty {
+            let n = Int(m.1)!
+            switch unit {
+            case .hour:
+                add("In \(n) hour\(n == 1 ? "" : "s")", addHours(n))
+            case .day:
+                add("In \(n) day\(n == 1 ? "" : "s")", addDays(n, 8))
+            case .week:
+                add("In \(n) week\(n == 1 ? "" : "s")",
+                    cal.date(byAdding: .weekOfYear, value: n, to: now).flatMap { at($0, 8) })
+            case .month:
+                add("In \(n) month\(n == 1 ? "" : "s")",
+                    cal.date(byAdding: .month, value: n, to: now).flatMap { at($0, 8) })
+            }
+        }
+
+        // "in 2" with no unit yet → offer each unit for that N.
+        if let m = text.wholeMatch(of: /in (\d+)\s*/), Int(m.1) != nil {
+            let n = Int(m.1)!
+            add("In \(n) hour\(n == 1 ? "" : "s")", addHours(n))
+            add("In \(n) day\(n == 1 ? "" : "s")", addDays(n, 8))
+            add("In \(n) week\(n == 1 ? "" : "s")",
+                cal.date(byAdding: .weekOfYear, value: n, to: now).flatMap { at($0, 8) })
+            add("In \(n) month\(n == 1 ? "" : "s")",
+                cal.date(byAdding: .month, value: n, to: now).flatMap { at($0, 8) })
+        }
+
+        // Bare "in" / "i" (prefix of "in") → common relative ladder.
+        if "in".hasPrefix(datePart), datePart.count <= 2, !datePart.isEmpty,
+           datePart.wholeMatch(of: /[a-z]+/) != nil,
+           // Don't steal "i" once a longer non-in token is underway.
+           text == datePart {
+            add("In 1 hour", addHours(1))
+            add("In 1 day", addDays(1, 8))
+            add("In 3 days", addDays(3, 8))
+            add("In 1 week",
+                cal.date(byAdding: .weekOfYear, value: 1, to: now).flatMap { at($0, 8) })
+            add("In 1 month",
+                cal.date(byAdding: .month, value: 1, to: now).flatMap { at($0, 8) })
+        }
+
+        // Bare unit words ("hour", "day", "week", "month") → in 1 <unit>.
+        // Single-letter: h→hour, d also hits December (both useful).
+        if datePart.wholeMatch(of: /[a-z]+/) != nil {
+            if unitWord("hour", matches: datePart) || unitWord("hours", matches: datePart) {
+                add("In 1 hour", addHours(1))
+            }
+            if unitWord("day", matches: datePart) || unitWord("days", matches: datePart) {
+                add("In 1 day", addDays(1, 8))
+            }
+            if unitWord("week", matches: datePart) || unitWord("weeks", matches: datePart) {
+                add("In 1 week",
+                    cal.date(byAdding: .weekOfYear, value: 1, to: now).flatMap { at($0, 8) })
+            }
+            if unitWord("month", matches: datePart) || unitWord("months", matches: datePart) {
+                add("In 1 month",
+                    cal.date(byAdding: .month, value: 1, to: now).flatMap { at($0, 8) })
+            }
+        }
+    }
+
+    private enum RelativeUnit { case hour, day, week, month }
+
+    private static func resolveUnitPrefix(_ prefix: String) -> RelativeUnit? {
+        guard !prefix.isEmpty else { return nil }
+        // Longest-first so "mo" → month not a false "m" minute.
+        let table: [(RelativeUnit, [String])] = [
+            (.hour, ["hour", "hours", "hr", "hrs", "h"]),
+            (.day, ["day", "days", "d"]),
+            (.week, ["week", "weeks", "wk", "wks", "w"]),
+            (.month, ["month", "months", "mo"]),
+        ]
+        for (unit, names) in table where names.contains(where: { $0.hasPrefix(prefix) && prefix.count <= $0.count }) {
+            // Require the typed prefix to be a prefix of the unit name (not
+            // the other way: "months".hasPrefix("mo") is checked via name).
+            if names.contains(where: { $0.hasPrefix(prefix) }) { return unit }
+        }
+        return nil
+    }
+
+    private static func unitWord(_ word: String, matches prefix: String) -> Bool {
+        word.hasPrefix(prefix)
+    }
+
     /// Peels a trailing time expression off the query:
     /// "fri 3pm" → ("fri", 15:00), "aug 12 at 17:30" → ("aug 12", 17:30).
     private static func splitTime(from text: String) -> (String, (hour: Int, minute: Int)?) {
@@ -170,9 +351,16 @@ enum SnoozeDateParser {
     /// alias, or a weekday name — i.e. a word a bare trailing hour can attach
     /// to. Deliberately excludes month names so "aug 12" isn't read as a time.
     private static func isDateWord(_ s: String, calendar cal: Calendar) -> Bool {
-        let keywords = ["today", "tonight", "tomorrow", "next week", "next month", "weekend", "this weekend"]
+        let keywords = [
+            "today", "tonight", "tomorrow", "later", "later today",
+            "next week", "next month", "weekend", "this weekend",
+            "end of day", "end of week", "end of month",
+        ]
         if keywords.contains(where: { $0.hasPrefix(s) }) { return true }
-        let aliases = ["tm", "tmr", "tmrw", "tmw", "tmo", "tmoro", "td", "tdy", "tn", "tnt"]
+        let aliases = [
+            "tm", "tmr", "tmrw", "tmw", "tmo", "tmoro", "td", "tdy", "tn", "tnt",
+            "lt", "l8r", "eod", "eow", "eom", "wknd", "nw", "nm",
+        ]
         if aliases.contains(s) { return true }
         // Match the suggestion path: single-letter weekday prefixes ("s 10")
         // must also count as date words for bare trailing hours.
