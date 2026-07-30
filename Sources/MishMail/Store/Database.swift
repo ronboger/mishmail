@@ -1300,6 +1300,10 @@ final class AppDatabase: @unchecked Sendable {
                     SELECT labelIds FROM message
                     WHERE threadId = ?
                     """, arguments: [threadKey])
+                // No messages: leave flags alone (orphan / mid-prune row).
+                // trashDraftFlags([]) is (false, false) and would clear a
+                // genuine trash denorm if we wrote it.
+                guard !labelStrings.isEmpty else { continue }
                 let flags = SyncEngine.trashDraftFlags(labelIdStrings: labelStrings)
                 try db.execute(sql: """
                     UPDATE thread SET inTrash = ?, inDrafts = ? WHERE id = ?

@@ -466,6 +466,32 @@ final class DatabaseMigrationTests: XCTestCase {
                        "v30 must clear inDrafts when only discarded drafts exist")
     }
 
+    /// v30 must not clear inTrash on thread rows with zero cached messages
+    /// (orphan / mid-prune). trashDraftFlags([]) is (false, false).
+    func testUpgradeToV30SkipsThreadsWithNoMessages() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v29")
+        try q.write { db in
+            try db.execute(sql: """
+                INSERT INTO account (id, displayName, senderName)
+                VALUES ('ron@x.com', 'P', '')
+                """)
+            try db.execute(sql: """
+                INSERT INTO thread (id, accountId, gmailThreadId, subject, snippet, fromDisplay,
+                    lastDate, isUnread, isStarred, inInbox, inTrash, labelIds, participants,
+                    messageCount, hasAttachment, inSent, inDrafts, inPromotions, inSocial, fromEmail)
+                VALUES (
+                    'ron@x.com:orphan', 'ron@x.com', 'orphan', 'Gone', '', 'X',
+                    '2026-07-01 00:00:00', 0, 0, 0, 1,
+                    'TRASH', 'X', 0, 0, 0, 0, 0, 0, 'x@y.com')
+                """)
+        }
+        try AppDatabase.migrator.migrate(q)
+        let t = try q.read { db in try MailThread.fetchOne(db, key: "ron@x.com:orphan") }
+        XCTAssertEqual(t?.inTrash, true,
+                       "v30 must not clear inTrash when no message rows exist")
+    }
+
     /// v17 rebuilds message_fts without bodyText (subject + fromHeader only).
     func testUpgradeToV17TrimsFTSBodyText() throws {
         let q = try DatabaseQueue()
