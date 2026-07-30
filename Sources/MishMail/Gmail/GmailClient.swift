@@ -461,19 +461,25 @@ actor GmailClient {
     }
 
     /// Sends an RFC 2822 message. Pass threadId to reply within a thread.
+    /// Empty / whitespace thread ids are omitted (Gmail 404s on `""`).
     func send(raw: Data, threadId: String? = nil) async throws {
         var body: [String: Any] = ["raw": raw.base64URLEncoded()]
-        if let threadId { body["threadId"] = threadId }
+        if let threadId, !threadId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            body["threadId"] = threadId
+        }
         let _: GMessage = try await request("POST", "/messages/send", jsonBody: body)
     }
 
     /// Saves an RFC 2822 message as a Gmail draft. Returns the draft id and
     /// the message ref so callers can chain replace-autosaves without a full
     /// listDrafts round-trip.
+    /// Empty / whitespace thread ids are omitted (Gmail 404s on `""`).
     @discardableResult
     func createDraft(raw: Data, threadId: String? = nil) async throws -> GDraftRef {
         var message: [String: Any] = ["raw": raw.base64URLEncoded()]
-        if let threadId { message["threadId"] = threadId }
+        if let threadId, !threadId.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+            message["threadId"] = threadId
+        }
         return try await request("POST", "/drafts", jsonBody: ["message": message])
     }
 

@@ -4873,10 +4873,24 @@ struct ComposeRequest: Identifiable {
             references: threadParent?.referencesHeader ?? draft?.referencesHeader,
             attachments: attachments
         )
-        // A reply keeps its thread; so does a draft that lives in one.
-        // Only pass threadId when it belongs to apiAccountId (always true after resolve).
-        let gmailThreadId = (threadParent ?? draft).map { String($0.threadId.split(separator: ":").last!) }
-        try await client(for: apiAccountId).send(raw: raw, threadId: gmailThreadId)
+        // A reply keeps its thread; so does a draft that lives in one — but
+        // only when the local composite is owned by apiAccountId. Stale /
+        // foreign threadIds used to 404 messages.send (compose shows
+        // "Send failed: Gmail API error 404").
+        let gmailThreadId = SendThreading.apiThreadId(
+            localThreadId: SendThreading.localThreadId(
+                replyThreadId: threadParent?.threadId,
+                draftThreadId: draft?.threadId),
+            apiAccountId: apiAccountId)
+        let gmail = client(for: apiAccountId)
+        do {
+            try await gmail.send(raw: raw, threadId: gmailThreadId)
+        } catch {
+            // Thread gone on the server (deleted draft-only conversation,
+            // pruned history, etc.): still deliver as a new conversation.
+            guard gmailThreadId != nil, SendThreading.isNotFound(error) else { throw error }
+            try await gmail.send(raw: raw, threadId: nil)
+        }
         if let draft { await deleteUnderlyingDraft(draft, silent: true) }
         await sync(accountId: apiAccountId)
     }
@@ -4961,10 +4975,25 @@ struct ComposeRequest: Identifiable {
             references: threadParent?.referencesHeader ?? draft?.referencesHeader,
             attachments: attachments
         )
-        let gmailThreadId = ((threadParent ?? draft).map { String($0.threadId.split(separator: ":").last!) })
+        let gmailThreadId = SendThreading.apiThreadId(
+            localThreadId: SendThreading.localThreadId(
+                replyThreadId: threadParent?.threadId,
+                draftThreadId: draft?.threadId),
+            apiAccountId: apiAccountId)
         do {
-            let created = try await client(for: apiAccountId)
-                .createDraft(raw: raw, threadId: gmailThreadId)
+            let gmail = client(for: apiAccountId)
+            let created: GmailClient.GDraftRef
+            // When createDraft 404s on a stale threadId we retry without it;
+            // the stand-in must then use Gmail's *new* thread, not the dead one.
+            var keptExistingThread = gmailThreadId != nil
+            do {
+                created = try await gmail.createDraft(raw: raw, threadId: gmailThreadId)
+            } catch {
+                // Same 404 fallback as send: stale draft thread → save as new.
+                guard gmailThreadId != nil, SendThreading.isNotFound(error) else { throw error }
+                created = try await gmail.createDraft(raw: raw, threadId: nil)
+                keptExistingThread = false
+            }
             if let draft { await deleteUnderlyingDraft(draft, silent: true) }
             if !silent {
                 showNotice("Draft saved — find it in Drafts")
@@ -4972,11 +5001,15 @@ struct ComposeRequest: Identifiable {
             if shouldSync {
                 await sync(accountId: apiAccountId)
             }
-            // Stand-in for replace chaining. threadId prefers the local
-            // account-prefixed id we already know; gmail bare id as fallback.
-            let localThreadId = threadParent?.threadId
-                ?? draft?.threadId
-                ?? "\(apiAccountId):\(created.message.threadId)"
+            // Stand-in for replace chaining. Prefer the local account-prefixed
+            // id we already know only when Gmail actually accepted that thread.
+            let localThreadId: String
+            if keptExistingThread,
+               let known = threadParent?.threadId ?? draft?.threadId {
+                localThreadId = known
+            } else {
+                localThreadId = "\(apiAccountId):\(created.message.threadId)"
+            }
             return Message(
                 id: "\(apiAccountId):\(created.message.id)",
                 accountId: apiAccountId,

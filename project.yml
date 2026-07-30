@@ -163,6 +163,7 @@ targets:
       - Sources/MishMail/Support/AppTheme.swift
       - Sources/MishMail/Support/SendSchedule.swift
       - Sources/MishMail/Support/SendIdentity.swift
+      - Sources/MishMail/Support/SendThreading.swift
       - Sources/MishMail/Support/Classifier.swift
       - Sources/MishMail/Support/SnippetDefaults.swift
       - Sources/MishMail/Support/SnippetExpander.swift
