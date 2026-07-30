@@ -253,6 +253,73 @@ final class ThreadDerivationTests: XCTestCase {
         XCTAssertFalse(t.inInbox)
     }
 
+    // MARK: - Discarded drafts must not hide live inbox threads
+
+    /// Fund Expense / Anna: discarded compose attempts leave DRAFT+TRASH on
+    /// those messages while the conversation stays in Inbox. Inbox filters
+    /// require `inInbox && !inTrash` — a union of TRASH would hide the thread.
+    func testDiscardedDraftsDoNotPinInTrashWhenInboxAlive() throws {
+        let reply = msg(id: "m3", from: "Anna Koh <anna@x.com>", daysAgo: 0,
+                        labels: "INBOX UNREAD CATEGORY_PERSONAL", unread: true)
+        let discarded1 = msg(id: "d1", from: account, daysAgo: 1, labels: "DRAFT TRASH")
+        let discarded2 = msg(id: "d2", from: account, daysAgo: 2, labels: "DRAFT TRASH")
+        let mine = msg(id: "m1", from: account, daysAgo: 3, labels: "SENT")
+        let t = try XCTUnwrap(derive([reply, discarded1, discarded2, mine]))
+        XCTAssertTrue(t.inInbox)
+        XCTAssertFalse(t.inTrash, "discarded DRAFT+TRASH must not hide inbox")
+        XCTAssertFalse(t.inDrafts, "discarded drafts are not live drafts")
+        XCTAssertTrue(t.isUnread)
+        // Union still records TRASH/DRAFT for search / chips.
+        let labs = Set(t.labelIds.split(separator: " ").map(String.init))
+        XCTAssertTrue(labs.contains("TRASH"))
+        XCTAssertTrue(labs.contains("DRAFT"))
+        XCTAssertTrue(labs.contains("INBOX"))
+    }
+
+    func testDiscardedComposeOnlyThreadIsTrashNotDrafts() throws {
+        // Never-sent compose discarded → only DRAFT+TRASH messages.
+        let d1 = msg(id: "d1", from: account, daysAgo: 0, labels: "DRAFT TRASH")
+        let d2 = msg(id: "d2", from: account, daysAgo: 1, labels: "DRAFT TRASH")
+        let t = try XCTUnwrap(derive([d1, d2]))
+        XCTAssertTrue(t.inTrash, "all-trashed (discarded-only) belongs in Trash")
+        XCTAssertFalse(t.inDrafts)
+        XCTAssertFalse(t.inInbox)
+    }
+
+    func testLiveDraftPinsInDraftsNotTrash() throws {
+        let draft = msg(id: "d1", from: account, daysAgo: 0, labels: "DRAFT")
+        let older = msg(id: "m1", from: "a@b.com", daysAgo: 1, labels: "INBOX")
+        let t = try XCTUnwrap(derive([draft, older]))
+        XCTAssertTrue(t.inDrafts)
+        XCTAssertFalse(t.inTrash)
+        XCTAssertTrue(t.inInbox)
+    }
+
+    func testTrashDraftFlagsHelper() {
+        let live = SyncEngine.trashDraftFlags(labelIdStrings: [
+            "INBOX UNREAD", "DRAFT TRASH", "SENT"
+        ])
+        XCTAssertFalse(live.inTrash)
+        XCTAssertFalse(live.inDrafts)
+
+        let deleted = SyncEngine.trashDraftFlags(labelIdStrings: ["TRASH", "TRASH SENT"])
+        XCTAssertTrue(deleted.inTrash)
+        XCTAssertFalse(deleted.inDrafts)
+
+        let onlyDiscarded = SyncEngine.trashDraftFlags(labelIdStrings: ["DRAFT TRASH"])
+        XCTAssertTrue(onlyDiscarded.inTrash)
+        XCTAssertFalse(onlyDiscarded.inDrafts)
+
+        let withLiveDraft = SyncEngine.trashDraftFlags(labelIdStrings: [
+            "DRAFT", "INBOX"
+        ])
+        XCTAssertFalse(withLiveDraft.inTrash)
+        XCTAssertTrue(withLiveDraft.inDrafts)
+
+        XCTAssertEqual(SyncEngine.trashDraftFlags(labelIdStrings: []).inTrash, false)
+        XCTAssertEqual(SyncEngine.trashDraftFlags(messages: []).inDrafts, false)
+    }
+
     // MARK: - lastInboundDate (own reply does not bump inbox position)
 
     func testOwnSentReplyLeavesLastDateNewestButHoldsInbound() throws {

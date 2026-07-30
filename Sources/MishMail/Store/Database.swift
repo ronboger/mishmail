@@ -77,13 +77,17 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     /// and `labelIds` is the historical union (still useful for search). Clobbering
     /// them from the union would hide personal replies under Promotions again
     /// after any optimistic mutation.
+    ///
+    /// Does **not** touch `inTrash` / `inDrafts` either: the union includes
+    /// discarded `DRAFT TRASH` messages, and a naive `contains("TRASH")` would
+    /// hide live inbox threads (see `SyncEngine.trashDraftFlags`). Explicit
+    /// trash/draft mutations set those flags in `applyLabelMutation`; sync
+    /// re-derives them from per-message labels.
     mutating func syncFlagsFromLabelIds() {
         let set = Set(labels)
         isStarred = set.contains("STARRED")
         inInbox = set.contains("INBOX")
-        inTrash = set.contains("TRASH")
         inSent = set.contains("SENT")
-        inDrafts = set.contains("DRAFT")
         inSpam = set.contains("SPAM")
     }
 
@@ -93,6 +97,8 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
     /// the flag), and syncFlagsFromLabelIds would otherwise clobber them.
     /// Explicit CATEGORY_PROMOTIONS / CATEGORY_SOCIAL add/remove update tab
     /// placement; other mutations leave `inPromotions` / `inSocial` alone.
+    /// Explicit TRASH / DRAFT add/remove update `inTrash` / `inDrafts` (not
+    /// safe to recompute from the historical union — discarded drafts).
     mutating func applyLabelMutation(add: Set<String> = [], remove: Set<String> = []) {
         var set = Set(labels)
         if isStarred { set.insert("STARRED") } else { set.remove("STARRED") }
@@ -101,6 +107,10 @@ struct MailThread: Codable, Identifiable, Hashable, FetchableRecord, Persistable
         set.formUnion(add)
         labelIds = set.sorted().joined(separator: " ")
         syncFlagsFromLabelIds()
+        if add.contains("TRASH") { inTrash = true }
+        if remove.contains("TRASH") { inTrash = false }
+        if add.contains("DRAFT") { inDrafts = true }
+        if remove.contains("DRAFT") { inDrafts = false }
         if add.contains("CATEGORY_PROMOTIONS") { inPromotions = true }
         if remove.contains("CATEGORY_PROMOTIONS") { inPromotions = false }
         if add.contains("CATEGORY_SOCIAL") { inSocial = true }
@@ -1276,6 +1286,24 @@ final class AppDatabase: @unchecked Sendable {
         m.registerMigration("v29") { db in
             try db.alter(table: "message") { t in
                 t.add(column: "senderAuth", .boolean)
+            }
+        }
+
+        // v30: inTrash / inDrafts from per-message labels, not the historical
+        // union. Discarded drafts (DRAFT+TRASH) used to pin inTrash and hide
+        // live inbox threads from Inbox / All Mail / unread badges.
+        // Raw SQL only — do not decode the live `Message` record here.
+        m.registerMigration("v30") { db in
+            let threadIds = try String.fetchAll(db, sql: "SELECT id FROM thread")
+            for threadKey in threadIds {
+                let labelStrings = try String.fetchAll(db, sql: """
+                    SELECT labelIds FROM message
+                    WHERE threadId = ?
+                    """, arguments: [threadKey])
+                let flags = SyncEngine.trashDraftFlags(labelIdStrings: labelStrings)
+                try db.execute(sql: """
+                    UPDATE thread SET inTrash = ?, inDrafts = ? WHERE id = ?
+                    """, arguments: [flags.inTrash, flags.inDrafts, threadKey])
             }
         }
         return m

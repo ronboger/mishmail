@@ -787,6 +787,11 @@ actor SyncEngine {
             if seen.insert(short).inserted { participants.append(short) }
         }
 
+        // Discarded drafts are DRAFT+TRASH on individual messages. A naive
+        // union would pin inTrash and hide the live conversation from Inbox
+        // (Anna / Fund Expense case). Same for inDrafts — only live drafts.
+        let trashDraft = trashDraftFlags(messages: messages)
+
         return MailThread(
             id: threadKey,
             accountId: accountId,
@@ -799,7 +804,7 @@ actor SyncEngine {
             isUnread: messages.contains { $0.isUnread },
             isStarred: allLabels.contains("STARRED"),
             inInbox: allLabels.contains("INBOX"),
-            inTrash: allLabels.contains("TRASH"),
+            inTrash: trashDraft.inTrash,
             // Full union still powers search / label chips; tab denorm is separate.
             labelIds: allLabels.sorted().joined(separator: " "),
             // Local snooze; Gmail-style wake on new *inbound* activity only.
@@ -811,7 +816,7 @@ actor SyncEngine {
             reminderAt: existing?.reminderAt,
             reminderSetAt: existing?.reminderSetAt,
             inSent: allLabels.contains("SENT"),
-            inDrafts: allLabels.contains("DRAFT"),
+            inDrafts: trashDraft.inDrafts,
             inPromotions: tabs.promotions,
             inSocial: tabs.social,
             inSpam: allLabels.contains("SPAM"),
@@ -820,6 +825,43 @@ actor SyncEngine {
             // Inbox-only sort / remind-if-no-reply. Nil when pure outbound so
             // own follow-ups never look like "they replied."
             lastInboundDate: lastInboundDate(messages: messages, accountId: accountId)
+        )
+    }
+
+    /// Thread-level trash / drafts denorm from per-message labels.
+    ///
+    /// Gmail keeps discarded drafts as `DRAFT TRASH` on those messages while
+    /// the conversation stays in Inbox. A historical union of TRASH would hide
+    /// the thread from Inbox / All Mail / badges (`inInbox && !inTrash`).
+    ///
+    /// - **inTrash**: any non-draft TRASH message, or every message is trashed
+    ///   (covers discarded-compose-only threads that never left drafts).
+    /// - **inDrafts**: any live draft (`DRAFT` without `TRASH`).
+    /// Pure — unit-tested. Also used by migration v30.
+    static func trashDraftFlags(messages: [Message]) -> (inTrash: Bool, inDrafts: Bool) {
+        trashDraftFlags(labelIdStrings: messages.map(\.labelIds))
+    }
+
+    /// Same rule as `trashDraftFlags(messages:)`, taking space-separated
+    /// `labelIds` strings. Used by migration v30 so it never decodes the live
+    /// `Message` record against a frozen schema.
+    static func trashDraftFlags(labelIdStrings: [String]) -> (inTrash: Bool, inDrafts: Bool) {
+        guard !labelIdStrings.isEmpty else { return (false, false) }
+        var anyLiveDraft = false
+        var anyNonDraftTrash = false
+        var anyTrash = false
+        var allTrashed = true
+        for s in labelIdStrings {
+            let labs = Set(s.split(whereSeparator: \.isWhitespace).map(String.init))
+            let hasTrash = labs.contains("TRASH")
+            let hasDraft = labs.contains("DRAFT")
+            if hasDraft && !hasTrash { anyLiveDraft = true }
+            if hasTrash && !hasDraft { anyNonDraftTrash = true }
+            if hasTrash { anyTrash = true } else { allTrashed = false }
+        }
+        return (
+            inTrash: anyNonDraftTrash || (anyTrash && allTrashed),
+            inDrafts: anyLiveDraft
         )
     }
 

@@ -415,6 +415,57 @@ final class DatabaseMigrationTests: XCTestCase {
         XCTAssertEqual(t?.inSocial, false)
     }
 
+    /// v30 clears inTrash pinned by discarded DRAFT+TRASH while INBOX is live
+    /// (Fund Expense / Anna case: inbox filter requires !inTrash).
+    func testUpgradeToV30HealsInTrashPinnedByDiscardedDrafts() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v29")
+        try q.write { db in
+            try db.execute(sql: """
+                INSERT INTO account (id, displayName, senderName)
+                VALUES ('ron@x.com', 'P', '')
+                """)
+            // Stale denorm: inTrash=1 from union of DRAFT+TRASH discarded drafts.
+            try db.execute(sql: """
+                INSERT INTO thread (id, accountId, gmailThreadId, subject, snippet, fromDisplay,
+                    lastDate, isUnread, isStarred, inInbox, inTrash, labelIds, participants,
+                    messageCount, hasAttachment, inSent, inDrafts, inPromotions, inSocial, fromEmail)
+                VALUES (
+                    'ron@x.com:fund', 'ron@x.com', 'fund', 'Fund Expense', 'LP note', 'Anna',
+                    '2026-07-30 12:40:52', 1, 0, 1, 1,
+                    'CATEGORY_PERSONAL DRAFT IMPORTANT INBOX SENT TRASH UNREAD',
+                    'me .. Anna', 4, 1, 1, 1, 0, 0, 'anna@x.com')
+                """)
+            try db.execute(sql: """
+                INSERT INTO message (id, accountId, gmailId, threadId, fromHeader, toHeader,
+                    ccHeader, bccHeader, subject, date, snippet, bodyText, messageIdHeader,
+                    referencesHeader, labelIds, isUnread, hasAttachment)
+                VALUES
+                ('ron@x.com:sent', 'ron@x.com', 'sent', 'ron@x.com:fund',
+                 'ron@x.com', '', '', '', 'Fund Expense',
+                 '2026-07-23 00:00:00', '', '', '', '', 'SENT', 0, 0),
+                ('ron@x.com:d1', 'ron@x.com', 'd1', 'ron@x.com:fund',
+                 'ron@x.com', '', '', '', 'Fund Expense',
+                 '2026-07-23 01:00:00', '', '', '', '', 'DRAFT TRASH', 0, 1),
+                ('ron@x.com:d2', 'ron@x.com', 'd2', 'ron@x.com:fund',
+                 'ron@x.com', '', '', '', 'Fund Expense',
+                 '2026-07-23 02:00:00', '', '', '', '', 'DRAFT TRASH', 0, 1),
+                ('ron@x.com:reply', 'ron@x.com', 'reply', 'ron@x.com:fund',
+                 'Anna <anna@x.com>', '', '', '', 'Fund Expense',
+                 '2026-07-30 12:40:52', '', '', '', '',
+                 'UNREAD IMPORTANT CATEGORY_PERSONAL INBOX', 1, 1)
+                """)
+        }
+        try AppDatabase.migrator.migrate(q)
+
+        let t = try q.read { db in try MailThread.fetchOne(db, key: "ron@x.com:fund") }
+        XCTAssertEqual(t?.inInbox, true)
+        XCTAssertEqual(t?.inTrash, false,
+                       "v30 must clear inTrash when only discarded drafts are trashed")
+        XCTAssertEqual(t?.inDrafts, false,
+                       "v30 must clear inDrafts when only discarded drafts exist")
+    }
+
     /// v17 rebuilds message_fts without bodyText (subject + fromHeader only).
     func testUpgradeToV17TrimsFTSBodyText() throws {
         let q = try DatabaseQueue()

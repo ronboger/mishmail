@@ -94,13 +94,57 @@ final class ThreadDenormTests: XCTestCase {
         t.syncFlagsFromLabelIds()
         XCTAssertTrue(t.isStarred)
         XCTAssertTrue(t.inInbox)
+        // inTrash / inDrafts are NOT derived from the historical union
+        // (discarded DRAFT+TRASH would hide live inbox threads).
         XCTAssertFalse(t.inTrash)
         XCTAssertTrue(t.inSent)
-        XCTAssertTrue(t.inDrafts)
+        XCTAssertFalse(t.inDrafts, "syncFlags must not invent inDrafts from union")
         // Tab categories are NOT derived from the labelIds union.
         XCTAssertFalse(t.inPromotions)
         XCTAssertFalse(t.inSocial)
         XCTAssertTrue(t.inSpam)
+    }
+
+    /// Historical union includes DRAFT+TRASH from discarded compose attempts.
+    /// syncFlags / non-trash mutations must not pin inTrash from that union.
+    func testSyncFlagsDoesNotPinInTrashFromDiscardedDraftUnion() {
+        var t = MailThread(
+            id: "a:t1", accountId: "a", gmailThreadId: "t1",
+            subject: "s", snippet: "sn", fromDisplay: "F",
+            lastDate: Date(), isUnread: true, isStarred: false,
+            inInbox: true, inTrash: false,
+            labelIds: "CATEGORY_PERSONAL DRAFT IMPORTANT INBOX SENT TRASH UNREAD",
+            snoozeUntil: nil, participants: "me .. Anna", messageCount: 18,
+            hasAttachment: true, reminderAt: nil,
+            inDrafts: false)
+        t.syncFlagsFromLabelIds()
+        XCTAssertTrue(t.inInbox)
+        XCTAssertFalse(t.inTrash, "discarded-draft TRASH in union must not hide inbox")
+        XCTAssertFalse(t.inDrafts)
+
+        // Star mutation must not re-pin trash from the union either.
+        t.applyLabelMutation(add: ["STARRED"])
+        XCTAssertTrue(t.isStarred)
+        XCTAssertFalse(t.inTrash)
+        XCTAssertTrue(t.inInbox)
+    }
+
+    func testApplyLabelMutationSetsInTrashExplicitly() {
+        var t = MailThread(
+            id: "a:t1", accountId: "a", gmailThreadId: "t1",
+            subject: "s", snippet: "sn", fromDisplay: "F",
+            lastDate: Date(), isUnread: false, isStarred: false,
+            inInbox: true, inTrash: false,
+            // Union already has DRAFT TRASH from discarded drafts.
+            labelIds: "DRAFT INBOX TRASH",
+            snoozeUntil: nil, participants: "F", messageCount: 2,
+            hasAttachment: false, reminderAt: nil)
+        t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
+        XCTAssertTrue(t.inTrash)
+        XCTAssertFalse(t.inInbox)
+        t.applyLabelMutation(add: ["INBOX"], remove: ["TRASH"])
+        XCTAssertFalse(t.inTrash)
+        XCTAssertTrue(t.inInbox)
     }
 
     func testSyncFlagsFromLabelIdsClearsWhenLabelsRemoved() {
