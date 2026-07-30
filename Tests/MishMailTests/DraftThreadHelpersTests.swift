@@ -71,18 +71,6 @@ final class DraftThreadHelpersTests: XCTestCase {
         XCTAssertNil(ForwardComposer.newestDraft(in: msgs))
     }
 
-    func testReadingPaneHidesDiscardedDrafts() {
-        let msgs = [
-            msg(id: "1", labels: "INBOX"),
-            msg(id: "d1", labels: "DRAFT TRASH"),
-            msg(id: "d2", labels: "DRAFT"),
-            msg(id: "2", labels: "SENT"),
-        ]
-        XCTAssertEqual(
-            ForwardComposer.readingPaneMessages(msgs).map(\.gmailId),
-            ["1", "d2", "2"])
-    }
-
     func testRemoteDraftIdMatchesGmailMessageId() {
         let drafts: [(id: String, messageId: String)] = [
             (id: "r-1", messageId: "m1"),

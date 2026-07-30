@@ -493,12 +493,6 @@ enum ForwardComposer {
         msgs.last(where: { isLiveDraft($0.labelIds) })
     }
 
-    /// Reading-pane rows: drop discarded drafts so they never reappear as
-    /// "Not sent" cards after a successful (or orphaned) discard.
-    static func readingPaneMessages(_ messages: [Message]) -> [Message] {
-        messages.filter { !isDiscardedDraft($0.labelIds) }
-    }
-
     /// Which forward package still suffixes `body`, for HTML upgrade at send.
     ///
     /// **Order matters:** try the full non-draft thread package *before* the
