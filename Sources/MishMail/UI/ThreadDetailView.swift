@@ -194,8 +194,8 @@ struct ThreadDetailView: View {
                         .padding(.horizontal)
                     }
 
-                    ForEach(messages) { message in
-                        if ForwardComposer.hasDraftLabel(message.labelIds) {
+                    ForEach(ForwardComposer.readingPaneMessages(messages)) { message in
+                        if ForwardComposer.isLiveDraft(message.labelIds) {
                             // Drafts are not ordinary messages: no quote trail, no
                             // Reply/Forward, clear "not sent" chrome. Edit lives on
                             // the card so you don't have to scroll to the top.
@@ -767,9 +767,9 @@ struct ThreadDetailView: View {
         ThreadRefresh.needsBodyLoad(message)
     }
 
-    /// Any DRAFT-labeled message currently in the open thread.
+    /// Any live (unsent, not trashed) draft currently in the open thread.
     private var hasThreadDraft: Bool {
-        messages.contains { ForwardComposer.hasDraftLabel($0.labelIds) }
+        messages.contains { ForwardComposer.isLiveDraft($0.labelIds) }
     }
 
     /// Banner only when the draft card is likely below the first viewport
@@ -1207,52 +1207,60 @@ struct DraftMessageCard: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 10) {
-            HStack(alignment: .center, spacing: 8) {
-                Text("Draft")
-                    .font(.system(size: 11 * fontScale, weight: .semibold))
-                    .foregroundStyle(.white)
-                    .padding(.horizontal, 7)
-                    .padding(.vertical, 2)
-                    .background(Color.orange, in: Capsule())
-                Text("Not sent")
-                    .font(.system(size: 12 * fontScale, weight: .medium))
-                    .foregroundStyle(Color.orange)
-                Spacer(minLength: 8)
-                Text(message.date, format: .dateTime.month(.abbreviated).day().hour().minute())
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
+            // Tap-to-edit on chrome + preview only. Buttons sit outside the
+            // gesture so Discard isn't stolen by editDraft on macOS (a parent
+            // onTapGesture over Buttons often wins the hit test).
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 8) {
+                    Text("Draft")
+                        .font(.system(size: 11 * fontScale, weight: .semibold))
+                        .foregroundStyle(.white)
+                        .padding(.horizontal, 7)
+                        .padding(.vertical, 2)
+                        .background(Color.orange, in: Capsule())
+                    Text("Not sent")
+                        .font(.system(size: 12 * fontScale, weight: .medium))
+                        .foregroundStyle(Color.orange)
+                    Spacer(minLength: 8)
+                    Text(message.date, format: .dateTime.month(.abbreviated).day().hour().minute())
+                        .font(.caption.monospacedDigit())
+                        .foregroundStyle(.secondary)
+                }
 
-            HStack(spacing: 6) {
-                Text(MessageParser.displayName(fromHeader: message.fromHeader))
-                    .font(.system(size: 13.5 * fontScale, weight: .semibold))
-                    .lineLimit(1)
-                Text("·")
-                    .foregroundStyle(.tertiary)
-                Text(toSummary)
-                    .font(.system(size: 12.5 * fontScale))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
-            }
+                HStack(spacing: 6) {
+                    Text(MessageParser.displayName(fromHeader: message.fromHeader))
+                        .font(.system(size: 13.5 * fontScale, weight: .semibold))
+                        .lineLimit(1)
+                    Text("·")
+                        .foregroundStyle(.tertiary)
+                    Text(toSummary)
+                        .font(.system(size: 12.5 * fontScale))
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
 
-            if ThreadDetailView.needsBodyLoad(message) {
-                Text("Loading draft…")
-                    .font(.system(size: 13.5 * fontScale))
-                    .foregroundStyle(.secondary)
-            } else if preview.isEmpty {
-                Text("Empty draft — click Continue to write")
-                    .font(.system(size: 13.5 * fontScale))
-                    .foregroundStyle(.secondary)
-                    .italic()
-            } else {
-                // No textSelection: the whole card opens compose, so a
-                // selection gesture would fight the tap-to-edit hit target.
-                Text(preview)
-                    .font(.system(size: 14 * fontScale))
-                    .lineSpacing(3)
-                    .lineLimit(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if ThreadDetailView.needsBodyLoad(message) {
+                    Text("Loading draft…")
+                        .font(.system(size: 13.5 * fontScale))
+                        .foregroundStyle(.secondary)
+                } else if preview.isEmpty {
+                    Text("Empty draft — click Continue to write")
+                        .font(.system(size: 13.5 * fontScale))
+                        .foregroundStyle(.secondary)
+                        .italic()
+                } else {
+                    // No textSelection: preview is tap-to-edit, so a selection
+                    // gesture would fight the hit target.
+                    Text(preview)
+                        .font(.system(size: 14 * fontScale))
+                        .lineSpacing(3)
+                        .lineLimit(8)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(Rectangle())
+            .onTapGesture { store.editDraft(message) }
 
             HStack(spacing: 8) {
                 Button {
@@ -1297,8 +1305,6 @@ struct DraftMessageCard: View {
                 .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
         }
         .pmCardElevation(cornerRadius: PMRadius.md)
-        .contentShape(RoundedRectangle(cornerRadius: PMRadius.md))
-        .onTapGesture { store.editDraft(message) }
         .onHover { inside in
             if inside {
                 if !cursorPushed { NSCursor.pointingHand.push(); cursorPushed = true }

@@ -262,9 +262,14 @@ struct ThreadDetailPayload: Equatable {
     /// Precomputed quote trails + assembled HTML, keyed by message id.
     var bodyPrepByMessageId: [String: MessageHTMLPrep]
 
+    /// Hide pending-send drafts and discarded `DRAFT TRASH` rows so the
+    /// reading pane never shows stuck "Not sent" cards after discard.
     func suppressingDrafts(_ suppressedIds: Set<String>) -> ThreadDetailPayload {
-        guard !suppressedIds.isEmpty else { return self }
-        let visible = messages.filter { !suppressedIds.contains($0.id) }
+        let withoutPending = suppressedIds.isEmpty
+            ? messages
+            : messages.filter { !suppressedIds.contains($0.id) }
+        let visible = ForwardComposer.readingPaneMessages(withoutPending)
+        guard visible.count != messages.count || !suppressedIds.isEmpty else { return self }
         let visibleIds = Set(visible.map(\.id))
         return ThreadDetailPayload(
             messages: visible,
@@ -444,10 +449,10 @@ actor ThreadDetailRepository {
                 """,
             arguments: [threadId])
 
-        // First frame expands the newest sent message. Draft cards also need
-        // their previews immediately, so hydrate exactly those bodies.
+        // First frame expands the newest sent message. Live draft cards also
+        // need their previews immediately, so hydrate exactly those bodies.
         var hydrateIds = Set(
-            messages.filter { Self.hasDraftLabel($0.labelIds) }.map(\.id))
+            messages.filter { Self.isLiveDraft($0.labelIds) }.map(\.id))
         if let newestSent = messages.last(where: {
             !Self.hasDraftLabel($0.labelIds)
         }) {
@@ -518,5 +523,10 @@ actor ThreadDetailRepository {
 
     private nonisolated static func hasDraftLabel(_ labelIds: String) -> Bool {
         labelIds.split(whereSeparator: \.isWhitespace).contains { $0 == "DRAFT" }
+    }
+
+    private nonisolated static func isLiveDraft(_ labelIds: String) -> Bool {
+        let labs = Set(labelIds.split(whereSeparator: \.isWhitespace).map(String.init))
+        return labs.contains("DRAFT") && !labs.contains("TRASH")
     }
 }

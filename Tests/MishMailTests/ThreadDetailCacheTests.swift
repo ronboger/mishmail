@@ -46,6 +46,20 @@ final class ThreadDetailCacheTests: XCTestCase {
         XCTAssertEqual(Set(visible.bodyPrepByMessageId.keys), ["sent"])
     }
 
+    func testSuppressingDraftsHidesDiscardedDraftTrash() {
+        let sent = fixtureMessage(id: "sent", labels: "INBOX")
+        let discarded = fixtureMessage(id: "old", labels: "DRAFT TRASH")
+        let live = fixtureMessage(id: "live", labels: "DRAFT")
+        let payload = ThreadDetailPayload(
+            messages: [sent, discarded, live],
+            attachmentsByMessageId: [:],
+            bodyPrepByMessageId: [:])
+
+        let visible = payload.suppressingDrafts([])
+        XCTAssertEqual(visible.messages.map(\.id), ["sent", "live"],
+                       "DRAFT TRASH must not stay as a Not-sent card")
+    }
+
     func testMessageHTMLPrepDetectsQuotedTrailAndAssemblesDocuments() throws {
         let html = """
         <div>New reply</div>

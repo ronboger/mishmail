@@ -43,6 +43,59 @@ final class DraftThreadHelpersTests: XCTestCase {
         XCTAssertEqual(ForwardComposer.newestDraft(in: msgs)?.gmailId, "d2")
     }
 
+    func testLiveDraftRequiresDraftWithoutTrash() {
+        XCTAssertTrue(ForwardComposer.isLiveDraft("DRAFT"))
+        XCTAssertTrue(ForwardComposer.isLiveDraft("INBOX DRAFT"))
+        XCTAssertFalse(ForwardComposer.isLiveDraft("DRAFT TRASH"))
+        XCTAssertFalse(ForwardComposer.isLiveDraft("TRASH DRAFT"))
+        XCTAssertFalse(ForwardComposer.isLiveDraft("INBOX"))
+        XCTAssertTrue(ForwardComposer.isDiscardedDraft("DRAFT TRASH"))
+        XCTAssertFalse(ForwardComposer.isDiscardedDraft("DRAFT"))
+    }
+
+    func testNewestDraftSkipsDiscardedDraftTrash() {
+        let msgs = [
+            msg(id: "1", labels: "INBOX"),
+            msg(id: "d1", labels: "DRAFT TRASH", date: 5),
+            msg(id: "d2", labels: "DRAFT", date: 10),
+            msg(id: "d3", labels: "DRAFT TRASH", date: 15),
+        ]
+        XCTAssertEqual(ForwardComposer.newestDraft(in: msgs)?.gmailId, "d2")
+    }
+
+    func testNewestDraftNilWhenOnlyDiscarded() {
+        let msgs = [
+            msg(id: "1", labels: "INBOX"),
+            msg(id: "d1", labels: "DRAFT TRASH"),
+        ]
+        XCTAssertNil(ForwardComposer.newestDraft(in: msgs))
+    }
+
+    func testReadingPaneHidesDiscardedDrafts() {
+        let msgs = [
+            msg(id: "1", labels: "INBOX"),
+            msg(id: "d1", labels: "DRAFT TRASH"),
+            msg(id: "d2", labels: "DRAFT"),
+            msg(id: "2", labels: "SENT"),
+        ]
+        XCTAssertEqual(
+            ForwardComposer.readingPaneMessages(msgs).map(\.gmailId),
+            ["1", "d2", "2"])
+    }
+
+    func testRemoteDraftIdMatchesGmailMessageId() {
+        let drafts: [(id: String, messageId: String)] = [
+            (id: "r-1", messageId: "m1"),
+            (id: "r-2", messageId: "m2"),
+        ]
+        XCTAssertEqual(
+            ForwardComposer.remoteDraftId(forGmailMessageId: "m2", drafts: drafts),
+            "r-2")
+        XCTAssertNil(
+            ForwardComposer.remoteDraftId(forGmailMessageId: "gone", drafts: drafts),
+            "listDrafts miss must not invent a draft id")
+    }
+
     func testAuthoredPreviewEmptyComposeSaveUsesReplyComposerShape() {
         // Reply opened, user typed nothing, closed → body is "\n\n" + plainQuote.
         let original = msg(id: "orig", labels: "INBOX")

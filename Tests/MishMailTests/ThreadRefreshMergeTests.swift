@@ -99,4 +99,13 @@ final class ThreadRefreshMergeTests: XCTestCase {
             ThreadRefresh.initialBodyLoadSeedIds(in: [draft]),
             [draft.id])
     }
+
+    func testInitialBodyLoadSeedIdsSkipsDiscardedDraftTrash() {
+        let sent = msg(id: "1", bodyText: "hi")
+        let discarded = msg(id: "d1", labels: "DRAFT TRASH", bodyText: "gone")
+        let live = msg(id: "d2", labels: "DRAFT", bodyText: "keep")
+        XCTAssertEqual(
+            ThreadRefresh.initialBodyLoadSeedIds(in: [sent, discarded, live]),
+            [sent.id, live.id])
+    }
 }

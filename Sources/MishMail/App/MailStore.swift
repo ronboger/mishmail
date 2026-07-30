@@ -2825,8 +2825,9 @@ struct ComposeRequest: Identifiable {
                 .fetchAll(db)
             return try Self.hydrateBodies(headers, db: db)
         }) ?? []
-        return PendingDraftVisibility.visibleMessages(
-            fetched, suppressing: suppressedDraftMessageIds)
+        return ForwardComposer.readingPaneMessages(
+            PendingDraftVisibility.visibleMessages(
+                fetched, suppressing: suppressedDraftMessageIds))
     }
 
     /// Headers + snippet only (empty body fields). Cheap open path for the
@@ -2892,8 +2893,9 @@ struct ComposeRequest: Identifiable {
                     arguments: [threadId]
                 )
             }) ?? []
-            return PendingDraftVisibility.visibleMessages(
-                fetched, suppressing: suppressedDraftMessageIds)
+            return ForwardComposer.readingPaneMessages(
+                PendingDraftVisibility.visibleMessages(
+                    fetched, suppressing: suppressedDraftMessageIds))
         }
     }
 
@@ -5053,17 +5055,18 @@ struct ComposeRequest: Identifiable {
     /// A thread that is nothing but an unsent draft — opening it should hop
     /// straight into compose (Notion Mail-style), not the reading pane.
     /// Draft replies inside real conversations still open the thread.
+    /// Discarded `DRAFT TRASH` rows alone are trash, not a live draft-only hop.
     func isDraftOnly(_ thread: MailThread) -> Bool {
         guard thread.labels.contains("DRAFT") else { return false }
         let msgs = messages(inThread: thread.id)
-        return !msgs.isEmpty && msgs.allSatisfy { ForwardComposer.hasDraftLabel($0.labelIds) }
+        return !msgs.isEmpty && msgs.allSatisfy { ForwardComposer.isLiveDraft($0.labelIds) }
     }
 
     /// Opens a specific draft back into compose. Reply drafts recover the
     /// parent message so send still attaches In-Reply-To and the Gmail-style
     /// HTML upgrade; forward / brand-new-compose drafts leave replyTo nil.
     func editDraft(_ draft: Message) {
-        guard ForwardComposer.hasDraftLabel(draft.labelIds) else { return }
+        guard ForwardComposer.isLiveDraft(draft.labelIds) else { return }
         let msgs = messages(inThread: draft.threadId)
         // Prefer the in-memory full body when the card was header-only.
         let full = messageBody(id: draft.id) ?? draft
@@ -5106,20 +5109,69 @@ struct ComposeRequest: Identifiable {
     }
 
     /// Deletes the Gmail draft behind a local draft message.
+    ///
+    /// Local row is removed first so Discard cannot leave a stuck card when
+    /// `drafts.list` has no match (orphaned local, already-trashed DRAFT, race
+    /// after replace). Remote delete is best-effort after that.
     func deleteUnderlyingDraft(_ draftMessage: Message, silent: Bool = false) async {
+        removeLocalDraftMessage(draftMessage, refreshList: !silent)
+
+        guard !demoMode else {
+            if !silent { showNotice("Draft deleted") }
+            return
+        }
+
         do {
             let client = client(for: draftMessage.accountId)
             let drafts = try await client.listDrafts()
-            guard let match = drafts.first(where: { $0.message.id == draftMessage.gmailId }) else {
-                return
+            let refs = drafts.map { (id: $0.id, messageId: $0.message.id) }
+            if let draftId = ForwardComposer.remoteDraftId(
+                forGmailMessageId: draftMessage.gmailId, drafts: refs) {
+                try await client.deleteDraft(id: draftId)
             }
-            try await client.deleteDraft(id: match.id)
+            // No list match: already gone on the server — local row is enough.
             if !silent {
                 showNotice("Draft deleted")
                 await sync(accountId: draftMessage.accountId)
             }
         } catch {
+            // Local already gone — report without resurrecting the card.
             if !silent { lastError = error.localizedDescription }
+        }
+    }
+
+    /// Drop a draft message row and re-derive (or delete) its thread so the
+    /// open reading pane and denorm flags update without waiting on history.
+    private func removeLocalDraftMessage(_ draftMessage: Message, refreshList: Bool) {
+        let threadId = draftMessage.threadId
+        let accountId = draftMessage.accountId
+        var threadDeleted = false
+        try? db.write { db in
+            guard try Message.fetchOne(db, key: draftMessage.id) != nil else { return }
+            _ = try Message.deleteOne(db, key: draftMessage.id)
+            let remaining = try Message
+                .filter(Column("threadId") == threadId)
+                .fetchCount(db)
+            if remaining == 0 {
+                _ = try MailThread.deleteOne(db, key: threadId)
+                try ThreadLabels.rewrite(db, threadId: threadId, labelIds: "")
+                threadDeleted = true
+            } else {
+                try SyncEngine.deriveThreads(db, for: [threadId], accountId: accountId)
+            }
+        }
+        applyThreadContentChange(.threads([threadId]))
+        Task { await threadDetailRepository.drop(threadId: threadId) }
+        if refreshList {
+            reloadThreads()
+        } else if threadDeleted {
+            threads.removeAll { $0.id == threadId }
+            if selectedThreadId == threadId {
+                selectedThreadId = threads.first?.id
+            }
+        } else if let updated = try? db.read({ try MailThread.fetchOne($0, key: threadId) }),
+                  let idx = threads.firstIndex(where: { $0.id == threadId }) {
+            threads[idx] = updated
         }
     }
 

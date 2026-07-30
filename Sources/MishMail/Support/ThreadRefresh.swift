@@ -55,7 +55,7 @@ enum ThreadRefresh {
         if let sentId = ForwardComposer.newestSentMessage(in: messages)?.id {
             ids.append(sentId)
         }
-        for draft in messages where ForwardComposer.hasDraftLabel(draft.labelIds) {
+        for draft in messages where ForwardComposer.isLiveDraft(draft.labelIds) {
             ids.append(draft.id)
         }
         return ids

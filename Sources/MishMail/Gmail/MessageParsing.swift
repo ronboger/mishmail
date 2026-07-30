@@ -444,8 +444,34 @@ enum ForwardComposer {
     }
 
     /// True when a message carries Gmail's DRAFT label (space-separated ids).
+    /// Includes discarded drafts (`DRAFT TRASH`) — prefer `isLiveDraft` for
+    /// unsent chrome / Continue / Discard.
     static func hasDraftLabel(_ labelIds: String) -> Bool {
         labelIds.split(whereSeparator: \.isWhitespace).contains { $0 == "DRAFT" }
+    }
+
+    /// Unsent draft the user can still continue: `DRAFT` without `TRASH`.
+    /// Gmail keeps discarded drafts as `DRAFT TRASH` on the message; those are
+    /// not live drafts (see `SyncEngine.trashDraftFlags`).
+    static func isLiveDraft(_ labelIds: String) -> Bool {
+        let labs = Set(labelIds.split(whereSeparator: \.isWhitespace).map(String.init))
+        return labs.contains("DRAFT") && !labs.contains("TRASH")
+    }
+
+    /// Discarded compose attempt: still labeled DRAFT but already in TRASH.
+    static func isDiscardedDraft(_ labelIds: String) -> Bool {
+        let labs = Set(labelIds.split(whereSeparator: \.isWhitespace).map(String.init))
+        return labs.contains("DRAFT") && labs.contains("TRASH")
+    }
+
+    /// Gmail `drafts.list` entry whose message id matches a local draft row.
+    /// Pure — unit-tested. Nil when the draft is already gone on the server
+    /// (orphaned local row, or DRAFT+TRASH no longer in the drafts list).
+    static func remoteDraftId(
+        forGmailMessageId messageId: String,
+        drafts: [(id: String, messageId: String)]
+    ) -> String? {
+        drafts.first(where: { $0.messageId == messageId })?.id
     }
 
     /// Messages safe to include in Forward all — unsent drafts must not leak
@@ -461,9 +487,16 @@ enum ForwardComposer {
         msgs.last(where: { !hasDraftLabel($0.labelIds) })
     }
 
-    /// Newest DRAFT-labeled message (oldest-first list → last match).
+    /// Newest *live* draft (oldest-first list → last match). Discarded
+    /// `DRAFT TRASH` rows are ignored so Continue/Discard target a real draft.
     static func newestDraft(in msgs: [Message]) -> Message? {
-        msgs.last(where: { hasDraftLabel($0.labelIds) })
+        msgs.last(where: { isLiveDraft($0.labelIds) })
+    }
+
+    /// Reading-pane rows: drop discarded drafts so they never reappear as
+    /// "Not sent" cards after a successful (or orphaned) discard.
+    static func readingPaneMessages(_ messages: [Message]) -> [Message] {
+        messages.filter { !isDiscardedDraft($0.labelIds) }
     }
 
     /// Which forward package still suffixes `body`, for HTML upgrade at send.
