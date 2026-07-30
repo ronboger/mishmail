@@ -98,10 +98,24 @@ struct DatePickSheet: View {
         .padding(12)
         .frame(width: 340)
         .onAppear {
-            // Focus in the same turn so the first typed character lands in
-            // the field — no sheet-presentation race to wait out.
+            // Overlay presentation (snooze) races the thread list for first
+            // responder — set focus now and again after the hierarchy settles
+            // (CommandPalette / LabelPicker use the same pattern).
             fieldFocused = true
+            DispatchQueue.main.async { fieldFocused = true }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { fieldFocused = true }
             installKeys()
+        }
+        .onChange(of: fieldFocused) {
+            // When the field finally wins focus, macOS selects all — the next
+            // keystroke would replace text the key monitor already routed in.
+            // Park the caret at the end (LabelPicker does the same).
+            guard fieldFocused, !query.isEmpty else { return }
+            DispatchQueue.main.async {
+                if let editor = NSApp.keyWindow?.fieldEditor(false, for: nil) as? NSTextView {
+                    editor.selectedRange = NSRange(location: (editor.string as NSString).length, length: 0)
+                }
+            }
         }
         .onDisappear { removeKeys() }
     }
@@ -124,6 +138,9 @@ struct DatePickSheet: View {
 
     /// Owns ↑/↓/Return/Esc while open. ContentView's monitor stands down
     /// when `snoozingThread != nil` so these events aren't double-handled.
+    /// Also claims bare typing keys while the field is still winning the
+    /// focus race — otherwise they type-select a thread instead of filling
+    /// the "When?" box.
     private func installKeys() {
         guard keyMonitor == nil else { return }
         keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
@@ -141,6 +158,21 @@ struct DatePickSheet: View {
                 cancel()
                 return nil
             default:
+                let mods = event.modifierFlags.intersection([.command, .option, .control])
+                // Editable field owns typing; selectable conversation text
+                // (non-editable) must not — route those into the query.
+                // Always claim bare unmodified keys while unfocused so List
+                // type-select can't jump to a thread starting with that letter.
+                if mods.isEmpty, !TextFocus.isEditing(event.window?.firstResponder) {
+                    if case .consume(let next) = DatePickQueryInput.handle(
+                        query: query,
+                        keyCode: event.keyCode,
+                        characters: event.charactersIgnoringModifiers
+                    ) {
+                        query = next
+                    }
+                    return nil
+                }
                 return event
             }
         }

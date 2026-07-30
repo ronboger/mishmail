@@ -79,13 +79,12 @@ enum SnoozeDateParser {
             add(word.capitalized, make())
         }
 
-        // Weekday names, prefix-matched ("fri" → Friday). Min 2 chars so a
-        // single "t" doesn't drown the list in weekdays.
-        if datePart.count >= 2 {
-            let symbols = cal.weekdaySymbols  // Sunday-first
-            for (i, name) in symbols.enumerated() where name.lowercased().hasPrefix(datePart) {
-                add(name, at(nextWeekday(i + 1)))
-            }
+        // Weekday names, prefix-matched from the first character ("s" →
+        // Saturday/Sunday, "fri" → Friday). Single-letter noise is fine —
+        // results are capped at 5 and keywords already fire on one letter.
+        let symbols = cal.weekdaySymbols  // Sunday-first
+        for (i, name) in symbols.enumerated() where name.lowercased().hasPrefix(datePart) {
+            add(name, at(nextWeekday(i + 1)))
         }
 
         // "in N days/hours/weeks/months"
@@ -132,6 +131,13 @@ enum SnoozeDateParser {
             let year = fullYear(m.3.flatMap { Int($0) })
             add(label(month: Int(m.1)! - 1, day: Int(m.2)!, year: year),
                 monthDay(month: Int(m.1)!, day: Int(m.2)!, year: year))
+        } else if datePart.wholeMatch(of: /[a-z]+/) != nil {
+            // Bare month ("s", "sep", "september") → 1st of that month at 8am
+            // (rolls to next year when the 1st has already passed). Digits /
+            // spaces above keep "aug 12" on the day path.
+            for (i, name) in months.enumerated() where name.hasPrefix(datePart) {
+                add(cal.monthSymbols[i], monthDay(month: i + 1, day: 1))
+            }
         }
 
         return Array(results.prefix(5))

@@ -154,6 +154,7 @@ targets:
       - Sources/MishMail/Support/GmailFilterMatch.swift
       - Sources/MishMail/Support/GmailWebLinks.swift
       - Sources/MishMail/Support/DatePickRows.swift
+      - Sources/MishMail/Support/DatePickQueryInput.swift
       - Sources/MishMail/Support/SnoozeDateParser.swift
       - Sources/MishMail/Support/SnoozePresets.swift
       - Sources/MishMail/Support/PollCadence.swift
