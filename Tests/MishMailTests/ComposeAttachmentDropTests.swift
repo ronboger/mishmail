@@ -56,4 +56,46 @@ final class ComposeAttachmentDropTests: XCTestCase {
         XCTAssertEqual(urls.map(\.path), [file.path])
         XCTAssertTrue(ComposeAttachmentDrop.containsFileURLs(pb))
     }
+
+    func testMergeNewFilenamesSkipsDuplicates() {
+        let merge = ComposeAttachmentDrop.mergeNewFilenames(
+            existing: ["a.pdf"],
+            incoming: ["b.pdf", "a.pdf", "c.pdf"])
+        XCTAssertEqual(merge.added, ["b.pdf", "c.pdf"])
+        XCTAssertEqual(merge.skippedDuplicate, 1)
+        XCTAssertEqual(merge.failedReads, 0)
+    }
+
+    func testMergeNewFilenamesAllDuplicates() {
+        let merge = ComposeAttachmentDrop.mergeNewFilenames(
+            existing: ["a.pdf", "b.pdf"],
+            incoming: ["a.pdf", "b.pdf"],
+            failedReads: 0)
+        XCTAssertTrue(merge.added.isEmpty)
+        XCTAssertEqual(merge.skippedDuplicate, 2)
+        XCTAssertEqual(
+            ComposeAttachmentDrop.dropStatusMessage(merge: merge, attempted: 2),
+            "Those files are already attached.")
+    }
+
+    func testDropStatusAllFailed() {
+        let merge = ComposeAttachmentDrop.FilenameMerge(
+            added: [], skippedDuplicate: 0, failedReads: 2)
+        XCTAssertEqual(
+            ComposeAttachmentDrop.dropStatusMessage(merge: merge, attempted: 2),
+            "Couldn't read the dropped files.")
+    }
+
+    func testDropStatusPartialFailures() {
+        let merge = ComposeAttachmentDrop.FilenameMerge(
+            added: ["ok.pdf"], skippedDuplicate: 1, failedReads: 1)
+        let msg = ComposeAttachmentDrop.dropStatusMessage(merge: merge, attempted: 3)
+        XCTAssertEqual(msg, "1 file couldn't be read; 1 already attached.")
+    }
+
+    func testDropStatusCleanAddIsNil() {
+        let merge = ComposeAttachmentDrop.FilenameMerge(
+            added: ["a.pdf"], skippedDuplicate: 0, failedReads: 0)
+        XCTAssertNil(ComposeAttachmentDrop.dropStatusMessage(merge: merge, attempted: 1))
+    }
 }

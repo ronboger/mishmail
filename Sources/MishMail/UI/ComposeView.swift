@@ -601,6 +601,11 @@ struct ComposeView: View {
         .onChange(of: ccTokens) { scheduleAutosave() }
         .onChange(of: bccTokens) { scheduleAutosave() }
         .onChange(of: attachmentURLs) { scheduleAutosave() }
+        // Dropped files land in restoredAttachments; chip removal must also
+        // dirty the draft so a discarded drop doesn't reappear after restart.
+        .onChange(of: restoredAttachments.map(\.filename).joined(separator: "|")) {
+            scheduleAutosave()
+        }
         .onChange(of: store.accounts) {
             // Accounts can finish loading after the card appears — backfill From.
             if fromEmail.isEmpty { ensureFromSelection() }
@@ -661,29 +666,49 @@ struct ComposeView: View {
 
     /// Finder / inter-app drops: sandbox grants are transient, so load bytes
     /// now into `restoredAttachments` (same chip path as forward/undo) rather
-    /// than holding bare URLs that may fail at send/autosave.
+    /// than holding bare URLs that may fail at send/autosave. Reads off the
+    /// main actor so a large video drop doesn't stall the UI.
     private func ingestDroppedFiles(_ urls: [URL]) {
         guard !urls.isEmpty else { return }
-        var loaded: [MIMEBuilder.Attachment] = []
-        for url in urls {
-            let access = url.startAccessingSecurityScopedResource()
-            defer { if access { url.stopAccessingSecurityScopedResource() } }
-            guard let data = try? Data(contentsOf: url) else { continue }
-            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
-                ?? "application/octet-stream"
-            loaded.append(.init(filename: url.lastPathComponent, mimeType: mime, data: data))
+        let attempted = urls.count
+        // Detached: ComposeView is MainActor; don't inherit it for the reads.
+        Task.detached { [urls] in
+            var loaded: [MIMEBuilder.Attachment] = []
+            var failed = 0
+            for url in urls {
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                guard let data = try? Data(contentsOf: url) else {
+                    failed += 1
+                    continue
+                }
+                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                    ?? "application/octet-stream"
+                loaded.append(.init(filename: url.lastPathComponent, mimeType: mime, data: data))
+            }
+            await MainActor.run {
+                let existingNames = Set(restoredAttachments.map(\.filename)
+                    + attachmentURLs.map(\.lastPathComponent))
+                let merge = ComposeAttachmentDrop.mergeNewFilenames(
+                    existing: existingNames,
+                    incoming: loaded.map(\.filename),
+                    failedReads: failed)
+                // First occurrence of each new name wins (loaded order preserved).
+                var pending = Set(merge.added)
+                for att in loaded where pending.contains(att.filename) {
+                    restoredAttachments.append(att)
+                    pending.remove(att.filename)
+                }
+                // dropStatusMessage is nil only for a fully clean add.
+                if let msg = ComposeAttachmentDrop.dropStatusMessage(merge: merge,
+                                                                     attempted: attempted) {
+                    error = msg
+                }
+                if !merge.added.isEmpty {
+                    scheduleAutosave()
+                }
+            }
         }
-        guard !loaded.isEmpty else {
-            error = "Couldn't read the dropped file\(urls.count == 1 ? "" : "s")."
-            return
-        }
-        // Dedupe by filename against chips already on the draft.
-        let existingNames = Set(restoredAttachments.map(\.filename)
-            + attachmentURLs.map(\.lastPathComponent))
-        for att in loaded where !existingNames.contains(att.filename) {
-            restoredAttachments.append(att)
-        }
-        scheduleAutosave()
     }
 
     // MARK: - Header / minimize chrome

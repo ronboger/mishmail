@@ -82,8 +82,10 @@ struct ComposeBodyEditor: NSViewRepresentable {
         textView.onFilesDropped = { [weak coord = context.coordinator] urls in
             coord?.onFilesDropped?(urls)
         }
-        // Claim file drops before NSTextView inserts paths as body text.
-        textView.registerForDraggedTypes([.fileURL])
+        // Do NOT call registerForDraggedTypes here — NSView replaces (not
+        // merges) the type set, which would wipe NSTextView's built-in
+        // string/RTF/image registrations and break text drags into the body.
+        // NSTextView already accepts .fileURL; performDragOperation intercepts.
         textView.ghostText = ghostText
         context.coordinator.bindFormatTarget()
         Coordinator.highlight(textView, fontSize: fontSize)
@@ -478,7 +480,11 @@ final class ComposeBodyTextView: NSTextView {
         return ok
     }
 
-    /// Mark the previous ghost overlay dirty (and the whole view as a belt).
+    /// Mark the previous ghost overlay dirty.
+    ///
+    /// Always full-view redraw: the overlay is drawn outside the text system,
+    /// so partial dirty rects alone aren't enough after delete/selection moves.
+    /// `lastGhostRect` is still tracked for future tighter invalidation.
     func invalidateGhostDisplay() {
         if !lastGhostRect.isNull {
             setNeedsDisplay(lastGhostRect.insetBy(dx: -4, dy: -4))
@@ -538,8 +544,7 @@ final class ComposeBodyTextView: NSTextView {
             // end-of-document without zero-width boundingRect glitches.
             let caretRange = NSRange(location: charIndex, length: 0)
             let caretRect = firstRect(forCharacterRange: caretRange, actualRange: nil)
-            if caretRect.width >= 0, caretRect.height > 0,
-               let win = window {
+            if caretRect.height > 0, let win = window {
                 // firstRect is in screen coords; convert into this view.
                 let inWindow = win.convertFromScreen(caretRect)
                 let inView = convert(inWindow, from: nil)
