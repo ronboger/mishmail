@@ -544,12 +544,12 @@ struct ContentView: View {
             : (inline ? inlineHeight : ComposePlacement.preferredFloatingCardHeight)
         // Pin-to-pane uses a full-host-width HStack so trailing-anchored
         // placement agrees with chrome.leading (leading + width + trailing
-        // == host). Spacers are geometry only — they must not hit-test, or
-        // they swallow clicks on the sidebar and thread list under the
-        // gutter (especially pane-fill, which is nearly full height).
+        // == host). Leading gutter spans sidebar + list under pane-fill —
+        // force hit-through so mailbox clicks still land (defensive even if
+        // plain Spacer often ignores hits).
         HStack(spacing: 0) {
             if pinToPane {
-                Color.clear
+                Spacer()
                     .frame(width: chrome.leading)
                     .allowsHitTesting(false)
             }
@@ -563,9 +563,7 @@ struct ContentView: View {
                 .pmCardElevation(cornerRadius: minimized ? PMRadius.md : PMRadius.lg,
                                  intense: true)
             if pinToPane {
-                Color.clear
-                    .frame(minWidth: 0)
-                    .frame(maxWidth: .infinity)
+                Spacer(minLength: 0)
                     .allowsHitTesting(false)
             }
         }
@@ -1338,41 +1336,43 @@ struct Sidebar: View {
 
 
     /// Notion Mail-style row: each view keeps its own icon color.
-    @ViewBuilder
     private func sidebarItem(_ view: MailboxView, badge: Int? = nil) -> some View {
         // List(selection:) only fires onChange when the value *changes*, so
         // re-clicking the already-selected row (e.g. Inbox while a committed
         // `/` search is active) would otherwise be a no-op — same shape as the
-        // original gi bug. Mount the reselect gesture only on the selected
-        // row: a permanent TapGesture on every row steals List selection on
-        // macOS (same class of bug as ThreadListView's selected-only open
-        // overlay). Cross-view clicks go through the selection binding.
-        let row = Label {
+        // original gi bug. Only install the reselect gesture for hit-testing
+        // when this row is already selected (GestureMask.subviews otherwise):
+        // a permanent TapGesture on every row steals List selection on macOS
+        // (same class as ThreadListView's selected-only open overlay). Keep
+        // one view identity (no if/else branch) so selection flips don't
+        // rebuild the row. `.tag` stays outermost so List(selection:) sees it.
+        let reselect = ListReselectPolicy.mountsHandler(
+            row: view, selected: store.selectedView)
+        return Label {
             Text(view.title)
         } icon: {
             Image(systemName: view.icon)
                 .foregroundStyle(view.iconColor)
         }
         .badge((badge ?? 0) > 0 ? badge! : 0)
-        .tag(view)
         .accessibilityIdentifier(sidebarAccessibilityID(for: view))
-
-        if ListReselectPolicy.mountsHandler(row: view, selected: store.selectedView) {
-            row.simultaneousGesture(TapGesture().onEnded {
-                store.goTo(view)
-            })
-        } else {
-            row
-        }
+        .simultaneousGesture(
+            TapGesture().onEnded { store.goTo(view) },
+            including: reselect ? .gesture : .subviews)
+        .tag(view)
     }
 
     /// Stable id for UI tests / a11y (e.g. `sidebar.inbox`, `sidebar.sent`).
     private func sidebarAccessibilityID(for view: MailboxView) -> String {
-        if let key = view.prefsKey { return "sidebar.\(key)" }
         switch view {
+        case .account(let email): return "sidebar.account.\(email)"
         case .scheduled: return "sidebar.scheduled"
         case .saved(let id, _): return "sidebar.saved.\(id)"
-        default: return "sidebar.\(view.title)"
+        case .label(let account, let labelId, _):
+            return "sidebar.label.\(account).\(labelId)"
+        default:
+            if let key = view.prefsKey { return "sidebar.\(key)" }
+            return "sidebar.\(view.title)"
         }
     }
 }
