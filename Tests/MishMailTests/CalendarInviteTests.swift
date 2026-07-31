@@ -183,6 +183,64 @@ final class CalendarInviteTests: XCTestCase {
             mimeType: "application/pdf", filename: "deck.pdf"))
     }
 
+    func testUniqueCalendarAttachmentsCollapsesGoogleDualMime() {
+        // Google: text/calendar alternative (often inline) + application/ics
+        // attachment with the same invite.ics payload → one card, not two.
+        let inline = AttachmentRow(
+            id: 1, messageId: "m1",
+            gmailAttachmentId: AttachmentRow.inlineCalendarAttachmentId,
+            filename: "invite.ics", mimeType: "text/calendar; method=REQUEST",
+            size: 400)
+        let downloadable = AttachmentRow(
+            id: 2, messageId: "m1",
+            gmailAttachmentId: "att-ics-1",
+            filename: "invite.ics", mimeType: "application/ics",
+            size: 400)
+        let pdf = AttachmentRow(
+            id: 3, messageId: "m1",
+            gmailAttachmentId: "att-pdf",
+            filename: "notes.pdf", mimeType: "application/pdf",
+            size: 1200)
+
+        let unique = CalendarInvite.uniqueCalendarAttachments(
+            [inline, downloadable, pdf])
+        XCTAssertEqual(unique.count, 1)
+        XCTAssertEqual(unique.first?.gmailAttachmentId, "att-ics-1",
+                       "prefer downloadable over inline when filenames match")
+    }
+
+    func testUniqueCalendarAttachmentsKeepsDistinctInviteFiles() {
+        let a = AttachmentRow(
+            id: 1, messageId: "m1", gmailAttachmentId: "a1",
+            filename: "standup.ics", mimeType: "text/calendar", size: 100)
+        let b = AttachmentRow(
+            id: 2, messageId: "m1", gmailAttachmentId: "a2",
+            filename: "retro.ics", mimeType: "text/calendar", size: 100)
+        let unique = CalendarInvite.uniqueCalendarAttachments([a, b])
+        XCTAssertEqual(unique.map(\.filename), ["standup.ics", "retro.ics"])
+    }
+
+    func testUniqueCalendarAttachmentsEmptyFilenameMapsToInviteIcs() {
+        // Inline alternative parts often have no filename; parse synthesizes
+        // invite.ics — empty must collide with that key.
+        let noName = AttachmentRow(
+            id: 1, messageId: "m1",
+            gmailAttachmentId: AttachmentRow.inlineCalendarAttachmentId,
+            filename: "", mimeType: "text/calendar", size: 50)
+        let named = AttachmentRow(
+            id: 2, messageId: "m1", gmailAttachmentId: "att-1",
+            filename: "invite.ics", mimeType: "application/ics", size: 50)
+        let unique = CalendarInvite.uniqueCalendarAttachments([noName, named])
+        XCTAssertEqual(unique.count, 1)
+        XCTAssertEqual(unique.first?.gmailAttachmentId, "att-1")
+        XCTAssertEqual(
+            CalendarInvite.calendarAttachmentDedupeKey(filename: ""),
+            "invite.ics")
+        XCTAssertEqual(
+            CalendarInvite.calendarAttachmentDedupeKey(filename: "Invite.ICS"),
+            "invite.ics")
+    }
+
     func testRSVPPersistenceRoundTrip() {
         // Dedicated suite so we don't clobber the user's defaults.
         let suite = "CalendarInviteTests.\(UUID().uuidString)"

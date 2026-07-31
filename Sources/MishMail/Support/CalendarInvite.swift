@@ -91,6 +91,57 @@ struct CalendarInvite: Equatable, Sendable {
         return filename.lowercased().hasSuffix(".ics")
     }
 
+    /// Collapse Google-style duplicate calendar MIME parts to one row.
+    ///
+    /// Google Calendar invites almost always ship the same payload twice:
+    /// `text/calendar` inside `multipart/alternative` **and** a downloadable
+    /// `application/ics` / `invite.ics` sibling. Without collapsing, the
+    /// reading pane renders two identical Accept/Decline/Maybe cards.
+    ///
+    /// Preference when keys collide: real Gmail `attachmentId` over the
+    /// inline `text/calendar` sentinel (getAttachment is cheaper than a
+    /// full-message re-fetch). Display order follows first occurrence of
+    /// each dedupe key in the input.
+    ///
+    /// Distinct filenames (e.g. `standup.ics` + `retro.ics` on one mail)
+    /// stay separate so multi-invite messages still get one card each.
+    static func uniqueCalendarAttachments(_ attachments: [AttachmentRow]) -> [AttachmentRow] {
+        let cals = attachments.filter {
+            isCalendarAttachment(mimeType: $0.mimeType, filename: $0.filename)
+        }
+        guard cals.count > 1 else { return cals }
+
+        var best: [String: (att: AttachmentRow, firstIndex: Int)] = [:]
+        var keyOrder: [String] = []
+        for (i, att) in cals.enumerated() {
+            let key = calendarAttachmentDedupeKey(filename: att.filename)
+            if let existing = best[key] {
+                let existInline = AttachmentRow.isInlineCalendarId(
+                    existing.att.gmailAttachmentId)
+                let newInline = AttachmentRow.isInlineCalendarId(
+                    att.gmailAttachmentId)
+                // Prefer downloadable over inline when the same file appears twice.
+                if existInline && !newInline {
+                    best[key] = (att, existing.firstIndex)
+                }
+            } else {
+                best[key] = (att, i)
+                keyOrder.append(key)
+            }
+        }
+        return keyOrder.compactMap { best[$0]?.att }
+    }
+
+    /// Normalized filename key for collapsing duplicate calendar parts.
+    /// Empty / missing names (inline alternative parts) map to `invite.ics`,
+    /// matching the synthetic name used at parse time.
+    static func calendarAttachmentDedupeKey(filename: String) -> String {
+        let name = filename
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .lowercased()
+        return name.isEmpty ? "invite.ics" : name
+    }
+
     /// Preferred single event from an ICS document (see `preferred(from:)`).
     static func parse(_ data: Data) -> CalendarInvite? {
         guard let text = String(data: data, encoding: .utf8)

@@ -477,4 +477,140 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertEqual(message.subject, "")
         XCTAssertEqual(message.bodyText, "")
     }
+
+    // MARK: - Calendar invite double-card (Google dual MIME)
+
+    /// Google Calendar emails ship the same invite twice: a text/calendar
+    /// part inside multipart/alternative (often inline body.data) and a
+    /// downloadable application/ics attachment. Parser must keep one row.
+    func testParseGoogleCalendarInviteDoesNotDoubleCard() throws {
+        let ics = """
+            BEGIN:VCALENDAR
+            METHOD:REQUEST
+            BEGIN:VEVENT
+            UID:meet@google.com
+            SUMMARY:Ron and Eric
+            DTSTART:20260805T183000Z
+            DTEND:20260805T190000Z
+            ORGANIZER:mailto:eric@example.com
+            END:VEVENT
+            END:VCALENDAR
+            """
+        let icsB64 = b64url(ics)
+        let json = """
+        {
+          "id": "m-cal", "threadId": "t-cal",
+          "internalDate": "1751500000000",
+          "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [{"name": "From", "value": "Eric <eric@example.com>"}],
+            "parts": [
+              {
+                "mimeType": "multipart/alternative",
+                "parts": [
+                  {"mimeType": "text/plain", "body": {"data": "\(b64url("When: Wed"))"}},
+                  {"mimeType": "text/html", "body": {"data": "\(b64url("<p>When</p>"))"}},
+                  {
+                    "mimeType": "text/calendar; charset=UTF-8; method=REQUEST",
+                    "filename": "invite.ics",
+                    "body": {"size": \(ics.utf8.count), "data": "\(icsB64)"}
+                  }
+                ]
+              },
+              {
+                "mimeType": "application/ics",
+                "filename": "invite.ics",
+                "body": {"attachmentId": "att-invite", "size": \(ics.utf8.count)}
+              }
+            ]
+          }
+        }
+        """
+        let (message, attachments) = MessageParser.parse(
+            try decodeGMessage(json), accountId: "ron@x.com")
+        let calendar = attachments.filter {
+            CalendarInvite.isCalendarAttachment(
+                mimeType: $0.mimeType, filename: $0.filename)
+        }
+        XCTAssertEqual(calendar.count, 1,
+                       "expected one calendar row, got \(calendar.map { "\($0.mimeType):\($0.gmailAttachmentId)" })")
+        XCTAssertEqual(calendar.first?.gmailAttachmentId, "att-invite",
+                       "prefer downloadable application/ics over inline text/calendar")
+        XCTAssertTrue(message.hasAttachment)
+        // UI helper must also collapse already-synced duplicates.
+        XCTAssertEqual(
+            CalendarInvite.uniqueCalendarAttachments(attachments).count, 1)
+    }
+
+    /// Both parts have attachmentIds (larger ICS payloads in Gmail API).
+    func testParseGoogleCalendarBothAttachmentIdsDoesNotDoubleCard() throws {
+        let json = """
+        {
+          "id": "m-cal2", "threadId": "t-cal2",
+          "internalDate": "1751500000000",
+          "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [{"name": "From", "value": "a@b.com"}],
+            "parts": [
+              {
+                "mimeType": "multipart/alternative",
+                "parts": [
+                  {"mimeType": "text/html", "body": {"data": "\(b64url("<p>x</p>"))"}},
+                  {
+                    "mimeType": "text/calendar; method=REQUEST",
+                    "filename": "invite.ics",
+                    "body": {"attachmentId": "att-alt", "size": 500}
+                  }
+                ]
+              },
+              {
+                "mimeType": "application/ics",
+                "filename": "invite.ics",
+                "body": {"attachmentId": "att-file", "size": 500}
+              }
+            ]
+          }
+        }
+        """
+        let (_, attachments) = MessageParser.parse(
+            try decodeGMessage(json), accountId: "ron@x.com")
+        let calendar = attachments.filter {
+            CalendarInvite.isCalendarAttachment(
+                mimeType: $0.mimeType, filename: $0.filename)
+        }
+        XCTAssertEqual(calendar.count, 1, "dual attachmentId calendar parts → one row")
+        XCTAssertEqual(calendar.first?.gmailAttachmentId, "att-alt",
+                       "first downloadable wins when both have attachmentIds")
+    }
+
+    /// Two different .ics files on one message still produce two rows.
+    func testParseTwoDistinctCalendarAttachmentsKept() throws {
+        let json = """
+        {
+          "id": "m-cal3", "threadId": "t-cal3",
+          "internalDate": "0",
+          "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [{"name": "From", "value": "a@b.com"}],
+            "parts": [
+              {
+                "mimeType": "text/calendar",
+                "filename": "standup.ics",
+                "body": {"attachmentId": "a1", "size": 100}
+              },
+              {
+                "mimeType": "text/calendar",
+                "filename": "retro.ics",
+                "body": {"attachmentId": "a2", "size": 100}
+              }
+            ]
+          }
+        }
+        """
+        let (_, attachments) = MessageParser.parse(
+            try decodeGMessage(json), accountId: "ron@x.com")
+        XCTAssertEqual(attachments.count, 2)
+        XCTAssertEqual(Set(attachments.map(\.filename)),
+                       Set(["standup.ics", "retro.ics"]))
+    }
 }

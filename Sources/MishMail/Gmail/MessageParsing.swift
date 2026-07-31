@@ -114,10 +114,33 @@ enum MessageParser {
            filename != nil || contentId != nil {
             let name = filename
                 ?? CIDImageInliner.syntheticFilename(contentId: contentId, mimeType: mime)
-            attachments.append(AttachmentRow(
+            let row = AttachmentRow(
                 id: nil, messageId: messageId, gmailAttachmentId: attachmentId,
                 filename: name, mimeType: mime,
-                size: part.body?.size ?? 0, contentId: contentId))
+                size: part.body?.size ?? 0, contentId: contentId)
+            // Google Calendar: `text/calendar` alternative often precedes the
+            // downloadable `application/ics` / invite.ics sibling. Drop any
+            // earlier inline calendar row and skip same-filename duplicates
+            // so the reading pane only gets one Accept card.
+            if CalendarInvite.isCalendarAttachment(mimeType: mime, filename: name) {
+                attachments.removeAll {
+                    AttachmentRow.isInlineCalendarId($0.gmailAttachmentId)
+                        && CalendarInvite.isCalendarAttachment(
+                            mimeType: $0.mimeType, filename: $0.filename)
+                }
+                let key = CalendarInvite.calendarAttachmentDedupeKey(filename: name)
+                let already = attachments.contains {
+                    CalendarInvite.isCalendarAttachment(
+                        mimeType: $0.mimeType, filename: $0.filename)
+                        && CalendarInvite.calendarAttachmentDedupeKey(
+                            filename: $0.filename) == key
+                }
+                if !already {
+                    attachments.append(row)
+                }
+            } else {
+                attachments.append(row)
+            }
             // No blob capture here: attachmentId parts are resolved at render
             // time via getAttachment, session-only. Persisting their bytes as
             // data: URIs in message_body would bloat SQLCipher.
@@ -140,8 +163,10 @@ enum MessageParser {
                 inlineBlobs[cid] = (mime, bytes)
             }
             // Inline text/calendar without attachmentId (Outlook / Calendly).
-            // Skip when a real calendar attachment already exists so Google
-            // invites (invite.ics + multipart alternative) don't double-card.
+            // Skip when a calendar attachment already exists so Google invites
+            // (invite.ics + multipart alternative) don't double-card — and so
+            // a later downloadable part can still replace this via the branch
+            // above when walk order is alternative-then-attachment.
             if isCalendarMime(mime),
                let bytes = decodeBase64URLData(data), !bytes.isEmpty,
                !attachments.contains(where: {

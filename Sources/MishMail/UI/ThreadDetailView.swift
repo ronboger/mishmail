@@ -1776,11 +1776,10 @@ struct MessageCard: View {
                 }
                 // Calendar invites get a Gmail/Notion-style Accept card; the
                 // .ics itself is hidden from the generic attachment chips so
-                // it isn't double-presented as a dumb file.
-                let calendarAtts = attachments.filter {
-                    CalendarInvite.isCalendarAttachment(
-                        mimeType: $0.mimeType, filename: $0.filename)
-                }
+                // it isn't double-presented as a dumb file. uniqueCalendar…
+                // collapses Google's text/calendar + application/ics pair
+                // (and already-synced duplicate rows) to one card.
+                let calendarAtts = CalendarInvite.uniqueCalendarAttachments(attachments)
                 let fileAtts = attachments.filter {
                     !CalendarInvite.isCalendarAttachment(
                         mimeType: $0.mimeType, filename: $0.filename)
