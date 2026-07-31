@@ -18,6 +18,11 @@ struct TokenAddressField: View {
     @State private var keyMonitor: Any?
     /// Hovered chip (for pointer + slightly stronger fill).
     @State private var hoveredToken: String?
+    /// True while we've pushed a pointing-hand cursor for a chip hover.
+    /// Cleared on hover exit *and* when the chip is removed under the cursor
+    /// (click-to-edit / ×), which otherwise skips the exit callback and leaves
+    /// a stuck pointing hand.
+    @State private var chipCursorPushed = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -116,7 +121,10 @@ struct TokenAddressField: View {
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { focused = true }
             }
         }
-        .onDisappear { removeKeyMonitor() }
+        .onDisappear {
+            clearChipHoverChrome()
+            removeKeyMonitor()
+        }
     }
 
     /// One recipient chip: click address → edit in the text field; × → remove.
@@ -141,6 +149,7 @@ struct TokenAddressField: View {
                   : "\(token) — click to edit")
 
             Button {
+                clearChipHoverChrome()
                 tokens = TokenAddressEditing.remove(tokens: tokens, token: token)
             } label: {
                 Image(systemName: "xmark")
@@ -159,9 +168,27 @@ struct TokenAddressField: View {
             in: Capsule()
         )
         .onHover { inside in
-            hoveredToken = inside ? token : (hoveredToken == token ? nil : hoveredToken)
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+            if inside {
+                hoveredToken = token
+                if !chipCursorPushed {
+                    NSCursor.pointingHand.push()
+                    chipCursorPushed = true
+                }
+            } else if hoveredToken == token {
+                clearChipHoverChrome()
+            }
         }
+    }
+
+    /// Pop pointing-hand + clear hover highlight. Safe to call when nothing
+    /// is hovered (no-op). Must run when a chip is removed under the cursor
+    /// so SwiftUI's missing hover-exit doesn't leave a stuck hand.
+    private func clearChipHoverChrome() {
+        if chipCursorPushed {
+            NSCursor.pop()
+            chipCursorPushed = false
+        }
+        hoveredToken = nil
     }
 
     /// Installs the backspace monitor while this field is focused.
@@ -197,20 +224,27 @@ struct TokenAddressField: View {
     }
 
     private func accept(_ contact: MailStore.Contact) {
-        tokens.append(contact.email)
+        // Same dedup as commit — autocomplete shouldn't re-add an existing chip.
+        if !tokens.contains(contact.email) {
+            tokens.append(contact.email)
+        }
         draft = ""
     }
 
     private func commitDraft() {
-        let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
-        if cleaned.contains("@") { tokens.append(cleaned) }
-        draft = ""
+        let result = TokenAddressEditing.commit(tokens: tokens, draft: draft)
+        tokens = result.tokens
+        draft = result.draft
     }
 
     private func beginEdit(_ token: String) {
+        clearChipHoverChrome()
         let result = TokenAddressEditing.beginEdit(tokens: tokens, draft: draft, token: token)
         tokens = result.tokens
         draft = result.draft
-        focused = true
+        // Defer re-focus: the chip button click resigns the TextField first;
+        // setting focused in the same turn races that resignation (same
+        // pattern as autoFocus on appear).
+        DispatchQueue.main.async { focused = true }
     }
 }

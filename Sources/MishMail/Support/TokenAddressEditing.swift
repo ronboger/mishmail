@@ -12,6 +12,18 @@ enum TokenAddressEditing {
         var draft: String
     }
 
+    /// Commit pending draft text into a chip (blur, Return, trailing comma).
+    /// Same clean/dedup rules as the pending-draft step of `beginEdit`, so the
+    /// focus-loss path and the click-to-edit path cannot skew.
+    static func commit(tokens: [String], draft: String) -> (tokens: [String], draft: String) {
+        var next = tokens
+        let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
+        if cleaned.contains("@"), !next.contains(cleaned) {
+            next.append(cleaned)
+        }
+        return (next, "")
+    }
+
     /// Start editing `token`:
     /// 1. Commit any pending draft that looks like an email (don't lose it).
     /// 2. Remove the first matching chip.
@@ -19,12 +31,12 @@ enum TokenAddressEditing {
     ///
     /// Incomplete draft text (no `@`) is discarded — the click is an explicit
     /// "edit this address" action and the chip value replaces the draft.
+    ///
+    /// Note: when the TextField loses focus before the chip button runs, the
+    /// UI already called `commit`; this still works with `draft == ""`.
     static func beginEdit(tokens: [String], draft: String, token: String) -> EditStart {
-        var next = tokens
-        let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
-        if cleaned.contains("@"), !next.contains(cleaned) {
-            next.append(cleaned)
-        }
+        let committed = commit(tokens: tokens, draft: draft)
+        var next = committed.tokens
         if let idx = next.firstIndex(of: token) {
             next.remove(at: idx)
         }

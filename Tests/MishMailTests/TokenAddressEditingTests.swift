@@ -2,8 +2,37 @@ import XCTest
 
 /// Recipient chips were remove-only (×). Click should re-open the address in
 /// the draft field so typos are fixable without retyping. These tests pin the
-/// pure state transition the UI field uses.
+/// pure state transition the UI field uses — including the shared `commit`
+/// path that focus-loss and click-to-edit both route through.
 final class TokenAddressEditingTests: XCTestCase {
+
+    // MARK: - commit (blur / Return / trailing comma)
+
+    func testCommitAppendsValidAddressAndClearsDraft() {
+        let result = TokenAddressEditing.commit(tokens: [], draft: "a@x.com")
+        XCTAssertEqual(result.tokens, ["a@x.com"])
+        XCTAssertEqual(result.draft, "")
+    }
+
+    func testCommitTrimsCommaAndWhitespace() {
+        let result = TokenAddressEditing.commit(tokens: [], draft: " a@x.com, ")
+        XCTAssertEqual(result.tokens, ["a@x.com"])
+        XCTAssertEqual(result.draft, "")
+    }
+
+    func testCommitDoesNotDuplicateExistingToken() {
+        let result = TokenAddressEditing.commit(
+            tokens: ["a@x.com", "b@y.com"],
+            draft: "b@y.com")
+        XCTAssertEqual(result.tokens, ["a@x.com", "b@y.com"])
+        XCTAssertEqual(result.draft, "")
+    }
+
+    func testCommitDiscardsIncompleteDraft() {
+        let result = TokenAddressEditing.commit(tokens: ["a@x.com"], draft: "half")
+        XCTAssertEqual(result.tokens, ["a@x.com"])
+        XCTAssertEqual(result.draft, "")
+    }
 
     // MARK: - beginEdit (click chip)
 
@@ -60,6 +89,33 @@ final class TokenAddressEditingTests: XCTestCase {
             draft: "b@y.com",
             token: "a@x.com")
         XCTAssertEqual(result.tokens, ["b@y.com"])
+        XCTAssertEqual(result.draft, "a@x.com")
+    }
+
+    /// Focus-loss path already committed: `beginEdit` with empty draft is the
+    /// real UI order when clicking a chip while the TextField had focus.
+    func testBeginEditAfterFocusLossCommitStillWorks() {
+        // Simulate: commit ran first (draft cleared, token already a chip).
+        let afterFocus = TokenAddressEditing.commit(
+            tokens: ["a@x.com"],
+            draft: "b@y.com")
+        XCTAssertEqual(afterFocus.tokens, ["a@x.com", "b@y.com"])
+        let edit = TokenAddressEditing.beginEdit(
+            tokens: afterFocus.tokens,
+            draft: afterFocus.draft,
+            token: "a@x.com")
+        XCTAssertEqual(edit.tokens, ["b@y.com"])
+        XCTAssertEqual(edit.draft, "a@x.com")
+    }
+
+    /// Pending draft equals the chip being edited — commit then remove leaves
+    /// no duplicate, draft reloads that address.
+    func testBeginEditWhenDraftEqualsClickedToken() {
+        let result = TokenAddressEditing.beginEdit(
+            tokens: ["a@x.com"],
+            draft: "a@x.com",
+            token: "a@x.com")
+        XCTAssertEqual(result.tokens, [])
         XCTAssertEqual(result.draft, "a@x.com")
     }
 
