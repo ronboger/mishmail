@@ -601,6 +601,11 @@ struct ComposeView: View {
         .onChange(of: ccTokens) { scheduleAutosave() }
         .onChange(of: bccTokens) { scheduleAutosave() }
         .onChange(of: attachmentURLs) { scheduleAutosave() }
+        // Dropped files land in restoredAttachments; chip removal must also
+        // dirty the draft so a discarded drop doesn't reappear after restart.
+        .onChange(of: restoredAttachments.map(\.filename).joined(separator: "|")) {
+            scheduleAutosave()
+        }
         .onChange(of: store.accounts) {
             // Accounts can finish loading after the card appears — backfill From.
             if fromEmail.isEmpty { ensureFromSelection() }
@@ -635,7 +640,74 @@ struct ComposeView: View {
         }
         .fileImporter(isPresented: $showFilePicker,
                       allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { attachmentURLs.append(contentsOf: urls) }
+            if case .success(let urls) = result { appendAttachmentURLs(urls) }
+        }
+        // Card chrome (header/footer/padding) also accepts file drops — body
+        // NSTextView handles its own via ComposeBodyTextView so paths never
+        // land as typed text.
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            ComposeAttachmentDrop.fileURLs(from: providers) { urls in
+                ingestDroppedFiles(urls)
+            }
+            // Claim the drop if any provider looks like a file; load is async.
+            return providers.contains {
+                $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+            }
+        }
+    }
+
+    /// Merge picked files into the chip list (path-deduped). Open-panel
+    /// URLs keep their powerbox grant for later `collectAttachments`.
+    private func appendAttachmentURLs(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        attachmentURLs = ComposeAttachmentDrop.dedupeAppend(existing: attachmentURLs,
+                                                            incoming: urls)
+    }
+
+    /// Finder / inter-app drops: sandbox grants are transient, so load bytes
+    /// now into `restoredAttachments` (same chip path as forward/undo) rather
+    /// than holding bare URLs that may fail at send/autosave. Reads off the
+    /// main actor so a large video drop doesn't stall the UI.
+    private func ingestDroppedFiles(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        let attempted = urls.count
+        // Detached: ComposeView is MainActor; don't inherit it for the reads.
+        Task.detached { [urls] in
+            var loaded: [MIMEBuilder.Attachment] = []
+            var failed = 0
+            for url in urls {
+                let access = url.startAccessingSecurityScopedResource()
+                defer { if access { url.stopAccessingSecurityScopedResource() } }
+                guard let data = try? Data(contentsOf: url) else {
+                    failed += 1
+                    continue
+                }
+                let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                    ?? "application/octet-stream"
+                loaded.append(.init(filename: url.lastPathComponent, mimeType: mime, data: data))
+            }
+            await MainActor.run {
+                let existingNames = Set(restoredAttachments.map(\.filename)
+                    + attachmentURLs.map(\.lastPathComponent))
+                let merge = ComposeAttachmentDrop.mergeNewFilenames(
+                    existing: existingNames,
+                    incoming: loaded.map(\.filename),
+                    failedReads: failed)
+                // First occurrence of each new name wins (loaded order preserved).
+                var pending = Set(merge.added)
+                for att in loaded where pending.contains(att.filename) {
+                    restoredAttachments.append(att)
+                    pending.remove(att.filename)
+                }
+                // dropStatusMessage is nil only for a fully clean add.
+                if let msg = ComposeAttachmentDrop.dropStatusMessage(merge: merge,
+                                                                     attempted: attempted) {
+                    error = msg
+                }
+                if !merge.added.isEmpty {
+                    scheduleAutosave()
+                }
+            }
         }
     }
 
@@ -911,7 +983,8 @@ struct ComposeView: View {
             ComposeBodyEditor(text: $body_, isFocused: $bodyFocused,
                               caretUTF16: $bodyCaretUTF16,
                               ghostText: greetingGhostText,
-                              formatTarget: formatTarget, fontSize: 14)
+                              formatTarget: formatTarget, fontSize: 14,
+                              onFilesDropped: { ingestDroppedFiles($0) })
                 .padding(.top, 10)
                 .padding(.bottom, 6)
                 // Grow with authored content while the quote is collapsed so
