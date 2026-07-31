@@ -223,6 +223,10 @@ enum ComposePlacement {
     /// Horizontal placement for the compose overlay card.
     struct CardChrome: Equatable {
         /// Leading inset from the host's leading edge (0 for floating/split).
+        /// Used only as a pin-to-pane layout gutter — ContentView must mark
+        /// that spacer `.allowsHitTesting(false)` so sidebar/list clicks pass
+        /// through (pane-fill is nearly full height and would otherwise block
+        /// the whole left columns).
         var leading: CGFloat
         /// Card width (already clamped to fit the host when measured).
         var width: CGFloat

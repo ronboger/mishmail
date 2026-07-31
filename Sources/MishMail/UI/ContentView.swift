@@ -542,10 +542,16 @@ struct ContentView: View {
             : split ? max(composeHostFrame.height - splitPad * 2, 400)
             : pane ? paneHeight
             : (inline ? inlineHeight : ComposePlacement.preferredFloatingCardHeight)
+        // Pin-to-pane uses a full-host-width HStack so trailing-anchored
+        // placement agrees with chrome.leading (leading + width + trailing
+        // == host). Spacers are geometry only — they must not hit-test, or
+        // they swallow clicks on the sidebar and thread list under the
+        // gutter (especially pane-fill, which is nearly full height).
         HStack(spacing: 0) {
             if pinToPane {
-                Spacer()
+                Color.clear
                     .frame(width: chrome.leading)
+                    .allowsHitTesting(false)
             }
             ComposeView(request: request)
                 .id(request.id)
@@ -557,7 +563,10 @@ struct ContentView: View {
                 .pmCardElevation(cornerRadius: minimized ? PMRadius.md : PMRadius.lg,
                                  intense: true)
             if pinToPane {
-                Spacer(minLength: 0)
+                Color.clear
+                    .frame(minWidth: 0)
+                    .frame(maxWidth: .infinity)
+                    .allowsHitTesting(false)
             }
         }
         .padding(pane
@@ -1331,7 +1340,14 @@ struct Sidebar: View {
     /// Notion Mail-style row: each view keeps its own icon color.
     @ViewBuilder
     private func sidebarItem(_ view: MailboxView, badge: Int? = nil) -> some View {
-        Label {
+        // List(selection:) only fires onChange when the value *changes*, so
+        // re-clicking the already-selected row (e.g. Inbox while a committed
+        // `/` search is active) would otherwise be a no-op — same shape as the
+        // original gi bug. Mount the reselect gesture only on the selected
+        // row: a permanent TapGesture on every row steals List selection on
+        // macOS (same class of bug as ThreadListView's selected-only open
+        // overlay). Cross-view clicks go through the selection binding.
+        let row = Label {
             Text(view.title)
         } icon: {
             Image(systemName: view.icon)
@@ -1339,16 +1355,25 @@ struct Sidebar: View {
         }
         .badge((badge ?? 0) > 0 ? badge! : 0)
         .tag(view)
-        // List(selection:) only fires onChange when the value *changes*, so
-        // re-clicking the already-selected row (e.g. Inbox while a committed
-        // `/` search is active) would otherwise be a no-op — same shape as the
-        // original gi bug. Only handle the already-selected case; cross-view
-        // clicks still go through the selection binding + onChange.
-        .simultaneousGesture(TapGesture().onEnded {
-            if store.selectedView == view {
+        .accessibilityIdentifier(sidebarAccessibilityID(for: view))
+
+        if ListReselectPolicy.mountsHandler(row: view, selected: store.selectedView) {
+            row.simultaneousGesture(TapGesture().onEnded {
                 store.goTo(view)
-            }
-        })
+            })
+        } else {
+            row
+        }
+    }
+
+    /// Stable id for UI tests / a11y (e.g. `sidebar.inbox`, `sidebar.sent`).
+    private func sidebarAccessibilityID(for view: MailboxView) -> String {
+        if let key = view.prefsKey { return "sidebar.\(key)" }
+        switch view {
+        case .scheduled: return "sidebar.scheduled"
+        case .saved(let id, _): return "sidebar.saved.\(id)"
+        default: return "sidebar.\(view.title)"
+        }
     }
 }
 

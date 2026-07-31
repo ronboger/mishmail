@@ -150,6 +150,7 @@ targets:
       - Sources/MishMail/Support/ThreadContentRevisions.swift
       - Sources/MishMail/Support/ThreadDetailMirror.swift
       - Sources/MishMail/Support/GoToMailbox.swift
+      - Sources/MishMail/Support/ListReselectPolicy.swift
       - Sources/MishMail/Support/AccountOrder.swift
       - Sources/MishMail/Support/GmailFilterMatch.swift
       - Sources/MishMail/Support/GmailWebLinks.swift
