@@ -633,6 +633,9 @@ enum ComposeQuote {
     }
 
     /// Blank-line paragraphs each get their own `dir` + linkified body.
+    /// Adjacent paragraphs are separated with a Gmail-style empty spacer so
+    /// blank lines remain visible (splitting on blank lines would otherwise
+    /// collapse inter-paragraph gaps).
     private static func plainAuthoredHTML(_ userText: String) -> String {
         let paras = TextDirection.paragraphs(in: userText)
         if paras.isEmpty {
@@ -642,7 +645,7 @@ enum ComposeQuote {
         return paras.map { para in
             let dir = TextDirection.htmlDir(of: para)
             return "<div dir=\"\(dir)\">\(ComposeLinks.htmlFragment(from: para))</div>"
-        }.joined()
+        }.joined(separator: "<div><br></div>")
     }
 
     static func escapeHTML(_ s: String) -> String {

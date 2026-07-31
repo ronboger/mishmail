@@ -94,6 +94,8 @@ final class TextDirectionTests: XCTestCase {
         let html = ComposeQuote.authoredHeadHTML("Hi Yaniv,\n\nשלום רב, אנא עזרו.")
         XCTAssertTrue(html.contains(#"<div dir="ltr">Hi Yaniv,"#), html)
         XCTAssertTrue(html.contains(#"<div dir="rtl">שלום רב"#), html)
+        // Blank-line split must not collapse paragraph gaps for recipients.
+        XCTAssertTrue(html.contains(#"</div><div><br></div><div dir="rtl">"#), html)
     }
 
     func testAuthoredHeadHTML_HebrewMarkdownGetsDirRTL() {
@@ -115,10 +117,9 @@ final class TextDirectionTests: XCTestCase {
     func testHtmlFragment_AnchorsHaveDirLTR() {
         let html = ComposeLinks.htmlFragment(
             from: "ניסיתי http://forms.gov.il/x מספר")
-        XCTAssertTrue(html.contains(#"<a href="http://forms.gov.il/x" dir="ltr">"#)
-                      || html.contains(#"dir="ltr""#), html)
-        // Label is the bare URL; isolate attr is the load-bearing bit.
-        XCTAssertTrue(html.contains("dir=\"ltr\""), html)
+        XCTAssertTrue(
+            html.contains(#"<a href="http://forms.gov.il/x" dir="ltr">http://forms.gov.il/x</a>"#),
+            html)
     }
 
     func testHtmlFragment_MarkdownLinkHasDirLTR() {
