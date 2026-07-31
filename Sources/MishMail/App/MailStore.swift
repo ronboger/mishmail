@@ -304,6 +304,12 @@ final class MailStore {
     private(set) var suppressedDraftMessageIds: Set<String> = []
     private(set) var suppressedDraftThreadIds: Set<String> = []
     private var suppressedDraftThreadByMessageId: [String: String] = [:]
+    /// Draft ids an *open compose card* owns (the draft it was opened on plus
+    /// every autosave replacement), keyed by the compose request so a card that
+    /// unmounts after its successor appeared can only release its own ids.
+    /// Purely a render-time hide for the in-thread draft card — the rows stay
+    /// in the payload, unlike undo-send suppression above.
+    private var composingDraftIdsByRequest: [UUID: Set<String>] = [:]
     /// Multi-select checkboxes (Gmail `x` / Notion-style toggle). Bulk
     /// archive/trash/star/read act on this set when non-empty; the focused
     /// `selectedThreadId` still drives the reading pane.
@@ -5071,6 +5077,26 @@ struct ComposeRequest: Identifiable {
         let full = messageBody(id: draft.id) ?? draft
         let parent = Self.replyParent(forDraft: full, inThread: msgs)
         openCompose(ComposeRequest(replyTo: parent, editDraft: full))
+    }
+
+    /// Draft ids currently open in a compose editor. The in-thread draft card
+    /// and the slim draft banner hide these so Continue doesn't leave a
+    /// duplicate of the editor's own content in the conversation.
+    var composingDraftMessageIds: Set<String> {
+        composingDraftIdsByRequest.values.reduce(into: Set<String>()) {
+            $0.formUnion($1)
+        }
+    }
+
+    /// Compose claims the draft it is editing (and each autosave replacement).
+    func noteComposingDraft(_ id: String?, requestId: UUID) {
+        guard let id else { return }
+        composingDraftIdsByRequest[requestId, default: []].insert(id)
+    }
+
+    /// Compose card unmounted — its draft card may show again.
+    func endComposingDrafts(requestId: UUID) {
+        composingDraftIdsByRequest.removeValue(forKey: requestId)
     }
 
     /// Opens the newest draft in a thread (list/context-menu / top-banner entry).

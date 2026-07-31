@@ -445,6 +445,8 @@ struct ComposeView: View {
                 return
             }
             replacingDraft = saved
+            // Autosave moved the draft to a new id — keep the card hidden.
+            store.noteComposingDraft(saved.id, requestId: request.id)
             lastSavedFingerprint = fingerprint
             if silent { didSilentSave = true }
             draftStatus = .saved
@@ -537,6 +539,9 @@ struct ComposeView: View {
             // Seed the replace chain before prefill so undo-send restores any
             // draft that Send was about to delete.
             replacingDraft = editingDraft ?? request.restore?.replacingDraft
+            // Hide this draft's in-thread card while its editor is open.
+            store.noteComposingDraft(editingDraft?.id, requestId: request.id)
+            store.noteComposingDraft(replacingDraft?.id, requestId: request.id)
             prefill()
             // Prefill mutates fields — re-baseline carefully.
             // restore MUST win over editDraft: cancelPendingSend often sets
@@ -564,6 +569,9 @@ struct ComposeView: View {
             // replaced this card (single-key shortcuts allow that while
             // minimized). Keep the work as a draft instead of dropping it.
             if !didFinish { saveDraftIfNeeded() }
+            // Release the draft-card hide keyed to *this* request only; a newer
+            // card that already appeared keeps its own claim.
+            store.endComposingDrafts(requestId: request.id)
             store.composeMinimized = false
             store.slashPickerVisible = false
             autosaveTask?.cancel()

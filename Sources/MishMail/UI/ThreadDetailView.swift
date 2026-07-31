@@ -199,12 +199,18 @@ struct ThreadDetailView: View {
                             // Live unsent drafts only — DRAFT+TRASH (discarded)
                             // keeps ordinary MessageCard chrome so Trash still
                             // shows content for discarded-compose threads.
-                            DraftMessageCard(
-                                message: message,
-                                onNeedBody: { loadBodyIfNeeded(id: message.id) })
-                                .padding(.horizontal)
-                                .id(message.id)
-                                .background { messageHeightReader(id: message.id) }
+                            // The card steps aside while its own compose editor
+                            // is open, and returns when compose closes.
+                            if !ComposingDraftVisibility.hidesDraftCard(
+                                messageId: message.id,
+                                composingDraftIds: store.composingDraftMessageIds) {
+                                DraftMessageCard(
+                                    message: message,
+                                    onNeedBody: { loadBodyIfNeeded(id: message.id) })
+                                    .padding(.horizontal)
+                                    .id(message.id)
+                                    .background { messageHeightReader(id: message.id) }
+                            }
                         } else {
                             MessageCard(message: message,
                                         isLast: message.id == lastNonDraftId,
@@ -767,15 +773,19 @@ struct ThreadDetailView: View {
         ThreadRefresh.needsBodyLoad(message)
     }
 
-    /// Any live (unsent, not trashed) draft currently in the open thread.
-    private var hasThreadDraft: Bool {
-        messages.contains { ForwardComposer.isLiveDraft($0.labelIds) }
+    /// Live (unsent, not trashed) drafts currently in the open thread.
+    private var liveDraftIds: [String] {
+        messages.filter { ForwardComposer.isLiveDraft($0.labelIds) }.map(\.id)
     }
 
     /// Banner only when the draft card is likely below the first viewport
-    /// (≥4 messages). Shorter threads already show the draft card on screen.
+    /// (≥4 messages) and that draft isn't already open in compose. Shorter
+    /// threads already show the draft card on screen.
     private var showDraftBanner: Bool {
-        hasThreadDraft && messages.count > 3
+        ComposingDraftVisibility.showsDraftBanner(
+            liveDraftIds: liveDraftIds,
+            messageCount: messages.count,
+            composingDraftIds: store.composingDraftMessageIds)
     }
 
     /// Expand the newest *sent* message by default — drafts get their own card
@@ -1228,14 +1238,18 @@ struct DraftMessageCard: View {
                 }
 
                 HStack(spacing: 6) {
+                    // Sender/recipient chrome is muted like the preview: a draft
+                    // is not a message in the conversation, so it must not read
+                    // with a sent card's primary-text weight.
                     Text(MessageParser.displayName(fromHeader: message.fromHeader))
-                        .font(.system(size: 13.5 * fontScale, weight: .semibold))
+                        .font(.system(size: 13.5 * fontScale, weight: .medium))
+                        .foregroundStyle(.secondary)
                         .lineLimit(1)
                     Text("·")
                         .foregroundStyle(.tertiary)
                     Text(toSummary)
                         .font(.system(size: 12.5 * fontScale))
-                        .foregroundStyle(.secondary)
+                        .foregroundStyle(.tertiary)
                         .lineLimit(1)
                 }
 
@@ -1253,6 +1267,7 @@ struct DraftMessageCard: View {
                     // gesture would fight the hit target.
                     Text(preview)
                         .font(.system(size: 14 * fontScale))
+                        .foregroundStyle(.secondary)
                         .lineSpacing(3)
                         .lineLimit(8)
                         .frame(maxWidth: .infinity, alignment: .leading)
