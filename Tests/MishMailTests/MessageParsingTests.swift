@@ -613,4 +613,54 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertEqual(Set(attachments.map(\.filename)),
                        Set(["standup.ics", "retro.ics"]))
     }
+
+    /// Inline + downloadable with *different* filenames must both survive
+    /// (Fable finding: removeAll / skip must be key-scoped, not all-calendars).
+    func testParseMixedInlineAndDownloadableDistinctFilenamesKept() throws {
+        let standup = """
+            BEGIN:VCALENDAR
+            METHOD:REQUEST
+            BEGIN:VEVENT
+            UID:standup@x.com
+            SUMMARY:Standup
+            ORGANIZER:mailto:a@x.com
+            END:VEVENT
+            END:VCALENDAR
+            """
+        let json = """
+        {
+          "id": "m-cal4", "threadId": "t-cal4",
+          "internalDate": "0",
+          "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [{"name": "From", "value": "a@b.com"}],
+            "parts": [
+              {
+                "mimeType": "text/calendar; method=REQUEST",
+                "filename": "standup.ics",
+                "body": {"size": \(standup.utf8.count), "data": "\(b64url(standup))"}
+              },
+              {
+                "mimeType": "application/ics",
+                "filename": "retro.ics",
+                "body": {"attachmentId": "att-retro", "size": 200}
+              }
+            ]
+          }
+        }
+        """
+        let (_, attachments) = MessageParser.parse(
+            try decodeGMessage(json), accountId: "ron@x.com")
+        XCTAssertEqual(attachments.count, 2,
+                       "distinct filenames must not collapse: \(attachments.map(\.filename))")
+        XCTAssertEqual(Set(attachments.map(\.filename)),
+                       Set(["standup.ics", "retro.ics"]))
+        let standupRow = attachments.first { $0.filename == "standup.ics" }
+        XCTAssertTrue(
+            AttachmentRow.isInlineCalendarId(standupRow?.gmailAttachmentId ?? ""),
+            "standup stays inline when no same-key downloadable exists")
+        XCTAssertEqual(
+            attachments.first { $0.filename == "retro.ics" }?.gmailAttachmentId,
+            "att-retro")
+    }
 }

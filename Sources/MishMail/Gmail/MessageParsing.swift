@@ -119,16 +119,20 @@ enum MessageParser {
                 filename: name, mimeType: mime,
                 size: part.body?.size ?? 0, contentId: contentId)
             // Google Calendar: `text/calendar` alternative often precedes the
-            // downloadable `application/ics` / invite.ics sibling. Drop any
-            // earlier inline calendar row and skip same-filename duplicates
-            // so the reading pane only gets one Accept card.
+            // downloadable `application/ics` / invite.ics sibling. Drop an
+            // earlier inline calendar row with the *same* filename key and
+            // skip same-key duplicates so the reading pane only gets one
+            // Accept card. Distinct filenames (standup.ics + retro.ics) keep
+            // both rows — including mixed inline + downloadable.
             if CalendarInvite.isCalendarAttachment(mimeType: mime, filename: name) {
+                let key = CalendarInvite.calendarAttachmentDedupeKey(filename: name)
                 attachments.removeAll {
                     AttachmentRow.isInlineCalendarId($0.gmailAttachmentId)
                         && CalendarInvite.isCalendarAttachment(
                             mimeType: $0.mimeType, filename: $0.filename)
+                        && CalendarInvite.calendarAttachmentDedupeKey(
+                            filename: $0.filename) == key
                 }
-                let key = CalendarInvite.calendarAttachmentDedupeKey(filename: name)
                 let already = attachments.contains {
                     CalendarInvite.isCalendarAttachment(
                         mimeType: $0.mimeType, filename: $0.filename)
@@ -163,22 +167,28 @@ enum MessageParser {
                 inlineBlobs[cid] = (mime, bytes)
             }
             // Inline text/calendar without attachmentId (Outlook / Calendly).
-            // Skip when a calendar attachment already exists so Google invites
-            // (invite.ics + multipart alternative) don't double-card — and so
-            // a later downloadable part can still replace this via the branch
-            // above when walk order is alternative-then-attachment.
+            // Skip only when a same-filename-key calendar row already exists
+            // so Google invites (invite.ics + multipart alternative) don't
+            // double-card, while a different .ics on the same message still
+            // gets its own card. A later downloadable same-key part replaces
+            // this via the attachmentId branch above.
             if isCalendarMime(mime),
-               let bytes = decodeBase64URLData(data), !bytes.isEmpty,
-               !attachments.contains(where: {
-                   CalendarInvite.isCalendarAttachment(
-                       mimeType: $0.mimeType, filename: $0.filename)
-               }) {
+               let bytes = decodeBase64URLData(data), !bytes.isEmpty {
                 let name = filename.map { MessageParser.safeFilename($0) } ?? "invite.ics"
-                attachments.append(AttachmentRow(
-                    id: nil, messageId: messageId,
-                    gmailAttachmentId: AttachmentRow.inlineCalendarAttachmentId,
-                    filename: name, mimeType: mime,
-                    size: bytes.count, contentId: contentId))
+                let key = CalendarInvite.calendarAttachmentDedupeKey(filename: name)
+                let already = attachments.contains {
+                    CalendarInvite.isCalendarAttachment(
+                        mimeType: $0.mimeType, filename: $0.filename)
+                        && CalendarInvite.calendarAttachmentDedupeKey(
+                            filename: $0.filename) == key
+                }
+                if !already {
+                    attachments.append(AttachmentRow(
+                        id: nil, messageId: messageId,
+                        gmailAttachmentId: AttachmentRow.inlineCalendarAttachmentId,
+                        filename: name, mimeType: mime,
+                        size: bytes.count, contentId: contentId))
+                }
             }
         }
         for child in part.parts ?? [] {
