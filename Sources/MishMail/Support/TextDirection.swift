@@ -77,8 +77,10 @@ enum TextDirection: Equatable {
     /// TLD is letters only (rejects `v1.0`); file-extension denylist rejects
     /// `README.md`. Isolation is broad; **linkify** uses `isLinkableHost`.
     private static let bareHostRegex: NSRegularExpression = {
+        // Group 1 includes optional :port and /path so isolation/linkify
+        // cover the full token (hostTLD strips path/port for TLD checks).
         try! NSRegularExpression(
-            pattern: #"(?i)(?<![\w@.])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24})(?::\d{2,5})?(?:/[^\s<>\[\]()\"']*)?"#)
+            pattern: #"(?i)(?<![\w@.])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?::\d{2,5})?(?:/[^\s<>\[\]()\"']*)?)"#)
     }()
 
     /// File-extension denylist for bare-host *isolation* false positives.
@@ -172,27 +174,20 @@ enum TextDirection: Equatable {
             candidates.append(IsolateSpan(range: r, kind: .phone))
         }
 
-        // Resolve overlaps: keep higher-priority kind, then longer, then earlier.
+        // Resolve overlaps: highest priority first, then longer, then earlier.
+        // Greedy accept non-overlapping — avoids replacement leaving residual
+        // overlaps when a longer span replaces a short one.
         let priority: [IsolateKind: Int] = [.url: 3, .host: 2, .phone: 1]
         let sorted = candidates.sorted {
-            if $0.range.location != $1.range.location {
-                return $0.range.location < $1.range.location
-            }
-            return $0.range.length > $1.range.length
+            let p0 = priority[$0.kind] ?? 0
+            let p1 = priority[$1.kind] ?? 0
+            if p0 != p1 { return p0 > p1 }
+            if $0.range.length != $1.range.length { return $0.range.length > $1.range.length }
+            return $0.range.location < $1.range.location
         }
         var accepted: [IsolateSpan] = []
         for span in sorted {
             if accepted.contains(where: { rangesOverlap($0.range, span.range) }) {
-                // Prefer higher priority already-accepted; skip if lower.
-                if let idx = accepted.firstIndex(where: { rangesOverlap($0.range, span.range) }) {
-                    let existing = accepted[idx]
-                    let pNew = priority[span.kind] ?? 0
-                    let pOld = priority[existing.kind] ?? 0
-                    if pNew > pOld
-                        || (pNew == pOld && span.range.length > existing.range.length) {
-                        accepted[idx] = span
-                    }
-                }
                 continue
             }
             accepted.append(span)

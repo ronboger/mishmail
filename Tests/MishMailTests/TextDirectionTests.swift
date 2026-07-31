@@ -104,6 +104,16 @@ final class TextDirectionTests: XCTestCase {
         XCTAssertTrue(html.contains(#"href="https://forms.gov.il""#), html)
     }
 
+    func testBareHostWithPathIsolatedAndLinked() {
+        let s = "see forms.gov.il/he/service now"
+        let spans = TextDirection.ltrIsolateSpans(in: s)
+        XCTAssertEqual(spans.count, 1)
+        XCTAssertEqual((s as NSString).substring(with: spans[0].range),
+                       "forms.gov.il/he/service")
+        let html = ComposeLinks.htmlFragment(from: s)
+        XCTAssertTrue(html.contains(#"href="https://forms.gov.il/he/service""#), html)
+    }
+
     func testPhoneDoesNotSpanNewline() {
         let s = "שנה 2026\n1234567 סוף"
         let phones = TextDirection.ltrIsolateSpans(in: s).filter { $0.kind == .phone }
