@@ -7,6 +7,12 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         XCTAssertTrue(css.contains("#e6e6e6"))
     }
 
+    func testLinksAreBidiIsolated() {
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
+        // Hebrew/Arabic + bare URLs must not shred under UBA in the pane.
+        XCTAssertTrue(css.contains("unicode-bidi: isolate"), css)
+    }
+
     func testLightSurfacesForceDarkText() {
         let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
         // White bgcolor panels get dark text (signature cards).

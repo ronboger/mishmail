@@ -143,37 +143,37 @@ final class ComposeLinksTests: XCTestCase {
     func testHTMLConvertsMarkdownLink() {
         let html = ComposeLinks.htmlFragment(from: "read [the docs](https://example.com/a)")
         XCTAssertEqual(html,
-                       "read <a href=\"https://example.com/a\">the docs</a>")
+                       "read <a href=\"https://example.com/a\" dir=\"ltr\">the docs</a>")
     }
 
     func testHTMLNormalizesBareHostInMarkdown() {
         // Hand-typed markdown without a scheme must not emit a relative href.
         let html = ComposeLinks.htmlFragment(from: "[x](example.com)")
-        XCTAssertEqual(html, "<a href=\"https://example.com\">x</a>")
+        XCTAssertEqual(html, "<a href=\"https://example.com\" dir=\"ltr\">x</a>")
     }
 
     func testHTMLAutolinksBareHTTPS() {
         let html = ComposeLinks.htmlFragment(from: "go https://example.com/x now")
         XCTAssertEqual(html,
-                       "go <a href=\"https://example.com/x\">https://example.com/x</a> now")
+                       "go <a href=\"https://example.com/x\" dir=\"ltr\">https://example.com/x</a> now")
     }
 
     func testHTMLAutolinkTrimsTrailingPunctuation() {
         let html = ComposeLinks.htmlFragment(from: "see https://example.com/x.")
         XCTAssertEqual(html,
-                       "see <a href=\"https://example.com/x\">https://example.com/x</a>.")
+                       "see <a href=\"https://example.com/x\" dir=\"ltr\">https://example.com/x</a>.")
     }
 
     func testHTMLAutolinkTrimsTrailingParen() {
         let html = ComposeLinks.htmlFragment(from: "see https://example.com/x)")
         XCTAssertEqual(html,
-                       "see <a href=\"https://example.com/x\">https://example.com/x</a>)")
+                       "see <a href=\"https://example.com/x\" dir=\"ltr\">https://example.com/x</a>)")
     }
 
     func testHTMLDoesNotDoubleLinkMarkdown() {
         // Bare-URL pass must not re-wrap the href already inside [text](url).
         let html = ComposeLinks.htmlFragment(from: "[x](https://example.com)")
-        XCTAssertEqual(html, "<a href=\"https://example.com\">x</a>")
+        XCTAssertEqual(html, "<a href=\"https://example.com\" dir=\"ltr\">x</a>")
         XCTAssertFalse(html.contains("<a href=\"https://example.com\"><a"))
     }
 
@@ -196,7 +196,7 @@ final class ComposeLinksTests: XCTestCase {
 
     func testHTMLUnicodeAroundLink() {
         let html = ComposeLinks.htmlFragment(from: "café [docs](https://example.com)")
-        XCTAssertEqual(html, "café <a href=\"https://example.com\">docs</a>")
+        XCTAssertEqual(html, "café <a href=\"https://example.com\" dir=\"ltr\">docs</a>")
     }
 
     // MARK: - selfLink

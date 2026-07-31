@@ -43,6 +43,9 @@ struct ComposeBodyEditor: NSViewRepresentable {
         textView.allowsUndo = true
         textView.font = .systemFont(ofSize: fontSize)
         textView.textColor = .labelColor
+        // Natural writing direction so Hebrew/Arabic paragraphs base RTL
+        // while English stays LTR (per first strong character / keyboard).
+        textView.baseWritingDirection = .natural
         textView.typingAttributes = [
             .font: NSFont.systemFont(ofSize: fontSize),
             .foregroundColor: NSColor.labelColor,
@@ -302,6 +305,9 @@ struct ComposeBodyEditor: NSViewRepresentable {
 
             let full = NSRange(location: 0, length: storage.length)
             storage.beginEditing()
+            // Base font/color only — paragraph BiDi + URL isolation are
+            // re-applied below so setAttributes does not leave an LTR-only
+            // surface after every keystroke.
             storage.setAttributes([
                 .font: plain,
                 .foregroundColor: NSColor.labelColor,
@@ -309,6 +315,8 @@ struct ComposeBodyEditor: NSViewRepresentable {
 
             let s = textView.string
             let ns = s as NSString
+
+            applyBidiAttributes(to: storage, string: s, fullRange: full)
 
             func apply(_ re: NSRegularExpression, attrs: [NSAttributedString.Key: Any]) {
                 re.enumerateMatches(in: s, options: [], range: full) { match, _, _ in
@@ -383,6 +391,59 @@ struct ComposeBodyEditor: NSViewRepresentable {
                 guard let match, match.numberOfRanges >= 4 else { return }
                 storage.addAttributes([.foregroundColor: marker], range: match.range(at: 1))
                 storage.addAttributes([.foregroundColor: marker], range: match.range(at: 3))
+            }
+        }
+
+        /// Per-paragraph base writing direction + LTR isolation on bare URLs.
+        /// Does not mutate the plain `string` model — attributes only — so
+        /// drafts/send stay free of FSI/PDI control characters.
+        private static func applyBidiAttributes(to storage: NSTextStorage,
+                                                string: String,
+                                                fullRange: NSRange) {
+            guard fullRange.length > 0 else { return }
+            let ns = string as NSString
+
+            // Paragraph base direction from first strong character.
+            var paraStart = 0
+            while paraStart <= ns.length {
+                let rest = NSRange(location: paraStart, length: ns.length - paraStart)
+                var paraEnd = NSMaxRange(rest)
+                var contentsEnd = paraEnd
+                if rest.length > 0 {
+                    ns.getParagraphStart(nil, end: &paraEnd,
+                                         contentsEnd: &contentsEnd,
+                                         for: NSRange(location: paraStart, length: 0))
+                }
+                let contentLen = max(0, contentsEnd - paraStart)
+                if contentLen > 0 {
+                    let paraRange = NSRange(location: paraStart, length: contentLen)
+                    let paraText = ns.substring(with: paraRange)
+                    let style = NSMutableParagraphStyle()
+                    style.alignment = .natural
+                    switch TextDirection.base(of: paraText) {
+                    case .rtl:
+                        style.baseWritingDirection = .rightToLeft
+                    case .ltr:
+                        style.baseWritingDirection = .leftToRight
+                    case .neutral:
+                        style.baseWritingDirection = .natural
+                    }
+                    storage.addAttribute(.paragraphStyle, value: style, range: paraRange)
+                }
+                if paraEnd <= paraStart { break }
+                paraStart = paraEnd
+            }
+
+            // Isolate bare URLs as LTR embeddings so Hebrew+URL lines do not
+            // visually shred (Unicode Bidirectional Algorithm).
+            // writingDirection: NSWritingDirection | NSWritingDirectionFormatType
+            let ltrEmbed = NSNumber(value:
+                NSWritingDirection.leftToRight.rawValue
+                | NSWritingDirectionFormatType.embedding.rawValue)
+            for range in TextDirection.ltrIsolateNSRanges(in: string) {
+                guard NSIntersectionRange(range, fullRange).length == range.length
+                else { continue }
+                storage.addAttribute(.writingDirection, value: [ltrEmbed], range: range)
             }
         }
     }

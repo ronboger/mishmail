@@ -199,7 +199,9 @@ enum ComposeLinks {
                 let span = links[linkIdx]
                 let href = escapeAttribute(span.href)
                 let label = escapeText(span.label).replacingOccurrences(of: "\n", with: "<br>")
-                out += "<a href=\"\(href)\">\(label)</a>"
+                // `dir="ltr"` isolates the URL/label so UBA cannot interleave
+                // it with surrounding Hebrew/Arabic in RTL paragraphs.
+                out += "<a href=\"\(href)\" dir=\"ltr\">\(label)</a>"
                 i = span.range.upperBound
                 linkIdx += 1
                 continue

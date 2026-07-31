@@ -618,12 +618,20 @@ enum ComposeQuote {
     }
 
     /// Authored head → HTML: markdown when present, else linkified plain.
+    ///
+    /// Outer `dir` follows the first strong character (HTML `dir=auto`
+    /// semantics) so Hebrew/Arabic paragraphs render RTL for recipients
+    /// instead of inheriting the client's LTR default.
     static func authoredHeadHTML(_ userText: String) -> String {
         guard !userText.isEmpty else { return "" }
+        let dir = TextDirection.htmlDir(of: userText)
+        let inner: String
         if Markdown.looksLikeMarkdown(userText) {
-            return Markdown.toHTML(userText)
+            inner = Markdown.toHTML(userText)
+        } else {
+            inner = ComposeLinks.htmlFragment(from: userText)
         }
-        return "<div>\(ComposeLinks.htmlFragment(from: userText))</div>"
+        return "<div dir=\"\(dir)\">\(inner)</div>"
     }
 
     static func escapeHTML(_ s: String) -> String {

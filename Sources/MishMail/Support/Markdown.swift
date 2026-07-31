@@ -464,7 +464,7 @@ enum Markdown {
         // Invalid schemes stay as raw text and are escaped in the final pass.
         work = replaceAll(work, pattern: #"\[([^\]]*)\]\(([^)\s]+)\)"#) { m in
             guard let href = ComposeLinks.normalizeURL(m[2]) else { return m[0] }
-            return protect("<a href=\"\(ComposeLinks.escapeAttribute(href))\">\(escapeHTML(m[1]))</a>")
+            return protect("<a href=\"\(ComposeLinks.escapeAttribute(href))\" dir=\"ltr\">\(escapeHTML(m[1]))</a>")
         }
         // Bare http(s)/mailto URLs (ComposeLinks parity for markdown bodies).
         work = replaceAll(work, pattern: #"(?i)\b((?:https?://|mailto:)[^\s<>\[\]()\"']+)"#) { m in
@@ -473,7 +473,7 @@ enum Markdown {
             guard !text.isEmpty, let href = ComposeLinks.normalizeURL(text) else { return m[0] }
             // Trailing punctuation stays outside the anchor; escaped later.
             let trailing = String(m[1].dropFirst(text.count))
-            return protect("<a href=\"\(ComposeLinks.escapeAttribute(href))\">\(escapeHTML(text))</a>")
+            return protect("<a href=\"\(ComposeLinks.escapeAttribute(href))\" dir=\"ltr\">\(escapeHTML(text))</a>")
                 + trailing
         }
         // Bold ** ** or __ __

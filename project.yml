@@ -139,6 +139,7 @@ targets:
       - Sources/MishMail/Store/ThreadLabels.swift
       - Sources/MishMail/Support/ContactMiner.swift
       - Sources/MishMail/Support/ComposeLinks.swift
+      - Sources/MishMail/Support/TextDirection.swift
       - Sources/MishMail/Support/HTMLEntities.swift
       - Sources/MishMail/Support/KeyBindings.swift
       - Sources/MishMail/Support/LabelSearch.swift

@@ -106,7 +106,7 @@ final class MarkdownTests: XCTestCase {
 
     func testLinkAndStrikethrough() {
         let html = Markdown.toHTML("See [docs](https://a.com) and ~~old~~.")
-        XCTAssertTrue(html.contains("<a href=\"https://a.com\">docs</a>"))
+        XCTAssertTrue(html.contains("<a href=\"https://a.com\" dir=\"ltr\">docs</a>"))
         XCTAssertTrue(html.contains("<del>old</del>"))
     }
 

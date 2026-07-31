@@ -899,6 +899,9 @@ struct ComposeView: View {
             TextField("Subject", text: $subject)
                 .textFieldStyle(.plain)
                 .font(.system(size: 14, weight: .semibold))
+                // Natural alignment for Hebrew subjects (trailing in LTR chrome).
+                .multilineTextAlignment(
+                    TextDirection.isRTL(subject) ? .trailing : .leading)
                 .padding(.vertical, 8)
             Divider()
 

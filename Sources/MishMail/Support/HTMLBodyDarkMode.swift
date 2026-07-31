@@ -60,6 +60,9 @@ enum HTMLBodyDarkMode {
         :root { color-scheme: light dark; }
         html, body { height: auto !important; min-height: 0 !important; }
         body { font: \(font)px -apple-system, sans-serif; color: canvastext; margin: 0; background: transparent; }
+        /* Isolate links so bare URLs inside RTL Hebrew/Arabic do not shred
+           under the Unicode Bidirectional Algorithm (compose + reading pane). */
+        a { unicode-bidi: isolate; }
         img { max-width: 100%; height: auto; }
         \(HTMLBodyLayout.imageCSS)
         \(HTMLBodyLayout.antiFeedbackCSS)
