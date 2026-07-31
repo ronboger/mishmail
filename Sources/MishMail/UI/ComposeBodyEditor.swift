@@ -404,6 +404,9 @@ struct ComposeBodyEditor: NSViewRepresentable {
             let ns = string as NSString
 
             // Paragraph base direction from first strong character.
+            // Style range includes the paragraph terminator (`paraEnd`) so
+            // AppKit fixAttributes sees a uniform style across the whole
+            // paragraph; direction is still detected from content only.
             var paraStart = 0
             while paraStart <= ns.length {
                 let rest = NSRange(location: paraStart, length: ns.length - paraStart)
@@ -414,10 +417,13 @@ struct ComposeBodyEditor: NSViewRepresentable {
                                          contentsEnd: &contentsEnd,
                                          for: NSRange(location: paraStart, length: 0))
                 }
-                let contentLen = max(0, contentsEnd - paraStart)
-                if contentLen > 0 {
-                    let paraRange = NSRange(location: paraStart, length: contentLen)
-                    let paraText = ns.substring(with: paraRange)
+                let styleLen = max(0, paraEnd - paraStart)
+                if styleLen > 0 {
+                    let styleRange = NSRange(location: paraStart, length: styleLen)
+                    let contentLen = max(0, contentsEnd - paraStart)
+                    let paraText = contentLen > 0
+                        ? ns.substring(with: NSRange(location: paraStart, length: contentLen))
+                        : ""
                     let style = NSMutableParagraphStyle()
                     style.alignment = .natural
                     switch TextDirection.base(of: paraText) {
@@ -428,7 +434,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
                     case .neutral:
                         style.baseWritingDirection = .natural
                     }
-                    storage.addAttribute(.paragraphStyle, value: style, range: paraRange)
+                    storage.addAttribute(.paragraphStyle, value: style, range: styleRange)
                 }
                 if paraEnd <= paraStart { break }
                 paraStart = paraEnd
@@ -436,6 +442,8 @@ struct ComposeBodyEditor: NSViewRepresentable {
 
             // Isolate bare URLs as LTR embeddings so Hebrew+URL lines do not
             // visually shred (Unicode Bidirectional Algorithm).
+            // Embedding (not isolate) is the best AppKit attribute can do —
+            // true FSI would require control chars in the model string.
             // writingDirection: NSWritingDirection | NSWritingDirectionFormatType
             let ltrEmbed = NSNumber(value:
                 NSWritingDirection.leftToRight.rawValue

@@ -619,19 +619,30 @@ enum ComposeQuote {
 
     /// Authored head → HTML: markdown when present, else linkified plain.
     ///
-    /// Outer `dir` follows the first strong character (HTML `dir=auto`
-    /// semantics) so Hebrew/Arabic paragraphs render RTL for recipients
-    /// instead of inheriting the client's LTR default.
+    /// Plain text: **per blank-line paragraph** `dir` (first strong char), so
+    /// an English greeting + Hebrew body is not forced LTR for the whole
+    /// message. Markdown: one outer `dir` from the full body (blocks already
+    /// structure the content; per-block dir is a follow-up).
     static func authoredHeadHTML(_ userText: String) -> String {
         guard !userText.isEmpty else { return "" }
-        let dir = TextDirection.htmlDir(of: userText)
-        let inner: String
         if Markdown.looksLikeMarkdown(userText) {
-            inner = Markdown.toHTML(userText)
-        } else {
-            inner = ComposeLinks.htmlFragment(from: userText)
+            let dir = TextDirection.htmlDir(of: userText)
+            return "<div dir=\"\(dir)\">\(Markdown.toHTML(userText))</div>"
         }
-        return "<div dir=\"\(dir)\">\(inner)</div>"
+        return plainAuthoredHTML(userText)
+    }
+
+    /// Blank-line paragraphs each get their own `dir` + linkified body.
+    private static func plainAuthoredHTML(_ userText: String) -> String {
+        let paras = TextDirection.paragraphs(in: userText)
+        if paras.isEmpty {
+            let dir = TextDirection.htmlDir(of: userText)
+            return "<div dir=\"\(dir)\">\(ComposeLinks.htmlFragment(from: userText))</div>"
+        }
+        return paras.map { para in
+            let dir = TextDirection.htmlDir(of: para)
+            return "<div dir=\"\(dir)\">\(ComposeLinks.htmlFragment(from: para))</div>"
+        }.joined()
     }
 
     static func escapeHTML(_ s: String) -> String {

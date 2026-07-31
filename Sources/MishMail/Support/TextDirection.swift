@@ -7,6 +7,10 @@ import Foundation
 /// 2. **Isolation** of embedded LTR runs (URLs) so UBA does not shred them
 ///
 /// Pure Foundation — no AppKit — so unit tests cover detection and HTML attrs.
+///
+/// Coverage is intentional, not complete UAX #9: Latin/Greek/Cyrillic and
+/// Hebrew/Arabic families are strong; CJK and other scripts are treated as
+/// neutral (they rarely set compose direction for this app's user base).
 enum TextDirection: Equatable {
     case ltr
     case rtl
@@ -39,34 +43,66 @@ enum TextDirection: Equatable {
 
     // MARK: - LTR spans to isolate
 
+    /// Bare `http(s)://` / `mailto:` matcher — shared so isolate ranges and
+    /// linkify cannot drift. Compiled once (highlighter runs every keystroke).
+    static let bareURLRegex: NSRegularExpression = {
+        try! NSRegularExpression(
+            pattern: #"(?i)\b((?:https?://|mailto:)[^\s<>\[\]()\"']+)"#)
+    }()
+
+    /// Characters trimmed from the end of a bare-URL match so trailing prose
+    /// punctuation stays outside the isolate / anchor (same set as
+    /// `ComposeLinks.bareURLMatches`).
+    private static let trailingURLPunctuation = CharacterSet(charactersIn: ".,;:!?)]}\"'")
+
     /// UTF-16 ranges of bare `http(s)://` / `mailto:` URLs that should be
     /// LTR-isolated inside an RTL paragraph (compose highlighter + HTML).
     ///
-    /// Trailing prose punctuation (`.`, `,`, …) is excluded, matching
-    /// `ComposeLinks` bare-URL trimming so isolate bounds stay consistent
-    /// with the linkified HTML alternative.
+    /// Trailing prose punctuation is stripped one character at a time from the
+    /// end (same greedy-while as `ComposeLinks`), so isolate bounds stay aligned
+    /// with the linkified HTML alternative for common cases (`.`, `,`, `)`).
     static func ltrIsolateNSRanges(in string: String) -> [NSRange] {
-        guard !string.isEmpty,
-              let re = try? NSRegularExpression(
-                pattern: #"(?i)\b((?:https?://|mailto:)[^\s<>\[\]()\"']+)"#)
-        else { return [] }
+        guard !string.isEmpty else { return [] }
         let ns = string as NSString
         let full = NSRange(location: 0, length: ns.length)
         var out: [NSRange] = []
-        re.enumerateMatches(in: string, options: [], range: full) { match, _, _ in
+        bareURLRegex.enumerateMatches(in: string, options: [], range: full) { match, _, _ in
             guard let match, match.numberOfRanges >= 2 else { return }
             var range = match.range(at: 1)
             guard range.location != NSNotFound, range.length > 0 else { return }
-            // Drop trailing punctuation commonly stuck to URLs in prose.
             while range.length > 0 {
                 let last = ns.character(at: range.location + range.length - 1)
                 guard let scalar = Unicode.Scalar(last),
-                      ".,;:!?)]}\"'".unicodeScalars.contains(scalar) else { break }
+                      trailingURLPunctuation.contains(scalar) else { break }
                 range.length -= 1
             }
             if range.length > 0 { out.append(range) }
         }
         return out
+    }
+
+    // MARK: - Paragraph split (HTML dir per block)
+
+    /// Blank-line-separated paragraphs (single newlines stay inside a block).
+    /// Empty input → `[]`. Leading/trailing blank runs are dropped.
+    static func paragraphs(in text: String) -> [String] {
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+        var paras: [String] = []
+        var buf: [String] = []
+        for line in normalized.split(separator: "\n", omittingEmptySubsequences: false) {
+            if line.isEmpty {
+                if !buf.isEmpty {
+                    paras.append(buf.joined(separator: "\n"))
+                    buf = []
+                }
+            } else {
+                buf.append(String(line))
+            }
+        }
+        if !buf.isEmpty { paras.append(buf.joined(separator: "\n")) }
+        return paras
     }
 
     // MARK: - Strong character classification
@@ -89,8 +125,12 @@ enum TextDirection: Equatable {
         }
     }
 
-    /// Strong LTR: Latin letters (ASCII + common Latin extensions). Digits are
-    /// weak and do not set base direction (so "2028606" alone stays neutral).
+    /// Strong LTR: Latin letters (ASCII + common Latin extensions), Greek,
+    /// Cyrillic. Digits are weak and do not set base direction.
+    ///
+    /// CJK / Hangul / Devanagari etc. are intentionally **not** strong here —
+    /// full UAX #9 would treat many as L; we only need Hebrew↔English for
+    /// compose quality.
     static func isStrongLTR(_ scalar: Unicode.Scalar) -> Bool {
         if isStrongRTL(scalar) { return false }
         let v = scalar.value

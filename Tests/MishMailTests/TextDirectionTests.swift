@@ -77,15 +77,23 @@ final class TextDirectionTests: XCTestCase {
 
     func testAuthoredHeadHTML_HebrewGetsDirRTL() {
         let html = ComposeQuote.authoredHeadHTML("שלום רב,\n\nאנא עזרו.")
-        XCTAssertTrue(html.hasPrefix(#"<div dir="rtl">"#), html)
+        XCTAssertTrue(html.contains(#"<div dir="rtl">"#), html)
         XCTAssertTrue(html.contains("שלום רב"), html)
-        XCTAssertTrue(html.hasSuffix("</div>"), html)
+        // Two blank-line paragraphs → two RTL wrappers.
+        XCTAssertEqual(html.components(separatedBy: #"dir="rtl""#).count - 1, 2, html)
     }
 
     func testAuthoredHeadHTML_EnglishGetsDirLTR() {
         let html = ComposeQuote.authoredHeadHTML("Hi Yaniv, let's close.")
         XCTAssertTrue(html.hasPrefix(#"<div dir="ltr">"#), html)
         XCTAssertTrue(html.contains("Hi Yaniv"), html)
+    }
+
+    func testAuthoredHeadHTML_MixedParagraphsGetPerBlockDir() {
+        // English greeting + Hebrew body must not force the whole message LTR.
+        let html = ComposeQuote.authoredHeadHTML("Hi Yaniv,\n\nשלום רב, אנא עזרו.")
+        XCTAssertTrue(html.contains(#"<div dir="ltr">Hi Yaniv,"#), html)
+        XCTAssertTrue(html.contains(#"<div dir="rtl">שלום רב"#), html)
     }
 
     func testAuthoredHeadHTML_HebrewMarkdownGetsDirRTL() {
@@ -96,6 +104,12 @@ final class TextDirectionTests: XCTestCase {
 
     func testAuthoredHeadHTML_Empty() {
         XCTAssertEqual(ComposeQuote.authoredHeadHTML(""), "")
+    }
+
+    func testParagraphsSplitOnBlankLines() {
+        XCTAssertEqual(TextDirection.paragraphs(in: "a\nb\n\nc"), ["a\nb", "c"])
+        XCTAssertEqual(TextDirection.paragraphs(in: "only"), ["only"])
+        XCTAssertEqual(TextDirection.paragraphs(in: ""), [])
     }
 
     func testHtmlFragment_AnchorsHaveDirLTR() {
