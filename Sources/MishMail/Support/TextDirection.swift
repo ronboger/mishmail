@@ -79,8 +79,10 @@ enum TextDirection: Equatable {
     private static let bareHostRegex: NSRegularExpression = {
         // Group 1 includes optional :port and /path so isolation/linkify
         // cover the full token (hostTLD strips path/port for TLD checks).
+        // Trailing (?![\w@.]) prevents partial matches like `ron.boge` from
+        // `ron.boger@…` when the engine backtracks the TLD (also blocks emails).
         try! NSRegularExpression(
-            pattern: #"(?i)(?<![\w@.])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?::\d{2,5})?(?:/[^\s<>\[\]()\"']*)?)"#)
+            pattern: #"(?i)(?<![\w@.])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24}(?::\d{2,5})?(?:/[^\s<>\[\]()\"']*)?)(?![\w@.])"#)
     }()
 
     /// File-extension denylist for bare-host *isolation* false positives.
@@ -143,6 +145,12 @@ enum TextDirection: Equatable {
         bareHostRegex.enumerateMatches(in: string, options: [], range: full) { match, _, _ in
             guard let match, match.numberOfRanges >= 2,
                   let r = trimTrailing(match.range(at: 1)) else { return }
+            // Drop if this token is the local-part of an email (next char is @).
+            // Lookahead in the regex is flaky with optional path; post-check is sure.
+            let end = r.location + r.length
+            if end < ns.length, ns.character(at: end) == 0x40 /* @ */ {
+                return
+            }
             let text = ns.substring(with: r)
             guard isPlausibleBareHost(text) else { return }
             candidates.append(IsolateSpan(range: r, kind: .host))

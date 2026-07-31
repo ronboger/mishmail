@@ -90,6 +90,12 @@ final class TextDirectionTests: XCTestCase {
         XCTAssertFalse(html.contains("<a "), html)
     }
 
+    func testDottedEmailLocalPartDoesNotYieldBareHost() {
+        // Lookahead (?!@): ron.boger@x.com must not isolate `ron.boger`.
+        let spans = TextDirection.ltrIsolateSpans(in: "כתבו ל ron.boger@gmail.com")
+        XCTAssertTrue(spans.isEmpty, "\(spans)")
+    }
+
     func testArbitraryWordDotWordNotLinkified() {
         // Isolation may still skip denylisted TLDs; linkify must not fire.
         XCTAssertFalse(TextDirection.isLinkableHost("setup.sh"))
