@@ -215,23 +215,35 @@ enum ComposeLinks {
         return out
     }
 
-    /// Escape a non-link slice, wrapping phone isolates in `dir="ltr"` spans.
+    /// Escape a non-link slice, wrapping phone + non-linkified host isolates
+    /// in `dir="ltr"` spans (so isolation still lands for hosts we refuse to
+    /// autolink, e.g. exotic TLDs).
     private static func plainChunkHTML(in plain: String,
                                        range: Range<String.Index>) -> String {
         guard range.lowerBound < range.upperBound else { return "" }
         let base = NSRange(range, in: plain)
-        let phones = TextDirection.ltrIsolateSpans(in: plain)
-            .filter { $0.kind == .phone }
-            .filter { NSIntersectionRange($0.range, base).length == $0.range.length }
+        let spans = TextDirection.ltrIsolateSpans(in: plain)
+            .filter { span in
+                guard NSIntersectionRange(span.range, base).length == span.range.length
+                else { return false }
+                switch span.kind {
+                case .phone: return true
+                case .host:
+                    // Linkable hosts become anchors; isolate-only hosts need spans.
+                    guard let r = Range(span.range, in: plain) else { return false }
+                    return !TextDirection.isLinkableHost(String(plain[r]))
+                case .url: return false
+                }
+            }
             .sorted { $0.range.location < $1.range.location }
-        if phones.isEmpty {
+        if spans.isEmpty {
             let chunk = String(plain[range])
             return escapeText(chunk).replacingOccurrences(of: "\n", with: "<br>")
         }
         var out = ""
         var cursor = range.lowerBound
-        for phone in phones {
-            guard let pr = Range(phone.range, in: plain),
+        for span in spans {
+            guard let pr = Range(span.range, in: plain),
                   pr.lowerBound >= cursor, pr.upperBound <= range.upperBound else { continue }
             if cursor < pr.lowerBound {
                 let before = String(plain[cursor..<pr.lowerBound])
@@ -311,10 +323,17 @@ enum ComposeLinks {
     }
 
     private static func bareURLMatches(in body: String) -> [BareURL] {
-        // Shared isolate spans: scheme URLs + conservative bare hosts.
-        // Phones are isolated in HTML as spans, not turned into links.
+        // Scheme URLs always linkify. Bare hosts linkify only when the TLD is
+        // on the allowlist (isolate still covers broader hosts in the editor).
+        // Phones become `<span dir="ltr">` in plainChunkHTML, not anchors.
         TextDirection.ltrIsolateSpans(in: body).compactMap { span -> BareURL? in
-            guard span.kind == .url || span.kind == .host else { return nil }
+            switch span.kind {
+            case .url: break
+            case .host:
+                guard let range = Range(span.range, in: body),
+                      TextDirection.isLinkableHost(String(body[range])) else { return nil }
+            case .phone: return nil
+            }
             guard let range = Range(span.range, in: body) else { return nil }
             let text = String(body[range])
             guard let href = normalizeURL(text) else { return nil }

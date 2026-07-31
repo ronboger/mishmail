@@ -73,14 +73,15 @@ enum TextDirection: Equatable {
     }
 
     /// Conservative bare-host: `label(.label)+.tld` with optional `:port` / path.
-    /// TLD is letters only (rejects `v1.0`); common file extensions are skipped
-    /// so `README.md` is not treated as a domain.
+    /// Negative lookbehind blocks `ron@gmail.com` → bogus `gmail.com` host.
+    /// TLD is letters only (rejects `v1.0`); file-extension denylist rejects
+    /// `README.md`. Isolation is broad; **linkify** uses `isLinkableHost`.
     private static let bareHostRegex: NSRegularExpression = {
         try! NSRegularExpression(
-            pattern: #"(?i)\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24})(?::\d{2,5})?(?:/[^\s<>\[\]()\"']*)?"#)
+            pattern: #"(?i)(?<![\w@.])((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24})(?::\d{2,5})?(?:/[^\s<>\[\]()\"']*)?"#)
     }()
 
-    /// File-extension denylist for bare-host false positives.
+    /// File-extension denylist for bare-host *isolation* false positives.
     private static let hostTLDDenylist: Set<String> = [
         "txt", "md", "pdf", "png", "jpg", "jpeg", "gif", "svg", "webp",
         "zip", "gz", "tgz", "rar", "7z", "tar", "bz2",
@@ -89,13 +90,25 @@ enum TextDirection: Equatable {
         "js", "ts", "tsx", "jsx", "css", "scss", "html", "htm", "xml", "json",
         "swift", "py", "rb", "go", "rs", "c", "h", "cpp", "java", "kt",
         "log", "lock", "yml", "yaml", "toml", "ini", "cfg", "conf",
+        "sh", "bat", "exe", "dll", "so", "dylib", "o", "a",
     ]
 
-    /// Phone / ID-like: optional `+`, digits with spaces / dashes / dots / parens.
-    /// Requires ≥7 digits so short numbers stay weak (UBA handles "2028606" OK).
+    /// TLDs safe to **autolink** as bare hosts (isolation is broader).
+    /// Keeps `forms.gov.il` / `example.com` while refusing `foo.bar` / `setup.sh`.
+    private static let linkableTLDs: Set<String> = [
+        "com", "org", "net", "edu", "gov", "mil", "int",
+        "io", "co", "ai", "dev", "app", "me", "info", "biz",
+        "il", "uk", "us", "eu", "de", "fr", "es", "it", "nl",
+        "ca", "au", "jp", "cn", "in", "br", "ru", "kr", "za",
+        "tv", "cc", "xyz", "online", "site", "tech",
+    ]
+
+    /// Phone / ID-like: optional `+`, digits with spaces/tabs / dashes / dots / parens.
+    /// No newlines (`\s` would cross lines and drop `\n` in HTML spans).
+    /// Requires ≥7 digits so short numbers stay weak.
     private static let phoneRegex: NSRegularExpression = {
         try! NSRegularExpression(
-            pattern: #"(?<![\w])(\+?\d[\d\s().-]{5,}\d)"#)
+            pattern: #"(?<![\w])(\+?\d[\d \t().-]{5,}\d)"#)
     }()
 
     /// UTF-16 ranges of LTR runs to isolate in RTL paragraphs (compose
@@ -192,28 +205,38 @@ enum TextDirection: Equatable {
         ltrIsolateSpans(in: string).map(\.range)
     }
 
-    /// Whether `host` (optional path/port) is safe to treat as a domain.
+    /// Whether `host` (optional path/port) is safe to *isolate* as a domain.
     static func isPlausibleBareHost(_ raw: String) -> Bool {
+        guard let tld = hostTLD(of: raw) else { return false }
+        if hostTLDDenylist.contains(tld) { return false }
+        return true
+    }
+
+    /// Whether a bare host should become an `<a href>` (stricter than isolate).
+    /// Allowlist common TLDs; multi-label public suffixes like `gov.il` work
+    /// because the last label `il` is allowlisted.
+    static func isLinkableHost(_ raw: String) -> Bool {
+        guard isPlausibleBareHost(raw), let tld = hostTLD(of: raw) else { return false }
+        return linkableTLDs.contains(tld)
+    }
+
+    /// Final DNS label of a bare host (path/port stripped), lowercased.
+    private static func hostTLD(of raw: String) -> String? {
         var s = raw
-        // Strip path for TLD check.
         if let slash = s.firstIndex(of: "/") {
             s = String(s[..<slash])
         }
-        // Strip port.
         if let colon = s.lastIndex(of: ":"),
            s[s.index(after: colon)...].allSatisfy(\.isNumber) {
             s = String(s[..<colon])
         }
         let labels = s.split(separator: ".")
-        guard labels.count >= 2 else { return false }
+        guard labels.count >= 2 else { return nil }
         let tld = String(labels.last!).lowercased()
         guard tld.count >= 2, tld.unicodeScalars.allSatisfy({
             ($0.value >= 0x61 && $0.value <= 0x7A) // a-z
-        }) else { return false }
-        if hostTLDDenylist.contains(tld) { return false }
-        // Reject single-letter second-level like "i.e" if only two labels and
-        // first is one char — but "i.e" fails TLD length if "e". "a.co" is OK.
-        return true
+        }) else { return nil }
+        return tld
     }
 
     private static func digitCount(in s: String) -> Int {

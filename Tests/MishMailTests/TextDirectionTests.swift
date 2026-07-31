@@ -81,6 +81,37 @@ final class TextDirectionTests: XCTestCase {
         XCTAssertTrue(TextDirection.ltrIsolateSpans(in: "see README.md please").isEmpty)
     }
 
+    func testEmailDoesNotYieldBareHost() {
+        // `@` lookbehind: must not isolate/linkify `gmail.com` out of an address.
+        let spans = TextDirection.ltrIsolateSpans(in: "כתבו ל ron@gmail.com בבקשה")
+        XCTAssertTrue(spans.isEmpty, "\(spans)")
+        let html = ComposeLinks.htmlFragment(from: "כתבו ל ron@gmail.com בבקשה")
+        XCTAssertFalse(html.contains("https://gmail.com"), html)
+        XCTAssertFalse(html.contains("<a "), html)
+    }
+
+    func testArbitraryWordDotWordNotLinkified() {
+        // Isolation may still skip denylisted TLDs; linkify must not fire.
+        XCTAssertFalse(TextDirection.isLinkableHost("setup.sh"))
+        XCTAssertFalse(TextDirection.isLinkableHost("foo.bar"))
+        let html = ComposeLinks.htmlFragment(from: "run setup.sh now")
+        XCTAssertFalse(html.contains("<a "), html)
+    }
+
+    func testFormsGovIlIsLinkable() {
+        XCTAssertTrue(TextDirection.isLinkableHost("forms.gov.il"))
+        let html = ComposeLinks.htmlFragment(from: "see forms.gov.il now")
+        XCTAssertTrue(html.contains(#"href="https://forms.gov.il""#), html)
+    }
+
+    func testPhoneDoesNotSpanNewline() {
+        let s = "שנה 2026\n1234567 סוף"
+        let phones = TextDirection.ltrIsolateSpans(in: s).filter { $0.kind == .phone }
+        // Second line alone is 7 digits — isolated; must not merge across \n.
+        XCTAssertEqual(phones.count, 1)
+        XCTAssertEqual((s as NSString).substring(with: phones[0].range), "1234567")
+    }
+
     func testPhoneIsIsolated() {
         let s = "התקשרו +1-555-123-4567 בבקשה"
         let spans = TextDirection.ltrIsolateSpans(in: s)

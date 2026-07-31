@@ -2065,16 +2065,26 @@ struct ComposeSubjectField: NSViewRepresentable {
     }
 
     private func applyDirection(to field: NSTextField, text: String) {
+        let direction: NSWritingDirection
+        let alignment: NSTextAlignment
         switch TextDirection.base(of: text) {
         case .rtl:
-            field.baseWritingDirection = .rightToLeft
-            field.alignment = .right
+            direction = .rightToLeft
+            alignment = .right
         case .ltr:
-            field.baseWritingDirection = .leftToRight
-            field.alignment = .left
+            direction = .leftToRight
+            alignment = .left
         case .neutral:
-            field.baseWritingDirection = .natural
-            field.alignment = .natural
+            direction = .natural
+            alignment = .natural
+        }
+        field.baseWritingDirection = direction
+        field.alignment = alignment
+        // Live field editor draws the text while focused — cell-only updates
+        // would only take effect after blur.
+        if let editor = field.currentEditor() {
+            editor.baseWritingDirection = direction
+            editor.alignment = alignment
         }
     }
 
