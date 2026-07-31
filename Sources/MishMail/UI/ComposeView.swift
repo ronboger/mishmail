@@ -635,8 +635,55 @@ struct ComposeView: View {
         }
         .fileImporter(isPresented: $showFilePicker,
                       allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
-            if case .success(let urls) = result { attachmentURLs.append(contentsOf: urls) }
+            if case .success(let urls) = result { appendAttachmentURLs(urls) }
         }
+        // Card chrome (header/footer/padding) also accepts file drops — body
+        // NSTextView handles its own via ComposeBodyTextView so paths never
+        // land as typed text.
+        .onDrop(of: [.fileURL], isTargeted: nil) { providers in
+            ComposeAttachmentDrop.fileURLs(from: providers) { urls in
+                ingestDroppedFiles(urls)
+            }
+            // Claim the drop if any provider looks like a file; load is async.
+            return providers.contains {
+                $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier)
+            }
+        }
+    }
+
+    /// Merge picked files into the chip list (path-deduped). Open-panel
+    /// URLs keep their powerbox grant for later `collectAttachments`.
+    private func appendAttachmentURLs(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        attachmentURLs = ComposeAttachmentDrop.dedupeAppend(existing: attachmentURLs,
+                                                            incoming: urls)
+    }
+
+    /// Finder / inter-app drops: sandbox grants are transient, so load bytes
+    /// now into `restoredAttachments` (same chip path as forward/undo) rather
+    /// than holding bare URLs that may fail at send/autosave.
+    private func ingestDroppedFiles(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
+        var loaded: [MIMEBuilder.Attachment] = []
+        for url in urls {
+            let access = url.startAccessingSecurityScopedResource()
+            defer { if access { url.stopAccessingSecurityScopedResource() } }
+            guard let data = try? Data(contentsOf: url) else { continue }
+            let mime = UTType(filenameExtension: url.pathExtension)?.preferredMIMEType
+                ?? "application/octet-stream"
+            loaded.append(.init(filename: url.lastPathComponent, mimeType: mime, data: data))
+        }
+        guard !loaded.isEmpty else {
+            error = "Couldn't read the dropped file\(urls.count == 1 ? "" : "s")."
+            return
+        }
+        // Dedupe by filename against chips already on the draft.
+        let existingNames = Set(restoredAttachments.map(\.filename)
+            + attachmentURLs.map(\.lastPathComponent))
+        for att in loaded where !existingNames.contains(att.filename) {
+            restoredAttachments.append(att)
+        }
+        scheduleAutosave()
     }
 
     // MARK: - Header / minimize chrome
@@ -908,7 +955,8 @@ struct ComposeView: View {
             ComposeBodyEditor(text: $body_, isFocused: $bodyFocused,
                               caretUTF16: $bodyCaretUTF16,
                               ghostText: greetingGhostText,
-                              formatTarget: formatTarget, fontSize: 14)
+                              formatTarget: formatTarget, fontSize: 14,
+                              onFilesDropped: { ingestDroppedFiles($0) })
                 .padding(.top, 10)
                 .padding(.bottom, 6)
                 // Grow with authored content while the quote is collapsed so

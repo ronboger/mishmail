@@ -189,6 +189,7 @@ targets:
       - Sources/MishMail/Support/ComposePlacement.swift
       - Sources/MishMail/Support/ComposeDraftStatusLayout.swift
       - Sources/MishMail/Support/ComposeBodyLayout.swift
+      - Sources/MishMail/Support/ComposeAttachmentDrop.swift
       - Sources/MishMail/Support/ComposeFooterLayout.swift
       - Sources/MishMail/Support/ComposeKeyOwnership.swift
       - Sources/MishMail/Support/ComposeEsc.swift

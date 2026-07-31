@@ -29,10 +29,13 @@ struct ComposeBodyEditor: NSViewRepresentable {
     var ghostText: String = ""
     var formatTarget: ComposeBodyFormatTarget?
     var fontSize: CGFloat = 14
+    /// Files dropped on the body (Finder / other apps) — attach, don't insert
+    /// paths into the markdown source.
+    var onFilesDropped: (([URL]) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, isFocused: $isFocused, caretUTF16: $caretUTF16,
-                    formatTarget: formatTarget)
+                    formatTarget: formatTarget, onFilesDropped: onFilesDropped)
     }
 
     func makeNSView(context: Context) -> NSScrollView {
@@ -52,8 +55,11 @@ struct ComposeBodyEditor: NSViewRepresentable {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = true
-        textView.backgroundColor = .clear
-        textView.drawsBackground = false
+        // Opaque fill matching the compose card so partial glyph updates after
+        // delete never leave trails (drawsBackground=false + custom ghost draw
+        // used to retain deleted characters under the caret).
+        textView.backgroundColor = .windowBackgroundColor
+        textView.drawsBackground = true
         textView.textContainerInset = NSSize(width: 0, height: 0)
         // Match TextEditor's ~5pt line fragment padding cancel used in ComposeView.
         textView.textContainer?.lineFragmentPadding = 0
@@ -73,6 +79,11 @@ struct ComposeBodyEditor: NSViewRepresentable {
         textView.onFocusChange = { [weak coord = context.coordinator] focused in
             coord?.isFocused.wrappedValue = focused
         }
+        textView.onFilesDropped = { [weak coord = context.coordinator] urls in
+            coord?.onFilesDropped?(urls)
+        }
+        // Claim file drops before NSTextView inserts paths as body text.
+        textView.registerForDraggedTypes([.fileURL])
         textView.ghostText = ghostText
         context.coordinator.bindFormatTarget()
         Coordinator.highlight(textView, fontSize: fontSize)
@@ -81,7 +92,10 @@ struct ComposeBodyEditor: NSViewRepresentable {
         // back to legacy when a mouse is plugged in / "Always show scroll bars"
         // is on (that flip used to reflow the body on the next Enter).
         let scroll = OverlayComposeScrollView()
-        scroll.drawsBackground = false
+        // Match the text view so the gutter never shows a different clear/erase
+        // path than the body (stale pixels on delete lived in that mismatch).
+        scroll.drawsBackground = true
+        scroll.backgroundColor = .windowBackgroundColor
         scroll.hasVerticalScroller = true
         scroll.hasHorizontalScroller = false
         scroll.autohidesScrollers = true
@@ -97,9 +111,13 @@ struct ComposeBodyEditor: NSViewRepresentable {
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.fontSize = fontSize
         context.coordinator.formatTarget = formatTarget
+        context.coordinator.onFilesDropped = onFilesDropped
         context.coordinator.bindFormatTarget()
         guard let textView = scroll.documentView as? ComposeBodyTextView else { return }
         context.coordinator.textView = textView
+        textView.onFilesDropped = { [weak coord = context.coordinator] urls in
+            coord?.onFilesDropped?(urls)
+        }
 
         if textView.string != text {
             // Suppress publishCaret while rewriting: assigning string and
@@ -109,6 +127,9 @@ struct ComposeBodyEditor: NSViewRepresentable {
             // body_ also set caretUTF16 to the intended park position.
             let coord = context.coordinator
             coord.isProgrammaticUpdate = true
+            // Invalidate any prior ghost before the string rewrite so old
+            // overlay pixels can't sit on top of the new layout.
+            textView.invalidateGhostDisplay()
             textView.string = text
             let maxLen = (text as NSString).length
             let loc = min(max(caretUTF16, 0), maxLen)
@@ -145,6 +166,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
         var isFocused: Binding<Bool>
         var caretUTF16: Binding<Int>
         var formatTarget: ComposeBodyFormatTarget?
+        var onFilesDropped: (([URL]) -> Void)?
         weak var textView: ComposeBodyTextView?
         var fontSize: CGFloat = 14
         /// True while updateNSView (or another external rewrite) is driving
@@ -154,11 +176,13 @@ struct ComposeBodyEditor: NSViewRepresentable {
 
         init(text: Binding<String>, isFocused: Binding<Bool>,
              caretUTF16: Binding<Int>,
-             formatTarget: ComposeBodyFormatTarget?) {
+             formatTarget: ComposeBodyFormatTarget?,
+             onFilesDropped: (([URL]) -> Void)?) {
             self.text = text
             self.isFocused = isFocused
             self.caretUTF16 = caretUTF16
             self.formatTarget = formatTarget
+            self.onFilesDropped = onFilesDropped
         }
 
         func bindFormatTarget() {
@@ -185,11 +209,23 @@ struct ComposeBodyEditor: NSViewRepresentable {
             }
             publishCaret(textView)
             Self.highlight(textView, fontSize: fontSize)
+            // Ghost is drawn outside the text system — force a full body
+            // redraw after every edit so deleted glyphs + old ghost suffix
+            // never leave a double-image under the caret.
+            if let body = textView as? ComposeBodyTextView {
+                body.invalidateGhostDisplay()
+                body.needsDisplay = true
+            }
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             publishCaret(textView)
+            // Selection moves the ghost anchor (or hides it when length > 0).
+            // Property `ghostText` may be unchanged, so didSet won't redraw.
+            if let body = textView as? ComposeBodyTextView {
+                body.invalidateGhostDisplay()
+            }
         }
 
         func apply(_ action: FormatAction) {
@@ -417,13 +453,18 @@ final class OverlayComposeScrollView: NSScrollView {
 final class ComposeBodyTextView: NSTextView {
     var onFormat: ((ComposeBodyEditor.FormatAction) -> Void)?
     var onFocusChange: ((Bool) -> Void)?
+    /// Finder / other-app file drops → compose attachments (not path text).
+    var onFilesDropped: (([URL]) -> Void)?
     /// Grey ghost suffix after the caret (greeting autocomplete). Drawn only;
     /// never part of `string` / the SwiftUI binding.
     var ghostText: String = "" {
         didSet {
-            if oldValue != ghostText { needsDisplay = true }
+            if oldValue != ghostText { invalidateGhostDisplay() }
         }
     }
+    /// Last rect where ghost text was painted — invalidated on move/clear so
+    /// partial dirty-rects after delete can't leave a double image.
+    private var lastGhostRect: NSRect = .null
 
     override func becomeFirstResponder() -> Bool {
         let ok = super.becomeFirstResponder()
@@ -437,6 +478,24 @@ final class ComposeBodyTextView: NSTextView {
         return ok
     }
 
+    /// Mark the previous ghost overlay dirty (and the whole view as a belt).
+    func invalidateGhostDisplay() {
+        if !lastGhostRect.isNull {
+            setNeedsDisplay(lastGhostRect.insetBy(dx: -4, dy: -4))
+        }
+        lastGhostRect = .null
+        needsDisplay = true
+    }
+
+    override func setSelectedRanges(_ ranges: [NSValue],
+                                    affinity: NSSelectionAffinity,
+                                    stillSelecting: Bool) {
+        invalidateGhostDisplay()
+        super.setSelectedRanges(ranges, affinity: affinity, stillSelecting: stillSelecting)
+        // New caret/selection may need ghost at a different anchor.
+        if !ghostText.isEmpty { needsDisplay = true }
+    }
+
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         drawGhostText()
@@ -444,9 +503,15 @@ final class ComposeBodyTextView: NSTextView {
 
     /// Gmail-style tertiary label ghost after a zero-length caret.
     private func drawGhostText() {
-        guard !ghostText.isEmpty else { return }
+        guard !ghostText.isEmpty else {
+            lastGhostRect = .null
+            return
+        }
         let sel = selectedRange()
-        guard sel.length == 0 else { return }
+        guard sel.length == 0 else {
+            lastGhostRect = .null
+            return
+        }
         guard let lm = layoutManager, let tc = textContainer else { return }
         lm.ensureLayout(for: tc)
         let font = self.font ?? NSFont.systemFont(ofSize: 14)
@@ -458,40 +523,54 @@ final class ComposeBodyTextView: NSTextView {
         let charIndex = min(sel.location, (string as NSString).length)
         let drawPoint: NSPoint
         if (string as NSString).length == 0 {
-            // Empty body: first glyph isn't laid out yet — pin to the
-            // container's top-leading content origin.
-            drawPoint = NSPoint(
-                x: origin.x + tc.lineFragmentPadding,
-                y: origin.y)
+            // Empty body: prefer the layout manager's extra line fragment
+            // (real caret metrics) over a hand-rolled origin pin.
+            let extra = lm.extraLineFragmentUsedRect
+            if extra.height > 0 {
+                drawPoint = NSPoint(x: origin.x + extra.minX, y: origin.y + extra.minY)
+            } else {
+                drawPoint = NSPoint(
+                    x: origin.x + tc.lineFragmentPadding,
+                    y: origin.y)
+            }
         } else {
-            // Caret at end: glyphIndexForCharacter returns the last glyph;
-            // use the caret rect from the layout manager's extra line fragment
-            // when past the last character.
-            let length = (string as NSString).length
-            if charIndex >= length {
-                var used = lm.usedRect(for: tc)
-                if lm.extraLineFragmentUsedRect.height > 0 {
-                    used = lm.extraLineFragmentUsedRect
-                    drawPoint = NSPoint(x: origin.x + used.minX,
-                                        y: origin.y + used.minY)
+            // Prefer caret rect from firstRect — handles trailing spaces and
+            // end-of-document without zero-width boundingRect glitches.
+            let caretRange = NSRange(location: charIndex, length: 0)
+            let caretRect = firstRect(forCharacterRange: caretRange, actualRange: nil)
+            if caretRect.width >= 0, caretRect.height > 0,
+               let win = window {
+                // firstRect is in screen coords; convert into this view.
+                let inWindow = win.convertFromScreen(caretRect)
+                let inView = convert(inWindow, from: nil)
+                drawPoint = NSPoint(x: inView.minX, y: inView.minY)
+            } else {
+                let length = (string as NSString).length
+                if charIndex >= length {
+                    var used = lm.usedRect(for: tc)
+                    if lm.extraLineFragmentUsedRect.height > 0 {
+                        used = lm.extraLineFragmentUsedRect
+                        drawPoint = NSPoint(x: origin.x + used.minX,
+                                            y: origin.y + used.minY)
+                    } else {
+                        let lastChar = max(0, length - 1)
+                        let g = lm.glyphIndexForCharacter(at: lastChar)
+                        var lineRange = NSRange()
+                        let line = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: &lineRange)
+                        let loc = lm.location(forGlyphAt: g)
+                        let glyphW = lm.boundingRect(
+                            forGlyphRange: NSRange(location: g, length: 1),
+                            in: tc).width
+                        drawPoint = NSPoint(x: origin.x + loc.x + glyphW,
+                                            y: origin.y + line.minY)
+                    }
                 } else {
-                    // Same line as last glyph — place after its max X.
-                    let lastChar = max(0, length - 1)
-                    let g = lm.glyphIndexForCharacter(at: lastChar)
+                    let g = lm.glyphIndexForCharacter(at: charIndex)
                     var lineRange = NSRange()
                     let line = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: &lineRange)
                     let loc = lm.location(forGlyphAt: g)
-                    let glyphW = lm.boundingRect(forGlyphRange: NSRange(location: g, length: 1),
-                                                 in: tc).width
-                    drawPoint = NSPoint(x: origin.x + loc.x + glyphW,
-                                        y: origin.y + line.minY)
+                    drawPoint = NSPoint(x: origin.x + loc.x, y: origin.y + line.minY)
                 }
-            } else {
-                let g = lm.glyphIndexForCharacter(at: charIndex)
-                var lineRange = NSRange()
-                let line = lm.lineFragmentRect(forGlyphAt: g, effectiveRange: &lineRange)
-                let loc = lm.location(forGlyphAt: g)
-                drawPoint = NSPoint(x: origin.x + loc.x, y: origin.y + line.minY)
             }
         }
         // Flipped view: draw(at:) treats y as the top of the string's box when
@@ -501,8 +580,42 @@ final class ComposeBodyTextView: NSTextView {
             ? lm.extraLineFragmentRect.height
             : font.boundingRectForFont.height
         let y = drawPoint.y + max(0, (lineH - size.height) / 2)
-        (ghostText as NSString).draw(at: NSPoint(x: drawPoint.x, y: y),
-                                    withAttributes: attrs)
+        let originDraw = NSPoint(x: drawPoint.x, y: y)
+        lastGhostRect = NSRect(origin: originDraw, size: size)
+        (ghostText as NSString).draw(at: originDraw, withAttributes: attrs)
+    }
+
+    // MARK: - File drag → attachments
+
+    override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if ComposeAttachmentDrop.containsFileURLs(sender.draggingPasteboard) {
+            return .copy
+        }
+        return super.draggingEntered(sender)
+    }
+
+    override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+        if ComposeAttachmentDrop.containsFileURLs(sender.draggingPasteboard) {
+            return .copy
+        }
+        return super.draggingUpdated(sender)
+    }
+
+    override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        if ComposeAttachmentDrop.containsFileURLs(sender.draggingPasteboard) {
+            return true
+        }
+        return super.prepareForDragOperation(sender)
+    }
+
+    override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        let urls = ComposeAttachmentDrop.fileURLs(from: sender.draggingPasteboard)
+        guard !urls.isEmpty else {
+            return super.performDragOperation(sender)
+        }
+        // Never insert file paths / NSTextAttachments into the markdown body.
+        onFilesDropped?(urls)
+        return true
     }
 
     /// `scrollRangeToVisible` (caret after Return) can nudge the clip view
