@@ -43,8 +43,8 @@ enum TextDirection: Equatable {
 
     // MARK: - LTR spans to isolate
 
-    /// Bare `http(s)://` / `mailto:` matcher — shared so isolate ranges and
-    /// linkify cannot drift. Compiled once (highlighter runs every keystroke).
+    /// Bare `http(s)://` / `mailto:` matcher (same pattern as ComposeLinks /
+    /// Markdown bare-URL passes). Compiled once — highlighter runs every keystroke.
     static let bareURLRegex: NSRegularExpression = {
         try! NSRegularExpression(
             pattern: #"(?i)\b((?:https?://|mailto:)[^\s<>\[\]()\"']+)"#)
