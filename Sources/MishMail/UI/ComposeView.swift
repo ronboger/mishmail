@@ -446,7 +446,12 @@ struct ComposeView: View {
             }
             replacingDraft = saved
             // Autosave moved the draft to a new id — keep the card hidden.
-            store.noteComposingDraft(saved.id, requestId: request.id)
+            // Only claim while *this* request is still the open compose; a
+            // fire-and-forget save after onDisappear must not resurrect a
+            // dead requestId (Fable M1).
+            if store.composeRequest?.id == request.id {
+                store.noteComposingDraft(saved.id, requestId: request.id)
+            }
             lastSavedFingerprint = fingerprint
             if silent { didSilentSave = true }
             draftStatus = .saved

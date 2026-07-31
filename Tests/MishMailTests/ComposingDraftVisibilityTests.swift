@@ -50,4 +50,42 @@ final class ComposingDraftVisibilityTests: XCTestCase {
         XCTAssertFalse(ComposingDraftVisibility.showsDraftBanner(
             liveDraftIds: [], messageCount: 9, composingDraftIds: []))
     }
+
+    func testNoteAcceptedOnlyForActiveComposeRequest() {
+        let active = UUID()
+        let stale = UUID()
+        XCTAssertTrue(ComposingDraftVisibility.acceptsComposingNote(
+            requestId: active, activeComposeRequestId: active))
+        XCTAssertFalse(ComposingDraftVisibility.acceptsComposingNote(
+            requestId: stale, activeComposeRequestId: active),
+            "late autosave from a replaced compose must not re-claim")
+        XCTAssertFalse(ComposingDraftVisibility.acceptsComposingNote(
+            requestId: active, activeComposeRequestId: nil),
+            "closed compose must not accept notes")
+    }
+
+    /// Lifecycle the pure rules must pin: note → end → late note must not
+    /// leave a permanent hide (Fable M1).
+    func testLateNoteAfterEndDoesNotHideCard() {
+        let requestId = UUID()
+        let draftId = "a:d1"
+        var claimed: Set<String> = []
+        // Active compose claims the draft.
+        if ComposingDraftVisibility.acceptsComposingNote(
+            requestId: requestId, activeComposeRequestId: requestId) {
+            claimed.insert(draftId)
+        }
+        XCTAssertTrue(ComposingDraftVisibility.hidesDraftCard(
+            messageId: draftId, composingDraftIds: claimed))
+        // Card unmounts / request ends.
+        claimed.removeAll()
+        // Late autosave tries to re-claim with a dead request (compose nil).
+        if ComposingDraftVisibility.acceptsComposingNote(
+            requestId: requestId, activeComposeRequestId: nil) {
+            claimed.insert(draftId)
+        }
+        XCTAssertFalse(ComposingDraftVisibility.hidesDraftCard(
+            messageId: draftId, composingDraftIds: claimed),
+            "card must return after compose closes even if save finishes late")
+    }
 }

@@ -28,4 +28,12 @@ enum ComposingDraftVisibility {
         guard messageCount > 3 else { return false }
         return liveDraftIds.contains { !composingDraftIds.contains($0) }
     }
+
+    /// Autosave that outlives its compose card must not re-claim a dead
+    /// requestId (would permanently hide the draft card). Only the active
+    /// `composeRequest` may register ownership.
+    static func acceptsComposingNote(requestId: UUID,
+                                     activeComposeRequestId: UUID?) -> Bool {
+        activeComposeRequestId == requestId
+    }
 }
