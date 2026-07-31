@@ -2,6 +2,9 @@ import SwiftUI
 
 /// Notion Mail-style recipient field: accepted addresses render as chips,
 /// with autocomplete backed by contacts mined from synced mail.
+///
+/// Chips are clickable: click the address to re-open it in the text field for
+/// editing (typos, wrong contact). × still removes without editing.
 struct TokenAddressField: View {
     @Environment(MailStore.self) var store
     let label: String
@@ -13,6 +16,8 @@ struct TokenAddressField: View {
     /// Backspace never reaches onKeyPress — the field editor eats it —
     /// so an NSEvent monitor (active only while focused) pops the last chip.
     @State private var keyMonitor: Any?
+    /// Hovered chip (for pointer + slightly stronger fill).
+    @State private var hoveredToken: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -24,17 +29,7 @@ struct TokenAddressField: View {
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
                         ForEach(tokens, id: \.self) { token in
-                            HStack(spacing: 3) {
-                                Text(displayName(token)).font(.system(size: 12))
-                                Button {
-                                    tokens.removeAll { $0 == token }
-                                } label: {
-                                    Image(systemName: "xmark").font(.system(size: 8, weight: .bold))
-                                }
-                                .buttonStyle(.plain).foregroundStyle(.secondary)
-                            }
-                            .padding(.horizontal, 8).padding(.vertical, 3)
-                            .background(Color.secondary.opacity(0.14), in: Capsule())
+                            chip(token)
                         }
                         TextField(tokens.isEmpty ? "Add recipients" : "", text: $draft)
                             .textFieldStyle(.plain)
@@ -124,6 +119,51 @@ struct TokenAddressField: View {
         .onDisappear { removeKeyMonitor() }
     }
 
+    /// One recipient chip: click address → edit in the text field; × → remove.
+    @ViewBuilder
+    private func chip(_ token: String) -> some View {
+        let isHovered = hoveredToken == token
+        HStack(spacing: 0) {
+            // Address (or contact name) — click re-opens for editing.
+            Button {
+                beginEdit(token)
+            } label: {
+                Text(displayName(token))
+                    .font(.system(size: 12))
+                    .padding(.leading, 8)
+                    .padding(.vertical, 3)
+                    .padding(.trailing, 3)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(token == displayName(token)
+                  ? "Click to edit"
+                  : "\(token) — click to edit")
+
+            Button {
+                tokens = TokenAddressEditing.remove(tokens: tokens, token: token)
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.system(size: 8, weight: .bold))
+                    .padding(.trailing, 8)
+                    .padding(.vertical, 3)
+                    .padding(.leading, 1)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(.secondary)
+            .help("Remove")
+        }
+        .background(
+            Color.secondary.opacity(isHovered ? 0.22 : 0.14),
+            in: Capsule()
+        )
+        .onHover { inside in
+            hoveredToken = inside ? token : (hoveredToken == token ? nil : hoveredToken)
+            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
+        }
+    }
+
     /// Installs the backspace monitor while this field is focused.
     private func syncKeyMonitor() {
         if focused {
@@ -165,5 +205,12 @@ struct TokenAddressField: View {
         let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
         if cleaned.contains("@") { tokens.append(cleaned) }
         draft = ""
+    }
+
+    private func beginEdit(_ token: String) {
+        let result = TokenAddressEditing.beginEdit(tokens: tokens, draft: draft, token: token)
+        tokens = result.tokens
+        draft = result.draft
+        focused = true
     }
 }
