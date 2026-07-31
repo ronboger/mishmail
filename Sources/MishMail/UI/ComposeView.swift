@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import UniformTypeIdentifiers
 
 /// Notion/Gmail-style compose: a docked card with recipient chips,
@@ -968,12 +969,10 @@ struct ComposeView: View {
                     .zIndex(1)
             }
 
-            TextField("Subject", text: $subject)
-                .textFieldStyle(.plain)
-                .font(.system(size: 14, weight: .semibold))
-                // Natural alignment for Hebrew subjects (trailing in LTR chrome).
-                .multilineTextAlignment(
-                    TextDirection.isRTL(subject) ? .trailing : .leading)
+            // AppKit field so we can set baseWritingDirection (SwiftUI
+            // TextField only gets alignment, which still shreds mixed subjects).
+            ComposeSubjectField(text: $subject)
+                .frame(height: 22)
                 .padding(.vertical, 8)
             Divider()
 
@@ -2026,5 +2025,66 @@ struct ComposeView: View {
     private func cancelInFlightPersist() {
         autosaveTask?.cancel()
         autosaveTask = nil
+    }
+}
+
+// MARK: - Subject field (BiDi base writing direction)
+
+/// Borderless subject field with per-content base writing direction.
+/// SwiftUI `TextField` can right-align RTL but leaves base direction LTR, so
+/// Hebrew subjects with Latin/punctuation still reorder wrong.
+struct ComposeSubjectField: NSViewRepresentable {
+    @Binding var text: String
+
+    func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField(string: text)
+        field.isBordered = false
+        field.isBezeled = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: 14, weight: .semibold)
+        field.textColor = .labelColor
+        field.placeholderString = "Subject"
+        field.lineBreakMode = .byTruncatingTail
+        field.cell?.isScrollable = true
+        field.cell?.wraps = false
+        field.cell?.usesSingleLineMode = true
+        field.delegate = context.coordinator
+        applyDirection(to: field, text: text)
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.text = $text
+        if field.stringValue != text {
+            field.stringValue = text
+        }
+        applyDirection(to: field, text: text)
+    }
+
+    private func applyDirection(to field: NSTextField, text: String) {
+        switch TextDirection.base(of: text) {
+        case .rtl:
+            field.baseWritingDirection = .rightToLeft
+            field.alignment = .right
+        case .ltr:
+            field.baseWritingDirection = .leftToRight
+            field.alignment = .left
+        case .neutral:
+            field.baseWritingDirection = .natural
+            field.alignment = .natural
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+        init(text: Binding<String>) { self.text = text }
+
+        func controlTextDidChange(_ obj: Notification) {
+            guard let field = obj.object as? NSTextField else { return }
+            text.wrappedValue = field.stringValue
+        }
     }
 }

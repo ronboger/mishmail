@@ -4,7 +4,8 @@ import Foundation
 ///
 /// MishMail is mostly LTR, but mixed RTL paragraphs (Hebrew + URLs/IDs) need:
 /// 1. A paragraph **base direction** (HTML `dir=auto` / first strong char)
-/// 2. **Isolation** of embedded LTR runs (URLs) so UBA does not shred them
+/// 2. **Isolation** of embedded LTR runs (URLs, bare hosts, phones) so UBA
+///    does not shred them
 ///
 /// Pure Foundation — no AppKit — so unit tests cover detection and HTML attrs.
 ///
@@ -41,68 +42,250 @@ enum TextDirection: Equatable {
         base(of: string) == .rtl
     }
 
-    // MARK: - LTR spans to isolate
+    // MARK: - Shared bare-URL pattern (ComposeLinks / Markdown / isolate)
 
-    /// Bare `http(s)://` / `mailto:` matcher (same pattern as ComposeLinks /
-    /// Markdown bare-URL passes). Compiled once — highlighter runs every keystroke.
+    /// Bare `http(s)://` / `mailto:` matcher. Single compiled regex so
+    /// isolate ranges and linkify cannot drift.
     static let bareURLRegex: NSRegularExpression = {
         try! NSRegularExpression(
             pattern: #"(?i)\b((?:https?://|mailto:)[^\s<>\[\]()\"']+)"#)
     }()
 
-    /// Characters trimmed from the end of a bare-URL match so trailing prose
-    /// punctuation stays outside the isolate / anchor (same set as
-    /// `ComposeLinks.bareURLMatches`).
-    private static let trailingURLPunctuation = CharacterSet(charactersIn: ".,;:!?)]}\"'")
+    /// Characters trimmed from the end of a bare-URL / host match so trailing
+    /// prose punctuation stays outside the isolate / anchor.
+    static let trailingURLPunctuation = CharacterSet(charactersIn: ".,;:!?)]}\"'")
 
-    /// UTF-16 ranges of bare `http(s)://` / `mailto:` URLs that should be
-    /// LTR-isolated inside an RTL paragraph (compose highlighter + HTML).
+    // MARK: - LTR spans to isolate
+
+    /// Kind of LTR run isolated inside RTL prose.
+    enum IsolateKind: Equatable {
+        /// `http(s)://` / `mailto:` (and autolinkable bare hosts).
+        case url
+        /// Domain-like token without scheme (isolate always; linkify when safe).
+        case host
+        /// Phone / long ID with separators that UBA otherwise reorders.
+        case phone
+    }
+
+    struct IsolateSpan: Equatable {
+        let range: NSRange
+        let kind: IsolateKind
+    }
+
+    /// Conservative bare-host: `label(.label)+.tld` with optional `:port` / path.
+    /// TLD is letters only (rejects `v1.0`); common file extensions are skipped
+    /// so `README.md` is not treated as a domain.
+    private static let bareHostRegex: NSRegularExpression = {
+        try! NSRegularExpression(
+            pattern: #"(?i)\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,24})(?::\d{2,5})?(?:/[^\s<>\[\]()\"']*)?"#)
+    }()
+
+    /// File-extension denylist for bare-host false positives.
+    private static let hostTLDDenylist: Set<String> = [
+        "txt", "md", "pdf", "png", "jpg", "jpeg", "gif", "svg", "webp",
+        "zip", "gz", "tgz", "rar", "7z", "tar", "bz2",
+        "doc", "docx", "xls", "xlsx", "ppt", "pptx", "csv",
+        "mp3", "mp4", "mov", "avi", "mkv", "wav",
+        "js", "ts", "tsx", "jsx", "css", "scss", "html", "htm", "xml", "json",
+        "swift", "py", "rb", "go", "rs", "c", "h", "cpp", "java", "kt",
+        "log", "lock", "yml", "yaml", "toml", "ini", "cfg", "conf",
+    ]
+
+    /// Phone / ID-like: optional `+`, digits with spaces / dashes / dots / parens.
+    /// Requires ≥7 digits so short numbers stay weak (UBA handles "2028606" OK).
+    private static let phoneRegex: NSRegularExpression = {
+        try! NSRegularExpression(
+            pattern: #"(?<![\w])(\+?\d[\d\s().-]{5,}\d)"#)
+    }()
+
+    /// UTF-16 ranges of LTR runs to isolate in RTL paragraphs (compose
+    /// highlighter + HTML plain spans). Non-overlapping, sorted by location.
     ///
-    /// Trailing prose punctuation is stripped one character at a time from the
-    /// end (same greedy-while as `ComposeLinks`), so isolate bounds stay aligned
-    /// with the linkified HTML alternative for common cases (`.`, `,`, `)`).
-    static func ltrIsolateNSRanges(in string: String) -> [NSRange] {
+    /// Priority when ranges collide: scheme URL > bare host > phone.
+    static func ltrIsolateSpans(in string: String) -> [IsolateSpan] {
         guard !string.isEmpty else { return [] }
         let ns = string as NSString
         let full = NSRange(location: 0, length: ns.length)
-        var out: [NSRange] = []
-        bareURLRegex.enumerateMatches(in: string, options: [], range: full) { match, _, _ in
-            guard let match, match.numberOfRanges >= 2 else { return }
-            var range = match.range(at: 1)
-            guard range.location != NSNotFound, range.length > 0 else { return }
-            while range.length > 0 {
-                let last = ns.character(at: range.location + range.length - 1)
+        var candidates: [IsolateSpan] = []
+
+        func trimTrailing(_ range: NSRange) -> NSRange? {
+            var r = range
+            while r.length > 0 {
+                let last = ns.character(at: r.location + r.length - 1)
                 guard let scalar = Unicode.Scalar(last),
                       trailingURLPunctuation.contains(scalar) else { break }
-                range.length -= 1
+                r.length -= 1
             }
-            if range.length > 0 { out.append(range) }
+            return r.length > 0 ? r : nil
         }
-        return out
+
+        bareURLRegex.enumerateMatches(in: string, options: [], range: full) { match, _, _ in
+            guard let match, match.numberOfRanges >= 2,
+                  let r = trimTrailing(match.range(at: 1)) else { return }
+            candidates.append(IsolateSpan(range: r, kind: .url))
+        }
+
+        bareHostRegex.enumerateMatches(in: string, options: [], range: full) { match, _, _ in
+            guard let match, match.numberOfRanges >= 2,
+                  let r = trimTrailing(match.range(at: 1)) else { return }
+            let text = ns.substring(with: r)
+            guard isPlausibleBareHost(text) else { return }
+            candidates.append(IsolateSpan(range: r, kind: .host))
+        }
+
+        phoneRegex.enumerateMatches(in: string, options: [], range: full) { match, _, _ in
+            guard let match, match.numberOfRanges >= 2 else { return }
+            // Trim only prose punctuation — keep phone separators - ( ) .
+            var r = match.range(at: 1)
+            while r.length > 0 {
+                let last = ns.character(at: r.location + r.length - 1)
+                guard let scalar = Unicode.Scalar(last) else { break }
+                let ch = Character(scalar)
+                if ",;:!?)]}\"'".contains(ch) {
+                    r.length -= 1
+                    continue
+                }
+                // Trailing period only when not part of a digit.digit sequence
+                // already ended (prose "call me 555-1234.")
+                if ch == "." {
+                    r.length -= 1
+                    continue
+                }
+                break
+            }
+            guard r.length > 0 else { return }
+            let text = ns.substring(with: r)
+            guard digitCount(in: text) >= 7 else { return }
+            candidates.append(IsolateSpan(range: r, kind: .phone))
+        }
+
+        // Resolve overlaps: keep higher-priority kind, then longer, then earlier.
+        let priority: [IsolateKind: Int] = [.url: 3, .host: 2, .phone: 1]
+        let sorted = candidates.sorted {
+            if $0.range.location != $1.range.location {
+                return $0.range.location < $1.range.location
+            }
+            return $0.range.length > $1.range.length
+        }
+        var accepted: [IsolateSpan] = []
+        for span in sorted {
+            if accepted.contains(where: { rangesOverlap($0.range, span.range) }) {
+                // Prefer higher priority already-accepted; skip if lower.
+                if let idx = accepted.firstIndex(where: { rangesOverlap($0.range, span.range) }) {
+                    let existing = accepted[idx]
+                    let pNew = priority[span.kind] ?? 0
+                    let pOld = priority[existing.kind] ?? 0
+                    if pNew > pOld
+                        || (pNew == pOld && span.range.length > existing.range.length) {
+                        accepted[idx] = span
+                    }
+                }
+                continue
+            }
+            accepted.append(span)
+        }
+        return accepted.sorted { $0.range.location < $1.range.location }
     }
 
-    // MARK: - Paragraph split (HTML dir per block)
+    /// Convenience: ranges only (compose highlighter).
+    static func ltrIsolateNSRanges(in string: String) -> [NSRange] {
+        ltrIsolateSpans(in: string).map(\.range)
+    }
 
-    /// Blank-line-separated paragraphs (single newlines stay inside a block).
-    /// Empty input → `[]`. Leading/trailing blank runs are dropped.
-    static func paragraphs(in text: String) -> [String] {
+    /// Whether `host` (optional path/port) is safe to treat as a domain.
+    static func isPlausibleBareHost(_ raw: String) -> Bool {
+        var s = raw
+        // Strip path for TLD check.
+        if let slash = s.firstIndex(of: "/") {
+            s = String(s[..<slash])
+        }
+        // Strip port.
+        if let colon = s.lastIndex(of: ":"),
+           s[s.index(after: colon)...].allSatisfy(\.isNumber) {
+            s = String(s[..<colon])
+        }
+        let labels = s.split(separator: ".")
+        guard labels.count >= 2 else { return false }
+        let tld = String(labels.last!).lowercased()
+        guard tld.count >= 2, tld.unicodeScalars.allSatisfy({
+            ($0.value >= 0x61 && $0.value <= 0x7A) // a-z
+        }) else { return false }
+        if hostTLDDenylist.contains(tld) { return false }
+        // Reject single-letter second-level like "i.e" if only two labels and
+        // first is one char — but "i.e" fails TLD length if "e". "a.co" is OK.
+        return true
+    }
+
+    private static func digitCount(in s: String) -> Int {
+        s.unicodeScalars.filter { CharacterSet.decimalDigits.contains($0) }.count
+    }
+
+    private static func rangesOverlap(_ a: NSRange, _ b: NSRange) -> Bool {
+        let aEnd = a.location + a.length
+        let bEnd = b.location + b.length
+        return a.location < bEnd && b.location < aEnd
+    }
+
+    // MARK: - Paragraph / blank-line blocks (HTML dir + spacing)
+
+    /// A blank-line-separated text block or a run of empty lines.
+    enum Block: Equatable {
+        /// Non-empty paragraph (may contain single newlines between lines).
+        case paragraph(String)
+        /// One or more consecutive blank lines (after whitespace trim).
+        case blanks(Int)
+    }
+
+    /// Split text into paragraphs and blank-line runs.
+    /// Whitespace-only lines count as blank. Leading/trailing blank runs are kept
+    /// so multi-blank fidelity can be preserved for HTML.
+    static func blocks(in text: String) -> [Block] {
         let normalized = text
             .replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
-        var paras: [String] = []
+        // Drop a single trailing empty line so "para\n" is one paragraph
+        // (editor often ends with a newline without meaning an extra blank).
+        var lines = normalized.split(separator: "\n", omittingEmptySubsequences: false)
+            .map(String.init)
+        if lines.count > 1, lines.last == "" { lines.removeLast() }
+        if lines.isEmpty { return [] }
+
+        var out: [Block] = []
         var buf: [String] = []
-        for line in normalized.split(separator: "\n", omittingEmptySubsequences: false) {
-            if line.isEmpty {
-                if !buf.isEmpty {
-                    paras.append(buf.joined(separator: "\n"))
-                    buf = []
-                }
+        var blankRun = 0
+
+        func flushPara() {
+            guard !buf.isEmpty else { return }
+            out.append(.paragraph(buf.joined(separator: "\n")))
+            buf = []
+        }
+        func flushBlanks() {
+            guard blankRun > 0 else { return }
+            out.append(.blanks(blankRun))
+            blankRun = 0
+        }
+
+        for line in lines {
+            if line.trimmingCharacters(in: .whitespaces).isEmpty {
+                flushPara()
+                blankRun += 1
             } else {
-                buf.append(String(line))
+                flushBlanks()
+                buf.append(line)
             }
         }
-        if !buf.isEmpty { paras.append(buf.joined(separator: "\n")) }
-        return paras
+        flushPara()
+        flushBlanks()
+        return out
+    }
+
+    /// Blank-line-separated paragraphs only (empty input → `[]`).
+    /// Blank runs are dropped; use `blocks(in:)` when spacing fidelity matters.
+    static func paragraphs(in text: String) -> [String] {
+        blocks(in: text).compactMap {
+            if case .paragraph(let p) = $0 { return p }
+            return nil
+        }
     }
 
     // MARK: - Strong character classification

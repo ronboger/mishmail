@@ -186,8 +186,9 @@ enum ComposeLinks {
 
     // MARK: - HTML
 
-    /// Escaped HTML fragment for a plain-text compose body: markdown links and
-    /// bare `http(s)://` / `mailto:` URLs become anchors; newlines become `<br>`.
+    /// Escaped HTML fragment for a plain-text compose body: markdown links,
+    /// bare `http(s)://` / `mailto:` / hostnames become anchors; phone-like
+    /// digit runs get `<span dir="ltr">`; newlines become `<br>`.
     static func htmlFragment(from plain: String) -> String {
         guard !plain.isEmpty else { return "" }
         var out = ""
@@ -208,9 +209,41 @@ enum ComposeLinks {
             }
             // Consume plain text up to the next link (or end).
             let end = linkIdx < links.count ? links[linkIdx].range.lowerBound : plain.endIndex
-            let chunk = String(plain[i..<end])
-            out += escapeText(chunk).replacingOccurrences(of: "\n", with: "<br>")
+            out += plainChunkHTML(in: plain, range: i..<end)
             i = end
+        }
+        return out
+    }
+
+    /// Escape a non-link slice, wrapping phone isolates in `dir="ltr"` spans.
+    private static func plainChunkHTML(in plain: String,
+                                       range: Range<String.Index>) -> String {
+        guard range.lowerBound < range.upperBound else { return "" }
+        let base = NSRange(range, in: plain)
+        let phones = TextDirection.ltrIsolateSpans(in: plain)
+            .filter { $0.kind == .phone }
+            .filter { NSIntersectionRange($0.range, base).length == $0.range.length }
+            .sorted { $0.range.location < $1.range.location }
+        if phones.isEmpty {
+            let chunk = String(plain[range])
+            return escapeText(chunk).replacingOccurrences(of: "\n", with: "<br>")
+        }
+        var out = ""
+        var cursor = range.lowerBound
+        for phone in phones {
+            guard let pr = Range(phone.range, in: plain),
+                  pr.lowerBound >= cursor, pr.upperBound <= range.upperBound else { continue }
+            if cursor < pr.lowerBound {
+                let before = String(plain[cursor..<pr.lowerBound])
+                out += escapeText(before).replacingOccurrences(of: "\n", with: "<br>")
+            }
+            let text = String(plain[pr])
+            out += "<span dir=\"ltr\">\(escapeText(text))</span>"
+            cursor = pr.upperBound
+        }
+        if cursor < range.upperBound {
+            let after = String(plain[cursor..<range.upperBound])
+            out += escapeText(after).replacingOccurrences(of: "\n", with: "<br>")
         }
         return out
     }
@@ -278,23 +311,14 @@ enum ComposeLinks {
     }
 
     private static func bareURLMatches(in body: String) -> [BareURL] {
-        guard let re = try? NSRegularExpression(
-            pattern: #"(?i)\b((?:https?://|mailto:)[^\s<>\[\]()\"']+)"#) else { return [] }
-        let ns = body as NSString
-        let full = NSRange(location: 0, length: ns.length)
-        return re.matches(in: body, range: full).compactMap { match -> BareURL? in
-            guard let range = Range(match.range(at: 1), in: body) else { return nil }
-            var text = String(body[range])
-            // Trim trailing punctuation commonly stuck to URLs in prose.
-            while let last = text.last, ".,;:!?)]}\"'".contains(last) {
-                text.removeLast()
-            }
-            guard !text.isEmpty,
-                  let end = body.index(range.lowerBound,
-                                       offsetBy: text.count,
-                                       limitedBy: range.upperBound),
-                  let href = normalizeURL(text) else { return nil }
-            return BareURL(range: range.lowerBound..<end, text: text, url: href)
+        // Shared isolate spans: scheme URLs + conservative bare hosts.
+        // Phones are isolated in HTML as spans, not turned into links.
+        TextDirection.ltrIsolateSpans(in: body).compactMap { span -> BareURL? in
+            guard span.kind == .url || span.kind == .host else { return nil }
+            guard let range = Range(span.range, in: body) else { return nil }
+            let text = String(body[range])
+            guard let href = normalizeURL(text) else { return nil }
+            return BareURL(range: range, text: text, url: href)
         }
     }
 

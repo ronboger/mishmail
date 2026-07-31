@@ -621,31 +621,38 @@ enum ComposeQuote {
     ///
     /// Plain text: **per blank-line paragraph** `dir` (first strong char), so
     /// an English greeting + Hebrew body is not forced LTR for the whole
-    /// message. Markdown: one outer `dir` from the full body (blocks already
-    /// structure the content; per-block dir is a follow-up).
+    /// message. Markdown blocks carry their own `dir` (no single outer wrap).
     static func authoredHeadHTML(_ userText: String) -> String {
         guard !userText.isEmpty else { return "" }
         if Markdown.looksLikeMarkdown(userText) {
-            let dir = TextDirection.htmlDir(of: userText)
-            return "<div dir=\"\(dir)\">\(Markdown.toHTML(userText))</div>"
+            return Markdown.toHTML(userText)
         }
         return plainAuthoredHTML(userText)
     }
 
     /// Blank-line paragraphs each get their own `dir` + linkified body.
-    /// Adjacent paragraphs are separated with a Gmail-style empty spacer so
-    /// blank lines remain visible (splitting on blank lines would otherwise
-    /// collapse inter-paragraph gaps).
+    /// Runs of N blank lines become N Gmail-style `<div><br></div>` spacers
+    /// (multi-blank fidelity; whitespace-only lines count as blank).
     private static func plainAuthoredHTML(_ userText: String) -> String {
-        let paras = TextDirection.paragraphs(in: userText)
-        if paras.isEmpty {
+        let blocks = TextDirection.blocks(in: userText)
+        if blocks.isEmpty {
             let dir = TextDirection.htmlDir(of: userText)
             return "<div dir=\"\(dir)\">\(ComposeLinks.htmlFragment(from: userText))</div>"
         }
-        return paras.map { para in
-            let dir = TextDirection.htmlDir(of: para)
-            return "<div dir=\"\(dir)\">\(ComposeLinks.htmlFragment(from: para))</div>"
-        }.joined(separator: "<div><br></div>")
+        var out = ""
+        for block in blocks {
+            switch block {
+            case .paragraph(let para):
+                let dir = TextDirection.htmlDir(of: para)
+                out += "<div dir=\"\(dir)\">\(ComposeLinks.htmlFragment(from: para))</div>"
+            case .blanks(let n):
+                // One spacer per blank line (Gmail-shaped).
+                for _ in 0..<n {
+                    out += "<div><br></div>"
+                }
+            }
+        }
+        return out
     }
 
     static func escapeHTML(_ s: String) -> String {

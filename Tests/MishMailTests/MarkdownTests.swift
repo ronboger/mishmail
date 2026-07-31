@@ -65,8 +65,8 @@ final class MarkdownTests: XCTestCase {
         ## Sub
         This is **bold** and *italic* and `code`.
         """)
-        XCTAssertTrue(html.contains("<h1>Hello</h1>"))
-        XCTAssertTrue(html.contains("<h2>Sub</h2>"))
+        XCTAssertTrue(html.contains(#"<h1 dir="ltr">Hello</h1>"#))
+        XCTAssertTrue(html.contains(#"<h2 dir="ltr">Sub</h2>"#))
         XCTAssertTrue(html.contains("<strong>bold</strong>"))
         XCTAssertTrue(html.contains("<em>italic</em>"))
         XCTAssertTrue(html.contains("<code>code</code>"))
@@ -82,11 +82,11 @@ final class MarkdownTests: XCTestCase {
 
         > quoted line
         """)
-        XCTAssertTrue(html.contains("<ul>"))
+        XCTAssertTrue(html.contains(#"<ul dir="ltr">"#))
         XCTAssertTrue(html.contains("<li>alpha</li>"))
-        XCTAssertTrue(html.contains("<ol>"))
+        XCTAssertTrue(html.contains(#"<ol dir="ltr">"#))
         XCTAssertTrue(html.contains("<li>one</li>"))
-        XCTAssertTrue(html.contains("<blockquote type=\"cite\">quoted line</blockquote>"))
+        XCTAssertTrue(html.contains(#"<blockquote type="cite" dir="ltr">quoted line</blockquote>"#))
     }
 
     func testFencedCodeBlock() {
@@ -99,9 +99,9 @@ final class MarkdownTests: XCTestCase {
 
         Outro
         """)
-        XCTAssertTrue(html.contains("<pre><code class=\"language-swift\">let x = 1</code></pre>"))
-        XCTAssertTrue(html.contains("<p>Intro</p>"))
-        XCTAssertTrue(html.contains("<p>Outro</p>"))
+        XCTAssertTrue(html.contains(#"<pre dir="ltr"><code class="language-swift">let x = 1</code></pre>"#))
+        XCTAssertTrue(html.contains(#"<p dir="ltr">Intro</p>"#))
+        XCTAssertTrue(html.contains(#"<p dir="ltr">Outro</p>"#))
     }
 
     func testLinkAndStrikethrough() {

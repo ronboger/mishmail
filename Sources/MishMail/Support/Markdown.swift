@@ -55,7 +55,8 @@ enum Markdown {
 
     /// Full-body markdown → HTML fragment suitable for a multipart/alternative
     /// text/html part. Blank lines split paragraphs; fenced code and display
-    /// math keep their internal newlines.
+    /// math keep their internal newlines. Each block gets its own `dir` from
+    /// first-strong text (code/math forced LTR).
     static func toHTML(_ source: String) -> String {
         let normalized = source.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
@@ -70,7 +71,7 @@ enum Markdown {
         while i < lines.count {
             let line = lines[i]
 
-            // Fenced code block.
+            // Fenced code block — always LTR (code is LTR source).
             if line.hasPrefix("```") {
                 let lang = String(line.dropFirst(3)).trimmingCharacters(in: .whitespaces)
                 var body: [String] = []
@@ -81,7 +82,7 @@ enum Markdown {
                 }
                 if i < lines.count { i += 1 }  // closing fence
                 let classAttr = lang.isEmpty ? "" : " class=\"language-\(escapeAttr(lang))\""
-                html.append("<pre><code\(classAttr)>\(body.joined(separator: "\n"))</code></pre>")
+                html.append("<pre dir=\"ltr\"><code\(classAttr)>\(body.joined(separator: "\n"))</code></pre>")
                 continue
             }
 
@@ -122,7 +123,7 @@ enum Markdown {
                 }
                 // No closer — emit the opening line as a normal paragraph and
                 // advance (must not fall through or `i` stalls forever on `$$`).
-                html.append("<p>\(inlineHTML(line))</p>")
+                html.append(dirBlock("p", text: line, inner: inlineHTML(line)))
                 i += 1
                 continue
             }
@@ -135,7 +136,9 @@ enum Markdown {
 
             // ATX headings.
             if let heading = parseHeading(line) {
-                html.append("<h\(heading.level)>\(inlineHTML(heading.text))</h\(heading.level)>")
+                html.append(dirBlock("h\(heading.level)",
+                                     text: heading.text,
+                                     inner: inlineHTML(heading.text)))
                 i += 1
                 continue
             }
@@ -159,30 +162,40 @@ enum Markdown {
                 }
                 // Nested markdown inside quotes is rendered as plain lines with
                 // inline markup — good enough for reply trails.
+                let plain = quoted.joined(separator: "\n")
                 let inner = quoted.map { inlineHTML($0) }.joined(separator: "<br>")
-                html.append("<blockquote type=\"cite\">\(inner)</blockquote>")
+                let dir = TextDirection.htmlDir(of: plain)
+                html.append("<blockquote type=\"cite\" dir=\"\(dir)\">\(inner)</blockquote>")
                 continue
             }
 
             // Unordered list.
             if isUnorderedItem(line) {
                 var items: [String] = []
+                var plainItems: [String] = []
                 while i < lines.count, isUnorderedItem(lines[i]) {
-                    items.append(inlineHTML(stripListMarker(lines[i])))
+                    let stripped = stripListMarker(lines[i])
+                    plainItems.append(stripped)
+                    items.append(inlineHTML(stripped))
                     i += 1
                 }
-                html.append("<ul>" + items.map { "<li>\($0)</li>" }.joined() + "</ul>")
+                let dir = TextDirection.htmlDir(of: plainItems.joined(separator: "\n"))
+                html.append("<ul dir=\"\(dir)\">" + items.map { "<li>\($0)</li>" }.joined() + "</ul>")
                 continue
             }
 
             // Ordered list.
             if isOrderedItem(line) {
                 var items: [String] = []
+                var plainItems: [String] = []
                 while i < lines.count, isOrderedItem(lines[i]) {
-                    items.append(inlineHTML(stripOrderedMarker(lines[i])))
+                    let stripped = stripOrderedMarker(lines[i])
+                    plainItems.append(stripped)
+                    items.append(inlineHTML(stripped))
                     i += 1
                 }
-                html.append("<ol>" + items.map { "<li>\($0)</li>" }.joined() + "</ol>")
+                let dir = TextDirection.htmlDir(of: plainItems.joined(separator: "\n"))
+                html.append("<ol dir=\"\(dir)\">" + items.map { "<li>\($0)</li>" }.joined() + "</ol>")
                 continue
             }
 
@@ -199,13 +212,21 @@ enum Markdown {
             }
             // Safety: never stall if a "special" line matched no handler above.
             if para.isEmpty {
-                html.append("<p>\(inlineHTML(lines[i]))</p>")
+                html.append(dirBlock("p", text: lines[i], inner: inlineHTML(lines[i])))
                 i += 1
             } else {
-                html.append("<p>\(para.map { inlineHTML($0) }.joined(separator: "<br>"))</p>")
+                let plain = para.joined(separator: "\n")
+                let inner = para.map { inlineHTML($0) }.joined(separator: "<br>")
+                html.append(dirBlock("p", text: plain, inner: inner))
             }
         }
         return html.joined(separator: "\n")
+    }
+
+    /// `<tag dir="…">inner</tag>` from first-strong direction of plain `text`.
+    private static func dirBlock(_ tag: String, text: String, inner: String) -> String {
+        let dir = TextDirection.htmlDir(of: text)
+        return "<\(tag) dir=\"\(dir)\">\(inner)</\(tag)>"
     }
 
     // MARK: - Inline formatting for the editor
@@ -466,8 +487,9 @@ enum Markdown {
             guard let href = ComposeLinks.normalizeURL(m[2]) else { return m[0] }
             return protect("<a href=\"\(ComposeLinks.escapeAttribute(href))\" dir=\"ltr\">\(escapeHTML(m[1]))</a>")
         }
-        // Bare http(s)/mailto URLs (ComposeLinks parity for markdown bodies).
-        work = replaceAll(work, pattern: #"(?i)\b((?:https?://|mailto:)[^\s<>\[\]()\"']+)"#) { m in
+        // Bare http(s)/mailto URLs — same compiled pattern as TextDirection /
+        // ComposeLinks so isolate bounds and anchors cannot drift.
+        work = replaceAll(work, regex: TextDirection.bareURLRegex) { m in
             var text = m[1]
             while let last = text.last, ".,;:!?)]}\"'".contains(last) { text.removeLast() }
             guard !text.isEmpty, let href = ComposeLinks.normalizeURL(text) else { return m[0] }
@@ -562,8 +584,13 @@ enum Markdown {
     private static func replaceAll(_ input: String, pattern: String,
                                    with transform: ([String]) -> String) -> String {
         guard let re = try? NSRegularExpression(pattern: pattern) else { return input }
+        return replaceAll(input, regex: re, with: transform)
+    }
+
+    private static func replaceAll(_ input: String, regex: NSRegularExpression,
+                                   with transform: ([String]) -> String) -> String {
         let ns = input as NSString
-        let matches = re.matches(in: input, range: NSRange(location: 0, length: ns.length))
+        let matches = regex.matches(in: input, range: NSRange(location: 0, length: ns.length))
         var result = input
         for match in matches.reversed() {
             var groups: [String] = []

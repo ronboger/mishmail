@@ -40,7 +40,7 @@ final class TextDirectionTests: XCTestCase {
         XCTAssertEqual(TextDirection.base(of: "مرحبا"), .rtl)
     }
 
-    // MARK: - LTR isolate ranges (URLs)
+    // MARK: - LTR isolate ranges
 
     func testBareHTTPURLIsIsolated() {
         let s = "ניסיתי באתר http://forms.gov.il&source=gmail&ust=123 מספר"
@@ -68,9 +68,43 @@ final class TextDirectionTests: XCTestCase {
                        "https://example.com/x")
     }
 
-    func testNoURLMeansNoRanges() {
+    func testBareHostnameIsIsolated() {
+        let s = "ניסיתי באתר forms.gov.il היום"
+        let spans = TextDirection.ltrIsolateSpans(in: s)
+        XCTAssertEqual(spans.count, 1)
+        XCTAssertEqual(spans[0].kind, .host)
+        XCTAssertEqual((s as NSString).substring(with: spans[0].range), "forms.gov.il")
+    }
+
+    func testFileExtensionIsNotBareHost() {
+        XCTAssertFalse(TextDirection.isPlausibleBareHost("README.md"))
+        XCTAssertTrue(TextDirection.ltrIsolateSpans(in: "see README.md please").isEmpty)
+    }
+
+    func testPhoneIsIsolated() {
+        let s = "התקשרו +1-555-123-4567 בבקשה"
+        let spans = TextDirection.ltrIsolateSpans(in: s)
+        XCTAssertEqual(spans.count, 1, "\(spans)")
+        XCTAssertEqual(spans[0].kind, .phone)
+        XCTAssertEqual((s as NSString).substring(with: spans[0].range), "+1-555-123-4567")
+    }
+
+    func testLongIDIsIsolated() {
+        let s = "מספר זהות 205892862 בבקשה"
+        let spans = TextDirection.ltrIsolateSpans(in: s)
+        XCTAssertEqual(spans.count, 1)
+        XCTAssertEqual(spans[0].kind, .phone)
+        XCTAssertEqual((s as NSString).substring(with: spans[0].range), "205892862")
+    }
+
+    func testShortDigitsNotIsolatedAsPhone() {
+        // Fewer than 7 digits — leave as weak numbers.
+        let spans = TextDirection.ltrIsolateSpans(in: "קוד 1234 בלבד")
+        XCTAssertTrue(spans.isEmpty, "\(spans)")
+    }
+
+    func testPureHebrewHasNoIsolates() {
         XCTAssertTrue(TextDirection.ltrIsolateNSRanges(in: "שלום בלבד").isEmpty)
-        XCTAssertTrue(TextDirection.ltrIsolateNSRanges(in: "no scheme example.com").isEmpty)
     }
 
     // MARK: - Authored HTML dir wrapper contract
@@ -98,10 +132,31 @@ final class TextDirectionTests: XCTestCase {
         XCTAssertTrue(html.contains(#"</div><div><br></div><div dir="rtl">"#), html)
     }
 
+    func testAuthoredHeadHTML_MultiBlankLinesPreserved() {
+        let html = ComposeQuote.authoredHeadHTML("Hi\n\n\nשלום")
+        // Two blank lines → two spacers between paragraphs.
+        let spacers = html.components(separatedBy: "<div><br></div>").count - 1
+        XCTAssertEqual(spacers, 2, html)
+    }
+
+    func testAuthoredHeadHTML_WhitespaceOnlyLineIsBlank() {
+        let html = ComposeQuote.authoredHeadHTML("Hi\n  \nשלום")
+        XCTAssertTrue(html.contains(#"<div dir="ltr">Hi</div>"#), html)
+        XCTAssertTrue(html.contains(#"<div dir="rtl">שלום</div>"#), html)
+        XCTAssertTrue(html.contains("<div><br></div>"), html)
+    }
+
     func testAuthoredHeadHTML_HebrewMarkdownGetsDirRTL() {
         let html = ComposeQuote.authoredHeadHTML("שלום **עולם**")
-        XCTAssertTrue(html.hasPrefix(#"<div dir="rtl">"#), html)
+        // Markdown emits per-block dir (no outer wrapper).
+        XCTAssertTrue(html.contains(#"<p dir="rtl">"#), html)
         XCTAssertTrue(html.contains("<strong>עולם</strong>"), html)
+    }
+
+    func testAuthoredHeadHTML_MarkdownMixedBlocksGetOwnDir() {
+        let html = ComposeQuote.authoredHeadHTML("Hello **world**\n\nשלום **עולם**")
+        XCTAssertTrue(html.contains(#"<p dir="ltr">"#), html)
+        XCTAssertTrue(html.contains(#"<p dir="rtl">"#), html)
     }
 
     func testAuthoredHeadHTML_Empty() {
@@ -114,12 +169,32 @@ final class TextDirectionTests: XCTestCase {
         XCTAssertEqual(TextDirection.paragraphs(in: ""), [])
     }
 
+    func testBlocksPreserveBlankRuns() {
+        let blocks = TextDirection.blocks(in: "a\n\n\nb")
+        XCTAssertEqual(blocks, [
+            .paragraph("a"),
+            .blanks(2),
+            .paragraph("b"),
+        ])
+    }
+
     func testHtmlFragment_AnchorsHaveDirLTR() {
         let html = ComposeLinks.htmlFragment(
             from: "ניסיתי http://forms.gov.il/x מספר")
         XCTAssertTrue(
             html.contains(#"<a href="http://forms.gov.il/x" dir="ltr">http://forms.gov.il/x</a>"#),
             html)
+    }
+
+    func testHtmlFragment_BareHostAutolinked() {
+        let html = ComposeLinks.htmlFragment(from: "see forms.gov.il now")
+        XCTAssertTrue(html.contains(#"href="https://forms.gov.il""#), html)
+        XCTAssertTrue(html.contains(#"dir="ltr""#), html)
+    }
+
+    func testHtmlFragment_PhoneWrappedInSpan() {
+        let html = ComposeLinks.htmlFragment(from: "call +1-555-123-4567 please")
+        XCTAssertTrue(html.contains(#"<span dir="ltr">+1-555-123-4567</span>"#), html)
     }
 
     func testHtmlFragment_MarkdownLinkHasDirLTR() {
