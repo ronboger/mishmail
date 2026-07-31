@@ -11,9 +11,11 @@ final class SidebarNavUITests: XCTestCase {
         let app = XCUIApplication()
         app.launchEnvironment["MISHMAIL_DEMO"] = "1"
         app.launchEnvironment["MISHMAIL_UI_TEST"] = "1"
+        // Do not pass -sidebarHidden: AppStorage(Bool) does not coerce the
+        // argument-domain NSString the way AppKit bool(forKey:) does. Reveal
+        // with → like MishMailSmokeTests instead.
         app.launchArguments += ["-ApplePersistenceIgnoreState", "YES",
                                 "-NSQuitAlwaysKeepsWindows", "NO",
-                                "-sidebarHidden", "NO",
                                 "-threadOpenStyle", "readingPane"]
         app.terminate()
         app.launch()
@@ -28,10 +30,13 @@ final class SidebarNavUITests: XCTestCase {
         XCTAssertTrue(unstarred.waitForExistence(timeout: 10),
                       "demo inbox should list unstarred CI thread")
 
+        // Sidebar starts collapsed; → reveals it (and compose lives there).
+        app.typeKey(XCUIKeyboardKey.rightArrow.rawValue, modifierFlags: [])
+
         let starred = app.descendants(matching: .any)
             .matching(identifier: "sidebar.starred").firstMatch
         XCTAssertTrue(starred.waitForExistence(timeout: 5),
-                      "sidebar Starred row must be clickable")
+                      "sidebar Starred row must appear after → reveals the sidebar")
         starred.click()
 
         let deadline = Date().addingTimeInterval(5)
@@ -47,7 +52,7 @@ final class SidebarNavUITests: XCTestCase {
                       "Starred mailbox should still show the starred demo thread")
 
         // Compose open must not block further sidebar navigation (gutter
-        // hit-testing under pin-to-pane / empty-pane fill).
+        // hit-testing under pin-to-pane / empty-pane fill when present).
         let compose = app.buttons.matching(identifier: "composeButton").firstMatch
         XCTAssertTrue(compose.waitForExistence(timeout: 5))
         compose.click()
