@@ -1,3 +1,4 @@
+import AppKit
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -1512,8 +1513,72 @@ struct AISettings: View {
                     Text("After each sync, quietly tag new inbox threads (Reply needed, FYI, Newsletter, Receipt) with the local model. Skips silently when Ollama isn't running. A small fast model like llama3.2:3b is ideal here.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
+
+                MCPSettingsSection()
             }
             .formStyle(.grouped)
         }
+    }
+}
+
+/// Settings block for the in-process MCP Streamable HTTP server.
+private struct MCPSettingsSection: View {
+    @Environment(MailStore.self) private var store
+    @State private var copied = false
+
+    var body: some View {
+        Section {
+            Toggle("Enable MCP server", isOn: Binding(
+                get: { store.isMCPEnabled },
+                set: { store.isMCPEnabled = $0 }
+            ))
+            if store.mcpRunning, let port = store.mcpPort {
+                LabeledContent("Port") {
+                    Text("\(port)")
+                        .textSelection(.enabled)
+                        .foregroundStyle(.secondary)
+                }
+                LabeledContent("Discovery file") {
+                    Text(store.mcpDiscoveryURL.path)
+                        .font(.system(size: 11, design: .monospaced))
+                        .textSelection(.enabled)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(2)
+                }
+                if let token = store.mcpToken {
+                    VStack(alignment: .leading, spacing: 6) {
+                        Text("Claude Code")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                        Text(claudeSnippet(port: port, token: token))
+                            .font(.system(size: 11, design: .monospaced))
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                        Button {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(
+                                claudeSnippet(port: port, token: token), forType: .string)
+                            copied = true
+                            DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
+                                copied = false
+                            }
+                        } label: {
+                            Label(copied ? "Copied" : "Copy connect command",
+                                  systemImage: copied ? "checkmark" : "doc.on.doc")
+                        }
+                        .buttonStyle(.borderless)
+                    }
+                }
+            }
+        } header: {
+            Text("MCP")
+        } footer: {
+            Text("Lets local AI agents (Claude Code, etc.) read mail, manage drafts, set thread summaries, and edit VIPs over 127.0.0.1. Off by default. Requires a bearer token stored in your Keychain.")
+                .font(.caption).foregroundStyle(.secondary)
+        }
+    }
+
+    private func claudeSnippet(port: UInt16, token: String) -> String {
+        "claude mcp add --transport http mishmail http://127.0.0.1:\(port)/mcp --header \"Authorization: Bearer \(token)\""
     }
 }

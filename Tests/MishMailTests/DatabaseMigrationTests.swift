@@ -82,6 +82,11 @@ final class DatabaseMigrationTests: XCTestCase {
             let attachmentCols = try db.columns(in: "attachment").map(\.name)
             XCTAssertTrue(attachmentCols.contains("contentId"),
                           "v28 must add contentId on attachment")
+            XCTAssertTrue(try db.tableExists("threadSummary"), "v31 must add threadSummary")
+            let summaryCols = try db.columns(in: "threadSummary").map(\.name)
+            for name in ["threadId", "summary", "model", "updatedAt"] {
+                XCTAssertTrue(summaryCols.contains(name), "v31 must add \(name)")
+            }
         }
     }
 

@@ -343,6 +343,18 @@ struct ThreadAICategory: Codable, Identifiable, Hashable, FetchableRecord, Persi
     var id: String { threadId }
 }
 
+/// Persisted AI thread summary (MCP `set_thread_summary` / reading pane).
+/// Survives restarts; local Ollama Summarize is ephemeral and takes precedence
+/// when both exist.
+struct ThreadSummaryRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "threadSummary"
+    var threadId: String
+    var summary: String
+    var model: String
+    var updatedAt: Date
+    var id: String { threadId }
+}
+
 /// A VIP sender: mail from this address pins to the Inbox Priority section.
 /// Emails are stored lowercased; the list is global across accounts.
 struct VIPSender: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
@@ -408,6 +420,12 @@ final class AppDatabase: @unchecked Sendable {
     /// On-disk location, kept so the WAL sidecar can be sized without asking
     /// SQLite (see `checkpointIfNeeded`).
     private let path: String
+
+    /// Application Support directory that holds `mail.sqlite` (and discovery
+    /// files such as `mcp.json`).
+    var directoryURL: URL {
+        URL(fileURLWithPath: path).deletingLastPathComponent()
+    }
 
     init() throws {
         let root = try FileManager.default.url(for: .applicationSupportDirectory,
@@ -1308,6 +1326,18 @@ final class AppDatabase: @unchecked Sendable {
                 try db.execute(sql: """
                     UPDATE thread SET inTrash = ?, inDrafts = ? WHERE id = ?
                     """, arguments: [flags.inTrash, flags.inDrafts, threadKey])
+            }
+        }
+
+        // v31: persisted AI thread summaries for MCP / reading pane.
+        // Cascade with the thread so orphans never linger after prune.
+        m.registerMigration("v31") { db in
+            try db.create(table: "threadSummary") { t in
+                t.column("threadId", .text).primaryKey()
+                    .references("thread", onDelete: .cascade)
+                t.column("summary", .text).notNull()
+                t.column("model", .text).notNull()
+                t.column("updatedAt", .datetime).notNull()
             }
         }
         return m
