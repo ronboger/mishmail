@@ -7,7 +7,7 @@ final class MCPHTTPTests: XCTestCase {
             POST /mcp HTTP/1.1\r
             Host: 127.0.0.1\r
             Content-Type: application/json\r
-            Content-Length: 18\r
+            Content-Length: 17\r
             Authorization: Bearer secret\r
             \r
             {"jsonrpc":"2.0"}
