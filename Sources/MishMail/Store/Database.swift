@@ -1310,6 +1310,18 @@ final class AppDatabase: @unchecked Sendable {
                     """, arguments: [flags.inTrash, flags.inDrafts, threadKey])
             }
         }
+
+        // v31: external-content FTS5 vocabulary for typo-tolerant local search
+        // (FuzzySearch). `message_fts_vocab` is a view over the live FTS index.
+        // WARNING: any future migration that DROP/rebuilds `message_fts` must
+        // DROP `message_fts_vocab` first and recreate it after the new FTS
+        // table exists — otherwise the vocab virtual table is left dangling.
+        m.registerMigration("v31") { db in
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE message_fts_vocab
+                USING fts5vocab('message_fts', 'row')
+                """)
+        }
         return m
     }
 }
