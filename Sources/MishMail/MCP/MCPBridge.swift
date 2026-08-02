@@ -360,6 +360,10 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         guard let store else {
             throw MCPToolError("Mail store is unavailable")
         }
+        // addVIP silently no-ops in the demo inbox; agents need the refusal.
+        if await MainActor.run(body: { store.demoMode }) {
+            throw MCPToolError("VIP changes are disabled in the demo inbox")
+        }
         await MainActor.run {
             store.addVIP(e, group: groupName)
         }
@@ -373,6 +377,9 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         }
         guard let store else {
             throw MCPToolError("Mail store is unavailable")
+        }
+        if await MainActor.run(body: { store.demoMode }) {
+            throw MCPToolError("VIP changes are disabled in the demo inbox")
         }
         await MainActor.run {
             store.removeVIP(e)
