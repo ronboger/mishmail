@@ -687,16 +687,18 @@ struct ComposeView: View {
                     ?? "application/octet-stream"
                 loaded.append(.init(filename: url.lastPathComponent, mimeType: mime, data: data))
             }
+            let loadedSnapshot = loaded
+            let failedSnapshot = failed
             await MainActor.run {
                 let existingNames = Set(restoredAttachments.map(\.filename)
                     + attachmentURLs.map(\.lastPathComponent))
                 let merge = ComposeAttachmentDrop.mergeNewFilenames(
                     existing: existingNames,
-                    incoming: loaded.map(\.filename),
-                    failedReads: failed)
+                    incoming: loadedSnapshot.map(\.filename),
+                    failedReads: failedSnapshot)
                 // First occurrence of each new name wins (loaded order preserved).
                 var pending = Set(merge.added)
-                for att in loaded where pending.contains(att.filename) {
+                for att in loadedSnapshot where pending.contains(att.filename) {
                     restoredAttachments.append(att)
                     pending.remove(att.filename)
                 }
