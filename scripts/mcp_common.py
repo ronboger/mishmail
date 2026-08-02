@@ -2,6 +2,7 @@
 
 import json
 import sys
+import threading
 import urllib.request
 from pathlib import Path
 
@@ -28,11 +29,15 @@ class MCP:
         self.url = f"http://127.0.0.1:{cfg['port']}/mcp"
         self.headers = {"Authorization": f"Bearer {cfg['token']}"}
         self._id = 0
+        # Callers may summarize concurrently (--jobs); keep ids unique.
+        self._lock = threading.Lock()
 
     def call(self, tool, args=None):
-        self._id += 1
+        with self._lock:
+            self._id += 1
+            rpc_id = self._id
         resp = post_json(self.url, {
-            "jsonrpc": "2.0", "id": self._id, "method": "tools/call",
+            "jsonrpc": "2.0", "id": rpc_id, "method": "tools/call",
             "params": {"name": tool, "arguments": args or {}},
         }, self.headers)
         if "error" in resp:

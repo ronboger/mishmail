@@ -22,6 +22,7 @@ import argparse
 import json
 import os
 import sys
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from mcp_common import MCP, post_json
 
@@ -100,6 +101,11 @@ def main():
                     help="re-summarize threads that already have a summary")
     ap.add_argument("--max-chars", type=int, default=12000,
                     help="budget for thread text (quotes stripped; head+tail kept)")
+    ap.add_argument("--replace-model", default=None, metavar="NAME",
+                    help="only threads whose current summary came from NAME "
+                         "(use to upgrade an earlier pass to a better model)")
+    ap.add_argument("--jobs", type=int, default=4,
+                    help="concurrent summarization requests (default 4)")
     ap.add_argument("--dry-run", action="store_true",
                     help="print summaries without writing them back")
     args = ap.parse_args()
@@ -120,30 +126,40 @@ def main():
     threads = json.loads(mcp.call("list_threads", {
         "mailbox": args.mailbox, "limit": min(args.limit, 100)}))
 
-    todo = [t for t in threads if args.redo or not t.get("summary")]
+    if args.replace_model:
+        todo = [t for t in threads if t.get("summaryModel") == args.replace_model]
+    else:
+        todo = [t for t in threads if args.redo or not t.get("summary")]
     print(f"{len(threads)} threads listed, {len(todo)} to summarize "
           f"(backend={args.backend}, model={stored_model})")
 
     done = failed = 0
-    for t in todo:
-        try:
-            text = mcp.call("get_thread", {"thread_id": t["id"]})
-            summary = summarize(fit(text, args.max_chars))
-            # Guard against runaway model output.
-            summary = " ".join(summary.split())[:600]
-            if not summary:
-                raise RuntimeError("empty summary")
-            if args.dry_run:
-                print(f"[dry] {t['subject'][:50]!r}: {summary[:100]}")
-            else:
-                mcp.call("set_thread_summary", {
-                    "thread_id": t["id"], "summary": summary,
-                    "model": stored_model})
-                print(f"[ok]  {t['subject'][:50]!r}: {summary[:100]}")
-            done += 1
-        except Exception as e:  # keep going; report at the end
-            failed += 1
-            print(f"[err] {t['subject'][:50]!r}: {e}", file=sys.stderr)
+    def one(t):
+        """Summarize a single thread. Returns a line to print; raises on error."""
+        text = mcp.call("get_thread", {"thread_id": t["id"]})
+        summary = summarize(fit(text, args.max_chars))
+        # Guard against runaway model output.
+        summary = " ".join(summary.split())[:600]
+        if not summary:
+            raise RuntimeError("empty summary")
+        if args.dry_run:
+            return f"[dry] {t['subject'][:50]!r}: {summary[:100]}"
+        mcp.call("set_thread_summary", {
+            "thread_id": t["id"], "summary": summary, "model": stored_model})
+        return f"[ok]  {t['subject'][:50]!r}: {summary[:100]}"
+
+    # Ollama serves a few requests concurrently (OLLAMA_NUM_PARALLEL); going
+    # much past that just queues inside the server with no speedup.
+    with ThreadPoolExecutor(max_workers=max(1, args.jobs)) as pool:
+        futures = {pool.submit(one, t): t for t in todo}
+        for fut in as_completed(futures):
+            t = futures[fut]
+            try:
+                print(fut.result(), flush=True)
+                done += 1
+            except Exception as e:  # keep going; report at the end
+                failed += 1
+                print(f"[err] {t['subject'][:50]!r}: {e}", file=sys.stderr, flush=True)
 
     print(f"done: {done} summarized, {failed} failed, "
           f"{len(threads) - len(todo)} already had summaries")
