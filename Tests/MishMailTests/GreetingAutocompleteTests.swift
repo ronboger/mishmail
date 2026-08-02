@@ -77,17 +77,17 @@ final class GreetingAutocompleteTests: XCTestCase {
     }
 
     func testRecipientFirstNameRejectsEmailShapedContact() {
-        // The bug in the screenshot: contact.name was the bare address
-        // (MessageParser.displayName on a From without angle brackets), and
-        // greeting used it wholesale → "Hi John@ormoni.bio,".
+        // contact.name was the bare address (MessageParser.displayName on a
+        // From without angle brackets). Email-shaped contact is unusable, and
+        // bare tokens must not fall back to a local-part title-case guess.
         XCTAssertEqual(
             GreetingAutocomplete.recipientFirstName(
                 token: "John@ormoni.bio", contactName: "John@ormoni.bio"),
-            "John")
+            "")
         XCTAssertEqual(
             GreetingAutocomplete.recipientFirstName(
                 token: "john@ormoni.bio", contactName: "john@ormoni.bio"),
-            "John")
+            "")
     }
 
     func testRecipientFirstNameSuppressesBackoffice() {
@@ -98,7 +98,7 @@ final class GreetingAutocompleteTests: XCTestCase {
                 contactName: "Backoffice",
                 headerName: "Backoffice"),
             "")
-        // Local-part guess "Backoffice" from backoffice@… is also suppressed.
+        // Bare role local-part also yields no greeting (no fabricated name).
         XCTAssertEqual(
             GreetingAutocomplete.recipientFirstName(
                 token: "backoffice@company.com", contactName: nil),
@@ -110,6 +110,23 @@ final class GreetingAutocompleteTests: XCTestCase {
             GreetingAutocomplete.recipientFirstName(
                 token: "Alice Smith <alice@x.com>", contactName: nil),
             "Alice")
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "Alice <alice@x.com>", contactName: nil),
+            "Alice")
+    }
+
+    func testRecipientFirstNameIgnoresBareAddressLocalPart() {
+        // Bare address not in contacts must not invent "Hi Tomconerly," /
+        // "Hi John," from the local-part.
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "tomconerly@gmail.com", contactName: nil, headerName: nil),
+            "")
+        XCTAssertEqual(
+            GreetingAutocomplete.recipientFirstName(
+                token: "john.doe@x.com", contactName: nil, headerName: nil),
+            "")
     }
 
     func testRecipientFirstNameEmptyWhenNothingUsable() {
@@ -121,9 +138,15 @@ final class GreetingAutocompleteTests: XCTestCase {
     }
 
     func testPersonFromBareLocalPartTitleCases() {
+        // person(from:) still fabricates for non-greeting callers; greetings
+        // must not use that path (see testRecipientFirstNameIgnoresBare…).
         let p = GreetingAutocomplete.person(from: "john.doe@x.com")
         XCTAssertEqual(p.name, "John Doe")
         XCTAssertEqual(p.email, "john.doe@x.com")
+        XCTAssertNil(GreetingAutocomplete.explicitDisplayName(from: "john.doe@x.com"))
+        XCTAssertEqual(
+            GreetingAutocomplete.explicitDisplayName(from: "Alice <alice@x.com>"),
+            "Alice")
     }
 
     // MARK: - tone

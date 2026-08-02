@@ -95,7 +95,9 @@ enum GreetingAutocomplete {
 
     /// Name + email from a recipient token (`"Alice <a@x.com>"` or bare
     /// address). Bare local parts become a title-cased guess (`john.doe` →
-    /// `John Doe`) for fallback when no contact display name exists.
+    /// `John Doe`) for non-greeting callers (snippets / BCC context). Greetings
+    /// must not use that guess — see `explicitDisplayName(from:)` /
+    /// `recipientFirstName`.
     static func person(from token: String) -> (name: String, email: String) {
         if let lt = token.firstIndex(of: "<"), let gt = token.firstIndex(of: ">"), lt < gt {
             let name = String(token[..<lt])
@@ -117,20 +119,33 @@ enum GreetingAutocomplete {
         return (name, email)
     }
 
+    /// Display name only when the token used angle-bracket form
+    /// (`"Alice <a@x.com>"`). Bare addresses return `nil` so greetings never
+    /// invent a name from the email local-part.
+    static func explicitDisplayName(from token: String) -> String? {
+        guard let lt = token.firstIndex(of: "<"),
+              let gt = token.firstIndex(of: ">"),
+              lt < gt else { return nil }
+        let name = String(token[..<lt])
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \""))
+        return name.isEmpty ? nil : name
+    }
+
     /// First name for the greeting ghost.
     ///
     /// Preference order:
     /// 1. `headerName` — From display of the message being replied to (last
     ///    sender). Most accurate when contacts only know the bare address.
     /// 2. `contactName` — mined contact display name.
-    /// 3. Token display name / local-part title-case guess.
+    /// 3. Explicit token display name (`"Alice <a@x.com>"` only — never a
+    ///    local-part title-case guess from a bare address).
     ///
     /// Never returns email-shaped or role/shared mailbox labels (Backoffice,
-    /// Support, noreply, …).
+    /// Support, noreply, …). Bare address + no contact + no header → `""`.
     static func recipientFirstName(token: String,
                                    contactName: String?,
                                    headerName: String? = nil) -> String {
-        let (tokenName, _) = person(from: token)
+        let tokenName = explicitDisplayName(from: token)
         for candidate in [headerName, contactName, tokenName] {
             guard let candidate, isUsablePersonName(candidate) else { continue }
             let first = firstName(of: candidate)
