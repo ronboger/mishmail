@@ -4532,13 +4532,29 @@ struct ComposeRequest: Identifiable {
 
     /// Gmail Shift+I / Shift+U: mark the checked set (or focused row) read/unread.
     func setReadSelected(read: Bool) {
-        if !checkedThreadIds.isEmpty {
-            for thread in checkedThreadsInOrder {
-                setRead(thread, read: read)
-            }
-        } else if let t = selectedThread {
-            setRead(t, read: read)
+        for thread in gmailMarkReadTargets() {
+            setRead(thread, read: read)
         }
+    }
+
+    /// Gmail Shift+I / Shift+U with state-aware Shift+I (already-read → unread).
+    func applyGmailMarkReadChord(_ chord: GmailMarkReadKeys.Chord) {
+        let targets = gmailMarkReadTargets()
+        guard !targets.isEmpty else { return }
+        let anyUnread = targets.contains { $0.isUnread }
+        let read = GmailMarkReadKeys.desiredRead(chord: chord, anyUnread: anyUnread)
+        for thread in targets {
+            setRead(thread, read: read)
+        }
+    }
+
+    /// Checked threads when multi-select is active; otherwise the focused row.
+    private func gmailMarkReadTargets() -> [MailThread] {
+        if !checkedThreadIds.isEmpty {
+            return checkedThreadsInOrder
+        }
+        if let t = selectedThread { return [t] }
+        return []
     }
 
     /// Bulk read toggle: if any checked is unread, mark all read; else unread.

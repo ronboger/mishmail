@@ -4,6 +4,14 @@ All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
+## [Unreleased]
+
+### Changed
+- **Shift+I on an already-read conversation marks it unread** — Gmail's chord
+  still marks unread threads read; when every focused or multi-selected
+  conversation is already read, Shift+I flips them to unread instead of a
+  no-op. Shift+U still always marks unread.
+
 ## [0.4.6] - 2026-07-27
 
 ### Fixed

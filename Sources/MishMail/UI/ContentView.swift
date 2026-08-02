@@ -1118,13 +1118,14 @@ private extension ContentView {
             // Gmail Shift+I / Shift+U mark read / unread. Fixed chords (not in
             // KeyBindings): charactersIgnoringModifiers keeps Shift on letters
             // ("I"/"U"), so they must be handled before single-key lookup.
+            // Shift+I is state-aware: already-read selection → mark unread.
             let shiftOnly = event.modifierFlags
                 .intersection([.command, .option, .control, .shift]) == [.shift]
-            if let markRead = GmailMarkReadKeys.markAsRead(key: chars, shiftOnly: shiftOnly) {
+            if let chord = GmailMarkReadKeys.chord(key: chars, shiftOnly: shiftOnly) {
                 // Don't leave an armed `g` prefix: Shift+I after `g` must not
                 // keep the next key as a go-to chord target for 1.5s.
                 store.clearPendingGoKey()
-                store.setReadSelected(read: markRead)
+                store.applyGmailMarkReadChord(chord)
                 return nil
             }
             // j/k (and other rebindable browse keys) also auto-repeat; pass
