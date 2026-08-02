@@ -4530,17 +4530,17 @@ struct ComposeRequest: Identifiable {
         }
     }
 
-    /// Gmail Shift+I / Shift+U: mark the checked set (or focused row) read/unread.
-    func setReadSelected(read: Bool) {
-        for thread in gmailMarkReadTargets() {
-            setRead(thread, read: read)
-        }
-    }
-
     /// Gmail Shift+I / Shift+U with state-aware Shift+I (already-read → unread).
+    /// Targets the checked set when multi-select is active, else the focused row.
     func applyGmailMarkReadChord(_ chord: GmailMarkReadKeys.Chord) {
-        let targets = gmailMarkReadTargets()
-        guard !targets.isEmpty else { return }
+        let targets: [MailThread]
+        if !checkedThreadIds.isEmpty {
+            targets = checkedThreadsInOrder
+        } else if let t = selectedThread {
+            targets = [t]
+        } else {
+            return
+        }
         let anyUnread = targets.contains { $0.isUnread }
         let read = GmailMarkReadKeys.desiredRead(chord: chord, anyUnread: anyUnread)
         for thread in targets {
@@ -4548,23 +4548,11 @@ struct ComposeRequest: Identifiable {
         }
     }
 
-    /// Checked threads when multi-select is active; otherwise the focused row.
-    private func gmailMarkReadTargets() -> [MailThread] {
-        if !checkedThreadIds.isEmpty {
-            return checkedThreadsInOrder
-        }
-        if let t = selectedThread { return [t] }
-        return []
-    }
-
     /// Bulk read toggle: if any checked is unread, mark all read; else unread.
     func toggleReadChecked() {
-        let targets = checkedThreadsInOrder
-        guard !targets.isEmpty else { return }
-        let markRead = targets.contains { $0.isUnread }
-        for thread in targets {
-            setRead(thread, read: markRead)
-        }
+        guard !checkedThreadIds.isEmpty else { return }
+        // Same state rule as Shift+I on a multi-select.
+        applyGmailMarkReadChord(.shiftI)
     }
 
     /// Drop the snooze overlay immediately. Archive/trash are single-key and

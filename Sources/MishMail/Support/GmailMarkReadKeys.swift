@@ -43,21 +43,4 @@ enum GmailMarkReadKeys {
         case .shiftU: return false
         }
     }
-
-    /// - Parameters:
-    ///   - key: `NSEvent.charactersIgnoringModifiers` (Shift still affects
-    ///     letters, so callers may pass `"I"` / `"U"`).
-    ///   - shiftOnly: Shift held, and no ⌘ / ⌥ / ⌃.
-    /// - Returns: `true` = mark read intent for Shift+I, `false` = mark unread
-    ///   for Shift+U, `nil` = not this chord.
-    ///
-    /// Prefer `chord` + `desiredRead` at call sites so Shift+I can flip a
-    /// fully-read selection to unread. Kept for simple chord tests.
-    static func markAsRead(key: String, shiftOnly: Bool) -> Bool? {
-        switch chord(key: key, shiftOnly: shiftOnly) {
-        case .shiftI: return true
-        case .shiftU: return false
-        case nil: return nil
-        }
-    }
 }
