@@ -36,7 +36,7 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         account: String?
     ) async throws -> String {
         let mb = mailbox.lowercased()
-        let allowed = ["inbox", "starred", "sent", "drafts", "all"]
+        let allowed = ["primary", "inbox", "starred", "sent", "drafts", "all"]
         guard allowed.contains(mb) else {
             throw MCPToolError("mailbox must be one of: \(allowed.joined(separator: ", "))")
         }
@@ -45,6 +45,10 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
             var sql = "SELECT * FROM thread WHERE inTrash = 0 AND inSpam = 0"
             var args: [any DatabaseValueConvertible] = []
             switch mb {
+            case "primary":
+                // What the app shows in the Primary tab: real correspondence,
+                // not bulk mail. Agents summarizing "the inbox" want this.
+                sql += " AND inInbox = 1 AND inPromotions = 0 AND inSocial = 0"
             case "inbox":
                 sql += " AND inInbox = 1"
             case "starred":
@@ -83,10 +87,16 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
                 "inInbox": thread.inInbox,
                 "inSent": thread.inSent,
                 "inDrafts": thread.inDrafts,
+                "inPromotions": thread.inPromotions,
+                "inSocial": thread.inSocial,
             ]
             if let summary = summaries[thread.id] {
                 row["summary"] = summary.summary
                 row["summaryModel"] = summary.model
+                row["summaryUpdatedAt"] = ISO8601DateFormatter().string(from: summary.updatedAt)
+                // New mail arrived after the summary was written, so it no
+                // longer describes the whole thread.
+                row["summaryStale"] = thread.lastDate > summary.updatedAt
             }
             return row
         }

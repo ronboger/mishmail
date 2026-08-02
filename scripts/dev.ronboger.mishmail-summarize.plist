@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- Hourly incremental summary pass: picks up newly arrived threads and
+     refreshes summaries whose thread got new messages. No-ops in seconds when
+     nothing changed, and exits quietly if MishMail isn't running.
+     Install:  launchctl load -w ~/Library/LaunchAgents/dev.ronboger.mishmail-summarize.plist
+     Remove:   launchctl unload -w ~/Library/LaunchAgents/dev.ronboger.mishmail-summarize.plist -->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>dev.ronboger.mishmail-summarize</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/usr/bin/python3</string>
+        <string>/Users/ronboger/mishmail/scripts/mcp-summarize.py</string>
+        <string>--mailbox</string><string>primary</string>
+        <string>--limit</string><string>200</string>
+        <string>--model</string><string>qwen3:8b</string>
+        <string>--jobs</string><string>4</string>
+    </array>
+    <key>StartInterval</key>
+    <integer>3600</integer>
+    <key>RunAtLoad</key>
+    <false/>
+    <key>StandardOutPath</key>
+    <string>/tmp/mishmail-summarize.log</string>
+    <key>StandardErrorPath</key>
+    <string>/tmp/mishmail-summarize.err</string>
+</dict>
+</plist>

@@ -40,11 +40,11 @@ enum MCPTools {
         ),
         ToolDefinition(
             name: "list_threads",
-            description: "List threads in a mailbox. Returns id, subject, snippet, from, date, flags, and any persisted AI summary.",
+            description: "List threads in a mailbox. Returns id, subject, snippet, from, date, flags, and any persisted AI summary (with summaryStale=true when the thread has new messages since that summary was written).",
             inputSchema: objectSchema(
                 properties: [
                     "mailbox": stringSchema(
-                        description: "One of: inbox, starred, sent, drafts, all"),
+                        description: "One of: primary (inbox minus Promotions/Social — conversations that actually need attention), inbox, starred, sent, drafts, all"),
                     "unread_only": booleanSchema(description: "If true, only unread threads"),
                     "limit": integerSchema(description: "Max threads (1–100, default 25)"),
                     "offset": integerSchema(

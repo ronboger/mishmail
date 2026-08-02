@@ -13,7 +13,8 @@ Backends:
 
 Examples:
   ./scripts/mcp-summarize.py --limit 10                    # llama3.2:3b, newest 10
-  ./scripts/mcp-summarize.py --mailbox inbox --limit 200   # backfill inbox
+  ./scripts/mcp-summarize.py --limit 600                   # whole Primary tab
+  ./scripts/mcp-summarize.py --mailbox inbox --limit 200   # include bulk mail
   ./scripts/mcp-summarize.py --backend openai --api-base https://api.x.ai/v1 \
       --model luna-5.6-low --limit 500
 """
@@ -93,13 +94,17 @@ def main():
                     help="model name (default: llama3.2:3b for ollama)")
     ap.add_argument("--api-base", default=None,
                     help="ollama: http://127.0.0.1:11434; openai: API base URL")
-    ap.add_argument("--mailbox", default="inbox",
-                    choices=["inbox", "starred", "sent", "drafts", "all"])
+    ap.add_argument("--mailbox", default="primary",
+                    choices=["primary", "inbox", "starred", "sent", "drafts", "all"],
+                    help="primary (default) = inbox minus Promotions/Social")
     ap.add_argument("--limit", type=int, default=25,
                     help="max threads to examine, newest first; "
                          "pages past the server's 100-per-call cap")
     ap.add_argument("--redo", action="store_true",
                     help="re-summarize threads that already have a summary")
+    ap.add_argument("--no-refresh-stale", action="store_true",
+                    help="skip threads whose summary predates new messages "
+                         "(by default those are refreshed)")
     ap.add_argument("--max-chars", type=int, default=12000,
                     help="budget for thread text (quotes stripped; head+tail kept)")
     ap.add_argument("--replace-model", default=None, metavar="NAME",
@@ -137,11 +142,20 @@ def main():
         threads.extend(page)
         offset += len(page)
 
+    def needs_work(t):
+        if args.redo or not t.get("summary"):
+            return True
+        # A thread that got new messages after its summary was written is
+        # described by a summary that no longer covers it.
+        return t.get("summaryStale") and not args.no_refresh_stale
+
     if args.replace_model:
         todo = [t for t in threads if t.get("summaryModel") == args.replace_model]
     else:
-        todo = [t for t in threads if args.redo or not t.get("summary")]
+        todo = [t for t in threads if needs_work(t)]
+    stale = sum(1 for t in todo if t.get("summary"))
     print(f"{len(threads)} threads listed, {len(todo)} to summarize "
+          f"({stale} refreshing a stale summary) "
           f"(backend={args.backend}, model={stored_model})")
 
     done = failed = 0
