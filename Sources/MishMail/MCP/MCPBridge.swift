@@ -32,6 +32,7 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         mailbox: String,
         unreadOnly: Bool?,
         limit: Int,
+        offset: Int,
         account: String?
     ) async throws -> String {
         let mb = mailbox.lowercased()
@@ -62,8 +63,9 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
                 sql += " AND accountId = ?"
                 args.append(account)
             }
-            sql += " ORDER BY lastDate DESC LIMIT ?"
+            sql += " ORDER BY lastDate DESC LIMIT ? OFFSET ?"
             args.append(limit)
+            args.append(offset)
             return try MailThread.fetchAll(db, sql: sql, arguments: StatementArguments(args))
         }
 
@@ -93,7 +95,7 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
 
     // MARK: - search_threads
 
-    func searchThreads(query: String, limit: Int) async throws -> String {
+    func searchThreads(query: String, limit: Int, offset: Int) async throws -> String {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !q.isEmpty else {
             throw MCPToolError("query must not be empty")
@@ -112,8 +114,8 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
                         WHERE message_fts MATCH ?
                           AND thread.inTrash = 0
                         ORDER BY thread.lastDate DESC
-                        LIMIT ?
-                        """, arguments: [pattern, limit])
+                        LIMIT ? OFFSET ?
+                        """, arguments: [pattern, limit, offset])
                 } catch {
                     // FTS query syntax error → LIKE fallback below.
                 }
@@ -124,8 +126,8 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
                 WHERE inTrash = 0
                   AND (subject LIKE ? OR fromDisplay LIKE ?)
                 ORDER BY lastDate DESC
-                LIMIT ?
-                """, arguments: [like, like, limit])
+                LIMIT ? OFFSET ?
+                """, arguments: [like, like, limit, offset])
         }
 
         let summaries = try await loadSummaries(for: threads.map(\.id))

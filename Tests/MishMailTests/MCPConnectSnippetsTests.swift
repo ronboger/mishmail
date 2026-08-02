@@ -20,3 +20,23 @@ final class MCPConnectSnippetsTests: XCTestCase {
         XCTAssertTrue(snippet(.generic).hasPrefix("npx -y mcp-remote "))
     }
 }
+
+final class MCPPaginationTests: XCTestCase {
+
+    func testClampedOffsetFloorsAtZero() {
+        XCTAssertEqual(MCPTools.clampedOffset(nil), 0)
+        XCTAssertEqual(MCPTools.clampedOffset(-5), 0)
+        XCTAssertEqual(MCPTools.clampedOffset(250), 250)
+    }
+
+    func testListAndSearchSchemasExposeOffset() {
+        for name in ["list_threads", "search_threads"] {
+            let tool = MCPTools.catalog.first { $0.name == name }
+            XCTAssertNotNil(tool, "\(name) missing from catalog")
+            guard case .object(let props)? = tool?.inputSchema["properties"] else {
+                return XCTFail("\(name) has no properties object")
+            }
+            XCTAssertNotNil(props["offset"], "\(name) must accept offset")
+        }
+    }
+}

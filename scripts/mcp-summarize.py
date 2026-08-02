@@ -96,7 +96,8 @@ def main():
     ap.add_argument("--mailbox", default="inbox",
                     choices=["inbox", "starred", "sent", "drafts", "all"])
     ap.add_argument("--limit", type=int, default=25,
-                    help="max threads to examine (newest first)")
+                    help="max threads to examine, newest first; "
+                         "pages past the server's 100-per-call cap")
     ap.add_argument("--redo", action="store_true",
                     help="re-summarize threads that already have a summary")
     ap.add_argument("--max-chars", type=int, default=12000,
@@ -123,8 +124,18 @@ def main():
         stored_model = model
 
     mcp = MCP()
-    threads = json.loads(mcp.call("list_threads", {
-        "mailbox": args.mailbox, "limit": min(args.limit, 100)}))
+    # The server caps each call at 100 rows, so page with offset until we
+    # have --limit threads or the mailbox runs out.
+    threads, offset = [], 0
+    while len(threads) < args.limit:
+        page = json.loads(mcp.call("list_threads", {
+            "mailbox": args.mailbox,
+            "limit": min(100, args.limit - len(threads)),
+            "offset": offset}))
+        if not page:
+            break
+        threads.extend(page)
+        offset += len(page)
 
     if args.replace_model:
         todo = [t for t in threads if t.get("summaryModel") == args.replace_model]

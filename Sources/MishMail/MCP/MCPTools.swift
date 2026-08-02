@@ -4,8 +4,8 @@ import Foundation
 /// router only needs async text results (or throws → `isError` content).
 protocol MCPToolProvider: Sendable {
     func listAccounts() async throws -> String
-    func listThreads(mailbox: String, unreadOnly: Bool?, limit: Int, account: String?) async throws -> String
-    func searchThreads(query: String, limit: Int) async throws -> String
+    func listThreads(mailbox: String, unreadOnly: Bool?, limit: Int, offset: Int, account: String?) async throws -> String
+    func searchThreads(query: String, limit: Int, offset: Int) async throws -> String
     func getThread(threadId: String) async throws -> String
     func listDrafts(account: String?) async throws -> String
     func createDraft(
@@ -47,6 +47,8 @@ enum MCPTools {
                         description: "One of: inbox, starred, sent, drafts, all"),
                     "unread_only": booleanSchema(description: "If true, only unread threads"),
                     "limit": integerSchema(description: "Max threads (1–100, default 25)"),
+                    "offset": integerSchema(
+                        description: "Skip this many threads — page through more than `limit` (default 0)"),
                     "account": stringSchema(description: "Optional account email filter"),
                 ],
                 required: ["mailbox"]
@@ -59,6 +61,7 @@ enum MCPTools {
                 properties: [
                     "query": stringSchema(description: "Search query"),
                     "limit": integerSchema(description: "Max threads (1–100, default 25)"),
+                    "offset": integerSchema(description: "Skip this many matches (default 0)"),
                 ],
                 required: ["query"]
             )
@@ -181,6 +184,9 @@ enum MCPTools {
             "items": .object(["type": .string("string")]),
         ]
     }
+
+    /// Clamp an offset argument to >= 0.
+    static func clampedOffset(_ raw: Int?) -> Int { max(raw ?? 0, 0) }
 
     /// Clamp a limit argument into 1…maxLimit.
     static func clampedLimit(_ raw: Int?) -> Int {

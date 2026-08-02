@@ -17,11 +17,11 @@ private final class StubTools: MCPToolProvider, @unchecked Sendable {
     var lastCreateDraft: (account: String, to: [String], subject: String)?
 
     func listAccounts() async throws -> String { try listAccountsResult.get() }
-    func listThreads(mailbox: String, unreadOnly: Bool?, limit: Int, account: String?) async throws -> String {
+    func listThreads(mailbox: String, unreadOnly: Bool?, limit: Int, offset: Int, account: String?) async throws -> String {
         lastListThreads = (mailbox, unreadOnly, limit, account)
         return try listThreadsResult.get()
     }
-    func searchThreads(query: String, limit: Int) async throws -> String { try searchResult.get() }
+    func searchThreads(query: String, limit: Int, offset: Int) async throws -> String { try searchResult.get() }
     func getThread(threadId: String) async throws -> String { try getThreadResult.get() }
     func listDrafts(account: String?) async throws -> String { try listDraftsResult.get() }
     func createDraft(

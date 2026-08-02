@@ -135,14 +135,17 @@ enum MCPRouter {
             let limit = MCPTools.clampedLimit(intArg(args, "limit"))
             let account = stringArg(args, "account")
             return try await tools.listThreads(
-                mailbox: mailbox, unreadOnly: unread, limit: limit, account: account)
+                mailbox: mailbox, unreadOnly: unread, limit: limit,
+                offset: MCPTools.clampedOffset(intArg(args, "offset")), account: account)
 
         case "search_threads":
             guard let query = stringArg(args, "query") else {
                 throw ToolDispatchError.invalidParams("query is required")
             }
             let limit = MCPTools.clampedLimit(intArg(args, "limit"))
-            return try await tools.searchThreads(query: query, limit: limit)
+            return try await tools.searchThreads(
+                query: query, limit: limit,
+                offset: MCPTools.clampedOffset(intArg(args, "offset")))
 
         case "get_thread":
             guard let threadId = stringArg(args, "thread_id") else {

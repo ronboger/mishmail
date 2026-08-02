@@ -37,8 +37,16 @@ def main():
     args = ap.parse_args()
 
     mcp = MCP()
-    threads = json.loads(mcp.call("list_threads", {
-        "mailbox": args.mailbox, "limit": min(args.limit, 100)}))
+    threads, offset = [], 0
+    while len(threads) < args.limit:
+        page = json.loads(mcp.call("list_threads", {
+            "mailbox": args.mailbox,
+            "limit": min(100, args.limit - len(threads)),
+            "offset": offset}))
+        if not page:
+            break
+        threads.extend(page)
+        offset += len(page)
     todo = [t for t in threads if args.redo or not t.get("summary")]
 
     written = 0
