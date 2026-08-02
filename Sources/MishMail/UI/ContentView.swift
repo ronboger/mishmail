@@ -277,7 +277,7 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.2), value: store.threadFocusMode)
         .animation(.easeOut(duration: 0.1), value: splitComposeActive)
-        // Undo/notice toast: centered on the bottom of the whole window.
+        // Undo toast: centered on the bottom of the whole window (interactive).
         .overlay(alignment: .bottom) {
             if let undo = store.undoAction {
                 HStack(spacing: 14) {
@@ -304,14 +304,20 @@ struct ContentView: View {
                 .shadow(radius: 10)
                 .padding(.bottom, 20)
                 .transition(.move(edge: .bottom).combined(with: .opacity))
-            } else if let notice = store.notice {
+            }
+        }
+        // Notice toast: bottom-leading, non-interactive so it never covers
+        // clickable controls (draft card Continue/Discard sit bottom-center/trailing).
+        .overlay(alignment: .bottomLeading) {
+            if let notice = store.notice {
                 Text(notice)
                     .font(.system(size: 14, weight: .medium))
                     .padding(.horizontal, 22).padding(.vertical, 13)
                     .background(.regularMaterial, in: Capsule())
                     .shadow(radius: 10)
-                    .padding(.bottom, 20)
+                    .padding(.leading, 20).padding(.bottom, 20)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
+                    .allowsHitTesting(false)
             }
         }
         // Presence only — not `undoAction?.id` — so rapid keyboard archive/
