@@ -1465,6 +1465,10 @@ struct ComposeRequest: Identifiable {
 
     static let mcpEnabledKey = "mcp.enabled"
     static let mcpTokenKey = "mcp.token"
+    static let mcpPortKey = "mcp.port"
+
+    /// Default fixed port so client configs survive app relaunches.
+    static let mcpDefaultPort = 41888
 
     /// In-process Streamable HTTP MCP server (nil when stopped).
     @ObservationIgnored
@@ -1496,6 +1500,21 @@ struct ComposeRequest: Identifiable {
         }
     }
 
+    /// Preferred listen port. 0 = ephemeral (changes every launch); anything
+    /// else is bound verbatim. Restarts the server when changed while running.
+    var mcpPreferredPort: Int {
+        get {
+            UserDefaults.standard.object(forKey: Self.mcpPortKey) == nil
+                ? Self.mcpDefaultPort
+                : UserDefaults.standard.integer(forKey: Self.mcpPortKey)
+        }
+        set {
+            let clamped = min(max(newValue, 0), 65535)
+            UserDefaults.standard.set(clamped, forKey: Self.mcpPortKey)
+            if mcpRunning { startMCPServer() }
+        }
+    }
+
     /// Generate or load the Keychain bearer token (32 random bytes, hex).
     func ensureMCPToken() throws -> String {
         if let existing = mcpToken, !existing.isEmpty { return existing }
@@ -1518,7 +1537,7 @@ struct ComposeRequest: Identifiable {
             let token = try ensureMCPToken()
             let bridge = MCPBridge(store: self)
             let server = MCPServer(tools: bridge)
-            let port = try server.start(token: token)
+            let port = try server.start(token: token, preferredPort: UInt16(mcpPreferredPort))
             mcpServer = server
             mcpPort = port
             mcpRunning = true

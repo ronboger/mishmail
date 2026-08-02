@@ -1525,6 +1525,8 @@ struct AISettings: View {
 private struct MCPSettingsSection: View {
     @Environment(MailStore.self) private var store
     @State private var copied = false
+    @State private var client: MCPConnectSnippets.Client = .claudeCode
+    @State private var portText = ""
 
     var body: some View {
         Section {
@@ -1532,12 +1534,15 @@ private struct MCPSettingsSection: View {
                 get: { store.isMCPEnabled },
                 set: { store.isMCPEnabled = $0 }
             ))
+            LabeledContent("Port") {
+                TextField("41888", text: $portText)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 90)
+                    .multilineTextAlignment(.trailing)
+                    .onSubmit(applyPort)
+                    .onAppear { portText = "\(store.mcpPreferredPort)" }
+            }
             if store.mcpRunning, let port = store.mcpPort {
-                LabeledContent("Port") {
-                    Text("\(port)")
-                        .textSelection(.enabled)
-                        .foregroundStyle(.secondary)
-                }
                 LabeledContent("Discovery file") {
                     Text(store.mcpDiscoveryURL.path)
                         .font(.system(size: 11, design: .monospaced))
@@ -1547,17 +1552,21 @@ private struct MCPSettingsSection: View {
                 }
                 if let token = store.mcpToken {
                     VStack(alignment: .leading, spacing: 6) {
-                        Text("Claude Code")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                        Text(claudeSnippet(port: port, token: token))
+                        Picker("Connect command", selection: $client) {
+                            ForEach(MCPConnectSnippets.Client.allCases) { c in
+                                Text(c.rawValue).tag(c)
+                            }
+                        }
+                        .pickerStyle(.menu)
+                        Text(MCPConnectSnippets.snippet(for: client, port: port, token: token))
                             .font(.system(size: 11, design: .monospaced))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
                         Button {
                             NSPasteboard.general.clearContents()
                             NSPasteboard.general.setString(
-                                claudeSnippet(port: port, token: token), forType: .string)
+                                MCPConnectSnippets.snippet(for: client, port: port, token: token),
+                                forType: .string)
                             copied = true
                             DispatchQueue.main.asyncAfter(deadline: .now() + 1.5) {
                                 copied = false
@@ -1573,12 +1582,19 @@ private struct MCPSettingsSection: View {
         } header: {
             Text("MCP")
         } footer: {
-            Text("Lets local AI agents (Claude Code, etc.) read mail, manage drafts, set thread summaries, and edit VIPs over 127.0.0.1. Off by default. Requires a bearer token stored in your Keychain.")
+            Text("Lets local AI agents (Claude Code, Codex, etc.) read mail, manage drafts, set thread summaries, and edit VIPs over 127.0.0.1. Off by default; the bearer token lives in your Keychain. A fixed port keeps agent configs valid across relaunches — set 0 for a random port each launch.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
 
-    private func claudeSnippet(port: UInt16, token: String) -> String {
-        "claude mcp add --transport http mishmail http://127.0.0.1:\(port)/mcp --header \"Authorization: Bearer \(token)\""
+    /// Persist the port field (restarts the server if running). Non-numeric
+    /// input reverts to the stored value.
+    private func applyPort() {
+        guard let n = Int(portText.trimmingCharacters(in: .whitespaces)), (0...65535).contains(n) else {
+            portText = "\(store.mcpPreferredPort)"
+            return
+        }
+        store.mcpPreferredPort = n
+        portText = "\(store.mcpPreferredPort)"
     }
 }

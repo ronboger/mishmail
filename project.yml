@@ -222,6 +222,7 @@ targets:
       - Sources/MishMail/MCP/MCPHTTP.swift
       - Sources/MishMail/MCP/MCPRouter.swift
       - Sources/MishMail/MCP/MCPTools.swift
+      - Sources/MishMail/Support/MCPConnectSnippets.swift
     dependencies:
       - package: GRDB
     configFiles:

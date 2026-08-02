@@ -22,22 +22,31 @@ final class MCPServer: @unchecked Sendable {
     }
 
     /// Start listening. Returns the bound port.
+    ///
+    /// `preferredPort` 0 requests an ephemeral port; a fixed port keeps client
+    /// configs (Claude Code, Codex, …) valid across app relaunches, at the
+    /// cost of failing when something else already holds it.
     @discardableResult
-    func start(token: String) throws -> UInt16 {
+    func start(token: String, preferredPort: UInt16 = 0) throws -> UInt16 {
         lock.lock()
         defer { lock.unlock() }
         if listener != nil { stopUnlocked() }
 
         self.token = token
         let params = NWParameters.tcp
-        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        let nwPort = NWEndpoint.Port(rawValue: preferredPort) ?? .any
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: nwPort)
         let listener = try NWListener(using: params)
         listener.newConnectionHandler = { [weak self] conn in
             self?.handleConnection(conn)
         }
+        // With a fixed port, address-in-use surfaces as .failed (not a thrown
+        // init error) and `listener.port` can still echo the requested value,
+        // so track failure explicitly and treat it as a bind failure.
+        let failed = MCPAtomicFlag()
         listener.stateUpdateHandler = { state in
             if case .failed = state {
-                // Listener failed (e.g. interface down); caller can restart.
+                failed.set()
             }
         }
         listener.start(queue: queue)
@@ -45,13 +54,14 @@ final class MCPServer: @unchecked Sendable {
 
         var port: UInt16 = 0
         for _ in 0..<100 {
-            if let p = listener.port?.rawValue, p != 0 {
+            if failed.isSet { break }
+            if case .ready = listener.state, let p = listener.port?.rawValue, p != 0 {
                 port = p
                 break
             }
             usleep(10_000)
         }
-        guard port != 0 else {
+        guard port != 0, !failed.isSet else {
             listener.cancel()
             self.listener = nil
             throw MCPServerError.bindFailed
@@ -156,7 +166,17 @@ enum MCPServerError: Error, LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .bindFailed: return "Could not bind the MCP server to 127.0.0.1"
+        case .bindFailed:
+            return "Could not bind the MCP server to 127.0.0.1 (is the port already in use?)"
         }
     }
+}
+
+/// Tiny lock-guarded bool for the bind-failure handshake between the
+/// listener queue and the starting thread.
+private final class MCPAtomicFlag: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = false
+    var isSet: Bool { lock.lock(); defer { lock.unlock() }; return value }
+    func set() { lock.lock(); value = true; lock.unlock() }
 }
