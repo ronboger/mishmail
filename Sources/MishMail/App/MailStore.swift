@@ -1454,6 +1454,112 @@ struct ComposeRequest: Identifiable {
         loadBlocked()
         reloadThreads()
         startupTask = Task { await self.runDeferredStartupWork() }
+        // MCP is opt-in (UserDefaults). Start after the first frame so a bind
+        // failure only surfaces as a notice, not a launch crash.
+        if isMCPEnabled {
+            startMCPServer()
+        }
+    }
+
+    // MARK: - MCP server
+
+    static let mcpEnabledKey = "mcp.enabled"
+    static let mcpTokenKey = "mcp.token"
+
+    /// In-process Streamable HTTP MCP server (nil when stopped).
+    @ObservationIgnored
+    private var mcpServer: MCPServer?
+
+    /// Bound loopback port while the server is running; nil when stopped.
+    private(set) var mcpPort: UInt16?
+
+    /// True while the MCP server is accepting connections.
+    private(set) var mcpRunning = false
+
+    /// Cached bearer token for Settings copy snippet (Keychain-backed).
+    private(set) var mcpToken: String?
+
+    /// Discovery file next to mail.sqlite (`mcp.json`).
+    var mcpDiscoveryURL: URL {
+        AppDatabase.shared.directoryURL.appendingPathComponent("mcp.json")
+    }
+
+    var isMCPEnabled: Bool {
+        get { UserDefaults.standard.bool(forKey: Self.mcpEnabledKey) }
+        set {
+            UserDefaults.standard.set(newValue, forKey: Self.mcpEnabledKey)
+            if newValue {
+                startMCPServer()
+            } else {
+                stopMCPServer()
+            }
+        }
+    }
+
+    /// Generate or load the Keychain bearer token (32 random bytes, hex).
+    func ensureMCPToken() throws -> String {
+        if let existing = mcpToken, !existing.isEmpty { return existing }
+        let token = try Keychain.existingOrCreate(from: Keychain.read(Self.mcpTokenKey)) {
+            var bytes = [UInt8](repeating: 0, count: 32)
+            guard SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) == errSecSuccess else {
+                throw KeychainError.status(errSecParam)
+            }
+            let hex = bytes.map { String(format: "%02x", $0) }.joined()
+            try Keychain.set(hex, forKey: Self.mcpTokenKey)
+            return hex
+        }
+        mcpToken = token
+        return token
+    }
+
+    func startMCPServer() {
+        stopMCPServer()
+        do {
+            let token = try ensureMCPToken()
+            let bridge = MCPBridge(store: self)
+            let server = MCPServer(tools: bridge)
+            let port = try server.start(token: token)
+            mcpServer = server
+            mcpPort = port
+            mcpRunning = true
+            writeMCPDiscovery(port: port, token: token)
+        } catch {
+            mcpServer = nil
+            mcpPort = nil
+            mcpRunning = false
+            showNotice("MCP server failed to start: \(error.localizedDescription)")
+        }
+    }
+
+    func stopMCPServer() {
+        mcpServer?.stop()
+        mcpServer = nil
+        mcpPort = nil
+        mcpRunning = false
+        removeMCPDiscovery()
+    }
+
+    private func writeMCPDiscovery(port: UInt16, token: String) {
+        let url = mcpDiscoveryURL
+        let payload: [String: Any] = [
+            "port": Int(port),
+            "token": token,
+            "pid": Int(ProcessInfo.processInfo.processIdentifier),
+        ]
+        guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else {
+            return
+        }
+        do {
+            try data.write(to: url, options: .atomic)
+            try FileManager.default.setAttributes(
+                [.posixPermissions: 0o600], ofItemAtPath: url.path)
+        } catch {
+            NSLog("MishMail: failed to write mcp.json: %@", "\(error)")
+        }
+    }
+
+    private func removeMCPDiscovery() {
+        try? FileManager.default.removeItem(at: mcpDiscoveryURL)
     }
 
     /// Startup work that no on-screen surface is waiting for.
@@ -1748,6 +1854,10 @@ struct ComposeRequest: Identifiable {
     }
 
     private func executeTermination() async {
+        // Stop the MCP loopback listener before any DB shutdown so in-flight
+        // tool handlers cannot race a closed SQLCipher pool.
+        stopMCPServer()
+
         // Refuse new maintenance (VACUUM / idle checkpoint) immediately so a
         // deferred startup tail cannot open a long write after we begin
         // cancelling tracked tasks. The quit-path checkpoint below uses

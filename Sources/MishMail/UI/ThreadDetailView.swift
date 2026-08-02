@@ -1,4 +1,5 @@
 import AppKit
+import GRDB
 import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
@@ -63,6 +64,9 @@ struct ThreadDetailView: View {
     @State private var aiSummary: String?
     @State private var summarizing = false
     @State private var summaryError: String?
+    /// Persisted MCP / agent summary (`threadSummary` row). Shown only when no
+    /// ephemeral Ollama summary is present.
+    @State private var persistedSummary: ThreadSummaryRow?
     /// Session opt-in: Load images for every card in this thread.
     @State private var loadRemoteImagesForThread = false
     /// Message ids we already tried to hydrate — avoids re-querying forever
@@ -1052,7 +1056,8 @@ struct ThreadDetailView: View {
 
     /// On-device AI summary. Only offered for multi-message threads (a single
     /// short message doesn't need one). Collapses to a one-line affordance
-    /// until asked; the summary streams in locally.
+    /// until asked; the summary streams in locally. Ephemeral Ollama output
+    /// takes precedence over a persisted MCP `threadSummary` row.
     @ViewBuilder
     private var summarySection: some View {
         if messages.count >= 2 || (messages.first?.bodyText.count ?? 0) > 800 {
@@ -1066,6 +1071,23 @@ struct ThreadDetailView: View {
                             .font(.system(size: 12.5 * fontScale))
                             .textSelection(.enabled)
                             .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                    .padding(10)
+                    .background(Color.notionAccent.opacity(0.08), in: RoundedRectangle(cornerRadius: PMRadius.md))
+                } else if let persisted = persistedSummary {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .top, spacing: 8) {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 11 * fontScale))
+                                .foregroundStyle(.tint)
+                            Text(persisted.summary)
+                                .font(.system(size: 12.5 * fontScale))
+                                .textSelection(.enabled)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                        }
+                        Text("Summarized by \(persisted.model)")
+                            .font(.system(size: 10.5 * fontScale))
+                            .foregroundStyle(.secondary)
                     }
                     .padding(10)
                     .background(Color.notionAccent.opacity(0.08), in: RoundedRectangle(cornerRadius: PMRadius.md))
@@ -1089,6 +1111,20 @@ struct ThreadDetailView: View {
                 }
             }
             .padding(.horizontal)
+            .task(id: thread.id) {
+                await loadPersistedSummary()
+            }
+        }
+    }
+
+    private func loadPersistedSummary() async {
+        let id = thread.id
+        let row = try? await AppDatabase.shared.dbPool.read { db in
+            try ThreadSummaryRow.fetchOne(db, key: id)
+        }
+        await MainActor.run {
+            guard thread.id == id else { return }
+            persistedSummary = row
         }
     }
 

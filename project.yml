@@ -217,6 +217,11 @@ targets:
       - Sources/MishMail/Support/CalendarInvite.swift
       - Sources/MishMail/Support/UndoToast.swift
       - Sources/MishMail/Auth/OAuth.swift
+      # Pure MCP helpers (HTTP parse, JSON-RPC router, tool schemas). Networking
+      # + MailStore bridge stay app-only (AppKit / NWListener).
+      - Sources/MishMail/MCP/MCPHTTP.swift
+      - Sources/MishMail/MCP/MCPRouter.swift
+      - Sources/MishMail/MCP/MCPTools.swift
     dependencies:
       - package: GRDB
     configFiles:
