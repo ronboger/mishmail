@@ -6,6 +6,20 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+## [0.4.14] - 2026-08-02
+
+### Added
+- **MCP server** — an opt-in, in-process MCP endpoint (Streamable HTTP on
+  127.0.0.1) so external AI agents can read and search threads, list and
+  create drafts, write persisted per-thread AI summaries (shown in the
+  reading pane with model attribution), and manage VIP senders (suggestions
+  land in a "Suggested" group). Off by default; Settings → AI → MCP has the
+  toggle, a fixed port (default 41888, 0 = random per launch), and copyable
+  connect commands for Claude Code, Codex CLI, Gemini CLI, and any
+  mcp-remote-capable client. Auth is a Keychain-held bearer token; a
+  discovery file (mcp.json) is written next to the database while running.
+  No send/archive/trash tools in this first version — drafts stay reviewable.
+
 ### Changed
 - **Shift+I on an already-read conversation marks it unread** — Gmail's chord
   still marks unread threads read; when every focused or multi-selected
