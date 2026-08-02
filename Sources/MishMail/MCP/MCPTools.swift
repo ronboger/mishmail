@@ -40,7 +40,7 @@ enum MCPTools {
         ),
         ToolDefinition(
             name: "list_threads",
-            description: "List threads in a mailbox. Returns id, subject, snippet, from, date, flags, and any persisted AI summary (with summaryStale=true when the thread has new messages since that summary was written).",
+            description: "List threads in a mailbox. Returns id, subject, snippet, from, date, flags, any persisted AI summary (summaryStale=true once the thread has new messages since it was written), and the on-device triage category when the app has classified the thread.",
             inputSchema: objectSchema(
                 properties: [
                     "mailbox": stringSchema(

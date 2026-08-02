@@ -74,6 +74,7 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         }
 
         let summaries = try await loadSummaries(for: threads.map(\.id))
+        let categories = try await loadCategories(for: threads.map(\.id))
         let payload = threads.map { thread -> [String: Any] in
             var row: [String: Any] = [
                 "id": thread.id,
@@ -90,6 +91,9 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
                 "inPromotions": thread.inPromotions,
                 "inSocial": thread.inSocial,
             ]
+            if let category = categories[thread.id] {
+                row["category"] = category
+            }
             if let summary = summaries[thread.id] {
                 row["summary"] = summary.summary
                 row["summaryModel"] = summary.model
@@ -400,6 +404,17 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
     }
 
     // MARK: - Helpers
+
+    /// On-device triage categories (Reply needed / FYI / Newsletter / Receipt
+    /// / Other). Only populated for threads the app has classified — enable
+    /// Auto-sort in Settings → AI to fill this in.
+    private func loadCategories(for threadIds: [String]) async throws -> [String: String] {
+        guard !threadIds.isEmpty else { return [:] }
+        let rows = try await AppDatabase.shared.dbPool.read { db in
+            try ThreadAICategory.filter(threadIds.contains(Column("threadId"))).fetchAll(db)
+        }
+        return Dictionary(uniqueKeysWithValues: rows.map { ($0.threadId, $0.category) })
+    }
 
     private func loadSummaries(for threadIds: [String]) async throws -> [String: ThreadSummaryRow] {
         guard !threadIds.isEmpty else { return [:] }

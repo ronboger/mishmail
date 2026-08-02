@@ -1,6 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<!-- Hourly incremental summary pass: picks up newly arrived threads and
+<!-- Daily incremental summary pass: picks up newly arrived threads and
      refreshes summaries whose thread got new messages. No-ops in seconds when
      nothing changed, and exits quietly if MishMail isn't running.
      Install:  launchctl load -w ~/Library/LaunchAgents/dev.ronboger.mishmail-summarize.plist
@@ -11,15 +11,15 @@
     <string>dev.ronboger.mishmail-summarize</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/bin/python3</string>
-        <string>/Users/ronboger/mishmail/scripts/mcp-summarize.py</string>
-        <string>--mailbox</string><string>primary</string>
-        <string>--limit</string><string>200</string>
-        <string>--model</string><string>qwen3:8b</string>
-        <string>--jobs</string><string>4</string>
+        <string>/Users/ronboger/mishmail/scripts/mishmail-summarize-daily.sh</string>
     </array>
-    <key>StartInterval</key>
-    <integer>3600</integer>
+    <!-- Daily at 06:15. Edit the shell script, not this file, to change
+         model/backend — including switching to a cloud model later. -->
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>6</integer>
+        <key>Minute</key><integer>15</integer>
+    </dict>
     <key>RunAtLoad</key>
     <false/>
     <key>StandardOutPath</key>

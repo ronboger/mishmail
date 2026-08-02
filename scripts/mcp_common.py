@@ -1,6 +1,7 @@
 """Shared MCP client for the MishMail helper scripts."""
 
 import json
+import os
 import sys
 import threading
 import urllib.request
@@ -22,12 +23,25 @@ class MCP:
     """Minimal JSON-RPC client against the in-app MishMail MCP server."""
 
     def __init__(self, discovery=DISCOVERY):
-        if not Path(discovery).exists():
-            sys.exit(f"MCP discovery file not found ({discovery}). "
-                     "Is MishMail running with the MCP server enabled?")
-        cfg = json.loads(Path(discovery).read_text())
-        self.url = f"http://127.0.0.1:{cfg['port']}/mcp"
-        self.headers = {"Authorization": f"Bearer {cfg['token']}"}
+        # Env wins over the discovery file: a launchd agent (or any process
+        # without Full Disk Access) cannot read another app's sandbox
+        # container, but the port is fixed and the token is stable, so both
+        # can simply be supplied.
+        token = os.environ.get("MISHMAIL_MCP_TOKEN")
+        port = os.environ.get("MISHMAIL_MCP_PORT", "41888")
+        if not token:
+            if not Path(discovery).exists():
+                sys.exit(f"MCP discovery file not readable ({discovery}) and "
+                         "MISHMAIL_MCP_TOKEN is unset. Is MishMail running "
+                         "with the MCP server enabled?")
+            try:
+                cfg = json.loads(Path(discovery).read_text())
+            except PermissionError:
+                sys.exit(f"No permission to read {discovery}. Set "
+                         "MISHMAIL_MCP_TOKEN (and MISHMAIL_MCP_PORT) instead.")
+            token, port = cfg["token"], cfg["port"]
+        self.url = f"http://127.0.0.1:{port}/mcp"
+        self.headers = {"Authorization": f"Bearer {token}"}
         self._id = 0
         # Callers may summarize concurrently (--jobs); keep ids unique.
         self._lock = threading.Lock()

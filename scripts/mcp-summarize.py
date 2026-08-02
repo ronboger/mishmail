@@ -110,6 +110,10 @@ def main():
     ap.add_argument("--replace-model", default=None, metavar="NAME",
                     help="only threads whose current summary came from NAME "
                          "(use to upgrade an earlier pass to a better model)")
+    ap.add_argument("--skip-categories", default="", metavar="A,B",
+                    help="skip threads the app classified as these (e.g. "
+                         "'Newsletter,Receipt'); needs Auto-sort enabled in "
+                         "Settings → AI, unclassified threads are kept")
     ap.add_argument("--jobs", type=int, default=4,
                     help="concurrent summarization requests (default 4)")
     ap.add_argument("--dry-run", action="store_true",
@@ -142,7 +146,13 @@ def main():
         threads.extend(page)
         offset += len(page)
 
+    skip = {c.strip().lower() for c in args.skip_categories.split(",") if c.strip()}
+
     def needs_work(t):
+        # Unclassified threads have no category and are never skipped — the
+        # filter must not silently drop mail just because triage hasn't run.
+        if skip and (t.get("category") or "").lower() in skip:
+            return False
         if args.redo or not t.get("summary"):
             return True
         # A thread that got new messages after its summary was written is
