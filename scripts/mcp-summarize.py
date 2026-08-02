@@ -32,6 +32,35 @@ PROMPT = (
 )
 
 
+def strip_quotes(text):
+    """Drop quoted reply chains (`>` lines) — in a long thread they repeat
+    earlier messages verbatim and crowd out the real content."""
+    out, blanks = [], 0
+    for line in text.splitlines():
+        if line.lstrip().startswith(">"):
+            continue
+        if not line.strip():
+            blanks += 1
+            if blanks > 1:
+                continue
+        else:
+            blanks = 0
+        out.append(line)
+    return "\n".join(out)
+
+
+def fit(text, max_chars):
+    """Keep the head AND tail when a thread is too long. The opening message
+    usually carries the ask; the newest ones carry the current state.
+    Truncating to the tail alone loses the former."""
+    text = strip_quotes(text)
+    if len(text) <= max_chars:
+        return text
+    head = int(max_chars * 0.6)
+    tail = max_chars - head
+    return text[:head] + "\n\n[...middle of thread omitted...]\n\n" + text[-tail:]
+
+
 def summarize_ollama(base, model, thread_text):
     r = post_json(f"{base}/api/generate", {
         "model": model,
@@ -69,8 +98,8 @@ def main():
                     help="max threads to examine (newest first)")
     ap.add_argument("--redo", action="store_true",
                     help="re-summarize threads that already have a summary")
-    ap.add_argument("--max-chars", type=int, default=6000,
-                    help="truncate thread text to its last N chars")
+    ap.add_argument("--max-chars", type=int, default=12000,
+                    help="budget for thread text (quotes stripped; head+tail kept)")
     ap.add_argument("--dry-run", action="store_true",
                     help="print summaries without writing them back")
     args = ap.parse_args()
@@ -99,7 +128,7 @@ def main():
     for t in todo:
         try:
             text = mcp.call("get_thread", {"thread_id": t["id"]})
-            summary = summarize(text[-args.max_chars:])
+            summary = summarize(fit(text, args.max_chars))
             # Guard against runaway model output.
             summary = " ".join(summary.split())[:600]
             if not summary:
