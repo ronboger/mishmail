@@ -2888,10 +2888,13 @@ struct HTMLBodyView: NSViewRepresentable {
 
             // A user clicking a link is handed to the OS (real browser / mail
             // client); we never navigate the message pane itself. A crafted
-            // file:// or app-scheme link stays inert.
+            // file:// or app-scheme link stays inert. Schemeless hrefs that
+            // WebKit resolved against about:blank (baseURL is nil) are
+            // recovered to https:// when they look like a real host — see
+            // ExternalLinkRecovery.
             if navigationAction.navigationType == .linkActivated {
-                if let url, ["http", "https", "mailto"].contains(url.scheme?.lowercased() ?? "") {
-                    NSWorkspace.shared.open(url)
+                if let external = ExternalLinkRecovery.recoveredExternalURL(from: url) {
+                    NSWorkspace.shared.open(external)
                 }
                 decisionHandler(.cancel)
                 return
