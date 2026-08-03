@@ -40,3 +40,20 @@ final class MCPPaginationTests: XCTestCase {
         }
     }
 }
+
+final class MCPPrimaryMailboxTests: XCTestCase {
+
+    /// The label-matching trick the `primary` filter relies on: pad both sides
+    /// so a whole label matches and a prefix (CATEGORY_UPDATES_DIGEST) doesn't.
+    func testPaddedLabelMatchIsWholeLabelOnly() {
+        func hasLabel(_ labelIds: String, _ label: String) -> Bool {
+            (" " + labelIds + " ").contains(" " + label + " ")
+        }
+        XCTAssertTrue(hasLabel("INBOX CATEGORY_UPDATES", "CATEGORY_UPDATES"))
+        XCTAssertTrue(hasLabel("CATEGORY_UPDATES INBOX", "CATEGORY_UPDATES"))
+        XCTAssertTrue(hasLabel("CATEGORY_UPDATES", "CATEGORY_UPDATES"))
+        XCTAssertTrue(hasLabel("A CATEGORY_FORUMS B", "CATEGORY_FORUMS"))
+        XCTAssertFalse(hasLabel("INBOX CATEGORY_UPDATES_DIGEST", "CATEGORY_UPDATES"))
+        XCTAssertFalse(hasLabel("INBOX", "CATEGORY_UPDATES"))
+    }
+}

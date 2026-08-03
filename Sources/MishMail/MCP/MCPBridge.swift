@@ -46,9 +46,15 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
             var args: [any DatabaseValueConvertible] = []
             switch mb {
             case "primary":
-                // What the app shows in the Primary tab: real correspondence,
-                // not bulk mail. Agents summarizing "the inbox" want this.
-                sql += " AND inInbox = 1 AND inPromotions = 0 AND inSocial = 0"
+                // Real correspondence, not bulk mail: excludes all four Gmail
+                // categories. Promotions/Social have denormalized columns;
+                // Updates/Forums live only in the space-separated labelIds,
+                // so pad both sides to match a whole label.
+                sql += """
+                     AND inInbox = 1 AND inPromotions = 0 AND inSocial = 0
+                     AND (' ' || labelIds || ' ') NOT LIKE '% CATEGORY_UPDATES %'
+                     AND (' ' || labelIds || ' ') NOT LIKE '% CATEGORY_FORUMS %'
+                    """
             case "inbox":
                 sql += " AND inInbox = 1"
             case "starred":
