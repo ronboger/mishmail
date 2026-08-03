@@ -34,6 +34,7 @@ private final class StubTools: MCPToolProvider, @unchecked Sendable {
     func setThreadSummary(threadId: String, summary: String, model: String) async throws -> String {
         try setSummaryResult.get()
     }
+    func clearThreadSummary(threadId: String) async throws -> String { "{}" }
     func listVIPs() async throws -> String { try listVIPsResult.get() }
     func addVIP(email: String, group: String?) async throws -> String { try addVIPResult.get() }
     func removeVIP(email: String) async throws -> String { try removeVIPResult.get() }
@@ -87,18 +88,18 @@ final class MCPRouterTests: XCTestCase {
         XCTAssertNil(obj["error"])
     }
 
-    func testToolsListReturnsTenToolsWithSchemas() async throws {
+    func testToolsListReturnsEveryToolWithSchemas() async throws {
         let (status, body) = await MCPRouter.handle(body: rpc("tools/list"), tools: StubTools())
         XCTAssertEqual(status, 200)
         let obj = try jsonObject(body)
         let result = try XCTUnwrap(obj["result"] as? [String: Any])
         let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.count, 10)
+        XCTAssertEqual(tools.count, 11)
         let names = Set(tools.compactMap { $0["name"] as? String })
         XCTAssertEqual(names, [
             "list_accounts", "list_threads", "search_threads", "get_thread",
             "list_drafts", "create_draft", "set_thread_summary",
-            "list_vips", "add_vip", "remove_vip",
+            "clear_thread_summary", "list_vips", "add_vip", "remove_vip",
         ])
         for tool in tools {
             let schema = try XCTUnwrap(tool["inputSchema"] as? [String: Any])

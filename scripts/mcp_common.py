@@ -9,13 +9,24 @@ from pathlib import Path
 
 DISCOVERY = (Path.home() / "Library/Containers/dev.ronboger.MishMail/Data"
              / "Library/Application Support/MishMail/mcp.json")
+# Preferred: a copy of the token outside the app container. Reading the
+# container itself needs Full Disk Access, and on a Mac without it the read
+# BLOCKS on a TCC prompt rather than failing — so try this first.
+TOKEN_FILE = Path.home() / ".config/mishmail/mcp-token"
+DEFAULT_PORT = "41888"
+
+
+# urllib consults macOS system proxy settings, so a VPN or PAC file can make
+# even a 127.0.0.1 request hang. The MCP server is always loopback — never
+# proxy it.
+_OPENER = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
 def post_json(url, payload, headers=None, timeout=180):
     req = urllib.request.Request(
         url, data=json.dumps(payload).encode(),
         headers={"Content-Type": "application/json", **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
+    with _OPENER.open(req, timeout=timeout) as r:
         return json.loads(r.read())
 
 
@@ -28,7 +39,9 @@ class MCP:
         # container, but the port is fixed and the token is stable, so both
         # can simply be supplied.
         token = os.environ.get("MISHMAIL_MCP_TOKEN")
-        port = os.environ.get("MISHMAIL_MCP_PORT", "41888")
+        port = os.environ.get("MISHMAIL_MCP_PORT", DEFAULT_PORT)
+        if not token and TOKEN_FILE.exists():
+            token = TOKEN_FILE.read_text().strip() or None
         if not token:
             if not Path(discovery).exists():
                 sys.exit(f"MCP discovery file not readable ({discovery}) and "

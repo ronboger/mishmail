@@ -100,7 +100,7 @@ final class MCPBridgeTests: XCTestCase {
     }
 
     func testToolCatalogCountMatchesDesign() {
-        XCTAssertEqual(MCPTools.catalog.count, 10)
+        XCTAssertEqual(MCPTools.catalog.count, 11)
         XCTAssertEqual(MCPTools.clampedLimit(0), 1)
         XCTAssertEqual(MCPTools.clampedLimit(500), 100)
         XCTAssertEqual(MCPTools.clampedLimit(nil), 25)

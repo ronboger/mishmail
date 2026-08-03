@@ -13,6 +13,7 @@ protocol MCPToolProvider: Sendable {
         subject: String, body: String, replyToThreadId: String?
     ) async throws -> String
     func setThreadSummary(threadId: String, summary: String, model: String) async throws -> String
+    func clearThreadSummary(threadId: String) async throws -> String
     func listVIPs() async throws -> String
     func addVIP(email: String, group: String?) async throws -> String
     func removeVIP(email: String) async throws -> String
@@ -113,6 +114,16 @@ enum MCPTools {
                     "model": stringSchema(description: "Model that produced the summary"),
                 ],
                 required: ["thread_id", "summary", "model"]
+            )
+        ),
+        ToolDefinition(
+            name: "clear_thread_summary",
+            description: "Delete a thread's persisted AI summary (e.g. when it has gone stale and won't be refreshed).",
+            inputSchema: objectSchema(
+                properties: [
+                    "thread_id": stringSchema(description: "Local thread id"),
+                ],
+                required: ["thread_id"]
             )
         ),
         ToolDefinition(

@@ -189,6 +189,12 @@ enum MCPRouter {
             return try await tools.setThreadSummary(
                 threadId: threadId, summary: summary, model: model)
 
+        case "clear_thread_summary":
+            guard let threadId = stringArg(args, "thread_id") else {
+                throw ToolDispatchError.invalidParams("thread_id is required")
+            }
+            return try await tools.clearThreadSummary(threadId: threadId)
+
         case "list_vips":
             return try await tools.listVIPs()
 

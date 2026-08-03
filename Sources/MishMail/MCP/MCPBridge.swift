@@ -351,6 +351,15 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         ] as [String: Any])
     }
 
+    func clearThreadSummary(threadId: String) async throws -> String {
+        let tid = threadId.trimmingCharacters(in: .whitespaces)
+        guard !tid.isEmpty else { throw MCPToolError("thread_id is required") }
+        let deleted = try await AppDatabase.shared.dbPool.write { db in
+            try ThreadSummaryRow.deleteOne(db, key: tid)
+        }
+        return try encodeJSON(["threadId": tid, "cleared": deleted] as [String: Any])
+    }
+
     // MARK: - VIP tools
 
     func listVIPs() async throws -> String {
