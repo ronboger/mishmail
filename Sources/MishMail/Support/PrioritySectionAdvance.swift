@@ -26,6 +26,8 @@ enum PrioritySectionAdvance {
         vipThreadIds: Set<String>,
         vipAlwaysPins: Bool
     ) -> Set<String> {
+        // .off means no Priority section exists, so no row can leave it.
+        guard mode != .off else { return [] }
         var leaving = Set<String>()
         for target in targets {
             guard sectionIds.contains(target.id) else { continue }
