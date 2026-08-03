@@ -119,6 +119,51 @@ enum GreetingAutocomplete {
         return (name, email)
     }
 
+    /// Like `person(from:)`, but bare addresses (and angle forms with empty
+    /// display names) prefer a usable entry in `nameByEmail` over the
+    /// title-cased local-part guess. Keys are lowercased emails.
+    ///
+    /// Angle-bracket tokens keep their explicit display name even when the
+    /// map disagrees. Role / email-shaped map values are rejected via
+    /// `isUsablePersonName` so snippets still fall back to the local-part
+    /// guess rather than "Support".
+    static func person(from token: String,
+                       nameByEmail: [String: String]) -> (name: String, email: String) {
+        let base = person(from: token)
+        // Non-empty angle-bracket display name wins over the map.
+        if explicitDisplayName(from: token) != nil {
+            return base
+        }
+        let key = base.email.lowercased()
+        if let mapped = nameByEmail[key], isUsablePersonName(mapped) {
+            return (mapped.trimmingCharacters(in: .whitespacesAndNewlines), base.email)
+        }
+        return base
+    }
+
+    /// email (lowercased) → display name for snippet expansion.
+    ///
+    /// Starts from `contactEmailToName`, then overwrites with usable names
+    /// parsed from `headerTokens` so reply-header names win over mined
+    /// contacts (fresher on the message being replied to).
+    static func nameByEmail(headerTokens: [String],
+                            contactEmailToName: [String: String] = [:]) -> [String: String] {
+        var map: [String: String] = [:]
+        for (email, name) in contactEmailToName {
+            let key = email.lowercased()
+            guard !key.isEmpty, isUsablePersonName(name) else { continue }
+            map[key] = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        }
+        for token in headerTokens {
+            let email = MessageParser.emailAddress(token).lowercased()
+            guard !email.isEmpty,
+                  let name = explicitDisplayName(from: token),
+                  isUsablePersonName(name) else { continue }
+            map[email] = name
+        }
+        return map
+    }
+
     /// Display name only when the token used angle-bracket form
     /// (`"Alice <a@x.com>"`). Bare addresses return `nil` so greetings never
     /// invent a name from the email local-part.

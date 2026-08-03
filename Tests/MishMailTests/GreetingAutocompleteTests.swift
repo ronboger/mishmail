@@ -149,6 +149,66 @@ final class GreetingAutocompleteTests: XCTestCase {
             "Alice")
     }
 
+    // MARK: - person(from:nameByEmail:) for snippet expansion
+
+    func testPersonFromMapResolvesBareAddress() {
+        // Reply To/Bcc tokens are bare after MessageParser.emailAddress strips
+        // display names; map recovers the real name for {bcc_first_name}.
+        let map = ["jrsykes@berkeley.edu": "Jeffrey Sykes"]
+        let p = GreetingAutocomplete.person(
+            from: "jrsykes@berkeley.edu", nameByEmail: map)
+        XCTAssertEqual(p.name, "Jeffrey Sykes")
+        XCTAssertEqual(p.email, "jrsykes@berkeley.edu")
+        XCTAssertEqual(GreetingAutocomplete.firstName(of: p.name), "Jeffrey")
+    }
+
+    func testPersonFromMapFallsBackToLocalPartWhenMissing() {
+        let p = GreetingAutocomplete.person(
+            from: "jrsykes@berkeley.edu", nameByEmail: [:])
+        XCTAssertEqual(p.name, "Jrsykes")
+        XCTAssertEqual(p.email, "jrsykes@berkeley.edu")
+    }
+
+    func testPersonFromMapKeepsAngleBracketDisplayName() {
+        // Explicit token display name wins even when the map disagrees.
+        let map = ["alice@x.com": "Map Name"]
+        let p = GreetingAutocomplete.person(
+            from: "Alice Smith <alice@x.com>", nameByEmail: map)
+        XCTAssertEqual(p.name, "Alice Smith")
+        XCTAssertEqual(p.email, "alice@x.com")
+    }
+
+    func testPersonFromMapRejectsRoleLabel() {
+        let map = ["ops@company.com": "Support"]
+        let p = GreetingAutocomplete.person(
+            from: "ops@company.com", nameByEmail: map)
+        XCTAssertEqual(p.name, "Ops")
+        XCTAssertEqual(p.email, "ops@company.com")
+    }
+
+    func testPersonFromMapIsCaseInsensitiveOnEmail() {
+        let map = ["jrsykes@berkeley.edu": "Jeffrey Sykes"]
+        let p = GreetingAutocomplete.person(
+            from: "JRSykes@Berkeley.EDU", nameByEmail: map)
+        XCTAssertEqual(p.name, "Jeffrey Sykes")
+        XCTAssertEqual(p.email, "JRSykes@Berkeley.EDU")
+    }
+
+    func testNameByEmailHeadersWinOverContacts() {
+        let contacts = ["jrsykes@berkeley.edu": "Contact Name"]
+        let tokens = ["Jeffrey Sykes <jrsykes@berkeley.edu>"]
+        let map = GreetingAutocomplete.nameByEmail(
+            headerTokens: tokens, contactEmailToName: contacts)
+        XCTAssertEqual(map["jrsykes@berkeley.edu"], "Jeffrey Sykes")
+    }
+
+    func testNameByEmailUsesContactsWhenNoHeaderName() {
+        let contacts = ["alice@x.com": "Alice Smith"]
+        let map = GreetingAutocomplete.nameByEmail(
+            headerTokens: ["alice@x.com"], contactEmailToName: contacts)
+        XCTAssertEqual(map["alice@x.com"], "Alice Smith")
+    }
+
     // MARK: - tone
 
     func testToneCasualFromHeyOpener() {

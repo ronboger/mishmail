@@ -1918,9 +1918,13 @@ struct ComposeView: View {
         }?.displayName
             ?? store.accounts.first { $0.id == fromAccountId }?.senderName
             ?? ""
+        // Reply tokens are often bare addresses (display names stripped when
+        // building To/Cc). Recover names from the original headers + contacts
+        // so `{bcc_first_name}` / `{first_name}` don't invent "Jrsykes".
+        let names = snippetNameByEmail()
         if snippet.movesToBcc {
             if let intro = toTokens.first {
-                (ctx.bccName, ctx.bccEmail) = person(from: intro)
+                (ctx.bccName, ctx.bccEmail) = person(from: intro, nameByEmail: names)
             }
             let moved = SnippetInsertion.moveToBcc(to: toTokens, cc: ccTokens, bcc: bccTokens)
             toTokens = moved.to
@@ -1928,18 +1932,36 @@ struct ComposeView: View {
             bccTokens = moved.bcc
             if !bccTokens.isEmpty { showCc = true; showBcc = true }
         } else if let firstBcc = bccTokens.first {
-            (ctx.bccName, ctx.bccEmail) = person(from: firstBcc)
+            (ctx.bccName, ctx.bccEmail) = person(from: firstBcc, nameByEmail: names)
         }
         if let first = toTokens.first ?? (toDraft.contains("@") ? toDraft : nil) {
-            (ctx.recipientName, ctx.recipientEmail) = person(from: first)
+            (ctx.recipientName, ctx.recipientEmail) = person(from: first, nameByEmail: names)
         }
         return SnippetExpander.expand(snippet.body, ctx)
     }
 
-    /// Name + email from a recipient token ("Alice <a@x.com>" or bare address,
-    /// deriving a friendly name from the local part: john.doe → John Doe).
-    private func person(from token: String) -> (name: String, email: String) {
-        GreetingAutocomplete.person(from: token)
+    /// email → display name for snippet variables. Original-message headers
+    /// win over mined contacts (header names are fresher on the reply target).
+    private func snippetNameByEmail() -> [String: String] {
+        var contactMap: [String: String] = [:]
+        for c in store.contacts where !c.name.isEmpty {
+            contactMap[c.email.lowercased()] = c.name
+        }
+        var headerTokens: [String] = []
+        if let original {
+            for header in [original.fromHeader, original.toHeader, original.ccHeader] {
+                headerTokens.append(contentsOf: MessageParser.splitAddresses(header))
+            }
+        }
+        return GreetingAutocomplete.nameByEmail(
+            headerTokens: headerTokens, contactEmailToName: contactMap)
+    }
+
+    /// Name + email from a recipient token ("Alice <a@x.com>" or bare address),
+    /// with optional email→name recovery when reply setup stripped display names.
+    private func person(from token: String,
+                        nameByEmail: [String: String] = [:]) -> (name: String, email: String) {
+        GreetingAutocomplete.person(from: token, nameByEmail: nameByEmail)
     }
 
     private func saveCurrentAsSnippet() {
