@@ -11,7 +11,8 @@ xcuserdata/
 mishmail.project
 
 # Agent worktrees & scratch
-.claude/
+.claude/*
+!.claude/settings.json
 
 # Personal signing overrides (see Config/Signing.xcconfig)
 Config/Local.xcconfig
