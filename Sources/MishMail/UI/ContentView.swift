@@ -547,7 +547,9 @@ struct ContentView: View {
         let cardHeight: CGFloat = minimized ? 40
             : split ? max(composeHostFrame.height - splitPad * 2, 400)
             : pane ? paneHeight
-            : (inline ? inlineHeight : ComposePlacement.preferredFloatingCardHeight)
+            : (inline ? inlineHeight
+               : ComposePlacement.effectiveFloatingCardHeight(
+                    hostHeight: composeHostFrame.height))
         // Pin-to-pane uses a full-host-width HStack so trailing-anchored
         // placement agrees with chrome.leading (leading + width + trailing
         // == host). Leading gutter spans sidebar + list under pane-fill —

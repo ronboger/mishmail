@@ -281,6 +281,31 @@ final class ComposeLinksTests: XCTestCase {
         XCTAssertNil(ComposeLinks.selfLink(forSelection: "   "))
     }
 
+    // MARK: - shouldWrap (bare URL ⌘K)
+
+    func testShouldWrapEmptyLabelIsFalse() {
+        // Empty display text → leave bare URL alone (auto-links on send).
+        XCTAssertFalse(ComposeLinks.shouldWrap(label: "", href: "https://x.com/foo"))
+        XCTAssertFalse(ComposeLinks.shouldWrap(label: "   ", href: "https://x.com/foo"))
+    }
+
+    func testShouldWrapLabelEqualToURLIsFalse() {
+        XCTAssertFalse(ComposeLinks.shouldWrap(
+            label: "https://x.com/foo", href: "https://x.com/foo"))
+        // Bare host normalizes to the same href as the selection.
+        XCTAssertFalse(ComposeLinks.shouldWrap(
+            label: "x.com/foo", href: "https://x.com/foo"))
+        XCTAssertFalse(ComposeLinks.shouldWrap(
+            label: "a@b.com", href: "mailto:a@b.com"))
+    }
+
+    func testShouldWrapDistinctLabelIsTrue() {
+        XCTAssertTrue(ComposeLinks.shouldWrap(
+            label: "docs", href: "https://x.com/foo"))
+        XCTAssertTrue(ComposeLinks.shouldWrap(
+            label: "click here", href: "https://example.com"))
+    }
+
     // MARK: - UTF-16 bridge
 
     func testNSRangeRoundTrip() {

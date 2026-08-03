@@ -28,7 +28,8 @@ enum ComposeBodyLayout {
     /// Slash-active floors/caps leave room for the match list.
     static let slashFloor: CGFloat = 72
     static let slashCap: CGFloat = 160
-    /// New mail / expanded quote: flex min only (max is unbounded).
+    /// New mail / expanded quote: flex min; max hugs content so the "…"
+    /// pill sits under the last line instead of the card bottom.
     static let noQuoteMin: CGFloat = 120
 
     /// Estimated editor height for `body` (no floor/cap).
@@ -44,7 +45,8 @@ enum ComposeBodyLayout {
 
     /// `(minHeight, maxHeight)` for the body editor's SwiftUI frame.
     ///
-    /// - No collapsed quote: min `noQuoteMin`, max unbounded (flex with card).
+    /// - No collapsed quote: min `noQuoteMin`, max content + slack (hug);
+    ///   the editor's NSScrollView scrolls when the card is shorter.
     /// - Slash picker open: fixed low band so the match list keeps height.
     /// - Empty / short body + quote: at least `emptyFloor` (usable surface,
     ///   no first-keystroke snap).
@@ -54,7 +56,10 @@ enum ComposeBodyLayout {
                               slashActive: Bool)
         -> (min: CGFloat, max: CGFloat) {
         guard hasCollapsedQuote else {
-            return (noQuoteMin, .infinity)
+            // Cap at content so an inlined quote's collapse pill hugs the
+            // last line; floor at noQuoteMin so empty drafts keep a surface.
+            let maxH = max(noQuoteMin, contentHeight(body: body) + contentSlack)
+            return (noQuoteMin, maxH)
         }
         if slashActive {
             return (slashFloor, slashCap)

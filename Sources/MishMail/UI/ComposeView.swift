@@ -1061,6 +1061,12 @@ struct ComposeView: View {
                 .buttonStyle(.plain)
                 .help(request.forward ? "Hide forwarded message" : "Hide quoted text")
                 .padding(.bottom, 8)
+                // Leftover card space goes below the pill so it hugs the
+                // last line of text and the footer stays pinned at bottom.
+                // Same slash-active guard as the collapsed-quote branch.
+                if !slashActive {
+                    Spacer(minLength: 0)
+                }
             }
 
             if !attachmentURLs.isEmpty || !restoredAttachments.isEmpty || loadingAttachments {
@@ -1806,20 +1812,20 @@ struct ComposeView: View {
             return
         }
 
-        // ⌘K on a selection that's already a bare URL/email should just
-        // link it — no sheet, no retyping. Skip the short-circuit (and
-        // fall back to the sheet, same as before) when the selection
-        // overlaps an existing markdown link without exactly covering it;
-        // trying to be clever about partial overlaps isn't worth it.
+        // ⌘K on a bare URL/email: open the sheet prefilled with that href
+        // and empty display text so the user can type a label. Bare URLs
+        // already auto-link on send — wrapping as [url](url) just doubles
+        // them in the plain-text editor. Skip when the selection overlaps
+        // an existing markdown link without exactly covering it.
         if length > 0, !overlapsLinkWithoutExactCover(range) {
             let selected = nsBody.substring(with: sel)
-            if let href = ComposeLinks.selfLink(forSelection: selected),
-               let next = ComposeLinks.applyLink(in: body_, selection: range,
-                                                 text: selected, url: href) {
-                // Park after the inserted markdown link.
-                let delta = (next as NSString).length - nsBody.length
-                setBody(next, caretUTF16: location + length + delta)
-                bodyFocused = true
+            if let href = ComposeLinks.selfLink(forSelection: selected) {
+                linkSelLocation = location
+                linkSelLength = length
+                linkInitialText = ""
+                linkInitialURL = href
+                linkIsEditing = false
+                showLinkSheet = true
                 return
             }
         }
@@ -1843,8 +1849,16 @@ struct ComposeView: View {
 
     private func applyLink(text: String, url: String) {
         let sel = NSRange(location: linkSelLocation, length: linkSelLength)
-        guard let range = ComposeLinks.stringRange(nsRange: sel, in: body_),
-              let next = ComposeLinks.applyLink(in: body_, selection: range,
+        guard let range = ComposeLinks.stringRange(nsRange: sel, in: body_) else { return }
+        // Bare-URL selection + empty/same-as-URL label: leave body alone
+        // (auto-link on send). Distinct display text still wraps as markdown.
+        let selected = String(body_[range])
+        if ComposeLinks.selfLink(forSelection: selected) != nil,
+           !ComposeLinks.shouldWrap(label: text, href: url) {
+            bodyFocused = true
+            return
+        }
+        guard let next = ComposeLinks.applyLink(in: body_, selection: range,
                                                 text: text.isEmpty ? nil : text,
                                                 url: url) else { return }
         let oldLen = (body_ as NSString).length

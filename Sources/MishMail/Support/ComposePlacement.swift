@@ -124,6 +124,10 @@ enum ComposePlacement {
 
     /// Historical floating card body height (ContentView chrome default).
     static let preferredFloatingCardHeight: CGFloat = 500
+    /// Floor so a short host never collapses the floating card to nothing.
+    static let minFloatingCardHeight: CGFloat = 260
+    /// Small top gutter above the floating card inside the host.
+    static let floatingTopGutter: CGFloat = 12
 
     /// Preferred expanded inline compose card height (matches ContentView chrome).
     /// Tall enough for From/To/Subject + a usable body while the quote "…"
@@ -141,6 +145,16 @@ enum ComposePlacement {
     /// covered by the overlay card (`card + bottom padding`).
     static var inlineReservedHeight: CGFloat {
         inlineCardHeight + inlineBottomPadding
+    }
+
+    /// Floating card height clamped to the host so the Send footer stays on-screen.
+    /// Unmeasured / tall hosts keep `preferredFloatingCardHeight`; short hosts
+    /// shrink to host − bottom pad − top gutter, never below `minFloatingCardHeight`.
+    static func effectiveFloatingCardHeight(hostHeight: CGFloat) -> CGFloat {
+        guard hostHeight > 1 else { return preferredFloatingCardHeight }
+        let available = hostHeight - floatingBottomPadding - floatingTopGutter
+        return min(preferredFloatingCardHeight,
+                   max(minFloatingCardHeight, available))
     }
 
     /// Resize continuously with the pane instead of jumping between fixed

@@ -399,6 +399,42 @@ final class ComposePlacementTests: XCTestCase {
             accuracy: 0.001)
     }
 
+    // MARK: Floating card height clamp (short-window footer)
+
+    func testFloatingCardHeightTallHostKeepsPreferred() {
+        // Preferred 500 + bottom 16 + top 12 = 528; anything taller is fine.
+        let h = ComposePlacement.effectiveFloatingCardHeight(hostHeight: 900)
+        XCTAssertEqual(h, ComposePlacement.preferredFloatingCardHeight,
+                       accuracy: 0.001)
+    }
+
+    func testFloatingCardHeightShortHostClamps() {
+        // Host 400 → available 400 − 16 − 12 = 372 (between floor and preferred).
+        let h = ComposePlacement.effectiveFloatingCardHeight(hostHeight: 400)
+        XCTAssertEqual(
+            h,
+            400 - ComposePlacement.floatingBottomPadding
+                - ComposePlacement.floatingTopGutter,
+            accuracy: 0.001)
+        XCTAssertLessThan(h, ComposePlacement.preferredFloatingCardHeight)
+        XCTAssertGreaterThanOrEqual(h, ComposePlacement.minFloatingCardHeight)
+    }
+
+    func testFloatingCardHeightUnmeasuredKeepsPreferred() {
+        XCTAssertEqual(
+            ComposePlacement.effectiveFloatingCardHeight(hostHeight: 0),
+            ComposePlacement.preferredFloatingCardHeight)
+        XCTAssertEqual(
+            ComposePlacement.effectiveFloatingCardHeight(hostHeight: 1),
+            ComposePlacement.preferredFloatingCardHeight)
+    }
+
+    func testFloatingCardHeightNeverBelowFloor() {
+        // Pathologically short host: still at least minFloatingCardHeight.
+        let h = ComposePlacement.effectiveFloatingCardHeight(hostHeight: 100)
+        XCTAssertEqual(h, ComposePlacement.minFloatingCardHeight, accuracy: 0.001)
+    }
+
     func testPaneChromePinsToReadingColumnLikeInline() {
         let host = CGRect(x: 0, y: 0, width: 1_200, height: 800)
         let pane = CGRect(x: 800, y: 0, width: 400, height: 800)

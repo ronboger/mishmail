@@ -28,11 +28,32 @@ final class ComposeBodyLayoutTests: XCTestCase {
 
     // MARK: - no quote / slash
 
-    func testNoCollapsedQuoteFlexes() {
+    func testNoCollapsedQuoteHugsContent() {
+        // Short body stays at noQuoteMin floor (not unbounded flex).
+        let short = ComposeBodyLayout.editorHeights(
+            body: "Hi", hasCollapsedQuote: false, slashActive: false)
+        XCTAssertEqual(short.min, ComposeBodyLayout.noQuoteMin)
+        XCTAssertEqual(short.max, ComposeBodyLayout.noQuoteMin)
+
+        // Long body caps at content + slack so the collapse pill hugs text.
+        let lines = (0..<12).map { "line \($0)" }.joined(separator: "\n")
+        let long = ComposeBodyLayout.editorHeights(
+            body: lines, hasCollapsedQuote: false, slashActive: false)
+        let expected = max(
+            ComposeBodyLayout.noQuoteMin,
+            ComposeBodyLayout.contentHeight(body: lines)
+                + ComposeBodyLayout.contentSlack)
+        XCTAssertEqual(long.min, ComposeBodyLayout.noQuoteMin)
+        XCTAssertEqual(long.max, expected)
+        XCTAssertGreaterThan(long.max, ComposeBodyLayout.noQuoteMin)
+        XCTAssertNotEqual(long.max, .infinity)
+    }
+
+    func testNoCollapsedQuoteEmptyBodyUsesFloor() {
         let h = ComposeBodyLayout.editorHeights(
-            body: "anything", hasCollapsedQuote: false, slashActive: false)
+            body: "", hasCollapsedQuote: false, slashActive: false)
         XCTAssertEqual(h.min, ComposeBodyLayout.noQuoteMin)
-        XCTAssertEqual(h.max, .infinity)
+        XCTAssertEqual(h.max, ComposeBodyLayout.noQuoteMin)
     }
 
     func testSlashActiveUsesLowBand() {
@@ -44,12 +65,18 @@ final class ComposeBodyLayoutTests: XCTestCase {
         XCTAssertLessThan(h.max, 180)
     }
 
-    func testSlashWithoutCollapsedQuoteIsIgnored() {
+    func testSlashWithoutCollapsedQuoteStillHugs() {
         // Guard order: no-quote wins; slash band only when quote is collapsed.
+        // Max still hugs content (not infinity) so an inlined quote's pill
+        // placement is correct even while the slash picker is open.
         let h = ComposeBodyLayout.editorHeights(
             body: "/snip", hasCollapsedQuote: false, slashActive: true)
         XCTAssertEqual(h.min, ComposeBodyLayout.noQuoteMin)
-        XCTAssertEqual(h.max, .infinity)
+        let expected = max(
+            ComposeBodyLayout.noQuoteMin,
+            ComposeBodyLayout.contentHeight(body: "/snip")
+                + ComposeBodyLayout.contentSlack)
+        XCTAssertEqual(h.max, expected)
     }
 
     // MARK: - empty vs short reply (the screenshot bug)

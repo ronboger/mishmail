@@ -78,8 +78,8 @@ enum ComposeLinks {
     // MARK: - ⌘K on an already-linkable selection
 
     /// The href to use when ⌘K is pressed on a selection that already *is*
-    /// a URL/email — lets `openLinkSheet()` skip the sheet and link it
-    /// directly instead of making the user retype what they just selected.
+    /// a URL/email — lets `openLinkSheet()` prefill the URL field so the
+    /// user can type display text (bare URLs already auto-link on send).
     ///
     /// Qualifies only when the (trimmed) selection: is non-empty, has no
     /// internal whitespace/newlines, isn't itself markdown link syntax
@@ -98,6 +98,22 @@ enum ComposeLinks {
         guard !trimmed.isEmpty else { return nil }
         guard looksLikeURLOrEmail(trimmed) else { return nil }
         return normalizeURL(trimmed)
+    }
+
+    /// Whether ⌘K apply should wrap the selection as `[label](href)`.
+    ///
+    /// Bare URLs/emails already linkify on send via `htmlFragment`, so an
+    /// empty label or a label that is just the URL itself is pure duplication
+    /// in the plain-text editor — leave the body untouched in that case.
+    static func shouldWrap(label: String, href: String) -> Bool {
+        let trimmed = label.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard let normalizedHref = normalizeURL(href) else { return true }
+        // Label equals the href (or its bare form) → no wrap needed.
+        if let asURL = normalizeURL(trimmed), asURL == normalizedHref {
+            return false
+        }
+        return true
     }
 
     /// Strips prose punctuation stuck to a selected URL: leading openers
