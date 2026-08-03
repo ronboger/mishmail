@@ -1022,6 +1022,7 @@ final class AppDatabase: @unchecked Sendable {
         // Trim message_fts: index subject + fromHeader only. Body text is
         // large and rarely hit from the live search dropdown; body search
         // falls back to server search (`searchAllGmail` / `searchServer`).
+        // v33 re-adds toHeader/ccHeader so sent-without-reply is searchable.
         m.registerMigration("v17") { db in
             try db.dropFTS5SynchronizationTriggers(forTable: "message_fts")
             try db.drop(table: "message_fts")
@@ -1351,6 +1352,28 @@ final class AppDatabase: @unchecked Sendable {
                 t.column("model", .text).notNull()
                 t.column("updatedAt", .datetime).notNull()
             }
+        }
+
+        // v33: re-index toHeader + ccHeader on message_fts. v17 trimmed to
+        // subject + fromHeader only; a sent-without-reply thread's counterparty
+        // lives only in To/Cc, so recipient name/address search missed it.
+        // DROP vocab first (see v31 WARNING), then rebuild FTS + vocab.
+        m.registerMigration("v33") { db in
+            try db.execute(sql: "DROP TABLE IF EXISTS message_fts_vocab")
+            try db.dropFTS5SynchronizationTriggers(forTable: "message_fts")
+            try db.drop(table: "message_fts")
+            try db.create(virtualTable: "message_fts", using: FTS5()) { t in
+                t.synchronize(withTable: "message")
+                t.column("subject")
+                t.column("fromHeader")
+                t.column("toHeader")
+                t.column("ccHeader")
+                t.prefixes = [2, 3]
+            }
+            try db.execute(sql: """
+                CREATE VIRTUAL TABLE message_fts_vocab
+                USING fts5vocab('message_fts', 'row')
+                """)
         }
         return m
     }

@@ -94,4 +94,58 @@ final class ThreadTypeaheadTests: XCTestCase {
         }
         XCTAssertEqual(hits.map(\.gmailThreadId), ["live"])
     }
+
+    /// Sent-without-reply: counterparty is only in toHeader. message_fts must
+    /// index To/Cc (v33) so recipient name/address typeahead hits the thread.
+    func testFindsSentOnlyByRecipientNameAndAddress() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try self.seedSentOnly(
+                db, gmailId: "surgery",
+                subject: "surgery update",
+                fromHeader: "Me <\(self.account)>",
+                toHeader: "Claire Ferrari <claire@ferrariortho.com>",
+                date: Date())
+        }
+        let byName = try q.read {
+            try ThreadTypeahead.fetch(db: $0, query: "claire", limit: 5)
+        }
+        XCTAssertEqual(byName.map(\.gmailThreadId), ["surgery"],
+                       "recipient display name must match via toHeader FTS")
+        let byDomain = try q.read {
+            try ThreadTypeahead.fetch(db: $0, query: "ferrariortho", limit: 5)
+        }
+        XCTAssertEqual(byDomain.map(\.gmailThreadId), ["surgery"],
+                       "recipient address domain must match via toHeader FTS")
+        let bySubject = try q.read {
+            try ThreadTypeahead.fetch(db: $0, query: "surgery", limit: 5)
+        }
+        XCTAssertEqual(bySubject.map(\.gmailThreadId), ["surgery"],
+                       "subject search must still work")
+    }
+
+    /// Outbound-only thread + message (SENT, no INBOX). Recipient only in To.
+    private func seedSentOnly(
+        _ db: Database, gmailId: String, subject: String,
+        fromHeader: String, toHeader: String, date: Date
+    ) throws {
+        let threadId = "\(account):\(gmailId)"
+        let labels = "SENT"
+        var t = MailThread(
+            id: threadId, accountId: account, gmailThreadId: gmailId,
+            subject: subject, snippet: "sn", fromDisplay: "Me",
+            lastDate: date, isUnread: false, isStarred: false,
+            inInbox: false, inTrash: false,
+            labelIds: labels, snoozeUntil: nil, participants: "Claire",
+            messageCount: 1, hasAttachment: false, reminderAt: nil)
+        t.syncFlagsFromLabelIds()
+        try t.insert(db)
+        try Message(
+            id: "\(threadId):m1", accountId: account, gmailId: "\(gmailId)m",
+            threadId: threadId, fromHeader: fromHeader, toHeader: toHeader,
+            ccHeader: "", subject: subject, date: date,
+            snippet: "sn", bodyText: "body", bodyHTML: nil,
+            messageIdHeader: "<\(gmailId)@x>", referencesHeader: "",
+            labelIds: labels, isUnread: false, hasAttachment: false).insert(db)
+    }
 }
