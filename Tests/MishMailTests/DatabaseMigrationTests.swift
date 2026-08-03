@@ -27,8 +27,16 @@ final class DatabaseMigrationTests: XCTestCase {
             XCTAssertTrue(threadCols.contains("inSpam"), "v19 must add inSpam")
             let ftsSQL = try String.fetchOne(db, sql:
                 "SELECT sql FROM sqlite_master WHERE name = 'message_fts'") ?? ""
-            XCTAssertFalse(ftsSQL.lowercased().contains("bodytext"),
+            let ftsLower = ftsSQL.lowercased()
+            XCTAssertFalse(ftsLower.contains("bodytext"),
                            "v17 FTS must omit bodyText")
+            // v33: subject + fromHeader + toHeader + ccHeader (not body).
+            for col in ["subject", "fromheader", "toheader", "ccheader"] {
+                XCTAssertTrue(ftsLower.contains(col),
+                              "v33 FTS must index \(col); got: \(ftsSQL)")
+            }
+            XCTAssertTrue(try db.tableExists("message_fts_vocab"),
+                          "v31/v33 must keep message_fts_vocab")
             // v18 composite indexes for hot list queries (flag + inTrash + lastDate).
             for name in [
                 "thread_on_inInbox_inTrash_lastDate",
@@ -634,5 +642,92 @@ final class DatabaseMigrationTests: XCTestCase {
         XCTAssertEqual(t1?.inPromotions, true)
         XCTAssertEqual(t2?.inSpam, false)
         XCTAssertEqual(t3?.inSpam, true)
+    }
+
+    /// v33 rebuilds message_fts with toHeader + ccHeader so sent-without-reply
+    /// threads are searchable by recipient. Vocab must be dropped first and
+    /// recreated after the new FTS table (v31 WARNING).
+    func testUpgradeToV33IndexesRecipientHeadersAndKeepsVocab() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v32")
+        try q.write { db in
+            try db.execute(sql: """
+                INSERT INTO account (id, displayName, senderName)
+                VALUES ('me@x.com', 'Me', '')
+                """)
+            try db.execute(sql: """
+                INSERT INTO thread (
+                    id, accountId, gmailThreadId, subject, snippet, fromDisplay,
+                    lastDate, isUnread, isStarred, inInbox, inTrash, labelIds,
+                    participants, messageCount, hasAttachment,
+                    inSent, inDrafts, inPromotions, inSocial, fromEmail,
+                    inSpam, allFromEmails)
+                VALUES (
+                    'me@x.com:sent1', 'me@x.com', 'sent1', 'surgery update', 'sn', 'Me',
+                    '2026-01-02 00:00:00', 0, 0, 0, 0, 'SENT',
+                    'Claire', 1, 0,
+                    1, 0, 0, 0, 'me@x.com',
+                    0, 'me@x.com')
+                """)
+            // Recipient lives only in toHeader (sent-without-reply shape).
+            try db.execute(sql: """
+                INSERT INTO message (
+                    id, accountId, gmailId, threadId, fromHeader, toHeader,
+                    ccHeader, bccHeader, subject, date, snippet, bodyText,
+                    messageIdHeader, referencesHeader, labelIds, isUnread,
+                    hasAttachment)
+                VALUES (
+                    'me@x.com:m1', 'me@x.com', 'm1', 'me@x.com:sent1',
+                    'Me <me@x.com>', 'Claire Ferrari <claire@ferrariortho.com>',
+                    '', '', 'surgery update', '2026-01-02 00:00:00', 'sn', '',
+                    '<id@mail>', '', 'SENT', 0, 0)
+                """)
+        }
+        // Pre-v33: recipient terms are not in the FTS index.
+        try q.read { db in
+            let before = try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'claire'") ?? 0
+            XCTAssertEqual(before, 0,
+                           "pre-v33 FTS must not index toHeader")
+            XCTAssertTrue(try db.tableExists("message_fts_vocab"),
+                          "v31 vocab must exist before v33 rebuild")
+        }
+
+        try AppDatabase.migrator.migrate(q)
+
+        let ftsSQL = try q.read { db in
+            try String.fetchOne(db, sql:
+                "SELECT sql FROM sqlite_master WHERE name = 'message_fts'") ?? ""
+        }
+        let lower = ftsSQL.lowercased()
+        for col in ["subject", "fromheader", "toheader", "ccheader"] {
+            XCTAssertTrue(lower.contains(col),
+                          "v33 FTS must index \(col); got: \(ftsSQL)")
+        }
+        XCTAssertFalse(lower.contains("bodytext"),
+                       "v33 must still omit bodyText; got: \(ftsSQL)")
+        XCTAssertTrue(lower.contains("prefix"),
+                      "v33 must keep prefix indexes; got: \(ftsSQL)")
+
+        try q.read { db in
+            XCTAssertTrue(try db.tableExists("message_fts_vocab"),
+                          "v33 must recreate message_fts_vocab")
+            let byTo = try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'claire'") ?? 0
+            XCTAssertEqual(byTo, 1, "toHeader must be searchable after v33")
+            let byDomain = try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'ferrariortho'") ?? 0
+            XCTAssertEqual(byDomain, 1, "address local-part domain must match")
+            let bySubj = try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'surgery'") ?? 0
+            XCTAssertEqual(bySubj, 1, "subject must remain searchable")
+            // Vocab is a live view — recipient tokens must appear after rebuild.
+            let vocabHit = try Int.fetchOne(db, sql: """
+                SELECT count(*) FROM message_fts_vocab
+                WHERE term = 'claire' OR term = 'ferrariortho'
+                """) ?? 0
+            XCTAssertGreaterThan(vocabHit, 0,
+                                 "message_fts_vocab must reflect new FTS terms")
+        }
     }
 }
