@@ -95,7 +95,9 @@ struct ThreadListView: View {
             out += groups(rest)
             grouped = out
             flatDisplayOrder = out.flatMap { isCollapsed($0.0) ? [] : $0.1.map(\.id) }
-            store.updateDisplayOrder(flatDisplayOrder)
+            // prioritySectionIds drives unstar auto-advance within the section.
+            store.updateDisplayOrder(flatDisplayOrder,
+                                     prioritySectionIds: priority.map(\.id))
             // Superhuman-style: land with the top row already selected
             // (highlight only — never opens) so ↩ opens it right away.
             store.autoSelectTopThread()
