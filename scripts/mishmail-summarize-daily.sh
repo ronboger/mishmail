@@ -24,13 +24,13 @@ MISHMAIL_MCP_PORT=41888; export MISHMAIL_MCP_PORT
 
 # --- local model -----------------------------------------------------------
 exec /usr/bin/python3 scripts/mcp-summarize.py \
-    --mailbox primary --limit 200 \
+    --mailbox primary,correspondence,starred --limit 400 \
     --model qwen3:8b --jobs 4 \
     --skip-categories "Newsletter,Receipt"
 
 # --- cloud model (uncomment to switch, and comment out the block above) -----
 # export OPENAI_API_KEY="..."
 # exec /usr/bin/python3 scripts/mcp-summarize.py \
-#     --mailbox primary --limit 200 \
+#     --mailbox primary,correspondence,starred --limit 400 \
 #     --backend openai --api-base https://api.openai.com/v1 --model <cheap-model> \
 #     --jobs 8 --skip-categories "Newsletter,Receipt"

@@ -45,7 +45,7 @@ enum MCPTools {
             inputSchema: objectSchema(
                 properties: [
                     "mailbox": stringSchema(
-                        description: "One of: primary (inbox minus Promotions/Social — conversations that actually need attention), inbox, starred, sent, drafts, all"),
+                        description: "One of: primary (inbox minus all four Gmail categories), correspondence (inbox threads you have replied to), inbox, starred, sent, drafts, all"),
                     "unread_only": booleanSchema(description: "If true, only unread threads"),
                     "limit": integerSchema(description: "Max threads (1–100, default 25)"),
                     "offset": integerSchema(

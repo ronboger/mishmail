@@ -94,9 +94,12 @@ def main():
                     help="model name (default: llama3.2:3b for ollama)")
     ap.add_argument("--api-base", default=None,
                     help="ollama: http://127.0.0.1:11434; openai: API base URL")
-    ap.add_argument("--mailbox", default="primary",
-                    choices=["primary", "inbox", "starred", "sent", "drafts", "all"],
-                    help="primary (default) = inbox minus Promotions/Social")
+    ap.add_argument("--mailbox", default="primary,correspondence,starred",
+                    help="comma-separated scopes, de-duplicated. Default sweeps "
+                         "primary (inbox minus Gmail's four categories), "
+                         "correspondence (threads you replied to) and starred, "
+                         "so real conversations buried in Updates are covered. "
+                         "Others: inbox, sent, drafts, all")
     ap.add_argument("--limit", type=int, default=25,
                     help="max threads to examine, newest first; "
                          "pages past the server's 100-per-call cap")
@@ -133,18 +136,22 @@ def main():
         stored_model = model
 
     mcp = MCP()
-    # The server caps each call at 100 rows, so page with offset until we
-    # have --limit threads or the mailbox runs out.
-    threads, offset = [], 0
-    while len(threads) < args.limit:
-        page = json.loads(mcp.call("list_threads", {
-            "mailbox": args.mailbox,
-            "limit": min(100, args.limit - len(threads)),
-            "offset": offset}))
-        if not page:
-            break
-        threads.extend(page)
-        offset += len(page)
+    # Each scope is paged separately (the server caps a call at 100 rows) and
+    # merged by thread id, since scopes overlap heavily.
+    threads, seen = [], set()
+    for scope in [m.strip() for m in args.mailbox.split(",") if m.strip()]:
+        offset = 0
+        while len(threads) < args.limit:
+            page = json.loads(mcp.call("list_threads", {
+                "mailbox": scope, "limit": 100, "offset": offset}))
+            if not page:
+                break
+            offset += len(page)
+            for t in page:
+                if t["id"] not in seen:
+                    seen.add(t["id"])
+                    threads.append(t)
+    threads = threads[:args.limit]
 
     skip = {c.strip().lower() for c in args.skip_categories.split(",") if c.strip()}
 

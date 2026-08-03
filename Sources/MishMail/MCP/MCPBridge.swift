@@ -36,7 +36,8 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         account: String?
     ) async throws -> String {
         let mb = mailbox.lowercased()
-        let allowed = ["primary", "inbox", "starred", "sent", "drafts", "all"]
+        let allowed = ["primary", "correspondence", "inbox", "starred",
+                       "sent", "drafts", "all"]
         guard allowed.contains(mb) else {
             throw MCPToolError("mailbox must be one of: \(allowed.joined(separator: ", "))")
         }
@@ -55,6 +56,12 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
                      AND (' ' || labelIds || ' ') NOT LIKE '% CATEGORY_UPDATES %'
                      AND (' ' || labelIds || ' ') NOT LIKE '% CATEGORY_FORUMS %'
                     """
+            case "correspondence":
+                // Threads you actually took part in: an inbox thread that also
+                // has a SENT message. Catches real conversations Gmail files
+                // under Updates (insurance claims, vendor threads) which the
+                // category filter would otherwise drop.
+                sql += " AND inInbox = 1 AND inSent = 1"
             case "inbox":
                 sql += " AND inInbox = 1"
             case "starred":

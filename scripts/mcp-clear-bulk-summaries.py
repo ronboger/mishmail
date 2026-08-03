@@ -1,6 +1,10 @@
 #!/usr/bin/env python3
 """Delete summaries on threads the daily pass no longer maintains.
 
+NOTE: running this is optional. A summary that never refreshes is not harmful
+— it just describes the thread as of when it was written. This exists for
+tidiness, not hygiene, and is dry-run unless you pass --apply.
+
 Summaries are only kept current for the `primary` mailbox. Threads outside it
 (Gmail's Promotions / Social / Updates / Forums) may still carry summaries from
 an earlier, wider pass — those will never refresh, so they age into being wrong.
@@ -43,7 +47,10 @@ def main():
     args = ap.parse_args()
 
     mcp = MCP()
-    keep = {t["id"] for t in walk(mcp, "primary")}
+    # Whatever the daily pass maintains — keep in sync with the wrapper script.
+    keep = set()
+    for scope in ("primary", "correspondence", "starred"):
+        keep |= {t["id"] for t in walk(mcp, scope)}
     everything = walk(mcp, args.mailbox)
     doomed = [t for t in everything
               if t.get("summary") and t["id"] not in keep]
