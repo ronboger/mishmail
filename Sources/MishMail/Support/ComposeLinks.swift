@@ -116,6 +116,35 @@ enum ComposeLinks {
         return true
     }
 
+    /// How ⌘K apply should rewrite a bare-URL selection (already self-linkable).
+    enum BareURLApply: Equatable {
+        /// Leave the body unchanged.
+        case noOp
+        /// Replace the selection with this bare URL (auto-links on send).
+        case replaceBare(String)
+        /// Wrap as `[label](href)` markdown.
+        case wrap
+    }
+
+    /// Decision for ⌘K apply when the selection is already a bare URL/email.
+    ///
+    /// - Distinct display text → markdown wrap.
+    /// - Empty/same-as-URL label + same href as the selection → no-op.
+    /// - Empty/same-as-URL label + changed href → bare normalized URL
+    ///   (auto-links on send; do not wrap as `[url](url)`).
+    static func bareURLApply(label: String,
+                             href: String,
+                             existingHref: String) -> BareURLApply {
+        if shouldWrap(label: label, href: href) {
+            return .wrap
+        }
+        guard let normalized = normalizeURL(href) else { return .noOp }
+        if normalized == existingHref {
+            return .noOp
+        }
+        return .replaceBare(normalized)
+    }
+
     /// Strips prose punctuation stuck to a selected URL: leading openers
     /// (`(foo.com)` → `foo.com)`), then trailing `.,;:!?"'` and any closer
     /// that has no matching opener left in the string — so `foo.com.` and

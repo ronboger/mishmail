@@ -1039,11 +1039,6 @@ struct ComposeView: View {
                 .buttonStyle(.plain)
                 .help(request.forward ? "Show forwarded message" : "Show quoted text")
                 .padding(.bottom, 8)
-                // Expanding Spacer would eat the picker's list height inside
-                // the fixed card; only fill leftover space when `/` is idle.
-                if !slashActive {
-                    Spacer(minLength: 0)
-                }
             } else if quoteStartInBody != nil {
                 // The quote has been inlined; let the user tuck it back
                 // behind the "…" pill (Gmail's collapse control).
@@ -1061,12 +1056,16 @@ struct ComposeView: View {
                 .buttonStyle(.plain)
                 .help(request.forward ? "Hide forwarded message" : "Hide quoted text")
                 .padding(.bottom, 8)
-                // Leftover card space goes below the pill so it hugs the
-                // last line of text and the footer stays pinned at bottom.
-                // Same slash-active guard as the collapsed-quote branch.
-                if !slashActive {
-                    Spacer(minLength: 0)
-                }
+            }
+
+            // Leftover card space goes below the pill (or the editor when
+            // there is no quote) so the pill hugs the last text line and
+            // the footer stays pinned at the bottom — including plain new
+            // mail with a short body. Expanding Spacer would eat the
+            // picker's list height inside a fixed card; only fill when `/`
+            // is idle.
+            if !slashActive {
+                Spacer(minLength: 0)
             }
 
             if !attachmentURLs.isEmpty || !restoredAttachments.isEmpty || loadingAttachments {
@@ -1850,13 +1849,27 @@ struct ComposeView: View {
     private func applyLink(text: String, url: String) {
         let sel = NSRange(location: linkSelLocation, length: linkSelLength)
         guard let range = ComposeLinks.stringRange(nsRange: sel, in: body_) else { return }
-        // Bare-URL selection + empty/same-as-URL label: leave body alone
-        // (auto-link on send). Distinct display text still wraps as markdown.
+        // Bare-URL selection: empty/same-as-URL label only no-ops when the
+        // entered href matches the selection. A changed URL replaces as bare
+        // text (auto-links on send). Distinct display text wraps as markdown.
         let selected = String(body_[range])
-        if ComposeLinks.selfLink(forSelection: selected) != nil,
-           !ComposeLinks.shouldWrap(label: text, href: url) {
-            bodyFocused = true
-            return
+        if let existingHref = ComposeLinks.selfLink(forSelection: selected) {
+            switch ComposeLinks.bareURLApply(label: text, href: url,
+                                             existingHref: existingHref) {
+            case .noOp:
+                bodyFocused = true
+                return
+            case .replaceBare(let bare):
+                var next = body_
+                next.replaceSubrange(range, with: bare)
+                let oldLen = (body_ as NSString).length
+                let delta = (next as NSString).length - oldLen
+                setBody(next, caretUTF16: linkSelLocation + linkSelLength + delta)
+                bodyFocused = true
+                return
+            case .wrap:
+                break
+            }
         }
         guard let next = ComposeLinks.applyLink(in: body_, selection: range,
                                                 text: text.isEmpty ? nil : text,

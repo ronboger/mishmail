@@ -306,6 +306,56 @@ final class ComposeLinksTests: XCTestCase {
             label: "click here", href: "https://example.com"))
     }
 
+    // MARK: - bareURLApply (bare URL ⌘K apply decision)
+
+    func testBareURLApplyEmptyLabelSameURLIsNoOp() {
+        let existing = "https://x.com/foo"
+        XCTAssertEqual(
+            ComposeLinks.bareURLApply(label: "", href: existing, existingHref: existing),
+            .noOp)
+        XCTAssertEqual(
+            ComposeLinks.bareURLApply(label: "   ", href: "x.com/foo",
+                                      existingHref: existing),
+            .noOp)
+    }
+
+    func testBareURLApplyEmptyLabelChangedURLReplacesBare() {
+        let existing = "https://x.com/foo"
+        XCTAssertEqual(
+            ComposeLinks.bareURLApply(label: "", href: "https://y.com/bar",
+                                      existingHref: existing),
+            .replaceBare("https://y.com/bar"))
+        // Bare host input normalizes before replace.
+        XCTAssertEqual(
+            ComposeLinks.bareURLApply(label: "", href: "y.com/bar",
+                                      existingHref: existing),
+            .replaceBare("https://y.com/bar"))
+    }
+
+    func testBareURLApplyLabelEqualToURLIsNoOp() {
+        let existing = "https://x.com/foo"
+        XCTAssertEqual(
+            ComposeLinks.bareURLApply(label: "https://x.com/foo", href: existing,
+                                      existingHref: existing),
+            .noOp)
+        XCTAssertEqual(
+            ComposeLinks.bareURLApply(label: "x.com/foo", href: existing,
+                                      existingHref: existing),
+            .noOp)
+    }
+
+    func testBareURLApplyDistinctLabelWraps() {
+        let existing = "https://x.com/foo"
+        XCTAssertEqual(
+            ComposeLinks.bareURLApply(label: "docs", href: existing,
+                                      existingHref: existing),
+            .wrap)
+        XCTAssertEqual(
+            ComposeLinks.bareURLApply(label: "click here", href: "https://y.com",
+                                      existingHref: existing),
+            .wrap)
+    }
+
     // MARK: - UTF-16 bridge
 
     func testNSRangeRoundTrip() {
