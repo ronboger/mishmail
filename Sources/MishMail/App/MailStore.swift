@@ -3975,15 +3975,21 @@ struct ComposeRequest: Identifiable {
     /// section first, then grouped) — kept in sync by ThreadListView so
     /// keyboard navigation matches what's on screen.
     private(set) var displayOrder: [String] = []
+    /// Ids currently shown in the Priority section (inbox only). Used so
+    /// unstar can auto-advance within the section before the row re-partitions
+    /// into date groups. Empty when Priority is off or not on inbox.
+    private(set) var prioritySectionIds: [String] = []
     /// O(1) id→row for `moveSelection` (the key-repeat hot path). Rebuilt with
     /// displayOrder. Shift-click range select still scans linearly — it's cold.
     private var displayOrderIndex: [String: Int] = [:]
 
     /// Called by ThreadListView after regrouping. Rebuilds the index map so
     /// key-repeat does not scan the array on every step.
-    func updateDisplayOrder(_ order: [String]) {
+    func updateDisplayOrder(_ order: [String],
+                            prioritySectionIds: [String] = []) {
         displayOrder = order
         displayOrderIndex = ThreadListNavigation.indexMap(for: order)
+        self.prioritySectionIds = prioritySectionIds
     }
 
     /// Single selection gateway. Auto-advance changes opened content before
@@ -4341,6 +4347,61 @@ struct ComposeRequest: Identifiable {
         interval.end(extraMeta: destinations.openedId == nil ? "empty" : "neighbor")
     }
 
+    /// Unstar in the inbox Priority section: the row stays in the list, so
+    /// leave-list advance never fires. Before mutate re-partitions the row
+    /// into date groups, jump selection to the next Priority neighbor
+    /// (down, then up). When the section empties, destinations are nil —
+    /// deliberately do nothing; selection stays on the still-listed row.
+    private func advanceForPriorityUnstar(_ targets: [MailThread]) {
+        guard selectedView == .inbox, !prioritySectionIds.isEmpty else { return }
+        let modeRaw = UserDefaults.standard.string(forKey: "priorityMode")
+        let mode = PrioritySplit.Mode(rawValue: modeRaw ?? "") ?? .starred
+        guard mode != .off else { return }
+        // Match ThreadListView @AppStorage: key absent means true; bool(forKey:)
+        // alone would default to false when the key is missing.
+        let vipAlwaysPins: Bool = {
+            if UserDefaults.standard.object(forKey: "vipAlwaysPins") == nil {
+                return true
+            }
+            return UserDefaults.standard.bool(forKey: "vipAlwaysPins")
+        }()
+
+        let leaving = PrioritySectionAdvance.idsLeavingSection(
+            targets: targets,
+            sectionIds: Set(prioritySectionIds),
+            mode: mode,
+            vipThreadIds: vipThreadIds,
+            vipAlwaysPins: vipAlwaysPins)
+        guard !leaving.isEmpty else { return }
+
+        let destinations = PrioritySectionAdvance.destinations(
+            sectionOrder: prioritySectionIds,
+            leaving: leaving,
+            selected: selectedThreadId,
+            opened: openedThreadId)
+        // Section emptied (or focus not in section) → leave selection alone.
+        guard destinations.selectedWasRemoved || destinations.openedWasRemoved
+        else { return }
+
+        let interval = PerfMetrics.begin(
+            .actionAdvance, meta: "action=unstar-priority")
+        // openDetail first so the pane never points at nothing mid-handoff.
+        if destinations.openedWasRemoved, let next = destinations.openedId {
+            openDetail(next)
+        }
+        if destinations.selectedWasRemoved, let next = destinations.selectedId {
+            // setSelectionFocus writes selectedThreadId whose setter runs
+            // applyThreadLongStarPinDrops with the .autoAdvance intent — under
+            // .thread stickiness policy that drops the just-added pin for the
+            // no-longer-selected row so hidden-category mail leaves the Primary
+            // list; that cascade is correct and intended.
+            setSelectionFocus(next, intent: .autoAdvance)
+        }
+        interval.end(
+            extraMeta: destinations.selectedId == nil
+                && destinations.openedId == nil ? "empty" : "neighbor")
+    }
+
     /// Best-effort visibility check for the common leave-list mutations.
     /// Async reload is the source of truth for edge-case chip combinations.
     private func threadLeavesCurrentList(_ t: MailThread) -> Bool {
@@ -4645,7 +4706,13 @@ struct ComposeRequest: Identifiable {
     func toggleStar(_ thread: MailThread) {
         let starring = !thread.isStarred
         // Pin before mutate so optimistic leave-list and reload both see the id.
-        if !starring { pinStarStateKeep([thread.id]) }
+        if !starring {
+            pinStarStateKeep([thread.id])
+            // Before mutate re-partitions the Priority row into date groups.
+            // setSelectionFocus's .autoAdvance intent drops the just-added pin
+            // under .thread stickiness for the left row (intended cascade).
+            advanceForPriorityUnstar([thread])
+        }
         mutateThread(thread) { $0.isStarred = starring } remote: { client, id in
             try await client.modifyThread(id: id, add: starring ? ["STARRED"] : [],
                                           remove: starring ? [] : ["STARRED"])
@@ -4657,7 +4724,10 @@ struct ComposeRequest: Identifiable {
         let targets = checkedThreadsInOrder
         guard !targets.isEmpty else { return }
         let starring = targets.contains { !$0.isStarred }
-        if !starring { pinStarStateKeep(targets.map(\.id)) }
+        if !starring {
+            pinStarStateKeep(targets.map(\.id))
+            advanceForPriorityUnstar(targets)
+        }
         mutateThreads(targets, local: { $0.isStarred = starring }, remote: { client, id in
             try await client.modifyThread(id: id, add: starring ? ["STARRED"] : [],
                                           remove: starring ? [] : ["STARRED"])
