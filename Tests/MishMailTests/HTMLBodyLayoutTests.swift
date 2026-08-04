@@ -99,23 +99,25 @@ final class HTMLBodyLayoutTests: XCTestCase {
     }
 
     func testObserveFeedbackRequiresConsecutiveHitsBeforeFreeze() {
-        // Hit 1: record streak base, no freeze yet.
+        // Hit 1: record streak base, no freeze yet — even when base is already
+        // within tolerance of the viewport (would pass the below-viewport guard).
         let s1 = HTMLBodyLayout.observeFeedback(
-            previousHeight: 500, previousViewport: 500,
-            height: 550, viewport: 550,
+            previousHeight: 800, previousViewport: 800,
+            height: 805, viewport: 804,
             consecutiveHits: 0, streakBaseHeight: nil)
         XCTAssertEqual(s1.consecutiveHits, 1)
-        XCTAssertEqual(s1.streakBaseHeight, 500)
+        XCTAssertEqual(s1.streakBaseHeight, 800)
         XCTAssertNil(s1.freezeAt)
 
-        // Hit 2: freeze at pre-streak height.
+        // Hit 2: freeze at pre-streak height when base + tol >= current viewport.
+        // (A second large growth step would push viewport past base+tol and the
+        // below-viewport guard would block; freeze still requires consecutive hits.)
         let s2 = HTMLBodyLayout.observeFeedback(
-            previousHeight: 550, previousViewport: 550,
-            height: 600, viewport: 600,
-            consecutiveHits: s1.consecutiveHits,
-            streakBaseHeight: s1.streakBaseHeight)
+            previousHeight: 800, previousViewport: 800,
+            height: 805, viewport: 804,
+            consecutiveHits: 1, streakBaseHeight: 800)
         XCTAssertEqual(s2.consecutiveHits, 2)
-        XCTAssertEqual(s2.freezeAt, 500,
+        XCTAssertEqual(s2.freezeAt, 800,
                        "freeze at height before the feedback streak")
 
         // Non-feedback clears the streak (one-shot false positive recovery).
@@ -128,11 +130,188 @@ final class HTMLBodyLayoutTests: XCTestCase {
         XCTAssertNil(clear.freezeAt)
     }
 
+    func testObserveFeedbackRefusesFreezeBelowViewport() {
+        // Early-load false positive: tiny base, viewport already larger.
+        let s1 = HTMLBodyLayout.observeFeedback(
+            previousHeight: 120, previousViewport: 120,
+            height: 170, viewport: 170,
+            consecutiveHits: 0, streakBaseHeight: nil)
+        XCTAssertEqual(s1.consecutiveHits, 1)
+        XCTAssertEqual(s1.streakBaseHeight, 120)
+        XCTAssertNil(s1.freezeAt)
+
+        let s2 = HTMLBodyLayout.observeFeedback(
+            previousHeight: 170, previousViewport: 170,
+            height: 220, viewport: 220,
+            consecutiveHits: s1.consecutiveHits,
+            streakBaseHeight: s1.streakBaseHeight)
+        XCTAssertEqual(s2.consecutiveHits, 2)
+        XCTAssertEqual(s2.streakBaseHeight, 120)
+        XCTAssertNil(s2.freezeAt,
+                     "must not freeze when base (120) is below viewport (220)")
+    }
+
+    func testObserveFeedbackPreservesStreakWhenBelowViewportGuardBlocks() {
+        // Guard blocks freeze but keeps hits so a later near-viewport sample can freeze.
+        let s1 = HTMLBodyLayout.observeFeedback(
+            previousHeight: 500, previousViewport: 500,
+            height: 550, viewport: 550,
+            consecutiveHits: 0, streakBaseHeight: nil)
+        XCTAssertEqual(s1.consecutiveHits, 1)
+        XCTAssertNil(s1.freezeAt)
+
+        let s2 = HTMLBodyLayout.observeFeedback(
+            previousHeight: 550, previousViewport: 550,
+            height: 600, viewport: 600,
+            consecutiveHits: s1.consecutiveHits,
+            streakBaseHeight: s1.streakBaseHeight)
+        XCTAssertEqual(s2.consecutiveHits, 2)
+        XCTAssertEqual(s2.streakBaseHeight, 500)
+        XCTAssertNil(s2.freezeAt, "base 500 << viewport 600 — guard blocks")
+
+        // Streak preserved (hits still >= threshold). A subsequent feedback
+        // sample with viewport close enough to base can freeze.
+        // Construct via consecutiveHits already at threshold and small dVH:
+        // base 500 cannot pass with large viewport; use a tall-base streak.
+        let tall1 = HTMLBodyLayout.observeFeedback(
+            previousHeight: 900, previousViewport: 900,
+            height: 950, viewport: 950,
+            consecutiveHits: 0, streakBaseHeight: nil)
+        XCTAssertEqual(tall1.consecutiveHits, 1)
+        XCTAssertNil(tall1.freezeAt)
+
+        // Second hit still far: base 900, viewport 1000 — still blocked, hits kept.
+        let tall2 = HTMLBodyLayout.observeFeedback(
+            previousHeight: 950, previousViewport: 950,
+            height: 1000, viewport: 1000,
+            consecutiveHits: tall1.consecutiveHits,
+            streakBaseHeight: tall1.streakBaseHeight)
+        XCTAssertEqual(tall2.consecutiveHits, 2)
+        XCTAssertNil(tall2.freezeAt)
+        XCTAssertEqual(tall2.streakBaseHeight, 900)
+
+        // Third hit: small growth, viewport 903 from a reset-like prior close to base.
+        // Same streak base 900; viewport 903 → 900+4 >= 903 → freeze.
+        let tall3 = HTMLBodyLayout.observeFeedback(
+            previousHeight: 900, previousViewport: 900,
+            height: 905, viewport: 903,
+            consecutiveHits: tall2.consecutiveHits,
+            streakBaseHeight: tall2.streakBaseHeight)
+        XCTAssertEqual(tall3.consecutiveHits, 3)
+        XCTAssertEqual(tall3.freezeAt, 900,
+                       "preserved streak freezes once base is within tolerance of viewport")
+    }
+
+    func testObserveFeedbackStillFreezesWhenBaseAtLeastViewport() {
+        // base + tolerance >= viewport → freeze allowed (hits already at threshold-1).
+        let s = HTMLBodyLayout.observeFeedback(
+            previousHeight: 700, previousViewport: 700,
+            height: 705, viewport: 704,
+            consecutiveHits: 1, streakBaseHeight: 700)
+        // base 700 + tol 4 >= viewport 704
+        XCTAssertEqual(s.freezeAt, 700)
+        XCTAssertEqual(s.consecutiveHits, 2)
+        XCTAssertEqual(s.streakBaseHeight, 700)
+    }
+
+    func testObserveFreezeRecoveryAdoptsWhenViewportStableAndTaller() {
+        // Need N stable viewport samples and measured > frozen + tol.
+        let n = HTMLBodyLayout.freezeRecoveryStableViewportSamples
+        XCTAssertEqual(n, 2)
+
+        // Sample 1: viewport stable count → 1, not enough yet.
+        let r1 = HTMLBodyLayout.observeFreezeRecovery(
+            frozenHeight: 120,
+            measuredHeight: 480,
+            previousViewport: 400,
+            viewport: 400,
+            stableViewportSamples: 0,
+            adoptionsUsed: 0)
+        XCTAssertNil(r1.adoptHeight)
+        XCTAssertEqual(r1.stableViewportSamples, 1)
+        XCTAssertEqual(r1.adoptionsUsed, 0)
+
+        // Sample 2: stable reaches N, adopt measured (clamped).
+        let r2 = HTMLBodyLayout.observeFreezeRecovery(
+            frozenHeight: 120,
+            measuredHeight: 480,
+            previousViewport: 400,
+            viewport: 400,
+            stableViewportSamples: r1.stableViewportSamples,
+            adoptionsUsed: r1.adoptionsUsed)
+        XCTAssertEqual(r2.adoptHeight, 480)
+        XCTAssertEqual(r2.stableViewportSamples, 0)
+        XCTAssertEqual(r2.adoptionsUsed, 1)
+    }
+
+    func testObserveFreezeRecoveryHoldsWhenViewportStillGrowing() {
+        let r = HTMLBodyLayout.observeFreezeRecovery(
+            frozenHeight: 120,
+            measuredHeight: 480,
+            previousViewport: 400,
+            viewport: 450,
+            stableViewportSamples: 1,
+            adoptionsUsed: 0)
+        XCTAssertNil(r.adoptHeight, "growing viewport is real feedback — do not adopt")
+        XCTAssertEqual(r.stableViewportSamples, 0)
+    }
+
+    func testObserveFreezeRecoveryRequiresHeightMargin() {
+        // Measured only slightly above frozen — hold.
+        let r1 = HTMLBodyLayout.observeFreezeRecovery(
+            frozenHeight: 200,
+            measuredHeight: 200 + HTMLBodyLayout.freezeRecoveryHeightTolerance,
+            previousViewport: 300,
+            viewport: 300,
+            stableViewportSamples: 1,
+            adoptionsUsed: 0)
+        // stable becomes 2, but measured is not strictly greater than frozen+tol
+        XCTAssertNil(r1.adoptHeight)
+        XCTAssertEqual(r1.stableViewportSamples, 2)
+
+        let r2 = HTMLBodyLayout.observeFreezeRecovery(
+            frozenHeight: 200,
+            measuredHeight: 200 + HTMLBodyLayout.freezeRecoveryHeightTolerance + 1,
+            previousViewport: 300,
+            viewport: 300,
+            stableViewportSamples: 1,
+            adoptionsUsed: 0)
+        XCTAssertEqual(r2.adoptHeight, 200 + HTMLBodyLayout.freezeRecoveryHeightTolerance + 1)
+    }
+
+    func testObserveFreezeRecoveryRespectsAdoptionBudget() {
+        let max = HTMLBodyLayout.freezeRecoveryMaxAdoptions
+        let r = HTMLBodyLayout.observeFreezeRecovery(
+            frozenHeight: 100,
+            measuredHeight: 500,
+            previousViewport: 400,
+            viewport: 400,
+            stableViewportSamples: 10,
+            adoptionsUsed: max)
+        XCTAssertNil(r.adoptHeight, "budget exhausted — freeze permanent")
+        XCTAssertEqual(r.adoptionsUsed, max)
+        XCTAssertEqual(r.stableViewportSamples, 0)
+    }
+
+    func testObserveFreezeRecoveryClampsAdoptedHeight() {
+        let r = HTMLBodyLayout.observeFreezeRecovery(
+            frozenHeight: 100,
+            measuredHeight: CGFloat(HTMLBodyLayout.maxContentHeight + 5000),
+            previousViewport: 400,
+            viewport: 400,
+            stableViewportSamples: 1,
+            adoptionsUsed: 0)
+        XCTAssertEqual(r.adoptHeight, CGFloat(HTMLBodyLayout.maxContentHeight))
+    }
+
     func testFeedbackHitsToFreezeMatchesJS() {
         let js = HTMLBodyLayout.installLayoutAndMeasureJS
         XCTAssertTrue(js.contains("var HITS_TO_FREEZE=\(HTMLBodyLayout.feedbackHitsToFreeze)"))
         XCTAssertTrue(js.contains("var MIN_DELTA=\(Int(HTMLBodyLayout.feedbackMinDelta.rounded()))"))
         XCTAssertTrue(js.contains("var DELTA_TOL=\(Int(HTMLBodyLayout.feedbackDeltaTolerance.rounded()))"))
+        XCTAssertTrue(js.contains("var RECOVERY_STABLE_VH=\(HTMLBodyLayout.freezeRecoveryStableViewportSamples)"))
+        XCTAssertTrue(js.contains("var RECOVERY_TOL=\(Int(HTMLBodyLayout.freezeRecoveryHeightTolerance.rounded()))"))
+        XCTAssertTrue(js.contains("var RECOVERY_MAX_ADOPTIONS=\(HTMLBodyLayout.freezeRecoveryMaxAdoptions)"))
     }
 
     // MARK: - CSS / JS contracts
@@ -154,6 +333,11 @@ final class HTMLBodyLayoutTests: XCTestCase {
                        "bare height=100 is fixed px, not full-bleed")
         // Percent form is present (attribute selector with quotes).
         XCTAssertTrue(css.contains("[height=\"100%\"]") || css.contains("height=\"100%\""))
+        // Inline percentage heights (declaration-anchored, same as vh).
+        XCTAssertTrue(css.contains("height:100%") || css.contains("[style*=\"height:100%\" i]"))
+        XCTAssertTrue(css.contains("height: 100%") || css.contains("[style*=\"height: 100%\" i]"))
+        XCTAssertTrue(css.contains("min-height:100%") || css.contains("[style*=\"min-height:100%\" i]"))
+        XCTAssertTrue(css.contains("min-height: 100%") || css.contains("[style*=\"min-height: 100%\" i]"))
     }
 
     func testAntiFeedbackCSSUsesDeclarationAnchoredViewportUnits() {
@@ -214,11 +398,20 @@ final class HTMLBodyLayoutTests: XCTestCase {
         XCTAssertTrue(js.contains("__mmLastNeutralVH"))
         XCTAssertTrue(js.contains("__mmFeedbackHits"))
         XCTAssertTrue(js.contains("isFeedbackGrowth"))
+        XCTAssertTrue(js.contains("observeFreezeRecovery"))
+        XCTAssertTrue(js.contains("__mmFreezeStableVH"))
+        XCTAssertTrue(js.contains("__mmFreezeAdoptions"))
         XCTAssertTrue(js.contains("postHeight"))
         XCTAssertTrue(js.contains(HTMLBodyLayout.heightNeutralizedClass))
-        // Unfreeze only on real image geometry; min-height only neutralize.
+        // Unfreeze on real image geometry; false-freeze recovery without images.
         XCTAssertTrue(js.contains("naturalWidth > 0"))
         XCTAssertTrue(js.contains("setProperty('min-height'"))
+        // Percentage-authored height neutralization (not fixed px heroes).
+        XCTAssertTrue(js.contains("setProperty('height', 'auto'"))
+        XCTAssertTrue(js.contains("authoredPct"))
+        XCTAssertTrue(js.contains("charAt") && js.contains("'%'"))
+        // Below-viewport freeze guard.
+        XCTAssertTrue(js.contains("base + DELTA_TOL >= vh"))
     }
 
     func testTeardownJSDisconnectsObserverAndClearsFeedbackState() {
@@ -230,6 +423,8 @@ final class HTMLBodyLayoutTests: XCTestCase {
         XCTAssertTrue(js.contains("__mmFeedbackHits"))
         XCTAssertTrue(js.contains("__mmFeedbackBase"))
         XCTAssertTrue(js.contains("__mmLastNeutralVH"))
+        XCTAssertTrue(js.contains("__mmFreezeStableVH"))
+        XCTAssertTrue(js.contains("__mmFreezeAdoptions"))
     }
 
     func testFixturePlainTextContainsCode() {
