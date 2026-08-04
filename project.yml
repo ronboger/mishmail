@@ -162,6 +162,7 @@ targets:
       - Sources/MishMail/Support/PollCadence.swift
       - Sources/MishMail/Support/PrioritySplit.swift
       - Sources/MishMail/Support/PrioritySectionAdvance.swift
+      - Sources/MishMail/Support/StarNavAnchor.swift
       - Sources/MishMail/Support/ParticipantMenuVIP.swift
       - Sources/MishMail/Support/TokenAddressEditing.swift
       - Sources/MishMail/Support/AppTheme.swift
