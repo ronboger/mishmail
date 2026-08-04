@@ -82,6 +82,8 @@ enum HTMLBodyLayout {
         var consecutiveHits: Int
         /// Height recorded at the start of the current feedback streak.
         var streakBaseHeight: CGFloat?
+        /// Viewport recorded at the start of the current feedback streak.
+        var streakBaseViewport: CGFloat?
         /// When non-nil, freeze publishing at this height.
         var freezeAt: CGFloat?
     }
@@ -119,16 +121,21 @@ enum HTMLBodyLayout {
     /// not expand into the loop). A non-feedback sample clears the streak.
     ///
     /// A genuine measure→frame→viewport runaway implies content is at least as
-    /// tall as the viewport it is driving. Refuse to freeze when the streak
-    /// base is below the current viewport (within `feedbackDeltaTolerance`);
-    /// keep counting the streak so a later legitimately large base can freeze.
+    /// tall as the viewport it was driving when the streak started. Refuse to
+    /// freeze when the streak base is below the *streak-start* viewport
+    /// (within `feedbackDeltaTolerance`). Anchor to that fixed viewport — not
+    /// the live one — so a runaway that grows both height and viewport each
+    /// sample cannot drift past the tolerance and block freeze forever.
+    /// When the guard blocks, keep counting the streak so a later legitimately
+    /// large base (new streak) can still freeze.
     static func observeFeedback(
         previousHeight: CGFloat,
         previousViewport: CGFloat,
         height: CGFloat,
         viewport: CGFloat,
         consecutiveHits: Int,
-        streakBaseHeight: CGFloat?
+        streakBaseHeight: CGFloat?,
+        streakBaseViewport: CGFloat?
     ) -> FeedbackStep {
         guard isFeedbackGrowth(
             previousHeight: previousHeight,
@@ -136,19 +143,29 @@ enum HTMLBodyLayout {
             height: height,
             viewport: viewport
         ) else {
-            return FeedbackStep(consecutiveHits: 0, streakBaseHeight: nil, freezeAt: nil)
+            return FeedbackStep(
+                consecutiveHits: 0,
+                streakBaseHeight: nil,
+                streakBaseViewport: nil,
+                freezeAt: nil)
         }
         let base = streakBaseHeight ?? previousHeight
+        let baseVH = streakBaseViewport ?? previousViewport
         let hits = consecutiveHits + 1
         var freeze: CGFloat? = nil
         if hits >= feedbackHitsToFreeze {
-            // base >= viewport − tolerance  ⇔  base + tolerance >= viewport
-            if base + feedbackDeltaTolerance >= viewport {
+            // base >= streak-start viewport − tolerance
+            //  ⇔  base + tolerance >= streakBaseViewport
+            if base + feedbackDeltaTolerance >= baseVH {
                 freeze = base
             }
-            // else: below-viewport guard — keep hits/base, do not freeze yet
+            // else: below-viewport guard — keep hits/base/baseVH, do not freeze yet
         }
-        return FeedbackStep(consecutiveHits: hits, streakBaseHeight: base, freezeAt: freeze)
+        return FeedbackStep(
+            consecutiveHits: hits,
+            streakBaseHeight: base,
+            streakBaseViewport: baseVH,
+            freezeAt: freeze)
     }
 
     /// Decide whether a frozen height should be abandoned for a taller measure.
@@ -584,7 +601,9 @@ enum HTMLBodyLayout {
           /* Anti-feedback state (mirrors HTMLBodyLayout.observeFeedback /
              observeFreezeRecovery). Freezes only after HITS_TO_FREEZE
              consecutive dH≈dVH samples so a one-shot concurrent reflow does
-             not clip real content. Refuses freeze when base < viewport.
+             not clip real content. Refuses freeze when base < streak-start
+             viewport (__mmFeedbackBaseVH) — anchored at streak begin so a
+             runaway cannot drift the live viewport past the tolerance.
              While frozen, re-measure and recover if viewport is stable and
              content is clearly taller (budgeted adoptions). */
           if (typeof window.__mmLastH !== 'number') window.__mmLastH = 0;
@@ -592,6 +611,7 @@ enum HTMLBodyLayout {
           if (typeof window.__mmFrozenH !== 'number') window.__mmFrozenH = 0;
           if (typeof window.__mmFeedbackHits !== 'number') window.__mmFeedbackHits = 0;
           if (typeof window.__mmFeedbackBase !== 'number') window.__mmFeedbackBase = 0;
+          if (typeof window.__mmFeedbackBaseVH !== 'number') window.__mmFeedbackBaseVH = 0;
           if (typeof window.__mmFreezeStableVH !== 'number') window.__mmFreezeStableVH = 0;
           if (typeof window.__mmFreezeAdoptions !== 'number') window.__mmFreezeAdoptions = 0;
 
@@ -633,6 +653,7 @@ enum HTMLBodyLayout {
                 window.__mmFrozenH = 0;
                 window.__mmFeedbackHits = 0;
                 window.__mmFeedbackBase = 0;
+                window.__mmFeedbackBaseVH = 0;
                 window.__mmLastH = rec.adopt;
                 return postHeight(rec.adopt);
               }
@@ -641,13 +662,19 @@ enum HTMLBodyLayout {
             var lastH = window.__mmLastH;
             var lastVH = window.__mmLastVH;
             if (isFeedbackGrowth(lastH, lastVH, h, vh)) {
-              if (!window.__mmFeedbackBase) window.__mmFeedbackBase = lastH;
+              if (!window.__mmFeedbackBase) {
+                window.__mmFeedbackBase = lastH;
+                window.__mmFeedbackBaseVH = lastVH;
+              }
               window.__mmFeedbackHits = (window.__mmFeedbackHits || 0) + 1;
               if (window.__mmFeedbackHits >= HITS_TO_FREEZE) {
-                /* Refuse freeze when base < viewport (early-load false positive).
+                /* Refuse freeze when base < streak-start viewport (early-load
+                   false positive). Compare against __mmFeedbackBaseVH, not
+                   live vh, so runaway growth cannot drift past the guard.
                    Keep the streak so a later legitimately large base can freeze. */
                 var base = window.__mmFeedbackBase;
-                if (base + DELTA_TOL >= vh) {
+                var baseVH = window.__mmFeedbackBaseVH;
+                if (base + DELTA_TOL >= baseVH) {
                   window.__mmFrozenH = base;
                   window.__mmFreezeStableVH = 0;
                   h = window.__mmFrozenH;
@@ -656,6 +683,7 @@ enum HTMLBodyLayout {
             } else {
               window.__mmFeedbackHits = 0;
               window.__mmFeedbackBase = 0;
+              window.__mmFeedbackBaseVH = 0;
             }
             if (window.__mmFrozenH <= 0) {
               window.__mmLastH = h;
@@ -674,6 +702,7 @@ enum HTMLBodyLayout {
               window.__mmFrozenH = 0;
               window.__mmFeedbackHits = 0;
               window.__mmFeedbackBase = 0;
+              window.__mmFeedbackBaseVH = 0;
               window.__mmFreezeStableVH = 0;
             }
             report();
@@ -686,6 +715,7 @@ enum HTMLBodyLayout {
           window.__mmLastNeutralVH = 0;
           window.__mmFeedbackHits = 0;
           window.__mmFeedbackBase = 0;
+          window.__mmFeedbackBaseVH = 0;
           window.__mmFreezeStableVH = 0;
           window.__mmFreezeAdoptions = 0;
 
@@ -740,6 +770,7 @@ enum HTMLBodyLayout {
             window.__mmLastNeutralVH = 0;
             window.__mmFeedbackHits = 0;
             window.__mmFeedbackBase = 0;
+            window.__mmFeedbackBaseVH = 0;
             window.__mmFreezeStableVH = 0;
             window.__mmFreezeAdoptions = 0;
           } catch (e) {}
