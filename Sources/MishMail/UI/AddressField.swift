@@ -37,6 +37,7 @@ struct TokenAddressField: View {
                             chip(token)
                         }
                         TextField(tokens.isEmpty ? "Add recipients" : "", text: $draft)
+                            .accessibilityIdentifier("addressField.\(label)")
                             .textFieldStyle(.plain)
                             .font(.system(size: 13))
                             .frame(minWidth: 160)
@@ -47,7 +48,13 @@ struct TokenAddressField: View {
                             }
                             .onChange(of: focused) {
                                 // Leaving the field turns typed text into a chip.
-                                if !focused { commitDraft() }
+                                // Deferred: mutating tokens *during* the Tab
+                                // traversal restructures the row mid-move and
+                                // AppKit drops the just-granted Subject focus
+                                // after the first keystroke.
+                                if !focused {
+                                    DispatchQueue.main.async { commitDraft() }
+                                }
                                 syncKeyMonitor()
                             }
                             .onSubmit { commitDraft() }
@@ -62,9 +69,20 @@ struct TokenAddressField: View {
                                 return .handled
                             }
                             .onKeyPress(.tab) {
-                                guard focused, let pick = suggestions[safe: highlighted] else { return .ignored }
-                                accept(pick)
-                                return .handled
+                                // Tab always travels on to the next field
+                                // (Subject) — returning .handled here used to
+                                // trap the user in To, so their subject text
+                                // landed in the recipient draft. Accept the
+                                // highlighted suggestion (or commit the typed
+                                // address) on the next runloop turn so the
+                                // token mutation can't break the in-flight
+                                // focus traversal.
+                                guard focused else { return .ignored }
+                                let pick = suggestions[safe: highlighted]
+                                DispatchQueue.main.async {
+                                    if let pick { accept(pick) } else { commitDraft() }
+                                }
+                                return .ignored
                             }
                             .onKeyPress(.return) {
                                 guard focused, !draft.isEmpty else { return .ignored }
@@ -233,8 +251,11 @@ struct TokenAddressField: View {
 
     private func commitDraft() {
         let result = TokenAddressEditing.commit(tokens: tokens, draft: draft)
-        tokens = result.tokens
-        draft = result.draft
+        // Skip no-op writes: blur-time commits run right after a Tab
+        // traversal, and a gratuitous tokens/draft invalidation there can
+        // re-render the row and knock focus off the field Tab just reached.
+        if result.tokens != tokens { tokens = result.tokens }
+        if result.draft != draft { draft = result.draft }
     }
 
     private func beginEdit(_ token: String) {

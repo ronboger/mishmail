@@ -2098,6 +2098,7 @@ struct ComposeSubjectField: NSViewRepresentable {
         field.font = .systemFont(ofSize: 14, weight: .semibold)
         field.textColor = .labelColor
         field.placeholderString = "Subject"
+        field.setAccessibilityIdentifier("composeSubject")
         field.lineBreakMode = .byTruncatingTail
         field.cell?.isScrollable = true
         field.cell?.wraps = false
@@ -2129,13 +2130,26 @@ struct ComposeSubjectField: NSViewRepresentable {
             direction = .natural
             alignment = .natural
         }
-        field.baseWritingDirection = direction
-        field.alignment = alignment
-        // Live field editor draws the text while focused — cell-only updates
-        // would only take effect after blur.
+        // While a field editor is live, touch ONLY the editor. Writing
+        // alignment/baseWritingDirection on the field itself goes through the
+        // cell and ends the editing session — the first typed character flips
+        // neutral→LTR, and that write silently dropped keyboard focus (the
+        // "subject unselects while I type" glitch). The field-level values
+        // catch up on the next update after editing ends.
         if let editor = field.currentEditor() {
-            editor.baseWritingDirection = direction
-            editor.alignment = alignment
+            if editor.baseWritingDirection != direction {
+                editor.baseWritingDirection = direction
+            }
+            if editor.alignment != alignment {
+                editor.alignment = alignment
+            }
+        } else {
+            if field.baseWritingDirection != direction {
+                field.baseWritingDirection = direction
+            }
+            if field.alignment != alignment {
+                field.alignment = alignment
+            }
         }
     }
 
