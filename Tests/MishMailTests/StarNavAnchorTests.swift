@@ -109,4 +109,54 @@ final class StarNavAnchorTests: XCTestCase {
         let bottom = StarNavAnchor.Anchor(fromId: "z", nextId: nil, prevId: "y")
         XCTAssertNil(StarNavAnchor.targetId(in: bottom, delta: 1))
     }
+
+    // MARK: - scroll hold (viewport pin after star re-partition)
+
+    func testHoldIdPrefersNextThenPrev() {
+        let mid = StarNavAnchor.Anchor(fromId: "b", nextId: "c", prevId: "a")
+        XCTAssertEqual(StarNavAnchor.holdId(from: mid), "c")
+        let bottom = StarNavAnchor.Anchor(fromId: "z", nextId: nil, prevId: "y")
+        XCTAssertEqual(StarNavAnchor.holdId(from: bottom), "y")
+        let top = StarNavAnchor.Anchor(fromId: "a", nextId: "b", prevId: nil)
+        XCTAssertEqual(StarNavAnchor.holdId(from: top), "b")
+        let alone = StarNavAnchor.Anchor(fromId: "only", nextId: nil, prevId: nil)
+        XCTAssertNil(StarNavAnchor.holdId(from: alone))
+    }
+
+    func testShouldRestoreScrollHoldWhenPartitionMovedSelection() {
+        XCTAssertTrue(StarNavAnchor.shouldRestoreScrollHold(
+            holdId: "c", selectedId: "b",
+            holdPresentInOrder: true, selectedInPriority: true))
+    }
+
+    func testShouldRestoreRejectsMissingHoldOrSelected() {
+        XCTAssertFalse(StarNavAnchor.shouldRestoreScrollHold(
+            holdId: nil, selectedId: "b",
+            holdPresentInOrder: true, selectedInPriority: true))
+        XCTAssertFalse(StarNavAnchor.shouldRestoreScrollHold(
+            holdId: "", selectedId: "b",
+            holdPresentInOrder: true, selectedInPriority: true))
+        XCTAssertFalse(StarNavAnchor.shouldRestoreScrollHold(
+            holdId: "c", selectedId: nil,
+            holdPresentInOrder: true, selectedInPriority: true))
+    }
+
+    func testShouldRestoreRejectsHoldNotInOrder() {
+        XCTAssertFalse(StarNavAnchor.shouldRestoreScrollHold(
+            holdId: "c", selectedId: "b",
+            holdPresentInOrder: false, selectedInPriority: true))
+    }
+
+    func testShouldRestoreRejectsWhenSelectionNotInPriority() {
+        // No re-partition (already Priority-qualified, or mode off).
+        XCTAssertFalse(StarNavAnchor.shouldRestoreScrollHold(
+            holdId: "c", selectedId: "b",
+            holdPresentInOrder: true, selectedInPriority: false))
+    }
+
+    func testShouldRestoreRejectsHoldEqualsSelected() {
+        XCTAssertFalse(StarNavAnchor.shouldRestoreScrollHold(
+            holdId: "b", selectedId: "b",
+            holdPresentInOrder: true, selectedInPriority: true))
+    }
 }

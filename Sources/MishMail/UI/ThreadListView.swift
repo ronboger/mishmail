@@ -79,7 +79,9 @@ struct ThreadListView: View {
     }
 
     /// Rebuild Priority + group sections and keyboard `displayOrder`.
-    private func recomputeLayout() {
+    /// When `scrollProxy` is provided, consume a pending star-scroll hold and
+    /// restore the viewport so starring into Priority does not jump the list.
+    private func recomputeLayout(scrollProxy: ScrollViewProxy? = nil) {
         PerfMetrics.measure(.listGroup, meta: "n=\(store.threads.count)") {
             let visibleThreads = store.selectedView == .drafts
                 ? store.threads.filter { !store.suppressedDraftThreadIds.contains($0.id) }
@@ -101,6 +103,31 @@ struct ThreadListView: View {
             // Superhuman-style: land with the top row already selected
             // (highlight only — never opens) so ↩ opens it right away.
             store.autoSelectTopThread()
+
+            // Star-into-Priority: NSTableView scrolls the selected row into
+            // view after its position jumps to the Priority section. Counter
+            // that one-shot by scrolling the pre-star neighbor back into place
+            // with animations disabled (no second animated jump).
+            if let proxy = scrollProxy,
+               let holdId = store.consumeStarScrollHold() {
+                let selectedId = store.selectedThreadId
+                let priorityIds = Set(priority.map(\.id))
+                if StarNavAnchor.shouldRestoreScrollHold(
+                    holdId: holdId,
+                    selectedId: selectedId,
+                    holdPresentInOrder: flatDisplayOrder.contains(holdId),
+                    selectedInPriority: selectedId.map { priorityIds.contains($0) } ?? false
+                ) {
+                    // After the layout pass so the hold row's identity exists.
+                    DispatchQueue.main.async {
+                        var t = Transaction()
+                        t.disablesAnimations = true
+                        withTransaction(t) {
+                            proxy.scrollTo(holdId, anchor: nil)
+                        }
+                    }
+                }
+            }
         }
     }
 
@@ -247,6 +274,9 @@ struct ThreadListView: View {
                 multiSelectBar
                 Divider()
             }
+            // ScrollViewReader counters the star-into-Priority scroll jump
+            // (NSTableView keeps the selected row visible after re-partition).
+            ScrollViewReader { proxy in
             List(selection: threadSelection) {
                 ForEach(grouped, id: \.0) { title, threads in
                     Section {
@@ -266,6 +296,7 @@ struct ThreadListView: View {
                             )
                                 .equatable()
                                 .tag(thread.id)
+                                .id(thread.id)
                                 .accessibilityIdentifier("threadRow.\(thread.id)")
                                 // Notion Mail-style: READ rows recede on a
                                 // grey wash (adapts to dark mode); unread rows
@@ -342,19 +373,20 @@ struct ThreadListView: View {
             .scrollContentBackground(.hidden)
             // Matching air above the first group.
             .contentMargins(.top, 40 * fontScale, for: .scrollContent)
-            .onAppear { recomputeLayout() }
-            .onChange(of: store.threads) { recomputeLayout() }
-            .onChange(of: store.vipThreadIds) { recomputeLayout() }
-            .onChange(of: store.selectedView) { recomputeLayout() }
-            .onChange(of: groupByRaw) { recomputeLayout() }
-            .onChange(of: priorityModeRaw) { recomputeLayout() }
-            .onChange(of: vipAlwaysPins) { recomputeLayout() }
-            .onChange(of: collapsedLabels) { recomputeLayout() }
+            .onAppear { recomputeLayout(scrollProxy: proxy) }
+            .onChange(of: store.threads) { recomputeLayout(scrollProxy: proxy) }
+            .onChange(of: store.vipThreadIds) { recomputeLayout(scrollProxy: proxy) }
+            .onChange(of: store.selectedView) { recomputeLayout(scrollProxy: proxy) }
+            .onChange(of: groupByRaw) { recomputeLayout(scrollProxy: proxy) }
+            .onChange(of: priorityModeRaw) { recomputeLayout(scrollProxy: proxy) }
+            .onChange(of: vipAlwaysPins) { recomputeLayout(scrollProxy: proxy) }
+            .onChange(of: collapsedLabels) { recomputeLayout(scrollProxy: proxy) }
             // groups() also reads these — without them the cached sections
             // go stale (aiCategory grouping, Labels view after rename/reorder).
-            .onChange(of: store.aiCategories) { recomputeLayout() }
-            .onChange(of: store.labelsByAccount) { recomputeLayout() }
-            .onChange(of: store.suppressedDraftThreadIds) { recomputeLayout() }
+            .onChange(of: store.aiCategories) { recomputeLayout(scrollProxy: proxy) }
+            .onChange(of: store.labelsByAccount) { recomputeLayout(scrollProxy: proxy) }
+            .onChange(of: store.suppressedDraftThreadIds) { recomputeLayout(scrollProxy: proxy) }
+            } // ScrollViewReader
         }
         .background(Color.notionContent)
         .navigationTitle(store.selectedView.title)
