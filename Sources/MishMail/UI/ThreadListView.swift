@@ -37,6 +37,8 @@ struct ThreadListView: View {
     @AppStorage("fontScale") private var fontScale = 1.0
     @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
     @AppStorage("vipAlwaysPins") private var vipAlwaysPins = true
+    /// 0 = all starred; default 7 = only pin threads from the last week.
+    @AppStorage("priorityWindowDays") private var priorityWindowDays = 7
 
     private var groupBy: GroupBy { GroupBy(rawValue: groupByRaw) ?? .date }
 
@@ -92,7 +94,8 @@ struct ThreadListView: View {
                 mode: store.selectedView == .inbox ? mode : .off,
                 vipThreadIds: store.vipThreadIds,
                 vipAlwaysPins: vipAlwaysPins,
-                hiddenCategories: store.effectiveCategoryHide)
+                hiddenCategories: store.effectiveCategoryHide,
+                newerThan: PrioritySplit.cutoff(days: priorityWindowDays))
             var out: [(String, [MailThread])] = []
             if !priority.isEmpty { out.append((Self.prioritySection, priority)) }
             out += groups(rest)
@@ -381,6 +384,7 @@ struct ThreadListView: View {
             .onChange(of: groupByRaw) { recomputeLayout(scrollProxy: proxy) }
             .onChange(of: priorityModeRaw) { recomputeLayout(scrollProxy: proxy) }
             .onChange(of: vipAlwaysPins) { recomputeLayout(scrollProxy: proxy) }
+            .onChange(of: priorityWindowDays) { recomputeLayout(scrollProxy: proxy) }
             .onChange(of: collapsedLabels) { recomputeLayout(scrollProxy: proxy) }
             // groups() also reads these — without them the cached sections
             // go stale (aiCategory grouping, Labels view after rename/reorder).
