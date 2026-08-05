@@ -441,7 +441,7 @@ struct ThreadListView: View {
                 }
             }
         }
-        // Undo toast (centered) and notice toast (bottom-leading) live in ContentView.
+        // Undo toast and notice toast (both bottom-leading) live in ContentView.
     }
 
     /// Compact bulk-action strip when one or more checkboxes are on.
