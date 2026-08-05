@@ -23,9 +23,11 @@ enum PrioritySplit {
     }
 
     /// - Parameter hiddenCategories: effective category-hide set (CATEGORY_* ids).
-    ///   Starred / IMPORTANT threads that sit in a hidden category stay in
-    ///   chronological order (they still pin through `CategoryHide`); only the
-    ///   Priority hoist is suppressed. VIP pins are unaffected — VIPs are people.
+    ///   Manually starred threads always hoist into Priority regardless of this
+    ///   set. Only the IMPORTANT-only hoist (`.starredImportant` mode, not
+    ///   starred) is suppressed when the thread sits in a hidden category —
+    ///   those threads still pin through `CategoryHide` chronologically.
+    ///   VIP pins are unaffected — VIPs are people.
     static func qualifies(_ thread: MailThread, mode: Mode,
                           vipThreadIds: Set<String> = [],
                           vipAlwaysPins: Bool = true,
@@ -37,11 +39,11 @@ enum PrioritySplit {
             return isVIP
         case .starred:
             if vipAlwaysPins && isVIP { return true }
-            guard thread.isStarred else { return false }
-            return !isInHiddenCategory(thread, hide: hiddenCategories)
+            return thread.isStarred
         case .starredImportant:
             if vipAlwaysPins && isVIP { return true }
-            guard thread.isStarred || thread.labels.contains("IMPORTANT") else { return false }
+            if thread.isStarred { return true }
+            guard thread.labels.contains("IMPORTANT") else { return false }
             return !isInHiddenCategory(thread, hide: hiddenCategories)
         }
     }
