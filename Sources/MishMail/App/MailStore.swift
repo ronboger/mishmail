@@ -4483,13 +4483,22 @@ struct ComposeRequest: Identifiable {
             }
             return UserDefaults.standard.bool(forKey: "vipAlwaysPins")
         }()
+        // Match ThreadListView @AppStorage default 7; integer(forKey:) is 0 when absent.
+        let priorityWindowDays: Int = {
+            if UserDefaults.standard.object(forKey: "priorityWindowDays") == nil {
+                return 7
+            }
+            return UserDefaults.standard.integer(forKey: "priorityWindowDays")
+        }()
+        let newerThan = PrioritySplit.cutoff(days: priorityWindowDays)
 
         let leaving = PrioritySectionAdvance.idsLeavingSection(
             targets: targets,
             sectionIds: Set(prioritySectionIds),
             mode: mode,
             vipThreadIds: vipThreadIds,
-            vipAlwaysPins: vipAlwaysPins)
+            vipAlwaysPins: vipAlwaysPins,
+            newerThan: newerThan)
         guard !leaving.isEmpty else { return }
 
         let destinations = PrioritySectionAdvance.destinations(
@@ -4872,6 +4881,33 @@ struct ComposeRequest: Identifiable {
         else { return }
         // Already Priority-qualified → starring does not re-partition it.
         guard !prioritySectionIds.contains(focusId) else { return }
+        // Starring an old thread outside the Priority window does not hoist
+        // it, so a scroll/nav hold would freeze the viewport for nothing.
+        if let focused = threads.first(where: { $0.id == focusId }) {
+            let vipAlwaysPins: Bool = {
+                if UserDefaults.standard.object(forKey: "vipAlwaysPins") == nil {
+                    return true
+                }
+                return UserDefaults.standard.bool(forKey: "vipAlwaysPins")
+            }()
+            let priorityWindowDays: Int = {
+                if UserDefaults.standard.object(forKey: "priorityWindowDays") == nil {
+                    return 7
+                }
+                return UserDefaults.standard.integer(forKey: "priorityWindowDays")
+            }()
+            var starred = focused
+            starred.isStarred = true
+            if !PrioritySplit.qualifies(
+                starred, mode: mode,
+                vipThreadIds: vipThreadIds,
+                vipAlwaysPins: vipAlwaysPins,
+                hiddenCategories: effectiveCategoryHide,
+                newerThan: PrioritySplit.cutoff(days: priorityWindowDays)
+            ) {
+                return
+            }
+        }
         guard let anchor = StarNavAnchor.anchor(
             displayOrder: displayOrder,
             focusId: focusId,

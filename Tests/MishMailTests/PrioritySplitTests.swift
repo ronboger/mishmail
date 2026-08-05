@@ -2,10 +2,11 @@ import XCTest
 
 final class PrioritySplitTests: XCTestCase {
     private func thread(_ id: String, starred: Bool = false,
-                        labels: String = "INBOX") -> MailThread {
+                        labels: String = "INBOX",
+                        lastDate: Date = Date(timeIntervalSince1970: 1000)) -> MailThread {
         MailThread(id: "a@x.com:\(id)", accountId: "a@x.com", gmailThreadId: id,
                    subject: "s", snippet: "sn", fromDisplay: "F",
-                   lastDate: Date(timeIntervalSince1970: 1000),
+                   lastDate: lastDate,
                    isUnread: false, isStarred: starred, inInbox: true,
                    inTrash: false, labelIds: labels, snoozeUntil: nil,
                    participants: "F", messageCount: 1, hasAttachment: false,
@@ -238,5 +239,68 @@ final class PrioritySplitTests: XCTestCase {
             threads, mode: .starred, hiddenCategories: [])
         XCTAssertEqual(priority.map(\.gmailThreadId), ["t1", "t2"])
         XCTAssertEqual(rest.map(\.gmailThreadId), ["t3"])
+    }
+
+    // MARK: - Recency window (newerThan)
+
+    func testCutoffDaysZeroOrNegativeReturnsNil() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        XCTAssertNil(PrioritySplit.cutoff(days: 0, now: now))
+        XCTAssertNil(PrioritySplit.cutoff(days: -3, now: now))
+    }
+
+    func testCutoffDaysSevenIsNowMinusSevenDays() {
+        let now = Date(timeIntervalSince1970: 1_700_000_000)
+        let cut = PrioritySplit.cutoff(days: 7, now: now)
+        XCTAssertEqual(cut, now.addingTimeInterval(-7 * 86_400))
+    }
+
+    func testStarredInsideWindowHoistsOutsideDoesNot() {
+        let cutoff = Date(timeIntervalSince1970: 10_000)
+        let recent = thread("recent", starred: true,
+                            lastDate: Date(timeIntervalSince1970: 10_001))
+        let old = thread("old", starred: true,
+                         lastDate: Date(timeIntervalSince1970: 9_999))
+        for mode in [PrioritySplit.Mode.starred, .starredImportant] {
+            let (priority, rest) = PrioritySplit.partition(
+                [recent, old], mode: mode, newerThan: cutoff)
+            XCTAssertEqual(priority.map(\.gmailThreadId), ["recent"], "mode \(mode)")
+            XCTAssertEqual(rest.map(\.gmailThreadId), ["old"], "mode \(mode)")
+        }
+    }
+
+    func testNilNewerThanKeepsUnfilteredStarHoist() {
+        // Default parameter / nil window: old stars still hoist (pre-window behavior).
+        let old = thread("old", starred: true,
+                         lastDate: Date(timeIntervalSince1970: 1))
+        for mode in [PrioritySplit.Mode.starred, .starredImportant] {
+            let (priority, rest) = PrioritySplit.partition([old], mode: mode)
+            XCTAssertEqual(priority.map(\.gmailThreadId), ["old"], "mode \(mode)")
+            XCTAssertTrue(rest.isEmpty, "mode \(mode)")
+        }
+    }
+
+    func testVIPOlderThanWindowStillHoistsWithVipAlwaysPins() {
+        let cutoff = Date(timeIntervalSince1970: 10_000)
+        let vip = thread("vip", lastDate: Date(timeIntervalSince1970: 1))
+        for mode in [PrioritySplit.Mode.starred, .starredImportant] {
+            let (priority, rest) = PrioritySplit.partition(
+                [vip], mode: mode, vipThreadIds: [vip.id],
+                vipAlwaysPins: true, newerThan: cutoff)
+            XCTAssertEqual(priority.map(\.gmailThreadId), ["vip"], "mode \(mode)")
+            XCTAssertTrue(rest.isEmpty, "mode \(mode)")
+        }
+    }
+
+    func testImportantOnlyInsideWindowHoistsOutsideDoesNot() {
+        let cutoff = Date(timeIntervalSince1970: 10_000)
+        let recent = thread("recent", labels: "INBOX IMPORTANT",
+                            lastDate: Date(timeIntervalSince1970: 10_001))
+        let old = thread("old", labels: "INBOX IMPORTANT",
+                         lastDate: Date(timeIntervalSince1970: 9_999))
+        let (priority, rest) = PrioritySplit.partition(
+            [recent, old], mode: .starredImportant, newerThan: cutoff)
+        XCTAssertEqual(priority.map(\.gmailThreadId), ["recent"])
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["old"])
     }
 }

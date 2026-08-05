@@ -24,7 +24,8 @@ enum PrioritySectionAdvance {
         sectionIds: Set<String>,
         mode: PrioritySplit.Mode,
         vipThreadIds: Set<String>,
-        vipAlwaysPins: Bool
+        vipAlwaysPins: Bool,
+        newerThan: Date? = nil
     ) -> Set<String> {
         // .off means no Priority section exists, so no row can leave it.
         guard mode != .off else { return [] }
@@ -36,7 +37,8 @@ enum PrioritySectionAdvance {
             if !PrioritySplit.qualifies(
                 unstarred, mode: mode,
                 vipThreadIds: vipThreadIds,
-                vipAlwaysPins: vipAlwaysPins
+                vipAlwaysPins: vipAlwaysPins,
+                newerThan: newerThan
             ) {
                 leaving.insert(target.id)
             }

@@ -969,6 +969,8 @@ struct AppearanceSettings: View {
     @AppStorage("badgeScope") private var badgeScopeRaw = MailStore.BadgeScope.all.rawValue
     @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
     @AppStorage("vipAlwaysPins") private var vipAlwaysPins = true
+    /// Days of recency for Priority hoist; 0 = all starred. Default 7.
+    @AppStorage("priorityWindowDays") private var priorityWindowDays = 7
     @AppStorage(ThreadOpenStyle.storageKey) private var threadOpenStyleRaw =
         ThreadOpenStyle.fullWindow.rawValue
     /// Default `.ask` preserves privacy (no open-tracking until opt-in).
@@ -1024,9 +1026,16 @@ struct AppearanceSettings: View {
                                 .font(.system(size: 11))
                                 .foregroundStyle(.secondary)
                         }
+                        Picker("Only pin recent mail", selection: $priorityWindowDays) {
+                            Text("Last 3 days").tag(3)
+                            Text("Last 7 days").tag(7)
+                            Text("Last 14 days").tag(14)
+                            Text("Last 30 days").tag(30)
+                            Text("All starred").tag(0)
+                        }
                     }
                 } footer: {
-                    Text("What pins to the top of the Inbox. VIPs only is the tightest — just mail from your VIP senders. Starred is what you've hand-picked; Starred + Important adds everything Gmail predicts matters, which can be a lot.")
+                    Text("What pins to the top of the Inbox. VIPs only is the tightest — just mail from your VIP senders. Starred is what you've hand-picked; Starred + Important adds everything Gmail predicts matters, which can be a lot. Older starred mail stays in its place in the date list instead of pinning.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
