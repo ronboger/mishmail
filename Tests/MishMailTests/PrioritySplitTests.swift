@@ -113,4 +113,111 @@ final class PrioritySplitTests: XCTestCase {
         let (priority, _) = PrioritySplit.partition(threads, mode: .starredImportant)
         XCTAssertTrue(priority.isEmpty)
     }
+
+    // MARK: - Hidden-category star pin-through (no Priority hoist)
+
+    private func promoStarred(_ id: String) -> MailThread {
+        var t = thread(id, starred: true, labels: "INBOX STARRED CATEGORY_PROMOTIONS")
+        t.inPromotions = true
+        return t
+    }
+
+    private func socialStarred(_ id: String) -> MailThread {
+        var t = thread(id, starred: true, labels: "INBOX STARRED CATEGORY_SOCIAL")
+        t.inSocial = true
+        return t
+    }
+
+    func testStarredInHiddenPromotionsIsNotHoisted() {
+        let t = promoStarred("t1")
+        let hide: Set = ["CATEGORY_PROMOTIONS"]
+        let (priority, rest) = PrioritySplit.partition(
+            [t], mode: .starred, hiddenCategories: hide)
+        XCTAssertTrue(priority.isEmpty)
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["t1"])
+    }
+
+    func testStarredInHiddenSocialIsNotHoisted() {
+        let t = socialStarred("t1")
+        let hide: Set = ["CATEGORY_SOCIAL"]
+        let (priority, rest) = PrioritySplit.partition(
+            [t], mode: .starred, hiddenCategories: hide)
+        XCTAssertTrue(priority.isEmpty)
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["t1"])
+    }
+
+    func testStarredInHiddenUpdatesViaLabelIdsIsNotHoisted() {
+        let t = thread("t1", starred: true,
+                       labels: "INBOX STARRED CATEGORY_UPDATES")
+        let hide: Set = ["CATEGORY_UPDATES"]
+        let (priority, rest) = PrioritySplit.partition(
+            [t], mode: .starred, hiddenCategories: hide)
+        XCTAssertTrue(priority.isEmpty)
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["t1"])
+    }
+
+    func testStarredInHiddenForumsViaLabelIdsIsNotHoisted() {
+        let t = thread("t1", starred: true,
+                       labels: "INBOX STARRED CATEGORY_FORUMS")
+        let hide: Set = ["CATEGORY_FORUMS"]
+        let (priority, rest) = PrioritySplit.partition(
+            [t], mode: .starredImportant, hiddenCategories: hide)
+        XCTAssertTrue(priority.isEmpty)
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["t1"])
+    }
+
+    func testStarredIsHoistedWhenItsCategoryIsNotHidden() {
+        let promo = promoStarred("promo")
+        let updates = thread("upd", starred: true,
+                             labels: "INBOX STARRED CATEGORY_UPDATES")
+        // Hiding Social must not suppress Promotions / Updates stars.
+        let hide: Set = ["CATEGORY_SOCIAL"]
+        let (priority, rest) = PrioritySplit.partition(
+            [promo, updates], mode: .starred, hiddenCategories: hide)
+        XCTAssertEqual(priority.map(\.gmailThreadId), ["promo", "upd"])
+        XCTAssertTrue(rest.isEmpty)
+    }
+
+    func testImportantInHiddenCategoryIsNotHoisted() {
+        var t = thread("t1", labels: "INBOX IMPORTANT CATEGORY_PROMOTIONS")
+        t.inPromotions = true
+        let hide: Set = ["CATEGORY_PROMOTIONS"]
+        let (priority, rest) = PrioritySplit.partition(
+            [t], mode: .starredImportant, hiddenCategories: hide)
+        XCTAssertTrue(priority.isEmpty)
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["t1"])
+    }
+
+    func testVIPInHiddenCategoryStillHoistsWithVipAlwaysPins() {
+        let t = promoStarred("vip")
+        let hide: Set = ["CATEGORY_PROMOTIONS"]
+        for mode in [PrioritySplit.Mode.starred, .starredImportant] {
+            let (priority, rest) = PrioritySplit.partition(
+                [t], mode: mode, vipThreadIds: [t.id],
+                vipAlwaysPins: true, hiddenCategories: hide)
+            XCTAssertEqual(priority.map(\.gmailThreadId), ["vip"], "mode \(mode)")
+            XCTAssertTrue(rest.isEmpty, "mode \(mode)")
+        }
+    }
+
+    func testVIPsOnlyModeIgnoresHiddenCategories() {
+        // .vips pins people, not categories — hide set is irrelevant.
+        var t = thread("t1", labels: "INBOX CATEGORY_PROMOTIONS")
+        t.inPromotions = true
+        let (priority, rest) = PrioritySplit.partition(
+            [t], mode: .vips, vipThreadIds: [t.id],
+            hiddenCategories: ["CATEGORY_PROMOTIONS"])
+        XCTAssertEqual(priority.map(\.gmailThreadId), ["t1"])
+        XCTAssertTrue(rest.isEmpty)
+    }
+
+    func testEmptyHideSetBehavesAsBefore() {
+        let threads = [promoStarred("t1"),
+                       thread("t2", starred: true),
+                       thread("t3")]
+        let (priority, rest) = PrioritySplit.partition(
+            threads, mode: .starred, hiddenCategories: [])
+        XCTAssertEqual(priority.map(\.gmailThreadId), ["t1", "t2"])
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["t3"])
+    }
 }

@@ -22,37 +22,56 @@ enum PrioritySplit {
         }
     }
 
+    /// - Parameter hiddenCategories: effective category-hide set (CATEGORY_* ids).
+    ///   Starred / IMPORTANT threads that sit in a hidden category stay in
+    ///   chronological order (they still pin through `CategoryHide`); only the
+    ///   Priority hoist is suppressed. VIP pins are unaffected — VIPs are people.
     static func qualifies(_ thread: MailThread, mode: Mode,
                           vipThreadIds: Set<String> = [],
-                          vipAlwaysPins: Bool = true) -> Bool {
+                          vipAlwaysPins: Bool = true,
+                          hiddenCategories: Set<String> = []) -> Bool {
         let isVIP = vipThreadIds.contains(thread.id)
         switch mode {
         case .off: return false
         case .vips:
             return isVIP
         case .starred:
-            return thread.isStarred || (vipAlwaysPins && isVIP)
+            if vipAlwaysPins && isVIP { return true }
+            guard thread.isStarred else { return false }
+            return !isInHiddenCategory(thread, hide: hiddenCategories)
         case .starredImportant:
-            return thread.isStarred || thread.labels.contains("IMPORTANT")
-                || (vipAlwaysPins && isVIP)
+            if vipAlwaysPins && isVIP { return true }
+            guard thread.isStarred || thread.labels.contains("IMPORTANT") else { return false }
+            return !isInHiddenCategory(thread, hide: hiddenCategories)
         }
     }
 
     static func partition(_ threads: [MailThread], mode: Mode,
                           vipThreadIds: Set<String> = [],
-                          vipAlwaysPins: Bool = true) -> (priority: [MailThread], rest: [MailThread]) {
+                          vipAlwaysPins: Bool = true,
+                          hiddenCategories: Set<String> = []) -> (priority: [MailThread], rest: [MailThread]) {
         guard mode != .off else { return ([], threads) }
         var priority: [MailThread] = []
         var rest: [MailThread] = []
         for thread in threads {
             if qualifies(thread, mode: mode, vipThreadIds: vipThreadIds,
-                         vipAlwaysPins: vipAlwaysPins) {
+                         vipAlwaysPins: vipAlwaysPins,
+                         hiddenCategories: hiddenCategories) {
                 priority.append(thread)
             } else {
                 rest.append(thread)
             }
         }
         return (priority, rest)
+    }
+
+    /// Membership matches `StarStickiness.isInHiddenCategory` / SQL CategoryHide.
+    private static func isInHiddenCategory(_ thread: MailThread, hide: Set<String>) -> Bool {
+        StarStickiness.isInHiddenCategory(
+            hide: hide,
+            inPromotions: thread.inPromotions,
+            inSocial: thread.inSocial,
+            labelIds: thread.labelIds)
     }
 
     /// Pulls every plausible email address out of free-form text — comma or
