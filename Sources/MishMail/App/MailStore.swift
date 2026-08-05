@@ -265,6 +265,7 @@ final class MailStore {
         didSet {
             readStateKeepIds.removeAll()
             starStateKeepIds.removeAll()
+            starNavAnchor = nil
             resetListWindow()
         }
     }
@@ -2182,6 +2183,10 @@ struct ComposeRequest: Identifiable {
         // meant every trash/archive/mark-read (each schedules a reload)
         // evicted all ten cached reading-pane payloads, neighbours included.
         // Message-row writes report themselves via `applyThreadContentChange`.
+        // starNavAnchor is deliberately left alone: starring schedules a
+        // reconciliation reload ~140ms later, and the anchor must survive
+        // until the next ±1 move. Staleness is guarded lazily in moveSelection
+        // (wrong focus / missing target / multi-step) and on view change.
         chipReloadTask?.cancel()   // a direct reload supersedes a pending debounced one
         loadMoreTask?.cancel()
         loadMoreTask = nil
@@ -3982,9 +3987,16 @@ struct ComposeRequest: Identifiable {
     /// O(1) id→row for `moveSelection` (the key-repeat hot path). Rebuilt with
     /// displayOrder. Shift-click range select still scans linearly — it's cold.
     private var displayOrderIndex: [String: Int] = [:]
+    /// Pre-star Down/Up neighbors after starring into Priority. Survives the
+    /// re-partition (`updateDisplayOrder`); consumed on the next ±1 move while
+    /// focus is still the starred thread. Cleared on other moves, view change,
+    /// reload, or lazy validation when selection drifts. See `StarNavAnchor`.
+    private var starNavAnchor: StarNavAnchor.Anchor?
 
     /// Called by ThreadListView after regrouping. Rebuilds the index map so
     /// key-repeat does not scan the array on every step.
+    /// Does not clear `starNavAnchor` — the re-partition is what the anchor
+    /// exists to survive.
     func updateDisplayOrder(_ order: [String],
                             prioritySectionIds: [String] = []) {
         displayOrder = order
@@ -4043,6 +4055,30 @@ struct ComposeRequest: Identifiable {
 
     func moveSelection(_ delta: Int, intent: ThreadSelectionIntent = .browse) {
         PerfMetrics.measure(.navFocus, meta: "δ=\(delta)") {
+            // After starring into Priority, prefer the pre-star list neighbor
+            // over the new Priority-section neighbor. One-shot: clear always.
+            if let anchor = starNavAnchor {
+                starNavAnchor = nil
+                if let target = StarNavAnchor.targetId(in: anchor, delta: delta) {
+                    let order = displayOrder.isEmpty
+                        ? threads.map(\.id) : displayOrder
+                    let targetPresent: Bool = {
+                        if !displayOrder.isEmpty {
+                            return displayOrderIndex[target] != nil
+                        }
+                        return order.contains(target)
+                    }()
+                    if StarNavAnchor.applies(
+                        currentSelectedId: selectedThreadId,
+                        anchorFromId: anchor.fromId,
+                        delta: delta,
+                        targetPresent: targetPresent
+                    ) {
+                        selectThread(target, intent: intent)
+                        return
+                    }
+                }
+            }
             let order = displayOrder.isEmpty ? threads.map(\.id) : displayOrder
             let index = displayOrder.isEmpty ? [:] : displayOrderIndex
             guard let next = ThreadListNavigation.move(
@@ -4712,6 +4748,8 @@ struct ComposeRequest: Identifiable {
             // setSelectionFocus's .autoAdvance intent drops the just-added pin
             // under .thread stickiness for the left row (intended cascade).
             advanceForPriorityUnstar([thread])
+        } else {
+            captureStarNavAnchor(starredIds: [thread.id])
         }
         mutateThread(thread) { $0.isStarred = starring } remote: { client, id in
             try await client.modifyThread(id: id, add: starring ? ["STARRED"] : [],
@@ -4727,11 +4765,33 @@ struct ComposeRequest: Identifiable {
         if !starring {
             pinStarStateKeep(targets.map(\.id))
             advanceForPriorityUnstar(targets)
+        } else {
+            captureStarNavAnchor(starredIds: Set(targets.map(\.id)))
         }
         mutateThreads(targets, local: { $0.isStarred = starring }, remote: { client, id in
             try await client.modifyThread(id: id, add: starring ? ["STARRED"] : [],
                                           remove: starring ? [] : ["STARRED"])
         })
+    }
+
+    /// Remember pre-star Down/Up neighbors so the next ±1 move stays in the
+    /// original list position after the row jumps into Priority. Only when
+    /// Priority is active, the focused row is among the starred set, and that
+    /// row is not already in the Priority section (no re-partition).
+    private func captureStarNavAnchor(starredIds: Set<String>) {
+        guard selectedView == .inbox else { return }
+        let modeRaw = UserDefaults.standard.string(forKey: "priorityMode")
+        let mode = PrioritySplit.Mode(rawValue: modeRaw ?? "") ?? .starred
+        guard mode != .off else { return }
+        guard !displayOrder.isEmpty else { return }
+        guard let focusId = selectedThreadId, starredIds.contains(focusId)
+        else { return }
+        // Already Priority-qualified → starring does not re-partition it.
+        guard !prioritySectionIds.contains(focusId) else { return }
+        starNavAnchor = StarNavAnchor.anchor(
+            displayOrder: displayOrder,
+            focusId: focusId,
+            starredIds: starredIds)
     }
 
     func setRead(_ thread: MailThread, read: Bool) {
