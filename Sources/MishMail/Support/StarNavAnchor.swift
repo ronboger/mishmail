@@ -78,4 +78,29 @@ enum StarNavAnchor {
         if delta < 0 { return anchor.prevId }
         return nil
     }
+
+    /// Stable row to pin the viewport on after the starred row re-partitions
+    /// into Priority. Prefer the Down neighbor so the user keeps looking at
+    /// the date-group content that was below the starred row; fall back to
+    /// the Up neighbor at the bottom of the list.
+    static func holdId(from anchor: Anchor) -> String? {
+        anchor.nextId ?? anchor.prevId
+    }
+
+    /// Whether the star-scroll hold should counter NSTableView's scroll-to-
+    /// selected after regroup. Only when: a hold row exists and remains in
+    /// the new order, selection is still the starred thread, and that thread
+    /// is now in Priority (the re-partition that causes the jump actually
+    /// happened). Hostless so unit tests cover the decision without AppKit.
+    static func shouldRestoreScrollHold(
+        holdId: String?,
+        selectedId: String?,
+        holdPresentInOrder: Bool,
+        selectedInPriority: Bool
+    ) -> Bool {
+        guard let holdId, !holdId.isEmpty else { return false }
+        guard holdPresentInOrder else { return false }
+        guard let selectedId, selectedId != holdId else { return false }
+        return selectedInPriority
+    }
 }

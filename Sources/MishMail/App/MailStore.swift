@@ -266,6 +266,7 @@ final class MailStore {
             readStateKeepIds.removeAll()
             starStateKeepIds.removeAll()
             starNavAnchor = nil
+            starScrollHoldId = nil
             resetListWindow()
         }
     }
@@ -3992,6 +3993,11 @@ struct ComposeRequest: Identifiable {
     /// focus is still the starred thread. Cleared on other moves, view change,
     /// reload, or lazy validation when selection drifts. See `StarNavAnchor`.
     private var starNavAnchor: StarNavAnchor.Anchor?
+    /// One-shot row id to pin the list viewport on after star re-partitions
+    /// the selected row into Priority. Pre-star neighbor that stays put
+    /// (`nextId ?? prevId`). Cleared with `starNavAnchor` and when the list
+    /// view consumes it. See `StarNavAnchor.holdId` / `shouldRestoreScrollHold`.
+    private var starScrollHoldId: String?
 
     /// Called by ThreadListView after regrouping. Rebuilds the index map so
     /// key-repeat does not scan the array on every step.
@@ -4002,6 +4008,14 @@ struct ComposeRequest: Identifiable {
         displayOrder = order
         displayOrderIndex = ThreadListNavigation.indexMap(for: order)
         self.prioritySectionIds = prioritySectionIds
+    }
+
+    /// Take the pending star-scroll hold (if any). One-shot: clears store
+    /// state so the list view never mutates it ad hoc.
+    func consumeStarScrollHold() -> String? {
+        let id = starScrollHoldId
+        starScrollHoldId = nil
+        return id
     }
 
     /// Single selection gateway. Auto-advance changes opened content before
@@ -4059,6 +4073,9 @@ struct ComposeRequest: Identifiable {
             // over the new Priority-section neighbor. One-shot: clear always.
             if let anchor = starNavAnchor {
                 starNavAnchor = nil
+                // Viewport hold is independent of keyboard consume; drop it
+                // here so a later regroup cannot re-scroll after the user moves.
+                starScrollHoldId = nil
                 if let target = StarNavAnchor.targetId(in: anchor, delta: delta) {
                     let order = displayOrder.isEmpty
                         ? threads.map(\.id) : displayOrder
@@ -4775,9 +4792,11 @@ struct ComposeRequest: Identifiable {
     }
 
     /// Remember pre-star Down/Up neighbors so the next ±1 move stays in the
-    /// original list position after the row jumps into Priority. Only when
-    /// Priority is active, the focused row is among the starred set, and that
-    /// row is not already in the Priority section (no re-partition).
+    /// original list position after the row jumps into Priority. Also sets a
+    /// one-shot viewport hold so the list does not scroll up to Priority with
+    /// the selected row. Only when Priority is active, the focused row is
+    /// among the starred set, and that row is not already in the Priority
+    /// section (no re-partition).
     private func captureStarNavAnchor(starredIds: Set<String>) {
         guard selectedView == .inbox else { return }
         let modeRaw = UserDefaults.standard.string(forKey: "priorityMode")
@@ -4788,10 +4807,13 @@ struct ComposeRequest: Identifiable {
         else { return }
         // Already Priority-qualified → starring does not re-partition it.
         guard !prioritySectionIds.contains(focusId) else { return }
-        starNavAnchor = StarNavAnchor.anchor(
+        guard let anchor = StarNavAnchor.anchor(
             displayOrder: displayOrder,
             focusId: focusId,
-            starredIds: starredIds)
+            starredIds: starredIds) else { return }
+        starNavAnchor = anchor
+        // Neighbor that is *not* moving with the star re-partition.
+        starScrollHoldId = StarNavAnchor.holdId(from: anchor)
     }
 
     func setRead(_ thread: MailThread, read: Bool) {
