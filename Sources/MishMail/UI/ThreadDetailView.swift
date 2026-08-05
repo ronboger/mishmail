@@ -1085,9 +1085,13 @@ struct ThreadDetailView: View {
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
-                        Text("Summarized by \(persisted.model)")
-                            .font(.system(size: 10.5 * fontScale))
-                            .foregroundStyle(.secondary)
+                        HStack(spacing: 8) {
+                            Text("Summarized by \(persisted.model)")
+                            Spacer(minLength: 8)
+                            Text("Summary generated \(persisted.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                        }
+                        .font(.system(size: 10.5 * fontScale))
+                        .foregroundStyle(.secondary)
                     }
                     .padding(10)
                     .background(Color.notionAccent.opacity(0.08), in: RoundedRectangle(cornerRadius: PMRadius.md))
