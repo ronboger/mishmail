@@ -1340,7 +1340,9 @@ struct ComposeRequest: Identifiable {
     /// Effective category-hide set for the list currently on screen.
     /// Inbox/account use live chips; saved views use their chipsJSON (or
     /// legacy excludePromotions) because baseQuery does not read store.chips.
-    private var effectiveCategoryHide: Set<String> {
+    /// Internal so PrioritySplit can suppress hoisting starred mail that only
+    /// appears via category-hide pin-through.
+    var effectiveCategoryHide: Set<String> {
         if case .saved(let id, _) = selectedView,
            let v = savedViews.first(where: { $0.id == id }) {
             if let data = v.chipsJSON,

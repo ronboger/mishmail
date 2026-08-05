@@ -91,7 +91,8 @@ struct ThreadListView: View {
                 visibleThreads,
                 mode: store.selectedView == .inbox ? mode : .off,
                 vipThreadIds: store.vipThreadIds,
-                vipAlwaysPins: vipAlwaysPins)
+                vipAlwaysPins: vipAlwaysPins,
+                hiddenCategories: store.effectiveCategoryHide)
             var out: [(String, [MailThread])] = []
             if !priority.isEmpty { out.append((Self.prioritySection, priority)) }
             out += groups(rest)
@@ -582,7 +583,12 @@ struct FilterBar: View {
                                       active: store.chips.category.isActive)
                         }
                         .buttonStyle(.plain)
-                        .popover(isPresented: $showCategoriesPopover, arrowEdge: .bottom) {
+                        // Lead-edge anchor: chip title grows right when toggles
+                        // change ("Not Forums, …" → "…, Updates"); center-anchor
+                        // would slide the open popover under the cursor.
+                        .popover(isPresented: $showCategoriesPopover,
+                                 attachmentAnchor: .point(.bottomLeading),
+                                 arrowEdge: .bottom) {
                             CategoriesPopover()
                         }
                     }
