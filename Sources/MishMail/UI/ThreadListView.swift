@@ -387,6 +387,8 @@ struct ThreadListView: View {
             .onChange(of: store.aiCategories) { recomputeLayout(scrollProxy: proxy) }
             .onChange(of: store.labelsByAccount) { recomputeLayout(scrollProxy: proxy) }
             .onChange(of: store.suppressedDraftThreadIds) { recomputeLayout(scrollProxy: proxy) }
+            // Hidden-category set feeds Priority hoist suppression — recompute even when threads identity is unchanged (star pin-through).
+            .onChange(of: store.effectiveCategoryHide) { recomputeLayout(scrollProxy: proxy) }
             } // ScrollViewReader
         }
         .background(Color.notionContent)
