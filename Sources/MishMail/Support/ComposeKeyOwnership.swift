@@ -36,4 +36,17 @@ enum ComposeKeyOwnership {
     static func textFocusBlocksMailboxKeys(finishing: Bool) -> Bool {
         !finishing
     }
+
+    /// ⌘Z may bypass an editable first responder when the only live undo is
+    /// cancel-send and compose is not actively claiming typing.
+    ///
+    /// After Send, a lagging AppKit focus re-steal can leave an editable
+    /// NSText as first responder even though compose has finished/unmounted.
+    /// During the pending-send window the user expects ⌘Z to cancel send, not
+    /// to be swallowed by that orphan text focus. Expanded compose that still
+    /// claims typing must keep ⌘Z for text undo.
+    static func undoChordBypassesTextFocus(pendingSend: Bool,
+                                           composeClaimsTyping: Bool) -> Bool {
+        pendingSend && !composeClaimsTyping
+    }
 }

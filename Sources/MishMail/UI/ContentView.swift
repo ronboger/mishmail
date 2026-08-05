@@ -277,48 +277,48 @@ struct ContentView: View {
         }
         .animation(.easeOut(duration: 0.2), value: store.threadFocusMode)
         .animation(.easeOut(duration: 0.1), value: splitComposeActive)
-        // Undo toast: centered on the bottom of the whole window (interactive).
-        .overlay(alignment: .bottom) {
-            if let undo = store.undoAction {
-                HStack(spacing: 14) {
-                    Text(undo.label)
-                        .font(.system(size: 14, weight: .medium))
-                    Button {
-                        undo.undo()
-                    } label: {
-                        HStack(spacing: 6) {
-                            Text("Undo")
-                            // Rebindable single-key (default `z`); ⌘Z is also
-                            // wired in the key monitor for the standard chord.
-                            Text(store.keyBindings.key(for: .undo))
-                                .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                                .opacity(0.75)
-                        }
-                    }
-                    .buttonStyle(.borderedProminent)
-                    .controlSize(.large)
-                    .help("Undo (\(store.keyBindings.key(for: .undo)) or ⌘Z)")
-                }
-                .padding(.horizontal, 22).padding(.vertical, 13)
-                .background(.regularMaterial, in: Capsule())
-                .shadow(radius: 10)
-                .padding(.bottom, 20)
-                .transition(.move(edge: .bottom).combined(with: .opacity))
-            }
-        }
-        // Notice toast: bottom-leading, non-interactive so it never covers
-        // clickable controls (draft card Continue/Discard sit bottom-center/trailing).
+        // Undo + notice toasts: bottom-leading. Notice is non-interactive so it
+        // never covers clickable controls (draft card Continue/Discard sit
+        // bottom-center/trailing); undo stays hit-testable for the Undo button.
+        // Stacked in one overlay so both can appear without overlapping.
         .overlay(alignment: .bottomLeading) {
-            if let notice = store.notice {
-                Text(notice)
-                    .font(.system(size: 14, weight: .medium))
+            VStack(alignment: .leading, spacing: 10) {
+                if let notice = store.notice {
+                    Text(notice)
+                        .font(.system(size: 14, weight: .medium))
+                        .padding(.horizontal, 22).padding(.vertical, 13)
+                        .background(.regularMaterial, in: Capsule())
+                        .shadow(radius: 10)
+                        .transition(.move(edge: .bottom).combined(with: .opacity))
+                        .allowsHitTesting(false)
+                }
+                if let undo = store.undoAction {
+                    HStack(spacing: 14) {
+                        Text(undo.label)
+                            .font(.system(size: 14, weight: .medium))
+                        Button {
+                            undo.undo()
+                        } label: {
+                            HStack(spacing: 6) {
+                                Text("Undo")
+                                // Rebindable single-key (default `z`); ⌘Z is also
+                                // wired in the key monitor for the standard chord.
+                                Text(store.keyBindings.key(for: .undo))
+                                    .font(.system(size: 12, weight: .semibold, design: .monospaced))
+                                    .opacity(0.75)
+                            }
+                        }
+                        .buttonStyle(.borderedProminent)
+                        .controlSize(.large)
+                        .help("Undo (\(store.keyBindings.key(for: .undo)) or ⌘Z)")
+                    }
                     .padding(.horizontal, 22).padding(.vertical, 13)
                     .background(.regularMaterial, in: Capsule())
                     .shadow(radius: 10)
-                    .padding(.leading, 20).padding(.bottom, 20)
                     .transition(.move(edge: .bottom).combined(with: .opacity))
-                    .allowsHitTesting(false)
+                }
             }
+            .padding(.leading, 20).padding(.bottom, 20)
         }
         // Presence only — not `undoAction?.id` — so rapid keyboard archive/
         // trash updates the label in place instead of re-sliding every time.
@@ -867,6 +867,9 @@ private extension ContentView {
             // often miss when the toast has just appeared). Match the bare-key
             // overlay guards (palette / label picker / view editor) so ⌘Z and
             // `z` agree. Never steal text undo while expanded compose owns typing.
+            // After Send, a lagging AppKit re-steal can leave an editable NSText
+            // first responder with no compose claiming typing — allow ⌘Z to
+            // cancel pending send in that window (same class as post-Send `e`).
             if mods == .command,
                !event.modifierFlags.contains(.shift),
                event.charactersIgnoringModifiers?.lowercased() == "z",
@@ -881,7 +884,13 @@ private extension ContentView {
                    finishing: store.composeFinishing),
                !(TextFocus.isEditing(event.window?.firstResponder)
                  && ComposeKeyOwnership.textFocusBlocksMailboxKeys(
-                     finishing: store.composeFinishing)) {
+                     finishing: store.composeFinishing)
+                 && !ComposeKeyOwnership.undoChordBypassesTextFocus(
+                     pendingSend: store.pendingSend != nil,
+                     composeClaimsTyping: ComposeKeyOwnership.claimsTyping(
+                         hasRequest: store.composeRequest != nil,
+                         minimized: store.composeMinimized,
+                         finishing: store.composeFinishing))) {
                 store.perform(.undo)
                 return nil
             }

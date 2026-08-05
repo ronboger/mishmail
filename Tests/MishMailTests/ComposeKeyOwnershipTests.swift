@@ -55,4 +55,27 @@ final class ComposeKeyOwnershipTests: XCTestCase {
         XCTAssertTrue(ComposeKeyOwnership.textFocusBlocksMailboxKeys(
             finishing: false))
     }
+
+    /// Post-Send lagging NSText first responder must not swallow ⌘Z while
+    /// the undo-send window is open and compose no longer claims typing.
+    func testPendingSendBypassesTextFocusForUndoChord() {
+        XCTAssertTrue(ComposeKeyOwnership.undoChordBypassesTextFocus(
+            pendingSend: true, composeClaimsTyping: false))
+    }
+
+    /// Expanded compose still owns ⌘Z for text undo even if a pending send
+    /// somehow coexists (should not cancel-send while typing).
+    func testExpandedComposeBlocksUndoChordBypassDespitePendingSend() {
+        XCTAssertFalse(ComposeKeyOwnership.undoChordBypassesTextFocus(
+            pendingSend: true, composeClaimsTyping: true))
+    }
+
+    /// Without a pending send, orphan text focus must still block ⌘Z so we
+    /// do not steal text undo for archive/trash toasts.
+    func testNoPendingSendDoesNotBypassTextFocusForUndoChord() {
+        XCTAssertFalse(ComposeKeyOwnership.undoChordBypassesTextFocus(
+            pendingSend: false, composeClaimsTyping: false))
+        XCTAssertFalse(ComposeKeyOwnership.undoChordBypassesTextFocus(
+            pendingSend: false, composeClaimsTyping: true))
+    }
 }
