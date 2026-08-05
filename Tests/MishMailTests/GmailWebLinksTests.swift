@@ -41,4 +41,32 @@ final class GmailWebLinksTests: XCTestCase {
                        "+ must be percent-encoded in authuser")
         XCTAssertTrue(s.contains("ron%2Blists") || s.contains("ron%2blists"))
     }
+
+    func testMishMailThreadLinkRoundTripsAccountAndToken() {
+        let url = MishMailDeepLinks.threadURL(
+            accountEmail: "ron+mail@example.com", token: "18Abc_def-1")
+        XCTAssertEqual(url?.scheme, "mishmail")
+        XCTAssertEqual(url?.host, "thread")
+        XCTAssertEqual(
+            url.flatMap(MishMailDeepLinks.parseThreadURL),
+            .init(token: "18Abc_def-1", accountEmail: "ron+mail@example.com"))
+    }
+
+    func testMishMailThreadLinkAllowsUnknownAccount() {
+        let url = URL(string: "mishmail://thread/18abc")!
+        XCTAssertEqual(
+            MishMailDeepLinks.parseThreadURL(url),
+            .init(token: "18abc", accountEmail: nil))
+    }
+
+    func testMishMailThreadLinkRejectsUnexpectedRoutesAndTokens() {
+        XCTAssertNil(MishMailDeepLinks.parseThreadURL(
+            URL(string: "mishmail://settings/18abc")!))
+        XCTAssertNil(MishMailDeepLinks.parseThreadURL(
+            URL(string: "mishmail://thread/a/b")!))
+        XCTAssertNil(MishMailDeepLinks.threadURL(
+            accountEmail: "not-an-email", token: "18abc"))
+        XCTAssertNil(MishMailDeepLinks.threadURL(
+            accountEmail: nil, token: "bad token"))
+    }
 }

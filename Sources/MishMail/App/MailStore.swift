@@ -1113,9 +1113,13 @@ struct ComposeRequest: Identifiable {
     /// a direct open (e.g. after minimize) clears it.
     private var pendingMailto: DefaultMailClient.Mailto?
 
-    /// Handle a system open-URL (primarily `mailto:` from browsers / other apps).
-    /// Non-mailto schemes are ignored so we don't steal future custom URLs.
+    /// Handle a system open-URL: compose for `mailto:`, or open a locally
+    /// cached Gmail conversation for an app-owned `mishmail://thread/…` link.
     func handleOpenURL(_ url: URL) {
+        if let target = MishMailDeepLinks.parseThreadURL(url) {
+            openDeepLinkedThread(target)
+            return
+        }
         guard let mail = DefaultMailClient.parseMailto(url) else { return }
         NSApp.activate(ignoringOtherApps: true)
         // Expanded compose owns the card — same guard as in-app shortcuts.
@@ -1129,6 +1133,65 @@ struct ComposeRequest: Identifiable {
             return
         }
         openMailtoCompose(mail)
+    }
+
+    /// Resolve both Gmail thread ids and message ids. Gmail web links commonly
+    /// carry a message token even though opening them displays the conversation.
+    private func openDeepLinkedThread(_ target: MishMailDeepLinks.ThreadTarget) {
+        let thread: MailThread? = try? db.read { db in
+            if let account = target.accountEmail {
+                if let exact = try MailThread.fetchOne(
+                    db, key: "\(account):\(target.token)") {
+                    return exact
+                }
+                if let message = try Message.fetchOne(
+                    db, key: "\(account):\(target.token)") {
+                    return try MailThread.fetchOne(db, key: message.threadId)
+                }
+                if let byThreadToken = try MailThread.fetchOne(
+                    db,
+                    sql: """
+                        SELECT * FROM thread
+                        WHERE gmailThreadId = ? AND lower(accountId) = lower(?)
+                        ORDER BY lastDate DESC LIMIT 1
+                        """,
+                    arguments: [target.token, account]) {
+                    return byThreadToken
+                }
+                return try MailThread.fetchOne(
+                    db,
+                    sql: """
+                        SELECT thread.* FROM message
+                        JOIN thread ON thread.id = message.threadId
+                        WHERE message.gmailId = ? AND lower(message.accountId) = lower(?)
+                        ORDER BY message.date DESC LIMIT 1
+                        """,
+                    arguments: [target.token, account])
+            }
+
+            if let byThreadToken = try MailThread.fetchOne(
+                db,
+                sql: "SELECT * FROM thread WHERE gmailThreadId = ? ORDER BY lastDate DESC LIMIT 1",
+                arguments: [target.token]) {
+                return byThreadToken
+            }
+            return try MailThread.fetchOne(
+                db,
+                sql: """
+                    SELECT thread.* FROM message
+                    JOIN thread ON thread.id = message.threadId
+                    WHERE message.gmailId = ?
+                    ORDER BY message.date DESC LIMIT 1
+                    """,
+                arguments: [target.token])
+        }
+
+        NSApp.activate(ignoringOtherApps: true)
+        guard let thread else {
+            showNotice("That Gmail conversation isn't available in MishMail yet")
+            return
+        }
+        openThread(thread)
     }
 
     /// Open compose from a parsed `mailto:`. Joins address arrays with ", "
