@@ -971,6 +971,8 @@ struct AppearanceSettings: View {
     @AppStorage("vipAlwaysPins") private var vipAlwaysPins = true
     /// Days of recency for Priority hoist; 0 = all starred. Default 7.
     @AppStorage("priorityWindowDays") private var priorityWindowDays = 7
+    /// Cap on Priority section size; 0 = no limit. Default 10.
+    @AppStorage("priorityMaxCount") private var priorityMaxCount = 10
     @AppStorage(ThreadOpenStyle.storageKey) private var threadOpenStyleRaw =
         ThreadOpenStyle.fullWindow.rawValue
     /// Default `.ask` preserves privacy (no open-tracking until opt-in).
@@ -1033,9 +1035,15 @@ struct AppearanceSettings: View {
                             Text("Last 30 days").tag(30)
                             Text("All starred").tag(0)
                         }
+                        Picker("Pin at most", selection: $priorityMaxCount) {
+                            Text("5 conversations").tag(5)
+                            Text("10 conversations").tag(10)
+                            Text("25 conversations").tag(25)
+                            Text("No limit").tag(0)
+                        }
                     }
                 } footer: {
-                    Text("What pins to the top of the Inbox. VIPs only is the tightest — just mail from your VIP senders. Starred is what you've hand-picked; Starred + Important adds everything Gmail predicts matters, which can be a lot. Older starred mail stays in its place in the date list instead of pinning.")
+                    Text("What pins to the top of the Inbox. VIPs only is the tightest — just mail from your VIP senders. Starred is what you've hand-picked; Starred + Important adds everything Gmail predicts matters, which can be a lot. Older starred mail stays in its place in the date list instead of pinning. When more qualify, only the newest pin; the rest stay in the date list.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

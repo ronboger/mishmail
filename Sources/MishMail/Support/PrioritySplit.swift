@@ -29,6 +29,11 @@ enum PrioritySplit {
         return now.addingTimeInterval(-TimeInterval(days) * 86_400)
     }
 
+    /// Normalize a stored max-count setting: `nil` or `<= 0` means no cap.
+    static func cap(_ raw: Int) -> Int? {
+        raw > 0 ? raw : nil
+    }
+
     /// - Parameter hiddenCategories: effective category-hide set (CATEGORY_* ids).
     ///   Manually starred threads always hoist into Priority regardless of this
     ///   set. Only the IMPORTANT-only hoist (`.starredImportant` mode, not
@@ -38,6 +43,11 @@ enum PrioritySplit {
     /// - Parameter newerThan: when non-nil, star / IMPORTANT qualification also
     ///   requires `thread.lastDate >= newerThan`. VIP pins via `vipAlwaysPins`
     ///   ignore the window. `.off` and `.vips` ignore it entirely.
+    /// - Parameter maxCount: when non-nil and `> 0`, at most that many
+    ///   non-VIP-exempt threads enter Priority (newest first; input is
+    ///   date-sorted). VIP pins via `vipAlwaysPins` never consume the cap
+    ///   and may push the section past `maxCount` — VIPs are people.
+    ///   `qualifies` itself is cap-agnostic; the limit is applied only here.
     static func qualifies(_ thread: MailThread, mode: Mode,
                           vipThreadIds: Set<String> = [],
                           vipAlwaysPins: Bool = true,
@@ -67,8 +77,10 @@ enum PrioritySplit {
                           vipThreadIds: Set<String> = [],
                           vipAlwaysPins: Bool = true,
                           hiddenCategories: Set<String> = [],
-                          newerThan: Date? = nil) -> (priority: [MailThread], rest: [MailThread]) {
+                          newerThan: Date? = nil,
+                          maxCount: Int? = nil) -> (priority: [MailThread], rest: [MailThread]) {
         guard mode != .off else { return ([], threads) }
+        let limit = cap(maxCount ?? 0)
         var priority: [MailThread] = []
         var rest: [MailThread] = []
         for thread in threads {
@@ -76,7 +88,13 @@ enum PrioritySplit {
                          vipAlwaysPins: vipAlwaysPins,
                          hiddenCategories: hiddenCategories,
                          newerThan: newerThan) {
-                priority.append(thread)
+                let isVIPExempt = vipAlwaysPins && vipThreadIds.contains(thread.id)
+                let underCap = limit.map { priority.count < $0 } ?? true
+                if underCap || isVIPExempt {
+                    priority.append(thread)
+                } else {
+                    rest.append(thread)
+                }
             } else {
                 rest.append(thread)
             }
