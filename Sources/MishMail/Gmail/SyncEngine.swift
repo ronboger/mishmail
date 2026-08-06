@@ -323,12 +323,11 @@ actor SyncEngine {
                 let listedIds = refs.map(\.id)
                 listed += listedIds.count
                 // Preserve Gmail rank across pages; cap at `limit` unique threads.
-                for ref in refs {
-                    if matchedGmailThreadIds.count >= limit { break }
-                    if seenGmailThreads.insert(ref.threadId).inserted {
-                        matchedGmailThreadIds.append(ref.threadId)
-                    }
-                }
+                Self.appendUniqueGmailThreadIds(
+                    into: &matchedGmailThreadIds,
+                    seen: &seenGmailThreads,
+                    from: refs.map { ($0.id, $0.threadId) },
+                    limit: limit)
                 // Per-page missing check (PK IN …) — avoids O(mailbox) Set at start.
                 let missingIds = try await db.read { [accountId] db in
                     try Self.filterMissingGmailIds(db, accountId: accountId, listed: listedIds)
@@ -363,21 +362,32 @@ actor SyncEngine {
         gmailThreadIds.map { "\(accountId):\($0)" }
     }
 
-    /// Ordered unique Gmail thread ids from list refs, capped at `limit`.
-    /// Extracted for unit tests (Gmail rank preservation).
-    static func orderedUniqueGmailThreadIds(
-        from refs: [(id: String, threadId: String)], limit: Int
-    ) -> [String] {
-        guard limit > 0 else { return [] }
-        var seen = Set<String>()
-        var out: [String] = []
-        out.reserveCapacity(min(limit, refs.count))
+    /// Append ordered unique Gmail thread ids from list refs into `out`,
+    /// respecting an existing cross-page `seen` set and a hard `limit`.
+    /// Used by `fetchAll` (production) and covered by unit tests.
+    static func appendUniqueGmailThreadIds(
+        into out: inout [String],
+        seen: inout Set<String>,
+        from refs: [(id: String, threadId: String)],
+        limit: Int
+    ) {
+        guard limit > 0 else { return }
         for ref in refs {
-            if out.count >= limit { break }
+            if out.count >= limit { return }
             if seen.insert(ref.threadId).inserted {
                 out.append(ref.threadId)
             }
         }
+    }
+
+    /// Ordered unique Gmail thread ids from list refs, capped at `limit`.
+    static func orderedUniqueGmailThreadIds(
+        from refs: [(id: String, threadId: String)], limit: Int
+    ) -> [String] {
+        var out: [String] = []
+        var seen = Set<String>()
+        out.reserveCapacity(min(max(limit, 0), refs.count))
+        appendUniqueGmailThreadIds(into: &out, seen: &seen, from: refs, limit: limit)
         return out
     }
 

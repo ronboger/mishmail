@@ -195,12 +195,17 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
     }
 
     /// Load threads by id, preserving caller order (Gmail rank). Skips ids
-    /// that never landed in the DB (partial download / deleted).
+    /// that never landed in the DB (partial download / deleted). Hides trash
+    /// to match `localSearchThreads` (server list can still include trashed
+    /// mail when the query didn't use `in:trash`).
     private func threadsByIds(_ ids: [String], limit: Int) async throws -> [MailThread] {
         guard !ids.isEmpty else { return [] }
         let capped = Array(ids.prefix(limit))
         let found: [MailThread] = try await AppDatabase.shared.dbPool.read { db in
-            try MailThread.filter(capped.contains(Column("id"))).fetchAll(db)
+            try MailThread
+                .filter(capped.contains(Column("id")))
+                .filter(Column("inTrash") == false)
+                .fetchAll(db)
         }
         let byId = Dictionary(uniqueKeysWithValues: found.map { ($0.id, $0) })
         return capped.compactMap { byId[$0] }

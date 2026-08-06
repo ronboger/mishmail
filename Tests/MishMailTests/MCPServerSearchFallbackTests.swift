@@ -46,6 +46,22 @@ final class MCPServerSearchFallbackTests: XCTestCase {
             [])
     }
 
+    /// Production `fetchAll` pages through Gmail with a cross-page seen set —
+    /// exercise the same helper it calls so coverage can't drift.
+    func testAppendUniqueGmailThreadIdsAcrossPages() {
+        var out: [String] = []
+        var seen = Set<String>()
+        SyncEngine.appendUniqueGmailThreadIds(
+            into: &out, seen: &seen,
+            from: [("m1", "tA"), ("m2", "tB")], limit: 3)
+        XCTAssertEqual(out, ["tA", "tB"])
+        SyncEngine.appendUniqueGmailThreadIds(
+            into: &out, seen: &seen,
+            from: [("m3", "tA"), ("m4", "tC"), ("m5", "tD")], limit: 3)
+        XCTAssertEqual(out, ["tA", "tB", "tC"], "cap at 3; skip already-seen tA")
+        XCTAssertEqual(seen, ["tA", "tB", "tC"])
+    }
+
     func testLocalThreadIdsPrefixAccount() {
         XCTAssertEqual(
             SyncEngine.localThreadIds(accountId: "ron@x.com", gmailThreadIds: ["t1", "t2"]),
@@ -79,9 +95,25 @@ final class MCPServerSearchFallbackTests: XCTestCase {
             }
         }
 
-        let order = ["ron@x.com:t2", "ron@x.com:t1", "ron@x.com:t3", "ron@x.com:missing"]
+        // Also seed a trashed thread that must be dropped (matches MCPBridge.threadsByIds).
+        try q.write { db in
+            try db.execute(sql: """
+                INSERT INTO thread (id, accountId, gmailThreadId, subject, snippet,
+                    fromDisplay, lastDate, isUnread, isStarred, inInbox, inTrash,
+                    labelIds, participants, messageCount, hasAttachment)
+                VALUES ('ron@x.com:tTrash', 'ron@x.com', 'tTrash', 'Trashed', 'sn', 'Jane',
+                    '2026-07-01 12:00:00', 0, 0, 0, 1, 'TRASH', 'Jane', 1, 0)
+                """)
+        }
+
+        let order = ["ron@x.com:t2", "ron@x.com:t1", "ron@x.com:t3",
+                     "ron@x.com:tTrash", "ron@x.com:missing"]
         let found = try q.read { db -> [String] in
-            let rows = try MailThread.filter(order.contains(Column("id"))).fetchAll(db)
+            // Mirrors MCPBridge.threadsByIds: by-id + hide trash + caller order.
+            let rows = try MailThread
+                .filter(order.contains(Column("id")))
+                .filter(Column("inTrash") == false)
+                .fetchAll(db)
             let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
             return order.compactMap { byId[$0]?.subject }
         }
