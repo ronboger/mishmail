@@ -4896,6 +4896,12 @@ struct ComposeRequest: Identifiable {
                 }
                 return UserDefaults.standard.integer(forKey: "priorityWindowDays")
             }()
+            let priorityMaxCount: Int = {
+                if UserDefaults.standard.object(forKey: "priorityMaxCount") == nil {
+                    return 10
+                }
+                return UserDefaults.standard.integer(forKey: "priorityMaxCount")
+            }()
             var starred = focused
             starred.isStarred = true
             if !PrioritySplit.qualifies(
@@ -4906,6 +4912,31 @@ struct ComposeRequest: Identifiable {
                 newerThan: PrioritySplit.cutoff(days: priorityWindowDays)
             ) {
                 return
+            }
+            // Cap full and focused thread would not displace into Priority
+            // (not VIP-exempt, older than oldest current Priority row): starring
+            // won't visibly hoist it, so skip the scroll/nav hold.
+            if let maxCount = PrioritySplit.cap(priorityMaxCount),
+               prioritySectionIds.count >= maxCount {
+                let isVIPExempt = vipAlwaysPins && vipThreadIds.contains(focusId)
+                if !isVIPExempt {
+                    var oldestPriorityDate: Date?
+                    var unresolved = false
+                    for id in prioritySectionIds {
+                        guard let t = threads.first(where: { $0.id == id }) else {
+                            unresolved = true
+                            break
+                        }
+                        if oldestPriorityDate == nil || t.lastDate < oldestPriorityDate! {
+                            oldestPriorityDate = t.lastDate
+                        }
+                    }
+                    if !unresolved,
+                       let oldest = oldestPriorityDate,
+                       focused.lastDate < oldest {
+                        return
+                    }
+                }
             }
         }
         guard let anchor = StarNavAnchor.anchor(

@@ -303,4 +303,96 @@ final class PrioritySplitTests: XCTestCase {
         XCTAssertEqual(priority.map(\.gmailThreadId), ["recent"])
         XCTAssertEqual(rest.map(\.gmailThreadId), ["old"])
     }
+
+    // MARK: - maxCount cap
+
+    func testCapNilOrZeroMeansNoCap() {
+        XCTAssertNil(PrioritySplit.cap(0))
+        XCTAssertNil(PrioritySplit.cap(-1))
+        XCTAssertEqual(PrioritySplit.cap(10), 10)
+
+        let threads = [
+            thread("t1", starred: true, lastDate: Date(timeIntervalSince1970: 4)),
+            thread("t2", starred: true, lastDate: Date(timeIntervalSince1970: 3)),
+            thread("t3", starred: true, lastDate: Date(timeIntervalSince1970: 2)),
+            thread("t4", starred: true, lastDate: Date(timeIntervalSince1970: 1)),
+        ]
+        // Default maxCount / nil: all four pin (pre-cap behavior).
+        let (p1, r1) = PrioritySplit.partition(threads, mode: .starred)
+        XCTAssertEqual(p1.map(\.gmailThreadId), ["t1", "t2", "t3", "t4"])
+        XCTAssertTrue(r1.isEmpty)
+
+        let (p2, r2) = PrioritySplit.partition(threads, mode: .starred, maxCount: 0)
+        XCTAssertEqual(p2.map(\.gmailThreadId), ["t1", "t2", "t3", "t4"])
+        XCTAssertTrue(r2.isEmpty)
+
+        let (p3, r3) = PrioritySplit.partition(threads, mode: .starred, maxCount: nil)
+        XCTAssertEqual(p3.map(\.gmailThreadId), ["t1", "t2", "t3", "t4"])
+        XCTAssertTrue(r3.isEmpty)
+    }
+
+    func testMaxCountKeepsNewestQualifyingInOrder() {
+        // Input is newest-first; cap 2 keeps the first two that qualify.
+        let threads = [
+            thread("t1", starred: true, lastDate: Date(timeIntervalSince1970: 4)),
+            thread("t2", starred: true, lastDate: Date(timeIntervalSince1970: 3)),
+            thread("t3", starred: true, lastDate: Date(timeIntervalSince1970: 2)),
+            thread("t4", starred: true, lastDate: Date(timeIntervalSince1970: 1)),
+        ]
+        let (priority, rest) = PrioritySplit.partition(
+            threads, mode: .starred, maxCount: 2)
+        XCTAssertEqual(priority.map(\.gmailThreadId), ["t1", "t2"])
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["t3", "t4"])
+    }
+
+    func testVIPOverflowExemptFromCap() {
+        // After two non-VIP stars fill the cap, a VIP still enters Priority;
+        // a later non-VIP star stays in rest.
+        let threads = [
+            thread("s1", starred: true, lastDate: Date(timeIntervalSince1970: 4)),
+            thread("s2", starred: true, lastDate: Date(timeIntervalSince1970: 3)),
+            thread("vip", lastDate: Date(timeIntervalSince1970: 2)),
+            thread("s3", starred: true, lastDate: Date(timeIntervalSince1970: 1)),
+        ]
+        let vipId = "a@x.com:vip"
+        let (priority, rest) = PrioritySplit.partition(
+            threads, mode: .starred,
+            vipThreadIds: [vipId],
+            vipAlwaysPins: true,
+            maxCount: 2)
+        XCTAssertEqual(priority.map(\.gmailThreadId), ["s1", "s2", "vip"])
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["s3"])
+    }
+
+    func testCapComposesWithNewerThan() {
+        // Old starred threads are outside the window — they don't consume slots.
+        let cutoff = Date(timeIntervalSince1970: 10_000)
+        let threads = [
+            thread("r1", starred: true, lastDate: Date(timeIntervalSince1970: 10_003)),
+            thread("r2", starred: true, lastDate: Date(timeIntervalSince1970: 10_002)),
+            thread("r3", starred: true, lastDate: Date(timeIntervalSince1970: 10_001)),
+            thread("old", starred: true, lastDate: Date(timeIntervalSince1970: 9_999)),
+        ]
+        let (priority, rest) = PrioritySplit.partition(
+            threads, mode: .starred, newerThan: cutoff, maxCount: 2)
+        XCTAssertEqual(priority.map(\.gmailThreadId), ["r1", "r2"])
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["r3", "old"])
+    }
+
+    func testMaxCountAppliesToImportantOnlyInStarredImportantMode() {
+        let threads = [
+            thread("i1", labels: "INBOX IMPORTANT",
+                   lastDate: Date(timeIntervalSince1970: 4)),
+            thread("i2", labels: "INBOX IMPORTANT",
+                   lastDate: Date(timeIntervalSince1970: 3)),
+            thread("i3", labels: "INBOX IMPORTANT",
+                   lastDate: Date(timeIntervalSince1970: 2)),
+            thread("i4", labels: "INBOX IMPORTANT",
+                   lastDate: Date(timeIntervalSince1970: 1)),
+        ]
+        let (priority, rest) = PrioritySplit.partition(
+            threads, mode: .starredImportant, maxCount: 2)
+        XCTAssertEqual(priority.map(\.gmailThreadId), ["i1", "i2"])
+        XCTAssertEqual(rest.map(\.gmailThreadId), ["i3", "i4"])
+    }
 }
