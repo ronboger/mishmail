@@ -57,10 +57,11 @@ enum MCPTools {
         ),
         ToolDefinition(
             name: "search_threads",
-            description: "Full-text search threads by subject/from (FTS5 with LIKE fallback).",
+            description: "Search threads by subject/from (local FTS5 with LIKE fallback). When the local cache has no matches (e.g. mail older than the sync window), falls back to Gmail server search — same as the app's \"Search all of Gmail\" — downloads hits, then returns them. Gmail operators (from:/to:/subject:/before:/after:/is:…) work on the server pass.",
             inputSchema: objectSchema(
                 properties: [
-                    "query": stringSchema(description: "Search query"),
+                    "query": stringSchema(
+                        description: "Search query (free text and/or Gmail operators)"),
                     "limit": integerSchema(description: "Max threads (1–100, default 25)"),
                     "offset": integerSchema(description: "Skip this many matches (default 0)"),
                 ],
@@ -203,6 +204,13 @@ enum MCPTools {
     static func clampedLimit(_ raw: Int?) -> Int {
         let n = raw ?? defaultLimit
         return min(max(n, 1), maxLimit)
+    }
+
+    /// When local FTS/LIKE returns nothing on the first page, pull from Gmail
+    /// (UI "Search all of Gmail"). Later pages only walk the local index —
+    /// server search always starts at rank 0.
+    static func shouldPullServerSearch(localCount: Int, offset: Int) -> Bool {
+        localCount == 0 && offset == 0
     }
 }
 

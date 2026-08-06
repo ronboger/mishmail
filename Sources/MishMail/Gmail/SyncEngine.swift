@@ -103,8 +103,8 @@ actor SyncEngine {
         // mail is kept; Gmail is never touched). Always pull ALL starred mail
         // regardless of age (once).
         if UserDefaults.standard.integer(forKey: windowKey) != syncWindowDays {
-            let touchedKeys = try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
-            try await deriveThreads(for: touchedKeys)
+            let batch = try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
+            try await deriveThreads(for: batch.touchedKeys)
             if syncWindowDays != 0 {
                 progress?("Removing local mail outside the window…")
                 try await pruneLocalMail(keepingDays: syncWindowDays)
@@ -113,8 +113,8 @@ actor SyncEngine {
         }
         let starKey = "backfill.starred.\(accountId)"
         if !UserDefaults.standard.bool(forKey: starKey) {
-            let touchedKeys = try await fetchAll(query: "is:starred", limit: 3000, progress: progress)
-            try await deriveThreads(for: touchedKeys)
+            let batch = try await fetchAll(query: "is:starred", limit: 3000, progress: progress)
+            try await deriveThreads(for: batch.touchedKeys)
             UserDefaults.standard.set(true, forKey: starKey)
         }
 
@@ -201,8 +201,8 @@ actor SyncEngine {
 
     private func fullBackfill(progress: (@Sendable (String) -> Void)?) async throws -> String {
         let profile = try await client.profile()
-        let touchedKeys = try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
-        try await deriveThreads(for: touchedKeys)
+        let batch = try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
+        try await deriveThreads(for: batch.touchedKeys)
         UserDefaults.standard.set(syncWindowDays, forKey: "backfill.window.\(accountId)")
         return profile.historyId
     }
@@ -263,22 +263,35 @@ actor SyncEngine {
         return .threadRederived
     }
 
+    /// Outcome of a server-side search: cache invalidation keys plus the
+    /// Gmail-ranked local thread ids (even for messages already cached).
+    struct ServerSearchResult: Sendable {
+        var change: ThreadContentChange
+        /// `accountId:gmailThreadId` in Gmail list order, unique, capped at limit.
+        var threadIds: [String]
+    }
+
     /// Lists messages matching a query and downloads only the ones missing
     /// from the local cache.
     /// Server-side search: downloads messages matching a Gmail query that
     /// aren't already cached (so a search can reach mail outside the local sync
     /// window), then rebuilds the affected threads. Gmail's `q` syntax matches
     /// the app's search operators (from:/to:/subject:/is:/before:/after:…).
+    ///
+    /// `threadIds` preserves Gmail rank so callers (UI reload, MCP) can surface
+    /// matches even when free-text FTS would miss body-only hits after download.
     func searchServer(query: String, limit: Int = 50) async throws
-        -> ThreadContentChange {
-        let touchedKeys = try await fetchAll(query: query, limit: limit, progress: nil)
-        try await deriveThreads(for: touchedKeys)
-        return drainContentChange()
+        -> ServerSearchResult {
+        let batch = try await fetchAll(query: query, limit: limit, progress: nil)
+        try await deriveThreads(for: batch.touchedKeys)
+        return ServerSearchResult(
+            change: drainContentChange(),
+            threadIds: batch.matchedThreadIds)
     }
 
     /// Downloads messages matching `query` that aren't already cached.
-    /// Returns the set of thread keys touched, so callers can batch
-    /// re-derivation instead of recomputing every thread in the account.
+    /// Returns touched thread keys (for re-derivation) and ordered local
+    /// thread ids Gmail listed (for search result surfaces).
     ///
     /// Network: bounded concurrent `getMessage` (8). Writes: buffered and
     /// committed in chunks of `writeChunkSize` (one SQLCipher transaction per
@@ -287,9 +300,14 @@ actor SyncEngine {
     ///
     /// Existence: per list page, PK lookup for that page's ids only — never
     /// loads all account gmailIds into a Set (memory stays O(page), not O(mailbox)).
+    private struct FetchAllBatch: Sendable {
+        var touchedKeys: Set<String>
+        var matchedThreadIds: [String]
+    }
+
     @discardableResult
     private func fetchAll(query: String?, limit: Int,
-                          progress: (@Sendable (String) -> Void)?) async throws -> Set<String> {
+                          progress: (@Sendable (String) -> Void)?) async throws -> FetchAllBatch {
         try await PerfMetrics.measureAsync(.syncFetchAll, meta: "limit=\(limit)") {
             var touchedKeys = Set<String>()
             var writeBuffer: [PendingUpsert] = []
@@ -297,16 +315,26 @@ actor SyncEngine {
             var pageToken: String?
             var listed = 0
             var fetched = 0
+            var matchedGmailThreadIds: [String] = []
+            var seenGmailThreads = Set<String>()
             repeat {
                 let page = try await client.listMessages(query: query, pageToken: pageToken, maxResults: 100)
-                let listedIds = (page.messages ?? []).map(\.id)
+                let refs = page.messages ?? []
+                let listedIds = refs.map(\.id)
                 listed += listedIds.count
+                // Preserve Gmail rank across pages; cap at `limit` unique threads.
+                for ref in refs {
+                    if matchedGmailThreadIds.count >= limit { break }
+                    if seenGmailThreads.insert(ref.threadId).inserted {
+                        matchedGmailThreadIds.append(ref.threadId)
+                    }
+                }
                 // Per-page missing check (PK IN …) — avoids O(mailbox) Set at start.
                 let missingIds = try await db.read { [accountId] db in
                     try Self.filterMissingGmailIds(db, accountId: accountId, listed: listedIds)
                 }
                 let missingSet = Set(missingIds)
-                let missingGmailIds = (page.messages ?? []).map(\.id).filter { missingSet.contains($0) }
+                let missingGmailIds = listedIds.filter { missingSet.contains($0) }
                 // Batch HTTP when enabled; retry-exhausted ids retry next window pass.
                 let report = try await client.getMessages(ids: missingGmailIds)
                 for msg in report.messages {
@@ -323,8 +351,34 @@ actor SyncEngine {
                 pageToken = page.nextPageToken
             } while pageToken != nil && listed < limit
             try await flushUpserts(&writeBuffer, into: &touchedKeys)
-            return touchedKeys
+            let localThreadIds = Self.localThreadIds(
+                accountId: accountId, gmailThreadIds: matchedGmailThreadIds)
+            return FetchAllBatch(touchedKeys: touchedKeys, matchedThreadIds: localThreadIds)
         }
+    }
+
+    /// Map bare Gmail thread ids to local `accountId:gmailThreadId` keys.
+    /// Extracted for unit tests.
+    static func localThreadIds(accountId: String, gmailThreadIds: [String]) -> [String] {
+        gmailThreadIds.map { "\(accountId):\($0)" }
+    }
+
+    /// Ordered unique Gmail thread ids from list refs, capped at `limit`.
+    /// Extracted for unit tests (Gmail rank preservation).
+    static func orderedUniqueGmailThreadIds(
+        from refs: [(id: String, threadId: String)], limit: Int
+    ) -> [String] {
+        guard limit > 0 else { return [] }
+        var seen = Set<String>()
+        var out: [String] = []
+        out.reserveCapacity(min(limit, refs.count))
+        for ref in refs {
+            if out.count >= limit { break }
+            if seen.insert(ref.threadId).inserted {
+                out.append(ref.threadId)
+            }
+        }
+        return out
     }
 
     /// Returns gmailIds from `listed` that are not already stored for

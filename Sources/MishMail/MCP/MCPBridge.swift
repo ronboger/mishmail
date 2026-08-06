@@ -128,33 +128,19 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
             throw MCPToolError("query must not be empty")
         }
 
-        let threads: [MailThread] = try await AppDatabase.shared.dbPool.read { db in
-            // Prefer FTS5 (subject/from). On pattern/syntax failure fall back
-            // to LIKE on thread.subject / fromDisplay so agents still get hits.
-            if let pattern = FTS5Pattern(matchingAllPrefixesIn: q) {
-                do {
-                    return try MailThread.fetchAll(db, sql: """
-                        SELECT DISTINCT thread.*
-                        FROM message_fts
-                        JOIN message ON message.rowid = message_fts.rowid
-                        JOIN thread ON thread.id = message.threadId
-                        WHERE message_fts MATCH ?
-                          AND thread.inTrash = 0
-                        ORDER BY thread.lastDate DESC
-                        LIMIT ? OFFSET ?
-                        """, arguments: [pattern, limit, offset])
-                } catch {
-                    // FTS query syntax error → LIKE fallback below.
-                }
+        var threads = try await localSearchThreads(query: q, limit: limit, offset: offset)
+
+        // Local index only covers the sync window. Same as the UI's
+        // "Search all of Gmail" button: pull matching older mail from the
+        // server when the first page is empty, then surface those hits.
+        if MCPTools.shouldPullServerSearch(localCount: threads.count, offset: offset),
+           let store {
+            let serverIds = await store.pullServerSearchMatches(query: q, limit: limit)
+            if !serverIds.isEmpty {
+                threads = try await threadsByIds(serverIds, limit: limit)
             }
-            let like = "%\(q)%"
-            return try MailThread.fetchAll(db, sql: """
-                SELECT * FROM thread
-                WHERE inTrash = 0
-                  AND (subject LIKE ? OR fromDisplay LIKE ?)
-                ORDER BY lastDate DESC
-                LIMIT ? OFFSET ?
-                """, arguments: [like, like, limit, offset])
+            // If Gmail listed nothing (or download failed), keep the empty local
+            // result — agents see [] rather than a confusing error for "no mail".
         }
 
         let summaries = try await loadSummaries(for: threads.map(\.id))
@@ -176,6 +162,48 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
             return row
         }
         return try encodeJSON(payload)
+    }
+
+    /// Local FTS5 (subject/from/…) with LIKE fallback. Does not hit the network.
+    private func localSearchThreads(query: String, limit: Int, offset: Int) async throws -> [MailThread] {
+        try await AppDatabase.shared.dbPool.read { db in
+            if let pattern = FTS5Pattern(matchingAllPrefixesIn: query) {
+                do {
+                    return try MailThread.fetchAll(db, sql: """
+                        SELECT DISTINCT thread.*
+                        FROM message_fts
+                        JOIN message ON message.rowid = message_fts.rowid
+                        JOIN thread ON thread.id = message.threadId
+                        WHERE message_fts MATCH ?
+                          AND thread.inTrash = 0
+                        ORDER BY thread.lastDate DESC
+                        LIMIT ? OFFSET ?
+                        """, arguments: [pattern, limit, offset])
+                } catch {
+                    // FTS query syntax error → LIKE fallback below.
+                }
+            }
+            let like = "%\(query)%"
+            return try MailThread.fetchAll(db, sql: """
+                SELECT * FROM thread
+                WHERE inTrash = 0
+                  AND (subject LIKE ? OR fromDisplay LIKE ?)
+                ORDER BY lastDate DESC
+                LIMIT ? OFFSET ?
+                """, arguments: [like, like, limit, offset])
+        }
+    }
+
+    /// Load threads by id, preserving caller order (Gmail rank). Skips ids
+    /// that never landed in the DB (partial download / deleted).
+    private func threadsByIds(_ ids: [String], limit: Int) async throws -> [MailThread] {
+        guard !ids.isEmpty else { return [] }
+        let capped = Array(ids.prefix(limit))
+        let found: [MailThread] = try await AppDatabase.shared.dbPool.read { db in
+            try MailThread.filter(capped.contains(Column("id"))).fetchAll(db)
+        }
+        let byId = Dictionary(uniqueKeysWithValues: found.map { ($0.id, $0) })
+        return capped.compactMap { byId[$0] }
     }
 
     // MARK: - get_thread

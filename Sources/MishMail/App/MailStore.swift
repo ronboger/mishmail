@@ -2649,18 +2649,8 @@ struct ComposeRequest: Identifiable {
         guard !query.isEmpty, !serverSearching else { return }
         serverSearching = true
         syncStatus = "Searching all mail…"
-        let targets = activeAccountId.map { [$0] } ?? accounts.map(\.id)
         Task {
-            for accountId in targets {
-                let engine = engines[accountId] ?? SyncEngine(accountId: accountId)
-                engines[accountId] = engine
-                do {
-                    let change = try await engine.searchServer(query: query)
-                    await MainActor.run { self.applyThreadContentChange(change) }
-                } catch {
-                    await MainActor.run { self.lastError = error.localizedDescription }
-                }
-            }
+            _ = await self.pullServerSearchMatches(query: query)
             await MainActor.run {
                 serverSearching = false
                 syncStatus = ""
@@ -2668,6 +2658,38 @@ struct ComposeRequest: Identifiable {
                 rebuildContacts()
             }
         }
+    }
+
+    /// Same path as the UI "Search all of Gmail" button: list matches on the
+    /// server, download any that aren't cached, re-derive threads. Returns
+    /// local thread ids in Gmail rank order (deduped across accounts).
+    ///
+    /// No-ops in demo mode. Per-account errors set `lastError` and continue so
+    /// one bad token doesn't hide hits from other accounts. Used by MCP
+    /// `search_threads` when the local FTS window has nothing for a query.
+    @discardableResult
+    func pullServerSearchMatches(query: String, limit: Int = 50) async -> [String] {
+        let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !q.isEmpty, !demoMode else { return [] }
+        let targets = activeAccountId.map { [$0] } ?? accounts.map(\.id)
+        guard !targets.isEmpty else { return [] }
+
+        var ordered: [String] = []
+        var seen = Set<String>()
+        for accountId in targets {
+            let engine = engines[accountId] ?? SyncEngine(accountId: accountId)
+            engines[accountId] = engine
+            do {
+                let result = try await engine.searchServer(query: q, limit: limit)
+                applyThreadContentChange(result.change)
+                for id in result.threadIds where seen.insert(id).inserted {
+                    ordered.append(id)
+                }
+            } catch {
+                lastError = error.localizedDescription
+            }
+        }
+        return Array(ordered.prefix(max(limit, 0)))
     }
 
     /// Layers the full FilterChips set onto a thread query. Shared by the live
