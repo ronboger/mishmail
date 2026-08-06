@@ -110,9 +110,11 @@ final class ComposeBodyLayoutTests: XCTestCase {
                 + ComposeBodyLayout.contentSlack,
                 ComposeBodyLayout.emptyFloor),
             ComposeBodyLayout.collapsedCap)
+        XCTAssertEqual(h.min, ComposeBodyLayout.emptyFloor)
         XCTAssertEqual(h.max, expected)
         XCTAssertGreaterThan(h.max, ComposeBodyLayout.emptyFloor)
     }
+
 
     /// First keystroke / last delete must not snap the editor frame.
     /// Empty floor holds until content + slack exceeds it.
@@ -156,11 +158,16 @@ final class ComposeBodyLayoutTests: XCTestCase {
         let contentPlusSlack = ComposeBodyLayout.contentHeight(body: lines)
             + ComposeBodyLayout.contentSlack
         XCTAssertGreaterThan(contentPlusSlack, ComposeBodyLayout.emptyFloor)
+        XCTAssertLessThan(contentPlusSlack, ComposeBodyLayout.collapsedCap)
 
         let h = ComposeBodyLayout.editorHeights(
             body: lines, hasCollapsedQuote: true, slashActive: false)
-        XCTAssertEqual(h.max, min(contentPlusSlack, ComposeBodyLayout.collapsedCap))
+        // Max hugs content; min stays compressible at emptyFloor so a fixed
+        // card can shrink the editor and keep pill + footer on-screen.
+        XCTAssertEqual(h.min, ComposeBodyLayout.emptyFloor)
+        XCTAssertEqual(h.max, contentPlusSlack)
         XCTAssertGreaterThan(h.max, ComposeBodyLayout.emptyFloor)
+        XCTAssertLessThan(h.min, h.max)
     }
 
     func testGrowsWithAuthoredLinesUntilCap() {
@@ -172,13 +179,34 @@ final class ComposeBodyLayoutTests: XCTestCase {
             hasCollapsedQuote: true, slashActive: false)
         XCTAssertGreaterThan(more.max, mid.max)
         XCTAssertLessThanOrEqual(more.max, ComposeBodyLayout.collapsedCap)
+        XCTAssertEqual(mid.min, ComposeBodyLayout.emptyFloor)
+        XCTAssertEqual(more.min, ComposeBodyLayout.emptyFloor)
     }
 
-    func testLongBodyCaps() {
+    /// Long body + collapsed quote: max hits collapsedCap; min stays at
+    /// emptyFloor so the editor can compress inside a fixed compose card.
+    func testLongBodyCapsWithCompressibleMin() {
         let many = (0..<40).map { "line \($0)" }.joined(separator: "\n")
         let h = ComposeBodyLayout.editorHeights(
             body: many, hasCollapsedQuote: true, slashActive: false)
-        XCTAssertEqual(h.min, ComposeBodyLayout.collapsedCap)
+        XCTAssertEqual(h.min, ComposeBodyLayout.emptyFloor)
         XCTAssertEqual(h.max, ComposeBodyLayout.collapsedCap)
+        XCTAssertLessThan(h.min, h.max)
+    }
+
+    /// Medium body (raw between emptyFloor and collapsedCap): max == raw,
+    /// min stays at emptyFloor for compression headroom.
+    func testMediumBodyCompressibleMinHugsMax() {
+        let lines = (0..<10).map { "line \($0)" }.joined(separator: "\n")
+        let raw = ComposeBodyLayout.contentHeight(body: lines)
+            + ComposeBodyLayout.contentSlack
+        XCTAssertGreaterThan(raw, ComposeBodyLayout.emptyFloor)
+        XCTAssertLessThan(raw, ComposeBodyLayout.collapsedCap)
+
+        let h = ComposeBodyLayout.editorHeights(
+            body: lines, hasCollapsedQuote: true, slashActive: false)
+        XCTAssertEqual(h.min, ComposeBodyLayout.emptyFloor)
+        XCTAssertEqual(h.max, raw)
     }
 }
+

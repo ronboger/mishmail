@@ -48,9 +48,12 @@ enum ComposeBodyLayout {
     /// - No collapsed quote: min `noQuoteMin`, max content + slack (hug);
     ///   the editor's NSScrollView scrolls when the card is shorter.
     /// - Slash picker open: fixed low band so the match list keeps height.
-    /// - Empty / short body + quote: at least `emptyFloor` (usable surface,
-    ///   no first-keystroke snap).
-    /// - Longer authored body + quote: content height + slack, capped.
+    /// - Empty / short body + quote: min == max == `emptyFloor` (usable
+    ///   surface, no first-keystroke snap).
+    /// - Longer authored body + quote: max hugs content (capped); min stays
+    ///   at `emptyFloor` so the fixed-height compose card can compress the
+    ///   editor and keep the "…" pill + Send footer on-screen (NSTextView
+    ///   scrolls internally).
     static func editorHeights(body: String,
                               hasCollapsedQuote: Bool,
                               slashActive: Bool)
@@ -64,11 +67,13 @@ enum ComposeBodyLayout {
         if slashActive {
             return (slashFloor, slashCap)
         }
-        // Always measure content (whitespace-only newlines still count as
-        // visual lines) + slack; floor at emptyFloor so empty ↔ one-char
-        // never jumps and hug once content grows past the writing surface.
+        // Max: content + slack, floored at emptyFloor and capped so long
+        // drafts hug then scroll. Min: compressible down to emptyFloor so a
+        // fixed card (addresses + long body) never clips the quote pill /
+        // Send row; short drafts keep min == max == emptyFloor (no snap).
         let raw = contentHeight(body: body) + contentSlack
         let h = min(max(raw, emptyFloor), collapsedCap)
-        return (h, h)
+        return (Swift.min(h, emptyFloor), h)
     }
 }
+
