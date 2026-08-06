@@ -43,11 +43,6 @@ enum PrioritySplit {
     /// - Parameter newerThan: when non-nil, star / IMPORTANT qualification also
     ///   requires `thread.lastDate >= newerThan`. VIP pins via `vipAlwaysPins`
     ///   ignore the window. `.off` and `.vips` ignore it entirely.
-    /// - Parameter maxCount: when non-nil and `> 0`, at most that many
-    ///   non-VIP-exempt threads enter Priority (newest first; input is
-    ///   date-sorted). VIP pins via `vipAlwaysPins` never consume the cap
-    ///   and may push the section past `maxCount` — VIPs are people.
-    ///   `qualifies` itself is cap-agnostic; the limit is applied only here.
     static func qualifies(_ thread: MailThread, mode: Mode,
                           vipThreadIds: Set<String> = [],
                           vipAlwaysPins: Bool = true,
@@ -73,6 +68,11 @@ enum PrioritySplit {
         }
     }
 
+    /// - Parameter maxCount: when non-nil and `> 0`, at most that many
+    ///   non-VIP-exempt threads enter Priority (newest first; input is
+    ///   date-sorted). VIP pins via `vipAlwaysPins` never consume the cap
+    ///   and may push the section past `maxCount` — VIPs are people.
+    ///   `qualifies` is cap-agnostic; the limit is applied only here.
     static func partition(_ threads: [MailThread], mode: Mode,
                           vipThreadIds: Set<String> = [],
                           vipAlwaysPins: Bool = true,
