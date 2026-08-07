@@ -48,8 +48,15 @@ final class SidebarNavUITests: XCTestCase {
 
         let starredThread = app.staticTexts
             .matching(identifier: "threadRow.you@example.com:t1").firstMatch
-        XCTAssertTrue(starredThread.waitForExistence(timeout: 5),
-                      "Starred mailbox should still show the starred demo thread")
+        // On failure, embed the whole accessibility tree — this only runs on
+        // CI, where there is no way to see the window.
+        if !starredThread.waitForExistence(timeout: 5) {
+            XCTFail("""
+                Starred mailbox should still show the starred demo thread. \
+                Accessibility tree at failure:
+                \(app.debugDescription)
+                """)
+        }
 
         // Compose open must not block further sidebar navigation (gutter
         // hit-testing under pin-to-pane / empty-pane fill when present).
