@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 /// Regression: left-sidebar mailbox clicks must change the list.
@@ -79,23 +80,14 @@ final class SidebarNavUITests: XCTestCase {
                       "sidebar Inbox click must work while compose is open")
     }
 
-    /// The app process writes selectThread/openDetail call stacks next to its
-    /// UI-test database (see UITestBreadcrumbs). The runner is unsandboxed,
-    /// so it can read them through the app's container — or directly, if the
-    /// build under test is not sandboxed.
+    /// The app publishes selectThread/openDetail call stacks on a named
+    /// pasteboard (see UITestBreadcrumbs) — both processes are sandboxed with
+    /// separate containers, so a shared file is unreachable but pasteboards
+    /// cross the boundary. Read while the app is still alive.
     private static func appBreadcrumbs() -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser
-        let suffix = "Library/Application Support/MishMailUITests/breadcrumbs.log"
-        let candidates = [
-            home.appendingPathComponent(
-                "Library/Containers/dev.ronboger.MishMail.debug/Data/\(suffix)"),
-            home.appendingPathComponent(suffix),
-        ]
-        for url in candidates {
-            if let text = try? String(contentsOf: url, encoding: .utf8) {
-                return "[\(url.path)]\n\(text)"
-            }
-        }
-        return "(no breadcrumb file at \(candidates.map(\.path)))"
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name("dev.ronboger.mishmail.uitest.breadcrumbs"))
+        return pasteboard.string(forType: .string)
+            ?? "(no breadcrumbs on pasteboard)"
     }
 }
