@@ -1,3 +1,4 @@
+import AppKit
 import XCTest
 
 /// Regression: left-sidebar mailbox clicks must change the list.
@@ -48,8 +49,18 @@ final class SidebarNavUITests: XCTestCase {
 
         let starredThread = app.staticTexts
             .matching(identifier: "threadRow.you@example.com:t1").firstMatch
-        XCTAssertTrue(starredThread.waitForExistence(timeout: 5),
-                      "Starred mailbox should still show the starred demo thread")
+        // On failure, embed the app's breadcrumb log and the accessibility
+        // tree — this only runs on CI, where there is no way to see the
+        // window or attach a debugger.
+        if !starredThread.waitForExistence(timeout: 5) {
+            XCTFail("""
+                Starred mailbox should still show the starred demo thread.
+                App breadcrumbs (selectThread/openDetail call stacks):
+                \(Self.appBreadcrumbs())
+                Accessibility tree at failure:
+                \(app.debugDescription)
+                """)
+        }
 
         // Compose open must not block further sidebar navigation (gutter
         // hit-testing under pin-to-pane / empty-pane fill when present).
@@ -67,5 +78,16 @@ final class SidebarNavUITests: XCTestCase {
 
         XCTAssertTrue(unstarred.waitForExistence(timeout: 5),
                       "sidebar Inbox click must work while compose is open")
+    }
+
+    /// The app publishes selectThread/openDetail call stacks on a named
+    /// pasteboard (see UITestBreadcrumbs) — both processes are sandboxed with
+    /// separate containers, so a shared file is unreachable but pasteboards
+    /// cross the boundary. Read while the app is still alive.
+    private static func appBreadcrumbs() -> String {
+        let pasteboard = NSPasteboard(
+            name: NSPasteboard.Name("dev.ronboger.mishmail.uitest.breadcrumbs"))
+        return pasteboard.string(forType: .string)
+            ?? "(no breadcrumbs on pasteboard)"
     }
 }

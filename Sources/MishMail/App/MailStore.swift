@@ -771,19 +771,6 @@ final class MailStore {
         Set(vipGroups.values).union(vipGroupEnabled.keys).sorted()
     }
 
-    /// Newest sender address on a thread (for the Add/Remove VIP menu).
-    func senderEmail(of thread: MailThread) -> String? {
-        let header = (try? db.read { db in
-            try String.fetchOne(db, sql: """
-                SELECT fromHeader FROM message WHERE threadId = ?
-                ORDER BY date DESC LIMIT 1
-                """, arguments: [thread.id])
-        }) ?? nil
-        guard let header else { return nil }
-        let email = MessageParser.emailAddress(header).lowercased()
-        return email.contains("@") ? email : nil
-    }
-
     /// Recomputes which of the loaded threads came from a VIP. Any message From
     /// in the thread can pin it (not only the newest). Prefer the off-main path
     /// in `reloadThreads` — this MainActor entry point is for VIP list mutations
@@ -4109,6 +4096,8 @@ struct ComposeRequest: Identifiable {
     /// the removed row leaves `threads`, so the reading pane never renders an
     /// empty intermediate state.
     func selectThread(_ id: String?, intent: ThreadSelectionIntent) {
+        UITestBreadcrumbs.record(
+            "selectThread(\(id ?? "nil"), intent=\(intent.rawValue))")
         let interval = PerfMetrics.begin(
             .selectionFocus,
             meta: "intent=\(intent.rawValue)")
@@ -4134,15 +4123,24 @@ struct ComposeRequest: Identifiable {
         }
     }
 
-    /// Direct List bindings / legacy call sites have click semantics.
+    /// Every selection write records its intent in `setSelectionFocus` just
+    /// before `listFocus.id` changes, so a consume that finds nothing pending
+    /// is a spurious or coalesced extra onChange fire — not a user action.
+    /// Defaulting those to `.click` fabricated opens: on a compact-width
+    /// window, switching mailboxes opened the top conversation and replaced
+    /// the list (CI's 1000pt window hit this on every run — issue #3). A
+    /// real click whose intent was somehow already consumed still opens via
+    /// the same-row `openSelectedToken` path on the next click.
     func consumeSelectionIntent() -> ThreadSelectionIntent {
         defer { pendingSelectionIntent = nil }
-        return pendingSelectionIntent ?? .click
+        return pendingSelectionIntent ?? .quiet
     }
 
     /// Mount detail content and schedule useful neighbor payloads. Public to
     /// ContentView only for the settled end of a browse debounce.
     func openDetail(_ id: String?) {
+        UITestBreadcrumbs.record(
+            "openDetail(\(id ?? "nil")) opened=\(openedThreadId ?? "nil")")
         guard openedThreadId != id else { return }
         PerfMetrics.measure(.navDetailOpen, meta: id == nil ? "close" : "open") {
             openedThreadId = id

@@ -6,6 +6,30 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Fixed
+- **Switching mailboxes on a narrow window no longer dumps you into a
+  conversation.** On windows below the three-pane width (~1080pt), clicking a
+  sidebar mailbox could land with the top conversation auto-opened, replacing
+  the list you asked for. Cause: a consumed-twice selection intent — when a
+  SwiftUI selection-change fire found no pending intent it was treated as a
+  click, and the "click" opened the quietly pre-highlighted top row. Unmatched
+  fires are now treated as quiet (select only, never open). This is also what
+  made the SidebarNav UI test fail on every CI run since it was added
+  (issue #3) — the runner's window is 1000pt wide.
+- **Thread list repaints no longer query the database per row** — building
+  each row's right-click menu looked up the newest sender with a synchronous
+  encrypted-SQLite query, and SwiftUI evaluates that menu for every visible
+  row on every list update, so each repaint paid N queries on the main
+  thread. The menu now reads the sender address already denormalized on the
+  thread row. Label chips are also computed once per layout rebuild instead
+  of re-allocated and re-sorted per row on every pass.
+- **"Today" and "Yesterday" sections roll over at midnight** — date buckets
+  and the Priority recency window captured "now" only when the list layout
+  was rebuilt, so a list left open overnight kept yesterday's mail under
+  "Today". The list now recomputes on day change (and time-zone changes),
+  and the Labels view refreshes its section order when accounts are added
+  or removed.
+
 ## [0.4.14] - 2026-08-02
 
 ### Added
