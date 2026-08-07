@@ -4096,6 +4096,8 @@ struct ComposeRequest: Identifiable {
     /// the removed row leaves `threads`, so the reading pane never renders an
     /// empty intermediate state.
     func selectThread(_ id: String?, intent: ThreadSelectionIntent) {
+        UITestBreadcrumbs.record(
+            "selectThread(\(id ?? "nil"), intent=\(intent.rawValue))")
         let interval = PerfMetrics.begin(
             .selectionFocus,
             meta: "intent=\(intent.rawValue)")
@@ -4130,6 +4132,8 @@ struct ComposeRequest: Identifiable {
     /// Mount detail content and schedule useful neighbor payloads. Public to
     /// ContentView only for the settled end of a browse debounce.
     func openDetail(_ id: String?) {
+        UITestBreadcrumbs.record(
+            "openDetail(\(id ?? "nil")) opened=\(openedThreadId ?? "nil")")
         guard openedThreadId != id else { return }
         PerfMetrics.measure(.navDetailOpen, meta: id == nil ? "close" : "open") {
             openedThreadId = id

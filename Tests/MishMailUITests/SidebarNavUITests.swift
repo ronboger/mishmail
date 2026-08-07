@@ -48,11 +48,14 @@ final class SidebarNavUITests: XCTestCase {
 
         let starredThread = app.staticTexts
             .matching(identifier: "threadRow.you@example.com:t1").firstMatch
-        // On failure, embed the whole accessibility tree — this only runs on
-        // CI, where there is no way to see the window.
+        // On failure, embed the app's breadcrumb log and the accessibility
+        // tree — this only runs on CI, where there is no way to see the
+        // window or attach a debugger.
         if !starredThread.waitForExistence(timeout: 5) {
             XCTFail("""
-                Starred mailbox should still show the starred demo thread. \
+                Starred mailbox should still show the starred demo thread.
+                App breadcrumbs (selectThread/openDetail call stacks):
+                \(Self.appBreadcrumbs())
                 Accessibility tree at failure:
                 \(app.debugDescription)
                 """)
@@ -74,5 +77,25 @@ final class SidebarNavUITests: XCTestCase {
 
         XCTAssertTrue(unstarred.waitForExistence(timeout: 5),
                       "sidebar Inbox click must work while compose is open")
+    }
+
+    /// The app process writes selectThread/openDetail call stacks next to its
+    /// UI-test database (see UITestBreadcrumbs). The runner is unsandboxed,
+    /// so it can read them through the app's container — or directly, if the
+    /// build under test is not sandboxed.
+    private static func appBreadcrumbs() -> String {
+        let home = FileManager.default.homeDirectoryForCurrentUser
+        let suffix = "Library/Application Support/MishMailUITests/breadcrumbs.log"
+        let candidates = [
+            home.appendingPathComponent(
+                "Library/Containers/dev.ronboger.MishMail.debug/Data/\(suffix)"),
+            home.appendingPathComponent(suffix),
+        ]
+        for url in candidates {
+            if let text = try? String(contentsOf: url, encoding: .utf8) {
+                return "[\(url.path)]\n\(text)"
+            }
+        }
+        return "(no breadcrumb file at \(candidates.map(\.path)))"
     }
 }
