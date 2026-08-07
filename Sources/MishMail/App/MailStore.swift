@@ -4123,10 +4123,17 @@ struct ComposeRequest: Identifiable {
         }
     }
 
-    /// Direct List bindings / legacy call sites have click semantics.
+    /// Every selection write records its intent in `setSelectionFocus` just
+    /// before `listFocus.id` changes, so a consume that finds nothing pending
+    /// is a spurious or coalesced extra onChange fire — not a user action.
+    /// Defaulting those to `.click` fabricated opens: on a compact-width
+    /// window, switching mailboxes opened the top conversation and replaced
+    /// the list (CI's 1000pt window hit this on every run — issue #3). A
+    /// real click whose intent was somehow already consumed still opens via
+    /// the same-row `openSelectedToken` path on the next click.
     func consumeSelectionIntent() -> ThreadSelectionIntent {
         defer { pendingSelectionIntent = nil }
-        return pendingSelectionIntent ?? .click
+        return pendingSelectionIntent ?? .quiet
     }
 
     /// Mount detail content and schedule useful neighbor payloads. Public to
