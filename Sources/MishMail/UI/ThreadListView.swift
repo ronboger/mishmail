@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 enum GroupBy: String, CaseIterable {
@@ -47,6 +48,10 @@ struct ThreadListView: View {
     /// Cached grouping — rebuilt only when inputs change, not every body pass.
     @State private var grouped: [(String, [MailThread])] = []
     @State private var flatDisplayOrder: [String] = []
+    /// Sorted label chips per thread, cached alongside `grouped` — its inputs
+    /// (thread labels, labelsByAccount) are already recompute triggers, and
+    /// building them per row re-allocated and re-sorted on every body pass.
+    @State private var rowLabelChips: [String: [ThreadRowLabelChip]] = [:]
 
     private static let prioritySection = "Priority"
 
@@ -66,12 +71,7 @@ struct ThreadListView: View {
     /// Snapshot everything a row needs so `ThreadRow` can skip body work when
     /// only another row's focus changed (Equatable + no EnvironmentObject).
     private func threadRowModel(_ thread: MailThread, isChecked: Bool) -> ThreadRowModel {
-        // One dictionary hit per label. This runs for every visible row on
-        // every body pass, and used to be two linear scans of the account's
-        // label list per label.
-        let labels: [ThreadRowLabelChip] = thread.labels
-            .compactMap { store.labelChip($0, account: thread.accountId) }
-            .sorted { $0.name < $1.name }
+        let labels: [ThreadRowLabelChip] = rowLabelChips[thread.id] ?? []
         return ThreadRowModel(
             thread: thread,
             isFocused: listFocus.id == thread.id,
@@ -90,6 +90,16 @@ struct ThreadListView: View {
             let visibleThreads = store.selectedView == .drafts
                 ? store.threads.filter { !store.suppressedDraftThreadIds.contains($0.id) }
                 : store.threads
+            var chips: [String: [ThreadRowLabelChip]] = [:]
+            chips.reserveCapacity(visibleThreads.count)
+            for thread in visibleThreads {
+                let rowChips = thread.labels
+                    .compactMap { store.labelChip($0, account: thread.accountId) }
+                if !rowChips.isEmpty {
+                    chips[thread.id] = rowChips.sorted { $0.name < $1.name }
+                }
+            }
+            rowLabelChips = chips
             let mode = PrioritySplit.Mode(rawValue: priorityModeRaw) ?? .starred
             let (priority, rest) = PrioritySplit.partition(
                 visibleThreads,
@@ -397,6 +407,17 @@ struct ThreadListView: View {
             .onChange(of: store.suppressedDraftThreadIds) { recomputeLayout(scrollProxy: proxy) }
             // Hidden-category set feeds Priority hoist suppression — recompute even when threads identity is unchanged (star pin-through).
             .onChange(of: store.effectiveCategoryHide) { recomputeLayout(scrollProxy: proxy) }
+            // labelSections orders its sections by the accounts list.
+            .onChange(of: store.accounts) { recomputeLayout(scrollProxy: proxy) }
+            // Date buckets ("Today"/"Yesterday") and the Priority recency
+            // cutoff capture "now" at recompute time — refresh at midnight
+            // (and on time-zone changes) so they don't go stale overnight.
+            // The notification can arrive off-main; @State needs main.
+            .onReceive(NotificationCenter.default
+                .publisher(for: .NSCalendarDayChanged)
+                .receive(on: RunLoop.main)) { _ in
+                recomputeLayout(scrollProxy: proxy)
+            }
             } // ScrollViewReader
         }
         .background(Color.notionContent)
@@ -525,9 +546,12 @@ struct ThreadListView: View {
                 Button("Clear reminder") { store.setReminder(thread, after: nil) }
             }
         }
-        if let email = store.senderEmail(of: thread),
+        // `fromEmail` is the denormalized newest-sender address; the menu
+        // builder runs for every visible row on each body pass, so it must
+        // not query the database per row.
+        if thread.fromEmail.contains("@"),
            let vipAction = ParticipantMenuVIP.action(
-               email: email,
+               email: thread.fromEmail,
                vipEmails: store.vipEmails,
                ownEmails: store.ownEmailAddresses) {
             Divider()

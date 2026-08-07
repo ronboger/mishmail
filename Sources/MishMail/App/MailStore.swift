@@ -771,19 +771,6 @@ final class MailStore {
         Set(vipGroups.values).union(vipGroupEnabled.keys).sorted()
     }
 
-    /// Newest sender address on a thread (for the Add/Remove VIP menu).
-    func senderEmail(of thread: MailThread) -> String? {
-        let header = (try? db.read { db in
-            try String.fetchOne(db, sql: """
-                SELECT fromHeader FROM message WHERE threadId = ?
-                ORDER BY date DESC LIMIT 1
-                """, arguments: [thread.id])
-        }) ?? nil
-        guard let header else { return nil }
-        let email = MessageParser.emailAddress(header).lowercased()
-        return email.contains("@") ? email : nil
-    }
-
     /// Recomputes which of the loaded threads came from a VIP. Any message From
     /// in the thread can pin it (not only the newest). Prefer the off-main path
     /// in `reloadThreads` — this MainActor entry point is for VIP list mutations
