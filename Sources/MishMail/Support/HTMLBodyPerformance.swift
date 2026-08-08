@@ -301,36 +301,101 @@ struct HTMLHeightStability {
     struct Observation: Equatable {
         let shouldPublish: Bool
         let isStable: Bool
+        /// Height the caller should publish/cache — the frozen value while an
+        /// oscillation latch is engaged, otherwise the observed height.
+        let height: CGFloat
     }
 
     var tolerance: CGFloat = 1
     /// One repeat means two consecutive observations agreed.
     var requiredStableSamples = 1
+    /// A↔B reversals tolerated before freezing. A measure↔frame feedback loop
+    /// (publish → SwiftUI resizes the webview → ResizeObserver re-reports)
+    /// alternates between two heights that each differ from the previous
+    /// sample, so the duplicate filter above never quiets it — one core pegged
+    /// until quit. The JS freeze machine only catches monotone co-growth.
+    var maxFlips = 3
+    /// Consecutive agreeing samples at a genuinely new height (image load,
+    /// pane resize) that release the freeze.
+    var unlatchSamples = 5
 
     private(set) var lastHeight: CGFloat?
+    /// Two samples ago — an oscillation returns here while differing from last.
+    private var previousHeight: CGFloat?
     private(set) var stableSamples = 0
+    private var flipCount = 0
+    private(set) var latchedHeight: CGFloat?
+    private var escapeHeight: CGFloat?
+    private var escapeCount = 0
 
     mutating func reset() {
         lastHeight = nil
+        previousHeight = nil
         stableSamples = 0
+        flipCount = 0
+        latchedHeight = nil
+        escapeHeight = nil
+        escapeCount = 0
     }
 
     mutating func observe(_ height: CGFloat) -> Observation {
-        guard let lastHeight else {
-            self.lastHeight = height
-            stableSamples = 0
-            return Observation(shouldPublish: true, isStable: false)
+        if let latched = latchedHeight {
+            if abs(height - latched) <= tolerance {
+                escapeHeight = nil
+                escapeCount = 0
+                return Observation(shouldPublish: false, isStable: true,
+                                   height: latched)
+            }
+            if let escape = escapeHeight, abs(height - escape) <= tolerance {
+                escapeCount += 1
+                if escapeCount >= unlatchSamples {
+                    reset()
+                    lastHeight = height
+                    return Observation(shouldPublish: true, isStable: false,
+                                       height: height)
+                }
+            } else {
+                escapeHeight = height
+                escapeCount = 1
+            }
+            return Observation(shouldPublish: false, isStable: true,
+                               height: latched)
         }
 
-        if abs(lastHeight - height) <= tolerance {
+        guard let last = lastHeight else {
+            lastHeight = height
+            stableSamples = 0
+            return Observation(shouldPublish: true, isStable: false,
+                               height: height)
+        }
+
+        if abs(last - height) <= tolerance {
             stableSamples += 1
+            flipCount = 0
             return Observation(
                 shouldPublish: false,
-                isStable: stableSamples >= requiredStableSamples)
+                isStable: stableSamples >= requiredStableSamples,
+                height: last)
         }
 
-        self.lastHeight = height
+        if let previous = previousHeight, abs(previous - height) <= tolerance {
+            flipCount += 1
+        } else {
+            flipCount = 0
+        }
+        previousHeight = last
+        lastHeight = height
         stableSamples = 0
-        return Observation(shouldPublish: true, isStable: false)
+
+        if flipCount >= maxFlips {
+            // Freeze on the taller value so no content is clipped; publish it
+            // once (stable) and go quiet.
+            let latched = max(height, previousHeight ?? height)
+            latchedHeight = latched
+            lastHeight = latched
+            return Observation(shouldPublish: true, isStable: true,
+                               height: latched)
+        }
+        return Observation(shouldPublish: true, isStable: false, height: height)
     }
 }

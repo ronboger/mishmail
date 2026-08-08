@@ -71,16 +71,57 @@ final class HTMLBodyPerformanceTests: XCTestCase {
 
         XCTAssertEqual(
             tracker.observe(120),
-            .init(shouldPublish: true, isStable: false))
+            .init(shouldPublish: true, isStable: false, height: 120))
         XCTAssertEqual(
             tracker.observe(120.5),
-            .init(shouldPublish: false, isStable: true))
+            .init(shouldPublish: false, isStable: true, height: 120))
         XCTAssertEqual(
             tracker.observe(123),
-            .init(shouldPublish: true, isStable: false))
+            .init(shouldPublish: true, isStable: false, height: 123))
         XCTAssertEqual(
             tracker.observe(123),
-            .init(shouldPublish: false, isStable: true))
+            .init(shouldPublish: false, isStable: true, height: 123))
+    }
+
+    // Regression: an A↔B measure↔frame feedback loop (report → SwiftUI frame
+    // resize → ResizeObserver → report) used to publish on every cycle forever
+    // — one core pegged at ~97% until quit. The tracker must latch after a few
+    // reversals and go quiet.
+    func testHeightTrackerLatchesOscillation() {
+        var tracker = HTMLHeightStability()
+
+        XCTAssertTrue(tracker.observe(396).shouldPublish)
+        XCTAssertTrue(tracker.observe(592).shouldPublish)
+        XCTAssertTrue(tracker.observe(396).shouldPublish) // flip 1
+        XCTAssertTrue(tracker.observe(592).shouldPublish) // flip 2
+        let latch = tracker.observe(396)                  // flip 3 → freeze
+        XCTAssertEqual(latch, .init(shouldPublish: true, isStable: true, height: 592))
+
+        // Frozen: the oscillation keeps reporting but nothing publishes.
+        for h in [CGFloat(592), 396, 592, 396] {
+            let obs = tracker.observe(h)
+            XCTAssertFalse(obs.shouldPublish)
+            XCTAssertTrue(obs.isStable)
+            XCTAssertEqual(obs.height, 592)
+        }
+    }
+
+    // A real post-freeze change (image load, pane resize) must escape the
+    // latch once the new height proves itself with consecutive agreement.
+    func testHeightTrackerUnlatchesOnSustainedNewHeight() {
+        var tracker = HTMLHeightStability()
+        for h in [CGFloat(396), 592, 396, 592, 396] { _ = tracker.observe(h) }
+        XCTAssertNotNil(tracker.latchedHeight)
+
+        for _ in 0..<4 {
+            let obs = tracker.observe(900)
+            XCTAssertFalse(obs.shouldPublish)
+            XCTAssertEqual(obs.height, 592)
+        }
+        let released = tracker.observe(900)
+        XCTAssertEqual(released,
+                       .init(shouldPublish: true, isStable: false, height: 900))
+        XCTAssertNil(tracker.latchedHeight)
     }
 
     func testHeightTrackerResetForNewDocument() {

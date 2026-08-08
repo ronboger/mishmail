@@ -2775,24 +2775,28 @@ struct HTMLBodyView: NSViewRepresentable {
             // residual measure↔frame feedback loop must not grow the card
             // without bound (infinite scroll in the reading pane).
             let height = HTMLBodyLayout.clampContentHeight(rawHeight)
+            let wasLatched = heightStability.latchedHeight != nil
             let observation = heightStability.observe(height)
             if observation.shouldPublish {
                 heightUpdateCount += 1
+                let published = observation.height
                 let measuredView = webView ?? incoming ?? current
                 let measuredWidth = measuredView?.frame.width ?? 0
                 if !contentID.isEmpty, let key = loadedKey, measuredWidth > 0 {
                     HTMLBodyHeightCacheStore.store(
-                        height, contentID: contentID,
+                        published, contentID: contentID,
                         fontScale: key.fontScale, width: measuredWidth)
                 }
-                DispatchQueue.main.async { [weak self] in self?.setHeight?(height) }
+                DispatchQueue.main.async { [weak self] in self?.setHeight?(published) }
             }
             if pendingReveal, webView === incoming || (incoming == nil && webView === current) {
                 // First positive height is enough to reveal; stability can follow.
                 revealIncoming(animated: current != nil && incoming != nil)
             }
             if observation.isStable {
-                finishRender(reason: "stable")
+                let latchedNow = heightStability.latchedHeight != nil
+                finishRender(reason: !wasLatched && latchedNow
+                             ? "oscillation-latched" : "stable")
                 notifySettledIfNeeded()
             }
         }
