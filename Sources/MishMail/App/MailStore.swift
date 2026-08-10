@@ -468,8 +468,16 @@ final class MailStore {
     /// presentation instead of relying on wording inspection in the UI.
     var lastError: String? {
         get { presentedError?.message }
-        set { presentedError = newValue.map(ErrorRecovery.retry) }
+        set {
+            presentedError = newValue.map(ErrorRecovery.retry)
+            // Direct assignments (send, draft, …) are not tracked sync failures.
+            // `setSyncFailureError` re-stamps `lastErrorSyncAccountId` after set.
+            lastErrorSyncAccountId = nil
+        }
     }
+    /// Account id whose sync failure is currently shown in `lastError`, if any.
+    /// Success for that account clears the banner; other errors leave it alone.
+    @ObservationIgnored private var lastErrorSyncAccountId: String?
     var lastErrorRecovery: ErrorRecoveryAction {
         presentedError?.recovery ?? .retrySync
     }
@@ -3321,9 +3329,57 @@ struct ComposeRequest: Identifiable {
         }
     }
 
+    /// Transient connectivity failures that background poll should swallow
+    /// (next tick retries). Walks `NSUnderlyingErrorKey` chains.
+    static func isTransientNetworkError(_ error: Error) -> Bool {
+        var current: Error? = error
+        while let err = current {
+            if let urlError = err as? URLError, Self.isTransientURLErrorCode(urlError.code) {
+                return true
+            }
+            let ns = err as NSError
+            if ns.domain == NSURLErrorDomain,
+               let code = URLError.Code(rawValue: ns.code),
+               Self.isTransientURLErrorCode(code) {
+                return true
+            }
+            current = ns.userInfo[NSUnderlyingErrorKey] as? Error
+        }
+        return false
+    }
+
+    private static func isTransientURLErrorCode(_ code: URLError.Code) -> Bool {
+        switch code {
+        case .notConnectedToInternet,
+             .networkConnectionLost,
+             .timedOut,
+             .cannotConnectToHost,
+             .cannotFindHost,
+             .dnsLookupFailed,
+             .dataNotAllowed:
+            return true
+        default:
+            return false
+        }
+    }
+
     private func requireReauthorization(for accountID: String) {
         accountsNeedingReauth.insert(accountID)
+        lastErrorSyncAccountId = nil
         presentedError = ErrorRecovery.reauthorizationRequired(for: accountID)
+    }
+
+    /// Record a sync failure banner and remember which account set it so a
+    /// later success for that account can clear it without wiping send errors.
+    private func setSyncFailureError(_ message: String, accountId: String) {
+        lastError = message
+        lastErrorSyncAccountId = accountId
+    }
+
+    private func clearSyncFailureErrorIfNeeded(for accountId: String) {
+        guard lastErrorSyncAccountId == accountId else { return }
+        lastError = nil
+        lastErrorSyncAccountId = nil
     }
 
     // MARK: - Sync
@@ -3385,7 +3441,7 @@ struct ComposeRequest: Identifiable {
                         guard let self else { return }
                         defer { self.syncTickTask = nil }
                         guard !self.isShuttingDown else { return }
-                        await self.syncAll()
+                        await self.syncAll(interactive: false)
                     }
                 }
                 // Due sweeps are independent of syncAll and do not wait for
@@ -3435,7 +3491,7 @@ struct ComposeRequest: Identifiable {
                    Date().timeIntervalSince(last) < PollCadence.active {
                     return
                 }
-                await self.syncAll()
+                await self.syncAll(interactive: false)
             }
         })
         for name in [NSApplication.didResignActiveNotification,
@@ -3458,7 +3514,11 @@ struct ComposeRequest: Identifiable {
     /// Sync every account with true parallelism at the SyncEngine layer
     /// (each engine is an independent actor). MainActor work — reload,
     /// blocklist, contacts — runs once at the end.
-    func syncAll() async {
+    ///
+    /// - Parameter interactive: User-initiated sync (toolbar, menu, banner).
+    ///   Background timer / activation catch-up pass `false` so brief offline
+    ///   blips do not leave a sticky error banner.
+    func syncAll(interactive: Bool = true) async {
         guard !demoMode else {
             syncStatus = ""
             showNotice("Demo inbox is offline")
@@ -3525,11 +3585,16 @@ struct ComposeRequest: Identifiable {
                         accountsNeedingReauth.remove(id)
                         await backfillSenderNameIfNeeded(accountId: id)
                         await refreshSendIdentities(accountId: id)
+                    } else if !interactive && Self.isTransientNetworkError(error) {
+                        // Background tick: silent; next poll retries.
                     } else {
-                        lastError = "\(id): \(error.localizedDescription)"
+                        setSyncFailureError(
+                            "\(id): \(error.localizedDescription)",
+                            accountId: id)
                     }
                 } else {
                     accountsNeedingReauth.remove(id)
+                    clearSyncFailureErrorIfNeeded(for: id)
                     await backfillSenderNameIfNeeded(accountId: id)
                     await refreshSendIdentities(accountId: id)
                 }
@@ -3570,6 +3635,7 @@ struct ComposeRequest: Identifiable {
             applyThreadContentChange(change)
             syncStatus = ""
             accountsNeedingReauth.remove(accountId)
+            clearSyncFailureErrorIfNeeded(for: accountId)
             await backfillSenderNameIfNeeded(accountId: accountId)
             await refreshSendIdentities(accountId: accountId)
             reloadAccounts()
@@ -3589,7 +3655,9 @@ struct ComposeRequest: Identifiable {
                 reloadAccounts()
                 reloadThreads()
             } else {
-                lastError = "\(accountId): \(error.localizedDescription)"
+                setSyncFailureError(
+                    "\(accountId): \(error.localizedDescription)",
+                    accountId: accountId)
             }
         }
     }
