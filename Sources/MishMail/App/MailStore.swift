@@ -737,8 +737,14 @@ final class MailStore {
     }
 
     /// Add (or re-tag) a VIP with zero or more groups. Existing senders keep
-    /// their membership and gain any new tags (union).
-    func addVIP(_ email: String, groups: [String]) {
+    /// their membership and gain any new tags (union). Empty `groups` on an
+    /// already-VIP sender is a no-op; brand-new senders use
+    /// `defaultGroupsForNew` when `groups` is empty (MCP seeds "Suggested").
+    func addVIP(
+        _ email: String,
+        groups: [String],
+        defaultGroupsForNew: [String] = []
+    ) {
         guard !demoMode else {
             showNotice("VIP changes are disabled in the demo inbox")
             return
@@ -746,20 +752,31 @@ final class MailStore {
         let e = email.trimmingCharacters(in: .whitespaces).lowercased()
         guard e.contains("@") else { return }
         let adding = VIPMembership.normalizeGroups(groups)
-        let existed = vipEmails.contains(e)
+        let seed = VIPMembership.normalizeGroups(defaultGroupsForNew)
+        var wasNew = false
+        var changed = false
         try? db.write { db in
-            let current = existed
-                ? (try VIPSenderGroup
+            let existing = try VIPSender.fetchOne(db, key: e) != nil
+            if existing {
+                guard !adding.isEmpty else { return } // leave existing tags alone
+                let current = try VIPSenderGroup
                     .filter(Column("email") == e)
                     .fetchAll(db)
-                    .map(\.groupName))
-                : []
-            let merged = VIPMembership.union(existing: current, adding: adding)
-            try writeVIPMembership(email: e, groups: merged, in: db)
+                    .map(\.groupName)
+                let merged = VIPMembership.union(existing: current, adding: adding)
+                try writeVIPMembership(email: e, groups: merged, in: db)
+                changed = true
+            } else {
+                let tags = adding.isEmpty ? seed : adding
+                try writeVIPMembership(email: e, groups: tags, in: db)
+                wasNew = true
+                changed = true
+            }
         }
+        guard changed else { return }
         loadVIPs()
         reloadThreads()
-        showNotice(existed ? "\(e) updated in VIPs" : "\(e) added to VIPs")
+        showNotice(wasNew ? "\(e) added to VIPs" : "\(e) updated in VIPs")
     }
 
     /// Batch add (VIP manager paste box / MCP bulk): one write, one reload,
@@ -769,15 +786,22 @@ final class MailStore {
         addVIPs(emails, groups: VIPMembership.resolveGroups(group: group, groups: nil))
     }
 
-    /// Batch add with multi-group tags shared across the batch. Existing VIPs
-    /// receive a group union (not skipped), so bulk re-tagging works.
+    /// Batch add with multi-group tags. Non-empty `groups` are unioned onto
+    /// every email (new and existing). Empty `groups` only inserts brand-new
+    /// senders (existing left untouched), seeded with `defaultGroupsForNew`
+    /// when that is non-empty.
     @discardableResult
-    func addVIPs(_ emails: [String], groups: [String]) -> Int {
+    func addVIPs(
+        _ emails: [String],
+        groups: [String],
+        defaultGroupsForNew: [String] = []
+    ) -> Int {
         guard !demoMode else {
             showNotice("VIP changes are disabled in the demo inbox")
             return 0
         }
         let wanted = VIPMembership.normalizeGroups(groups)
+        let seed = VIPMembership.normalizeGroups(defaultGroupsForNew)
         let normalized = Array(Set(
             emails.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
                 .filter { $0.contains("@") }
@@ -785,29 +809,34 @@ final class MailStore {
         guard !normalized.isEmpty else { return 0 }
         var newCount = 0
         var firstNew: String?
+        var updatedCount = 0
         try? db.write { db in
             for e in normalized {
                 let existing = try VIPSender.fetchOne(db, key: e) != nil
-                if !existing {
+                if existing {
+                    guard !wanted.isEmpty else { continue }
+                    let current = try VIPSenderGroup
+                        .filter(Column("email") == e)
+                        .fetchAll(db)
+                        .map(\.groupName)
+                    let merged = VIPMembership.union(existing: current, adding: wanted)
+                    try writeVIPMembership(email: e, groups: merged, in: db)
+                    updatedCount += 1
+                } else {
+                    let tags = wanted.isEmpty ? seed : wanted
+                    try writeVIPMembership(email: e, groups: tags, in: db)
                     newCount += 1
                     if firstNew == nil { firstNew = e }
                 }
-                let current = existing
-                    ? (try VIPSenderGroup
-                        .filter(Column("email") == e)
-                        .fetchAll(db)
-                        .map(\.groupName))
-                    : []
-                let merged = VIPMembership.union(existing: current, adding: wanted)
-                try writeVIPMembership(email: e, groups: merged, in: db)
             }
         }
+        guard newCount > 0 || updatedCount > 0 else { return 0 }
         loadVIPs()
         reloadThreads()
         if newCount == 0 {
-            showNotice(normalized.count == 1
+            showNotice(updatedCount == 1
                        ? "\(normalized[0]) updated in VIPs"
-                       : "\(normalized.count) VIP tags updated")
+                       : "\(updatedCount) VIP tags updated")
         } else if newCount == 1, let e = firstNew {
             showNotice("\(e) added to VIPs")
         } else {

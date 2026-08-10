@@ -112,4 +112,46 @@ final class VIPMembershipTests: XCTestCase {
         }
         XCTAssertEqual(tags.map { "\($0.email):\($0.groupName)" }, ["legacy@x.com:Founders"])
     }
+
+    /// Mirrors MailStore.addVIPs empty-groups semantics used by MCP:
+    /// brand-new get defaultGroupsForNew; existing keep prior tags.
+    func testDefaultGroupsApplyOnlyToNewRows() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try VIPSender(email: "old@x.com", groupName: "investors").insert(db)
+            try VIPSenderGroup(email: "old@x.com", groupName: "investors").insert(db)
+            try VIPGroupRow(name: "investors").insert(db)
+            try VIPGroupRow(name: "Suggested").insert(db)
+        }
+
+        let emails = ["old@x.com", "new@x.com"]
+        let wanted: [String] = [] // caller gave no groups
+        let seed = ["Suggested"]
+        var newCount = 0
+        try q.write { db in
+            for e in emails {
+                let existing = try VIPSender.fetchOne(db, key: e) != nil
+                if existing {
+                    guard !wanted.isEmpty else { continue }
+                    // would union — skipped when empty
+                } else {
+                    let tags = wanted.isEmpty ? seed : wanted
+                    try VIPSender(email: e, groupName: tags.first).save(db)
+                    for name in tags {
+                        try VIPSenderGroup(email: e, groupName: name).insert(db)
+                    }
+                    newCount += 1
+                }
+            }
+        }
+        XCTAssertEqual(newCount, 1)
+        let oldTags = try q.read {
+            try VIPSenderGroup.filter(Column("email") == "old@x.com").fetchAll($0).map(\.groupName)
+        }
+        let newTags = try q.read {
+            try VIPSenderGroup.filter(Column("email") == "new@x.com").fetchAll($0).map(\.groupName)
+        }
+        XCTAssertEqual(oldTags, ["investors"], "existing VIP must not gain Suggested")
+        XCTAssertEqual(newTags, ["Suggested"])
+    }
 }

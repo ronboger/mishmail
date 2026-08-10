@@ -446,7 +446,8 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         guard e.contains("@") else {
             throw MCPToolError("Invalid email: \(email)")
         }
-        let resolved = Self.resolvedVIPGroups(group: group, groups: groups)
+        // Explicit tags only — "Suggested" is applied solely to brand-new VIPs.
+        let explicit = VIPMembership.resolveGroups(group: group, groups: groups)
 
         guard let store else {
             throw MCPToolError("Mail store is unavailable")
@@ -456,8 +457,8 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
             throw MCPToolError("VIP changes are disabled in the demo inbox")
         }
         let finalGroups = await MainActor.run { () -> [String] in
-            store.addVIP(e, groups: resolved)
-            return store.vipGroups[e] ?? resolved
+            store.addVIP(e, groups: explicit, defaultGroupsForNew: ["Suggested"])
+            return store.vipGroups[e] ?? (explicit.isEmpty ? ["Suggested"] : explicit)
         }
         return try encodeJSON(Self.vipResultJSON(email: e, groups: finalGroups))
     }
@@ -475,7 +476,7 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
             let e = $0.trimmingCharacters(in: .whitespaces).lowercased()
             return e.isEmpty || !e.contains("@")
         }.count
-        let resolved = Self.resolvedVIPGroups(group: group, groups: groups)
+        let explicit = VIPMembership.resolveGroups(group: group, groups: groups)
 
         guard let store else {
             throw MCPToolError("Mail store is unavailable")
@@ -485,19 +486,30 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         }
         let (added, results) = await MainActor.run { () -> (Int, [[String: Any]]) in
             let before = store.vipEmails
-            let newCount = store.addVIPs(normalized, groups: resolved)
+            let newCount = store.addVIPs(
+                normalized,
+                groups: explicit,
+                defaultGroupsForNew: ["Suggested"])
             let rows: [[String: Any]] = normalized.map { e in
-                var row = Self.vipResultJSON(email: e, groups: store.vipGroups[e] ?? resolved)
-                row["created"] = !before.contains(e)
+                let wasNew = !before.contains(e)
+                var row = Self.vipResultJSON(email: e, groups: store.vipGroups[e] ?? [])
+                row["created"] = wasNew
                 return row
             }
+            // `created` is sourced from the same pre-call set that defines
+            // "new" for reporting; `added` comes from the store DB write.
+            // Prefer the store count when they disagree (should be rare).
             return (newCount, rows)
         }
+        let createdFromFlags = results.filter { ($0["created"] as? Bool) == true }.count
+        let reportedAdded = added
         return try encodeJSON([
-            "added": added,
-            "updated": normalized.count - added,
+            "added": reportedAdded,
+            "updated": max(0, normalized.count - reportedAdded),
             "skippedInvalid": invalid,
-            "groups": resolved,
+            // Only the tags the caller asked for (empty = defaulted Suggested on new only).
+            "groups": explicit,
+            "createdCount": createdFromFlags,
             "vips": results,
         ] as [String: Any])
     }
@@ -547,12 +559,6 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
             store.removeVIP(e)
         }
         return try encodeJSON(["email": e, "removed": true] as [String: Any])
-    }
-
-    /// MCP default group is "Suggested" when neither group nor groups is given.
-    private static func resolvedVIPGroups(group: String?, groups: [String]?) -> [String] {
-        let resolved = VIPMembership.resolveGroups(group: group, groups: groups)
-        return resolved.isEmpty ? ["Suggested"] : resolved
     }
 
     // MARK: - Helpers

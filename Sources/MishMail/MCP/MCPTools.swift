@@ -136,7 +136,7 @@ enum MCPTools {
         ),
         ToolDefinition(
             name: "add_vip",
-            description: "Add a VIP sender (or union-tag an existing one). Creates group rows if needed. Accepts group (string) and/or groups (array). Default when neither is set: [\"Suggested\"].",
+            description: "Add a VIP sender (or union-tag an existing one). Creates group rows if needed. Accepts group (string) and/or groups (array). When neither is set, brand-new VIPs get [\"Suggested\"]; existing VIPs keep their current tags.",
             inputSchema: objectSchema(
                 properties: [
                     "email": stringSchema(description: "Sender email address"),
@@ -149,7 +149,7 @@ enum MCPTools {
         ),
         ToolDefinition(
             name: "add_vips",
-            description: "Bulk-add VIP senders (or union-tag existing ones) with optional shared group tags. Creates group rows if needed. Default when neither group nor groups is set: [\"Suggested\"].",
+            description: "Bulk-add VIP senders. Optional shared group tags are unioned onto every address. When neither group nor groups is set, brand-new VIPs get [\"Suggested\"] and existing VIPs are left unchanged (not re-tagged).",
             inputSchema: objectSchema(
                 properties: [
                     "emails": arrayOfStringsSchema(description: "Sender email addresses"),
