@@ -281,6 +281,50 @@ final class ComposeLinksTests: XCTestCase {
         XCTAssertNil(ComposeLinks.selfLink(forSelection: "   "))
     }
 
+    // MARK: - applySelfLink (⌘K immediate wrap → blue)
+
+    func testApplySelfLinkWrapsBareHost() {
+        // ⌘K on a bare host should produce markdown the highlighter paints
+        // blue — not open the link sheet.
+        let body = "see foo.com now"
+        let r = body.range(of: "foo.com")!
+        let out = ComposeLinks.applySelfLink(in: body, selection: r)
+        XCTAssertEqual(out, "see [foo.com](https://foo.com) now")
+    }
+
+    func testApplySelfLinkWrapsHTTPS() {
+        let body = "go https://example.com/a please"
+        let r = body.range(of: "https://example.com/a")!
+        let out = ComposeLinks.applySelfLink(in: body, selection: r)
+        XCTAssertEqual(out, "go [https://example.com/a](https://example.com/a) please")
+    }
+
+    func testApplySelfLinkWrapsBareEmail() {
+        let body = "mail a@b.com today"
+        let r = body.range(of: "a@b.com")!
+        let out = ComposeLinks.applySelfLink(in: body, selection: r)
+        XCTAssertEqual(out, "mail [a@b.com](mailto:a@b.com) today")
+    }
+
+    func testApplySelfLinkKeepsParenWrappedLabel() {
+        let body = "(foo.com)"
+        let all = body.startIndex..<body.endIndex
+        let out = ComposeLinks.applySelfLink(in: body, selection: all)
+        XCTAssertEqual(out, "[(foo.com)](https://foo.com)")
+    }
+
+    func testApplySelfLinkRejectsPlainWord() {
+        let body = "hello world"
+        let r = body.range(of: "hello")!
+        XCTAssertNil(ComposeLinks.applySelfLink(in: body, selection: r))
+    }
+
+    func testApplySelfLinkRejectsExistingMarkdown() {
+        let body = "[foo.com](https://foo.com)"
+        let all = body.startIndex..<body.endIndex
+        XCTAssertNil(ComposeLinks.applySelfLink(in: body, selection: all))
+    }
+
     // MARK: - shouldWrap (bare URL ⌘K)
 
     func testShouldWrapEmptyLabelIsFalse() {
