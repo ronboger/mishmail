@@ -1811,22 +1811,23 @@ struct ComposeView: View {
             return
         }
 
-        // ⌘K on a bare URL/email: open the sheet prefilled with that href
-        // and empty display text so the user can type a label. Bare URLs
-        // already auto-link on send and paint blue in the editor — wrapping
-        // as [url](url) just doubles them in the plain-text body. Skip when
-        // the selection overlaps an existing markdown link without exactly
-        // covering it.
+        // ⌘K on a bare URL/email: never open the sheet. If it already
+        // auto-links (and paints blue), leave the body alone — no [url](url)
+        // doubling. Otherwise wrap as markdown so it becomes a real link.
+        // Skip when the selection partially overlaps an existing markdown
+        // link (fall back to the sheet rather than guess intent).
         if length > 0, !overlapsLinkWithoutExactCover(range) {
-            let selected = nsBody.substring(with: sel)
-            if let href = ComposeLinks.selfLink(forSelection: selected) {
-                linkSelLocation = location
-                linkSelLength = length
-                linkInitialText = ""
-                linkInitialURL = href
-                linkIsEditing = false
-                showLinkSheet = true
+            switch ComposeLinks.bareURLCmdK(in: body_, selection: range) {
+            case .alreadyLinked:
+                bodyFocused = true
                 return
+            case .wrap(let next):
+                let delta = (next as NSString).length - nsBody.length
+                setBody(next, caretUTF16: location + length + delta)
+                bodyFocused = true
+                return
+            case .none:
+                break
             }
         }
 

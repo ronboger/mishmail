@@ -326,6 +326,52 @@ final class ComposeLinksTests: XCTestCase {
         XCTAssertTrue(ComposeLinks.editorLinkStyleRanges(in: "run setup.sh now").isEmpty)
     }
 
+    // MARK: - bareURLCmdK (⌘K on bare URL — no sheet)
+
+    func testBareURLCmdKAlreadyLinkedHost() {
+        // foo.com already auto-links + paints blue → no sheet, no [url](url).
+        let body = "see foo.com now"
+        let r = body.range(of: "foo.com")!
+        XCTAssertEqual(ComposeLinks.bareURLCmdK(in: body, selection: r), .alreadyLinked)
+        XCTAssertTrue(ComposeLinks.isAutolinkBareSelection("foo.com"))
+    }
+
+    func testBareURLCmdKAlreadyLinkedHTTPS() {
+        let body = "go https://example.com/a please"
+        let r = body.range(of: "https://example.com/a")!
+        XCTAssertEqual(ComposeLinks.bareURLCmdK(in: body, selection: r), .alreadyLinked)
+        XCTAssertTrue(ComposeLinks.isAutolinkBareSelection("https://example.com/a"))
+    }
+
+    func testBareURLCmdKWrapsBareEmail() {
+        // Bare emails do not auto-link as plain text — wrap so they become
+        // a real (blue) mailto link, still without opening the sheet.
+        let body = "mail a@b.com today"
+        let r = body.range(of: "a@b.com")!
+        XCTAssertFalse(ComposeLinks.isAutolinkBareSelection("a@b.com"))
+        XCTAssertEqual(ComposeLinks.bareURLCmdK(in: body, selection: r),
+                       .wrap("mail [a@b.com](mailto:a@b.com) today"))
+    }
+
+    func testBareURLCmdKWrapsParenWrappedHost() {
+        let body = "(foo.com)"
+        let all = body.startIndex..<body.endIndex
+        XCTAssertEqual(ComposeLinks.bareURLCmdK(in: body, selection: all),
+                       .wrap("[(foo.com)](https://foo.com)"))
+    }
+
+    func testBareURLCmdKNilForPlainWord() {
+        let body = "hello world"
+        let r = body.range(of: "hello")!
+        XCTAssertNil(ComposeLinks.bareURLCmdK(in: body, selection: r))
+    }
+
+    func testBareURLCmdKNilForExistingMarkdown() {
+        let body = "[foo.com](https://foo.com)"
+        let all = body.startIndex..<body.endIndex
+        XCTAssertNil(ComposeLinks.bareURLCmdK(in: body, selection: all))
+    }
+
     // MARK: - shouldWrap (bare URL ⌘K)
 
     func testShouldWrapEmptyLabelIsFalse() {

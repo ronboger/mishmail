@@ -78,9 +78,7 @@ enum ComposeLinks {
     // MARK: - ⌘K on an already-linkable selection
 
     /// The href to use when ⌘K is pressed on a selection that already *is*
-    /// a URL/email — lets `openLinkSheet()` prefill the URL field so the
-    /// user can type display text. Bare URLs already auto-link on send and
-    /// are painted blue in the editor; do **not** wrap as `[url](url)`.
+    /// a URL/email.
     ///
     /// Qualifies only when the (trimmed) selection: is non-empty, has no
     /// internal whitespace/newlines, isn't itself markdown link syntax
@@ -107,6 +105,46 @@ enum ComposeLinks {
     /// editor blue matches send-time linkify without wrapping as `[url](url)`.
     static func editorLinkStyleRanges(in body: String) -> [NSRange] {
         nonOverlappingLinkSpans(in: body).map { nsRange(of: $0.range, in: body) }
+    }
+
+    /// ⌘K decision when the selection is already a bare URL/email.
+    ///
+    /// - `alreadyLinked`: selection alone already auto-links on send (and
+    ///   paints blue via `editorLinkStyleRanges`) — no sheet, no body rewrite
+    ///   (preserves the Aug 3 “don’t wrap as `[url](url)`” rule).
+    /// - `wrap`: selection is link-shaped but does **not** auto-link bare
+    ///   (e.g. `a@b.com`, `(foo.com)`) — rewrite as markdown so it becomes
+    ///   a real hyperlink, still without opening the sheet.
+    /// - `nil`: not a bare URL/email — caller opens the ordinary link sheet.
+    enum BareURLCmdK: Equatable {
+        case alreadyLinked
+        case wrap(String)
+    }
+
+    static func bareURLCmdK(in body: String,
+                            selection: Range<String.Index>) -> BareURLCmdK? {
+        let selected = String(body[selection])
+        guard let href = selfLink(forSelection: selected) else { return nil }
+        if isAutolinkBareSelection(selected) {
+            return .alreadyLinked
+        }
+        guard let next = applyLink(in: body, selection: selection,
+                                   text: selected, url: href) else {
+            return .alreadyLinked
+        }
+        return .wrap(next)
+    }
+
+    /// True when `selected` (alone) is already one full bare-autolink span —
+    /// same rule `htmlFragment` uses, so ⌘K can leave it alone.
+    static func isAutolinkBareSelection(_ selected: String) -> Bool {
+        let trimmed = selected.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return false }
+        guard let href = selfLink(forSelection: selected) else { return false }
+        let matches = bareURLMatches(in: trimmed)
+        guard matches.count == 1, let only = matches.first else { return false }
+        return only.range == trimmed.startIndex..<trimmed.endIndex
+            && only.url == href
     }
 
     /// Whether ⌘K apply should wrap the selection as `[label](href)`.
