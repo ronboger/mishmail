@@ -12,6 +12,9 @@ import Foundation
 ///    highlighter spans). Inline light backgrounds paint per-line fragment
 ///    boxes — black text on white strips over dark chrome — instead of real
 ///    designed cards. Transparentize them so body force-light text wins.
+/// 5. Colored CTA buttons (mid-tone opaque fills on anchors, e.g. green
+///    `background` + authored `color:#fff`) stamp `keepAuthoredClass` so
+///    forced link blues do not wash out white-on-color labels.
 ///
 /// Light-vs-dark is resolved by app-injected JS: walk the DOM, track the
 /// nearest opaque `background-color` ancestor, and stamp a per-element
@@ -31,6 +34,9 @@ enum HTMLBodyDarkMode {
     /// Light fill cleared on an inline highlighter; treat as transparent for
     /// contrast inheritance.
     static let stripInlineBgClass = "mm-strip-inline-bg"
+    /// Designed colored CTA button (mid-tone opaque fill). Authored link text
+    /// color (e.g. white on green) must survive; forced link blues would wash out.
+    static let keepAuthoredClass = "mm-keep-authored"
 
     /// Tags whose attribute light-bg is almost never a designed card — Word /
     /// Google Docs / Gmail paste highlighters. First-paint CSS strips these;
@@ -40,6 +46,12 @@ enum HTMLBodyDarkMode {
     /// Relative luminance above this (sRGB 0–1) counts as a light surface.
     /// ~0.72 is mid-cream; pure white is 1.0, `#faf8f5` is ~0.97.
     static let luminanceThreshold = 0.72
+
+    /// Relative luminance at or below this counts as near-black chrome (still
+    /// force light/link colors). Mid-tone fills between this and
+    /// `luminanceThreshold` are designed colored buttons (`keepAuthoredClass`).
+    /// Pure black is 0; `#222` ≈ 0.133; TimeTap green rgb(90,200,130) ≈ 0.67.
+    static let darkLuminanceThreshold = 0.18
 
     /// Alpha below this is treated as transparent (plain mail over dark chrome
     /// must not be treated as a light fill).
@@ -55,7 +67,11 @@ enum HTMLBodyDarkMode {
         let onLight = fgOnLightClass
         let onDark = fgOnDarkClass
         let strip = stripInlineBgClass
+        let keep = keepAuthoredClass
         let inlineTags = inlineHighlighterTags
+        // Keep-authored CTAs and their descendants must match no force-color
+        // rule — !important stylesheet colors beat inline `color:#fff`.
+        let notKeep = ":not(:is(a.\(keep), a.\(keep) *))"
         return """
         :root { color-scheme: light dark; }
         html, body { height: auto !important; min-height: 0 !important; }
@@ -68,7 +84,7 @@ enum HTMLBodyDarkMode {
         \(HTMLBodyLayout.antiFeedbackCSS)
         @media (prefers-color-scheme: dark) {
           body, body :not(a):not(a *) { color: #e6e6e6 !important; }
-          a, a * { color: #6cb2ff !important; }
+          a:not(.\(keep)), a:not(.\(keep)) * { color: #6cb2ff !important; }
           /* Inline light fills (Word/Docs highlighters): clear the paint so we
              do not get per-line white strips. Body force-light text applies.
              Skip self-declared inline-block/flex CTAs (white pill buttons) —
@@ -83,15 +99,16 @@ enum HTMLBodyDarkMode {
              this stays (0,1,0) and JS .mm-fg-on-dark / .mm-fg-on-light win by
              source order — load-bearing for Google-welcome dark-on-dark when a
              light bgcolor attr is overridden by a dark computed fill. */
-          :is(\(light)):not(:where(\(inlineTags))) {
+          :is(\(light)):not(:where(\(inlineTags)))\(notKeep) {
             color: #222 !important;
           }
           /* JS effective-bg classes: every node stamped from nearest opaque fill. */
-          .\(onLight) { color: #222 !important; }
-          .\(onDark) { color: #e6e6e6 !important; }
-          /* Links last so nested spans inside CTAs keep link blue, not body fg. */
-          a.\(onLight), a.\(onLight) * { color: #0b57d0 !important; }
-          a.\(onDark), a.\(onDark) * { color: #6cb2ff !important; }
+          .\(onLight)\(notKeep) { color: #222 !important; }
+          .\(onDark)\(notKeep) { color: #e6e6e6 !important; }
+          /* Links last so nested spans inside CTAs keep link blue, not body fg.
+             Colored-button anchors (.\(keep)) keep authored color (white-on-green). */
+          a.\(onLight):not(.\(keep)), a.\(onLight):not(.\(keep)) * { color: #0b57d0 !important; }
+          a.\(onDark):not(.\(keep)), a.\(onDark):not(.\(keep)) * { color: #6cb2ff !important; }
         }
         """
     }
@@ -107,12 +124,37 @@ enum HTMLBodyDarkMode {
     /// false negative (still light-on-image); attribute selectors also miss it.
     static func isLightBackground(r: Double, g: Double, b: Double, a: Double = 1) -> Bool {
         guard a >= alphaFloor else { return false }
-        let luminance = (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
+        let luminance = relativeLuminance(r: r, g: g, b: b)
         return luminance > luminanceThreshold
     }
 
     static func isLightBackground(r: Int, g: Int, b: Int, a: Double = 1) -> Bool {
         isLightBackground(r: Double(r), g: Double(g), b: Double(b), a: a)
+    }
+
+    /// Near-black chrome fill — still force light/link colors (not a CTA paint).
+    static func isNearBlackBackground(r: Double, g: Double, b: Double, a: Double = 1) -> Bool {
+        guard a >= alphaFloor else { return false }
+        return relativeLuminance(r: r, g: g, b: b) <= darkLuminanceThreshold
+    }
+
+    static func isNearBlackBackground(r: Int, g: Int, b: Int, a: Double = 1) -> Bool {
+        isNearBlackBackground(r: Double(r), g: Double(g), b: Double(b), a: a)
+    }
+
+    /// Opaque mid-tone fill — designed colored button; keep authored text color.
+    static func isDesignedColorBackground(r: Double, g: Double, b: Double, a: Double = 1) -> Bool {
+        guard a >= alphaFloor else { return false }
+        let luminance = relativeLuminance(r: r, g: g, b: b)
+        return luminance > darkLuminanceThreshold && luminance <= luminanceThreshold
+    }
+
+    static func isDesignedColorBackground(r: Int, g: Int, b: Int, a: Double = 1) -> Bool {
+        isDesignedColorBackground(r: Double(r), g: Double(g), b: Double(b), a: a)
+    }
+
+    private static func relativeLuminance(r: Double, g: Double, b: Double) -> Double {
+        (0.2126 * r + 0.7152 * g + 0.0722 * b) / 255
     }
 
     /// App-injected JS (page scripts stay disabled). For every element, finds
@@ -125,20 +167,28 @@ enum HTMLBodyDarkMode {
     /// per-line highlighter fragments, not designed cards. `inline-block`
     /// CTAs/pills keep their fill.
     ///
+    /// Anchors that own (or nest under an opaque fill *inside the anchor*) a
+    /// mid-tone designed color get `keepAuthoredClass` so white-on-green CTAs
+    /// keep their authored text color instead of forced link blues.
+    ///
     /// Installed as a `WKUserScript` at `.atDocumentEnd` for every navigation.
-    /// Safe to re-run; replaces prior fg/strip classes.
+    /// Safe to re-run; replaces prior fg/strip/keep classes.
     static var applyContrastJS: String {
         let onLight = fgOnLightClass
         let onDark = fgOnDarkClass
         let strip = stripInlineBgClass
+        let keep = keepAuthoredClass
         let lum = luminanceThreshold
+        let darkLum = darkLuminanceThreshold
         let alpha = alphaFloor
         return """
         (function(){
           var ON_LIGHT='\(onLight)';
           var ON_DARK='\(onDark)';
           var STRIP='\(strip)';
+          var KEEP='\(keep)';
           var LUM=\(lum);
+          var DARK_LUM=\(darkLum);
           var AMIN=\(alpha);
           function parseBg(bg){
             if(!bg||bg==='transparent') return null;
@@ -148,9 +198,17 @@ enum HTMLBodyDarkMode {
             if(a<AMIN) return null;
             return {r:+m[1],g:+m[2],b:+m[3],a:a};
           }
+          function lumOf(c){
+            return (0.2126*c.r+0.7152*c.g+0.0722*c.b)/255;
+          }
           function isLight(c){
             if(!c) return false;
-            return (0.2126*c.r+0.7152*c.g+0.0722*c.b)/255>LUM;
+            return lumOf(c)>LUM;
+          }
+          function isDesignedColor(c){
+            if(!c) return false;
+            var L=lumOf(c);
+            return L>DARK_LUM && L<=LUM;
           }
           /* Only pure inline paints per-line fragment boxes. inline-block
              (CTA pills) and block cards keep their light fill. */
@@ -160,13 +218,30 @@ enum HTMLBodyDarkMode {
               return d==='inline';
             }catch(e){ return false; }
           }
+          function designedFillInAnchor(a){
+            /* Opaque mid-tone fill on the A itself or any descendant — not
+               inherited from outside the anchor (white card / dark chrome). */
+            try{
+              var c=parseBg(getComputedStyle(a).backgroundColor);
+              if(isDesignedColor(c)) return true;
+            }catch(e){}
+            try{
+              var all=a.querySelectorAll('*');
+              for(var j=0;j<all.length;j++){
+                var cbg=null;
+                try{ cbg=parseBg(getComputedStyle(all[j]).backgroundColor); }catch(e){}
+                if(isDesignedColor(cbg)) return true;
+              }
+            }catch(e){}
+            return false;
+          }
           function walk(el, inherited){
             var own=null;
             var cs=null;
             try{
-              /* Drop prior strip so getComputedStyle sees the authored fill
+              /* Drop prior stamps so getComputedStyle sees the authored fill
                  before we decide whether to strip again. */
-              el.classList.remove(ON_LIGHT, ON_DARK, STRIP);
+              el.classList.remove(ON_LIGHT, ON_DARK, STRIP, KEEP);
               cs=getComputedStyle(el);
               own=parseBg(cs.backgroundColor);
             }catch(e){}
@@ -182,6 +257,10 @@ enum HTMLBodyDarkMode {
             var next=own||inherited;
             var kids=el.children;
             for(var i=0;i<kids.length;i++) walk(kids[i], next);
+            /* After kids so descendant fills are measurable; only A gets KEEP. */
+            if((el.tagName||'').toUpperCase()==='A' && designedFillInAnchor(el)){
+              try{ el.classList.add(KEEP); }catch(e){}
+            }
           }
           if(document.documentElement) walk(document.documentElement, null);
         })();

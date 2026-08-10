@@ -71,11 +71,12 @@ final class HTMLBodyDarkModeTests: XCTestCase {
                      "do not stack :not(tag) — use :not(:where(tags)) for zero specificity")
         XCTAssertTrue(css.contains(":not(:where("))
         // Match rule selectors only (comments also mention the class names).
+        // Rules may carry :not(...keep-authored...) so match class then `{`.
         let onDark = HTMLBodyDarkMode.fgOnDarkClass
         let onLight = HTMLBodyDarkMode.fgOnLightClass
         guard let whereRange = css.range(of: ":not(:where("),
-              let onDarkRule = css.range(of: ".\(onDark) {"),
-              let onLightRule = css.range(of: ".\(onLight) {")
+              let onDarkRule = css.range(of: ".\(onDark)"),
+              let onLightRule = css.range(of: ".\(onLight)")
         else {
             XCTFail("missing :where exclusion or fg class rules")
             return
@@ -243,6 +244,79 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         // Google blue #1a73e8 — nested CTA on dark section must get light text,
         // not #222 / dark link blue from a white ancestor.
         XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 0x1a, g: 0x73, b: 0xe8))
+    }
+
+    // MARK: - Designed colored CTA (keep authored)
+
+    func testGreenCTAIsDesignedColorNotLight() {
+        // TimeTap-style green button rgb(90,200,130), L ≈ 0.67 — under the
+        // 0.72 light threshold, so it used to flip to mm-fg-on-dark and the
+        // forced link blues washed out authored white text.
+        XCTAssertFalse(HTMLBodyDarkMode.isLightBackground(r: 90, g: 200, b: 130))
+        XCTAssertFalse(HTMLBodyDarkMode.isNearBlackBackground(r: 90, g: 200, b: 130))
+        XCTAssertTrue(HTMLBodyDarkMode.isDesignedColorBackground(r: 90, g: 200, b: 130))
+    }
+
+    func testGoogleBlueCTAIsDesignedColor() {
+        XCTAssertTrue(HTMLBodyDarkMode.isDesignedColorBackground(r: 0x1a, g: 0x73, b: 0xe8))
+    }
+
+    func testWhiteAndBlackNotDesignedColor() {
+        XCTAssertFalse(HTMLBodyDarkMode.isDesignedColorBackground(r: 255, g: 255, b: 255))
+        XCTAssertFalse(HTMLBodyDarkMode.isDesignedColorBackground(r: 0, g: 0, b: 0))
+        XCTAssertTrue(HTMLBodyDarkMode.isNearBlackBackground(r: 0x22, g: 0x22, b: 0x22))
+        XCTAssertFalse(HTMLBodyDarkMode.isDesignedColorBackground(r: 0x22, g: 0x22, b: 0x22))
+    }
+
+    func testKeepAuthoredExemptsForcedLinkColors() {
+        let keep = HTMLBodyDarkMode.keepAuthoredClass
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
+        // Blanket link force must skip keep-authored CTAs.
+        XCTAssertTrue(css.contains("a:not(.\(keep))"),
+                      "plain-link force must exclude .\(keep)")
+        XCTAssertTrue(css.contains("a:not(.\(keep)) *") || css.contains("a:not(.\(keep)) *"),
+                      "descendant link force must exclude .\(keep) trees")
+        // Fg-class link rules also skip keep-authored.
+        let onLight = HTMLBodyDarkMode.fgOnLightClass
+        let onDark = HTMLBodyDarkMode.fgOnDarkClass
+        XCTAssertTrue(css.contains("a.\(onLight):not(.\(keep))"),
+                      "on-light link rule must spare keep-authored")
+        XCTAssertTrue(css.contains("a.\(onDark):not(.\(keep))"),
+                      "on-dark link rule must spare keep-authored")
+        // Fg body rules must not paint over keep-authored button text either.
+        XCTAssertTrue(css.contains(":not(:is(a.\(keep), a.\(keep) *))")
+                        || css.contains("a.\(keep)"),
+                      "force-color rules must exclude keep-authored trees")
+    }
+
+    func testApplyContrastJSStampsKeepAuthoredOnDesignedCTA() {
+        let js = HTMLBodyDarkMode.applyContrastJS
+        let keep = HTMLBodyDarkMode.keepAuthoredClass
+        XCTAssertTrue(js.contains(keep), "JS must know keep-authored class")
+        XCTAssertTrue(js.contains("KEEP") || js.contains(keep))
+        XCTAssertTrue(js.contains(String(HTMLBodyDarkMode.darkLuminanceThreshold)),
+                      "JS dark threshold must mirror Swift constant")
+        // Only stamps on anchors with mid-tone fills, not every link.
+        XCTAssertTrue(js.contains("tagName") || js.contains("'A'"),
+                      "keep-authored is anchor-scoped")
+        XCTAssertTrue(js.contains("isDesignedColor") || js.contains("DARK_LUM"),
+                      "designed-color detection in JS")
+    }
+
+    func testPlainLinkStillForcedInCSS() {
+        // Regression: plain links over transparent/dark chrome stay blue.
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
+        XCTAssertTrue(css.contains("#6cb2ff"))
+        XCTAssertTrue(css.contains("#0b57d0"))
+    }
+
+    func testWhiteCardStillGetsDarkText() {
+        // White surfaces still force #222 — keep-authored must not disable that
+        // for non-link card chrome.
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: 1)
+        XCTAssertTrue(css.contains("color: #222 !important"))
+        XCTAssertTrue(HTMLBodyDarkMode.isLightBackground(r: 255, g: 255, b: 255))
+        XCTAssertFalse(HTMLBodyDarkMode.isDesignedColorBackground(r: 255, g: 255, b: 255))
     }
 
 }
