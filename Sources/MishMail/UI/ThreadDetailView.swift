@@ -243,15 +243,21 @@ struct ThreadDetailView: View {
                 noteScrollOffsetChange(from: oldY, to: newY)
             })
             .navigationTitle(store.selectedView.title)
+            // `.navigation` placement pins to the window's far leading edge
+            // (traffic lights / above the sidebar) on macOS 26. Use
+            // `.principal` so the close/prev/next trio sits in the detail
+            // column's title region — left of the thread chrome, not over
+            // the sidebar.
+            .toolbarRole(.editor)
             .toolbar {
             // Notion Mail-style left cluster: close the pane, prev/next thread.
             // Separate ToolbarItems (not a group) + hidden shared glass on
             // macOS 26 so they don't merge into one capsule that lights up
             // when the thread scrolls. Spacers keep the trio off the title.
             if #available(macOS 26.0, *) {
-                ToolbarSpacer(.fixed, placement: .navigation)
+                ToolbarSpacer(.fixed, placement: .principal)
             }
-            ToolbarItem(placement: .navigation) {
+            ToolbarItem(placement: .principal) {
                 if splitMode {
                     Button(action: onBack) {
                         Label("Exit Side by Side",
@@ -296,7 +302,7 @@ struct ThreadDetailView: View {
             // Prev/next drive the list selection, which split's conversation
             // column is decoupled from — hide them there.
             if !splitMode {
-                ToolbarItem(placement: .navigation) {
+                ToolbarItem(placement: .principal) {
                     Button { store.moveSelection(-1, intent: .explicitOpen) } label: {
                         Label("Previous", systemImage: "chevron.up")
                     }
@@ -305,7 +311,7 @@ struct ThreadDetailView: View {
                     .focusEffectDisabled()
                 }
                 .pmHideSharedBackground()
-                ToolbarItem(placement: .navigation) {
+                ToolbarItem(placement: .principal) {
                     Button { store.moveSelection(1, intent: .explicitOpen) } label: {
                         Label("Next", systemImage: "chevron.down")
                     }
@@ -316,7 +322,7 @@ struct ThreadDetailView: View {
                 .pmHideSharedBackground()
             }
             if #available(macOS 26.0, *) {
-                ToolbarSpacer(.fixed, placement: .navigation)
+                ToolbarSpacer(.fixed, placement: .principal)
             }
             ToolbarItemGroup {
                 Button { store.archive(thread) } label: {
