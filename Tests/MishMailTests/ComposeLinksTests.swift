@@ -281,48 +281,49 @@ final class ComposeLinksTests: XCTestCase {
         XCTAssertNil(ComposeLinks.selfLink(forSelection: "   "))
     }
 
-    // MARK: - applySelfLink (⌘K immediate wrap → blue)
+    // MARK: - editorLinkStyleRanges (blue without [url](url))
 
-    func testApplySelfLinkWrapsBareHost() {
-        // ⌘K on a bare host should produce markdown the highlighter paints
-        // blue — not open the link sheet.
+    func testEditorLinkStyleRangesIncludesBareHost() {
+        // Bare hosts that auto-link on send must paint blue in the editor
+        // without wrapping as [url](url).
         let body = "see foo.com now"
-        let r = body.range(of: "foo.com")!
-        let out = ComposeLinks.applySelfLink(in: body, selection: r)
-        XCTAssertEqual(out, "see [foo.com](https://foo.com) now")
+        let ranges = ComposeLinks.editorLinkStyleRanges(in: body)
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual((body as NSString).substring(with: ranges[0]), "foo.com")
     }
 
-    func testApplySelfLinkWrapsHTTPS() {
+    func testEditorLinkStyleRangesIncludesHTTPS() {
         let body = "go https://example.com/a please"
-        let r = body.range(of: "https://example.com/a")!
-        let out = ComposeLinks.applySelfLink(in: body, selection: r)
-        XCTAssertEqual(out, "go [https://example.com/a](https://example.com/a) please")
+        let ranges = ComposeLinks.editorLinkStyleRanges(in: body)
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual((body as NSString).substring(with: ranges[0]),
+                       "https://example.com/a")
     }
 
-    func testApplySelfLinkWrapsBareEmail() {
-        let body = "mail a@b.com today"
-        let r = body.range(of: "a@b.com")!
-        let out = ComposeLinks.applySelfLink(in: body, selection: r)
-        XCTAssertEqual(out, "mail [a@b.com](mailto:a@b.com) today")
+    func testEditorLinkStyleRangesIncludesMarkdownLink() {
+        let body = "read [the docs](https://example.com/a)"
+        let ranges = ComposeLinks.editorLinkStyleRanges(in: body)
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual((body as NSString).substring(with: ranges[0]),
+                       "[the docs](https://example.com/a)")
     }
 
-    func testApplySelfLinkKeepsParenWrappedLabel() {
-        let body = "(foo.com)"
-        let all = body.startIndex..<body.endIndex
-        let out = ComposeLinks.applySelfLink(in: body, selection: all)
-        XCTAssertEqual(out, "[(foo.com)](https://foo.com)")
+    func testEditorLinkStyleRangesDoesNotDoubleCountMarkdownHref() {
+        // Bare-URL pass must not also style the href inside [text](url).
+        let body = "[x](https://example.com)"
+        let ranges = ComposeLinks.editorLinkStyleRanges(in: body)
+        XCTAssertEqual(ranges.count, 1)
+        XCTAssertEqual((body as NSString).substring(with: ranges[0]),
+                       "[x](https://example.com)")
     }
 
-    func testApplySelfLinkRejectsPlainWord() {
-        let body = "hello world"
-        let r = body.range(of: "hello")!
-        XCTAssertNil(ComposeLinks.applySelfLink(in: body, selection: r))
+    func testEditorLinkStyleRangesSkipsPlainWords() {
+        XCTAssertTrue(ComposeLinks.editorLinkStyleRanges(in: "hello world").isEmpty)
     }
 
-    func testApplySelfLinkRejectsExistingMarkdown() {
-        let body = "[foo.com](https://foo.com)"
-        let all = body.startIndex..<body.endIndex
-        XCTAssertNil(ComposeLinks.applySelfLink(in: body, selection: all))
+    func testEditorLinkStyleRangesSkipsNonLinkableHost() {
+        // setup.sh is isolated for BiDi but not autolinked — no blue.
+        XCTAssertTrue(ComposeLinks.editorLinkStyleRanges(in: "run setup.sh now").isEmpty)
     }
 
     // MARK: - shouldWrap (bare URL ⌘K)

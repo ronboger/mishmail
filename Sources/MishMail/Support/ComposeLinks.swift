@@ -78,8 +78,9 @@ enum ComposeLinks {
     // MARK: - ⌘K on an already-linkable selection
 
     /// The href to use when ⌘K is pressed on a selection that already *is*
-    /// a URL/email — lets `openLinkSheet()` wrap it immediately as
-    /// `[selection](href)` so the editor paints it blue (no sheet).
+    /// a URL/email — lets `openLinkSheet()` prefill the URL field so the
+    /// user can type display text. Bare URLs already auto-link on send and
+    /// are painted blue in the editor; do **not** wrap as `[url](url)`.
     ///
     /// Qualifies only when the (trimmed) selection: is non-empty, has no
     /// internal whitespace/newlines, isn't itself markdown link syntax
@@ -100,15 +101,12 @@ enum ComposeLinks {
         return normalizeURL(trimmed)
     }
 
-    /// ⌘K short-circuit: when `selection` is already a bare URL/email, wrap
-    /// it as `[selection](href)` so markdown highlighting turns it blue.
-    /// Returns nil when the selection is not self-linkable (caller opens the
-    /// link sheet instead).
-    static func applySelfLink(in body: String,
-                              selection: Range<String.Index>) -> String? {
-        let selected = String(body[selection])
-        guard let href = selfLink(forSelection: selected) else { return nil }
-        return applyLink(in: body, selection: selection, text: selected, url: href)
+    /// UTF-16 ranges the compose highlighter should paint as hyperlinks:
+    /// markdown `[label](url)` spans **and** bare URLs/hosts that
+    /// `htmlFragment` would turn into anchors. Single source of truth so
+    /// editor blue matches send-time linkify without wrapping as `[url](url)`.
+    static func editorLinkStyleRanges(in body: String) -> [NSRange] {
+        nonOverlappingLinkSpans(in: body).map { nsRange(of: $0.range, in: body) }
     }
 
     /// Whether ⌘K apply should wrap the selection as `[label](href)`.

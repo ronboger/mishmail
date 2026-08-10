@@ -320,7 +320,6 @@ struct ComposeBodyEditor: NSViewRepresentable {
         private static let reStrike = try! NSRegularExpression(pattern: #"~~[^~\n]+~~"#)
         private static let reItalicStar = try! NSRegularExpression(pattern: #"(?<![\w*])\*[^*\n]+\*(?![\w*])"#)
         private static let reItalicUnder = try! NSRegularExpression(pattern: #"(?<![\w_])_[^_\n]+_(?![\w_])"#)
-        private static let reLink = try! NSRegularExpression(pattern: #"\[[^\]]+\]\([^)\s]+\)"#)
         private static let reLineMarker = try! NSRegularExpression(pattern: #"(?m)^(\s*)(>|\d+\.|[-*+])(\s)"#)
         private static let reDimBoldStar = try! NSRegularExpression(pattern: #"(\*\*)([^*\n]+)(\*\*)"#)
         private static let reDimBoldUnder = try! NSRegularExpression(pattern: #"(__)([^_\n]+)(__)"#)
@@ -400,10 +399,16 @@ struct ComposeBodyEditor: NSViewRepresentable {
             apply(reStrike, attrs: [.strikethroughStyle: NSUnderlineStyle.single.rawValue])
             apply(reItalicStar, attrs: [.obliqueness: 0.15])
             apply(reItalicUnder, attrs: [.obliqueness: 0.15])
-            apply(reLink, attrs: [
+            // Markdown links + bare autolinkable URLs/hosts (same spans
+            // htmlFragment turns into anchors) — blue without requiring
+            // a [url](url) wrap that doubles the plain-text body.
+            let linkAttrs: [NSAttributedString.Key: Any] = [
                 .foregroundColor: accent,
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
-            ])
+            ]
+            for range in ComposeLinks.editorLinkStyleRanges(in: s) {
+                storage.addAttributes(linkAttrs, range: range)
+            }
 
             reLineMarker.enumerateMatches(in: s, range: full) { match, _, _ in
                 guard let match, match.numberOfRanges >= 3 else { return }
