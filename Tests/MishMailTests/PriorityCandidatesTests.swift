@@ -323,4 +323,28 @@ final class PriorityCandidatesTests: XCTestCase {
                 .map(\.id),
             page.map(\.id))
     }
+
+    /// Load-older cursor must come from the unmerged page bottom. An older
+    /// starred candidate in the merged list would otherwise become the
+    /// watermark and skip every row between page-end and that candidate.
+    func testPagingCursorIgnoresOlderMergedCandidates() {
+        let page = [
+            makeThread(id: "p1", lastDate: d(100)),
+            makeThread(id: "p2", lastDate: d(80)),
+            makeThread(id: "p3", lastDate: d(60)),
+        ]
+        let candidates = [
+            makeThread(id: "c-old", lastDate: d(50), isStarred: true),
+        ]
+        let merged = PriorityCandidates.merge(
+            page: page, candidates: candidates, inboundSort: false)
+        let pageCursor = ThreadListPaging.nextCursor(after: page, inboundSort: false)
+        let mergedCursor = ThreadListPaging.nextCursor(after: merged, inboundSort: false)
+        XCTAssertEqual(pageCursor?.id, page.last?.id)
+        XCTAssertEqual(pageCursor?.sortDate, d(60))
+        XCTAssertEqual(mergedCursor?.id, merged.last?.id)
+        XCTAssertEqual(mergedCursor?.sortDate, d(50))
+        XCTAssertNotEqual(pageCursor, mergedCursor,
+                          "cursor must not follow an older merged-in candidate")
+    }
 }
