@@ -2282,6 +2282,25 @@ struct ComposeRequest: Identifiable {
         // Primary badge tracks the inbox category hide set (Updates/Forums),
         // not only the fixed promo/social tab split.
         let inboxHideCategories = inboxBadgeHideCategories
+        // Priority candidate fetch (inbox only): snapshot settings on MainActor.
+        // Defaults match ThreadListView @AppStorage (starred / 7 days / 10).
+        let priorityMode: PrioritySplit.Mode = {
+            let raw = UserDefaults.standard.string(forKey: "priorityMode")
+            return PrioritySplit.Mode(rawValue: raw ?? "") ?? .starred
+        }()
+        let priorityWindowDays: Int = {
+            if UserDefaults.standard.object(forKey: "priorityWindowDays") == nil {
+                return 7
+            }
+            return UserDefaults.standard.integer(forKey: "priorityWindowDays")
+        }()
+        let priorityMaxCount: Int = {
+            if UserDefaults.standard.object(forKey: "priorityMaxCount") == nil {
+                return 10
+            }
+            return UserDefaults.standard.integer(forKey: "priorityMaxCount")
+        }()
+        let priorityHiddenCategories = chips.category.hide
         let pool = db
 
         threadReloadTask?.cancel()
@@ -2296,6 +2315,10 @@ struct ComposeRequest: Identifiable {
             let reloadKind = search.isEmpty ? "view" : "search"
             let totalInterval = PerfMetrics.begin(.reloadTotal, meta: reloadKind)
             let payload: ReloadPayload? = try? await pool.read { db -> ReloadPayload in
+                // Non-search: keep the filtered request so Priority candidates
+                // can re-use the same base+chips+account scope after the page fetch.
+                var listRequest: QueryInterfaceRequest<MailThread>?
+                var inboundSort = false
                 let result: [MailThread] = try PerfMetrics.measure(
                     .reloadList, meta: "\(reloadKind) limit=\(windowLimit)"
                 ) {
@@ -2408,22 +2431,40 @@ struct ComposeRequest: Identifiable {
                         q = MailStore.applyChips(q, chips, keepIds: keepIds, starKeepIds: starKeepIds)
                         if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
                         let inbound = MailStore.usesInboundSort(for: view)
+                        inboundSort = inbound
+                        listRequest = q
                         let key = ThreadListPaging.sortDateSQL(inboundSort: inbound)
                         return try q.order(sql: "\(key) DESC, id DESC")
                             .limit(fetchLimit).fetchAll(db)
                     }
                 }
                 let (page, hasMore) = ThreadListPaging.splitPage(result, pageSize: windowLimit)
-                let vipHits = try PerfMetrics.measure(.reloadVIP, meta: "n=\(page.count)") {
+                // Inbox Priority: merge deterministic candidates so stars outside
+                // the page window still pin. hasMore stays on the original probe.
+                var listPage = page
+                if search.isEmpty, view == .inbox,
+                   priorityMode == .starred || priorityMode == .starredImportant,
+                   let base = listRequest,
+                   let candReq = PriorityCandidates.request(
+                       base, mode: priorityMode,
+                       hiddenCategories: priorityHiddenCategories,
+                       newerThan: PrioritySplit.cutoff(days: priorityWindowDays),
+                       maxCount: priorityMaxCount,
+                       inboundSort: inboundSort) {
+                    let candidates = try candReq.fetchAll(db)
+                    listPage = PriorityCandidates.merge(
+                        page: page, candidates: candidates, inboundSort: inboundSort)
+                }
+                let vipHits = try PerfMetrics.measure(.reloadVIP, meta: "n=\(listPage.count)") {
                     try MailStore.computeVIPThreadIds(
-                        threads: page, activeVIP: activeVIP, db: db)
+                        threads: listPage, activeVIP: activeVIP, db: db)
                 }
                 let (counts, badge) = try PerfMetrics.measure(.reloadCounts) {
                     try MailStore.fetchSidebarCounts(
                         db: db, activeAccount: activeAccount, badgeAccount: badgeAccount,
                         hideCategories: inboxHideCategories)
                 }
-                return ReloadPayload(threads: page, vipHits: vipHits,
+                return ReloadPayload(threads: listPage, vipHits: vipHits,
                                      counts: counts, badge: badge, hasMore: hasMore)
             }
             if let payload {
