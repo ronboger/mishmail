@@ -1397,7 +1397,7 @@ final class AppDatabase: @unchecked Sendable {
             }
             try db.execute(sql: """
                 INSERT OR IGNORE INTO vipSenderGroup (email, groupName)
-                SELECT email, groupName FROM vipSender
+                SELECT email, TRIM(groupName) FROM vipSender
                 WHERE groupName IS NOT NULL AND TRIM(groupName) != ''
                 """)
         }

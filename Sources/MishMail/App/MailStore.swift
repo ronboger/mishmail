@@ -779,11 +779,21 @@ final class MailStore {
         showNotice(wasNew ? "\(e) added to VIPs" : "\(e) updated in VIPs")
     }
 
+    /// Result of a bulk VIP write: brand-new rows vs existing rows whose tags
+    /// were unioned (skips of already-VIP with empty groups are neither).
+    struct VIPBulkResult: Equatable {
+        var added: Int
+        var updated: Int
+    }
+
     /// Batch add (VIP manager paste box / MCP bulk): one write, one reload,
     /// one notice. Returns how many were newly inserted (not already VIP).
     @discardableResult
     func addVIPs(_ emails: [String], group: String? = nil) -> Int {
-        addVIPs(emails, groups: VIPMembership.resolveGroups(group: group, groups: nil))
+        addVIPsDetailed(
+            emails,
+            groups: VIPMembership.resolveGroups(group: group, groups: nil)
+        ).added
     }
 
     /// Batch add with multi-group tags. Non-empty `groups` are unioned onto
@@ -796,9 +806,21 @@ final class MailStore {
         groups: [String],
         defaultGroupsForNew: [String] = []
     ) -> Int {
+        addVIPsDetailed(
+            emails, groups: groups, defaultGroupsForNew: defaultGroupsForNew
+        ).added
+    }
+
+    /// Same as `addVIPs` but reports both new and re-tagged counts (for MCP).
+    @discardableResult
+    func addVIPsDetailed(
+        _ emails: [String],
+        groups: [String],
+        defaultGroupsForNew: [String] = []
+    ) -> VIPBulkResult {
         guard !demoMode else {
             showNotice("VIP changes are disabled in the demo inbox")
-            return 0
+            return VIPBulkResult(added: 0, updated: 0)
         }
         let wanted = VIPMembership.normalizeGroups(groups)
         let seed = VIPMembership.normalizeGroups(defaultGroupsForNew)
@@ -806,7 +828,7 @@ final class MailStore {
             emails.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
                 .filter { $0.contains("@") }
         )).sorted()
-        guard !normalized.isEmpty else { return 0 }
+        guard !normalized.isEmpty else { return VIPBulkResult(added: 0, updated: 0) }
         var newCount = 0
         var firstNew: String?
         var updatedCount = 0
@@ -830,7 +852,9 @@ final class MailStore {
                 }
             }
         }
-        guard newCount > 0 || updatedCount > 0 else { return 0 }
+        guard newCount > 0 || updatedCount > 0 else {
+            return VIPBulkResult(added: 0, updated: 0)
+        }
         loadVIPs()
         reloadThreads()
         if newCount == 0 {
@@ -842,7 +866,7 @@ final class MailStore {
         } else {
             showNotice("\(newCount) senders added to VIPs")
         }
-        return newCount
+        return VIPBulkResult(added: newCount, updated: updatedCount)
     }
 
     func removeVIP(_ email: String) {

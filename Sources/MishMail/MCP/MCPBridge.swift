@@ -484,32 +484,27 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         if await MainActor.run(body: { store.demoMode }) {
             throw MCPToolError("VIP changes are disabled in the demo inbox")
         }
-        let (added, results) = await MainActor.run { () -> (Int, [[String: Any]]) in
+        let (bulk, results) = await MainActor.run {
+            () -> (MailStore.VIPBulkResult, [[String: Any]]) in
             let before = store.vipEmails
-            let newCount = store.addVIPs(
+            let bulk = store.addVIPsDetailed(
                 normalized,
                 groups: explicit,
                 defaultGroupsForNew: ["Suggested"])
             let rows: [[String: Any]] = normalized.map { e in
-                let wasNew = !before.contains(e)
                 var row = Self.vipResultJSON(email: e, groups: store.vipGroups[e] ?? [])
-                row["created"] = wasNew
+                // created = was not VIP before this call (skipped existing stay false).
+                row["created"] = !before.contains(e) && (store.vipEmails.contains(e))
                 return row
             }
-            // `created` is sourced from the same pre-call set that defines
-            // "new" for reporting; `added` comes from the store DB write.
-            // Prefer the store count when they disagree (should be rare).
-            return (newCount, rows)
+            return (bulk, rows)
         }
-        let createdFromFlags = results.filter { ($0["created"] as? Bool) == true }.count
-        let reportedAdded = added
         return try encodeJSON([
-            "added": reportedAdded,
-            "updated": max(0, normalized.count - reportedAdded),
+            "added": bulk.added,
+            "updated": bulk.updated,
             "skippedInvalid": invalid,
-            // Only the tags the caller asked for (empty = defaulted Suggested on new only).
+            // Only the tags the caller asked for (empty = Suggested on new only).
             "groups": explicit,
-            "createdCount": createdFromFlags,
             "vips": results,
         ] as [String: Any])
     }
