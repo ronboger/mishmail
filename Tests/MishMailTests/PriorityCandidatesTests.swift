@@ -328,6 +328,7 @@ final class PriorityCandidatesTests: XCTestCase {
     /// starred candidate in the merged list would otherwise become the
     /// watermark and skip every row between page-end and that candidate.
     func testPagingCursorIgnoresOlderMergedCandidates() {
+        let d: (TimeInterval) -> Date = { Date(timeIntervalSince1970: $0) }
         let page = [
             makeThread(id: "p1", lastDate: d(100)),
             makeThread(id: "p2", lastDate: d(80)),
