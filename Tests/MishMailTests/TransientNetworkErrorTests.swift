@@ -1,5 +1,4 @@
 import XCTest
-@testable import MishMail
 
 final class TransientNetworkErrorTests: XCTestCase {
 
@@ -15,15 +14,15 @@ final class TransientNetworkErrorTests: XCTestCase {
         ]
         for code in codes {
             XCTAssertTrue(
-                MailStore.isTransientNetworkError(URLError(code)),
+                TransientNetworkError.isTransient(URLError(code)),
                 "\(code) should be transient")
         }
     }
 
     func testNonTransientURLError() {
-        XCTAssertFalse(MailStore.isTransientNetworkError(URLError(.badURL)))
-        XCTAssertFalse(MailStore.isTransientNetworkError(URLError(.cancelled)))
-        XCTAssertFalse(MailStore.isTransientNetworkError(URLError(.userAuthenticationRequired)))
+        XCTAssertFalse(TransientNetworkError.isTransient(URLError(.badURL)))
+        XCTAssertFalse(TransientNetworkError.isTransient(URLError(.cancelled)))
+        XCTAssertFalse(TransientNetworkError.isTransient(URLError(.userAuthenticationRequired)))
     }
 
     func testWrappedNSUnderlyingURLErrorIsTransient() {
@@ -33,7 +32,7 @@ final class TransientNetworkErrorTests: XCTestCase {
             code: 42,
             userInfo: [NSUnderlyingErrorKey: underlying])
         XCTAssertTrue(
-            MailStore.isTransientNetworkError(wrapped),
+            TransientNetworkError.isTransient(wrapped),
             "must unwrap NSUnderlyingErrorKey chains")
     }
 
@@ -47,7 +46,7 @@ final class TransientNetworkErrorTests: XCTestCase {
             domain: "Outer",
             code: 2,
             userInfo: [NSUnderlyingErrorKey: mid])
-        XCTAssertTrue(MailStore.isTransientNetworkError(outer))
+        XCTAssertTrue(TransientNetworkError.isTransient(outer))
     }
 
     func testNSURLErrorDomainNSErrorIsTransient() {
@@ -55,13 +54,13 @@ final class TransientNetworkErrorTests: XCTestCase {
             domain: NSURLErrorDomain,
             code: URLError.timedOut.rawValue,
             userInfo: nil)
-        XCTAssertTrue(MailStore.isTransientNetworkError(ns))
+        XCTAssertTrue(TransientNetworkError.isTransient(ns))
     }
 
     func testUnrelatedErrorIsNotTransient() {
         struct Boom: Error {}
-        XCTAssertFalse(MailStore.isTransientNetworkError(Boom()))
-        XCTAssertFalse(MailStore.isTransientNetworkError(
+        XCTAssertFalse(TransientNetworkError.isTransient(Boom()))
+        XCTAssertFalse(TransientNetworkError.isTransient(
             NSError(domain: "MishMail", code: 1)))
     }
 }
