@@ -15,7 +15,9 @@ protocol MCPToolProvider: Sendable {
     func setThreadSummary(threadId: String, summary: String, model: String) async throws -> String
     func clearThreadSummary(threadId: String) async throws -> String
     func listVIPs() async throws -> String
-    func addVIP(email: String, group: String?) async throws -> String
+    func addVIP(email: String, group: String?, groups: [String]?) async throws -> String
+    func addVIPs(emails: [String], group: String?, groups: [String]?) async throws -> String
+    func setVIPGroups(email: String, groups: [String]) async throws -> String
     func removeVIP(email: String) async throws -> String
 }
 
@@ -129,18 +131,44 @@ enum MCPTools {
         ),
         ToolDefinition(
             name: "list_vips",
-            description: "List VIP senders with group membership and group enabled state.",
+            description: "List VIP senders with multi-group membership and each group's enabled state.",
             inputSchema: objectSchema(properties: [:], required: [])
         ),
         ToolDefinition(
             name: "add_vip",
-            description: "Add a VIP sender. Creates the group row if needed. Default group is \"Suggested\".",
+            description: "Add a VIP sender (or union-tag an existing one). Creates group rows if needed. Accepts group (string) and/or groups (array). Default when neither is set: [\"Suggested\"].",
             inputSchema: objectSchema(
                 properties: [
                     "email": stringSchema(description: "Sender email address"),
-                    "group": stringSchema(description: "VIP group name (default: Suggested)"),
+                    "group": stringSchema(description: "Single VIP group name (merged with groups)"),
+                    "groups": arrayOfStringsSchema(
+                        description: "One or more VIP group names (merged with group)"),
                 ],
                 required: ["email"]
+            )
+        ),
+        ToolDefinition(
+            name: "add_vips",
+            description: "Bulk-add VIP senders (or union-tag existing ones) with optional shared group tags. Creates group rows if needed. Default when neither group nor groups is set: [\"Suggested\"].",
+            inputSchema: objectSchema(
+                properties: [
+                    "emails": arrayOfStringsSchema(description: "Sender email addresses"),
+                    "group": stringSchema(description: "Single VIP group applied to every email"),
+                    "groups": arrayOfStringsSchema(
+                        description: "VIP groups applied to every email (merged with group)"),
+                ],
+                required: ["emails"]
+            )
+        ),
+        ToolDefinition(
+            name: "set_vip_groups",
+            description: "Replace all group tags on an existing VIP (use [] to clear). Does not remove the VIP.",
+            inputSchema: objectSchema(
+                properties: [
+                    "email": stringSchema(description: "Sender email address (must already be a VIP)"),
+                    "groups": arrayOfStringsSchema(description: "Full replacement group list"),
+                ],
+                required: ["email", "groups"]
             )
         ),
         ToolDefinition(

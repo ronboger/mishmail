@@ -11,10 +11,15 @@ private final class StubTools: MCPToolProvider, @unchecked Sendable {
     var setSummaryResult: Result<String, Error> = .success("{}")
     var listVIPsResult: Result<String, Error> = .success("[]")
     var addVIPResult: Result<String, Error> = .success("{}")
+    var addVIPsResult: Result<String, Error> = .success("{}")
+    var setVIPGroupsResult: Result<String, Error> = .success("{}")
     var removeVIPResult: Result<String, Error> = .success("{}")
 
     var lastListThreads: (mailbox: String, unreadOnly: Bool?, limit: Int, account: String?)?
     var lastCreateDraft: (account: String, to: [String], subject: String)?
+    var lastAddVIP: (email: String, group: String?, groups: [String]?)?
+    var lastAddVIPs: (emails: [String], group: String?, groups: [String]?)?
+    var lastSetVIPGroups: (email: String, groups: [String])?
 
     func listAccounts() async throws -> String { try listAccountsResult.get() }
     func listThreads(mailbox: String, unreadOnly: Bool?, limit: Int, offset: Int, account: String?) async throws -> String {
@@ -36,7 +41,18 @@ private final class StubTools: MCPToolProvider, @unchecked Sendable {
     }
     func clearThreadSummary(threadId: String) async throws -> String { "{}" }
     func listVIPs() async throws -> String { try listVIPsResult.get() }
-    func addVIP(email: String, group: String?) async throws -> String { try addVIPResult.get() }
+    func addVIP(email: String, group: String?, groups: [String]?) async throws -> String {
+        lastAddVIP = (email, group, groups)
+        return try addVIPResult.get()
+    }
+    func addVIPs(emails: [String], group: String?, groups: [String]?) async throws -> String {
+        lastAddVIPs = (emails, group, groups)
+        return try addVIPsResult.get()
+    }
+    func setVIPGroups(email: String, groups: [String]) async throws -> String {
+        lastSetVIPGroups = (email, groups)
+        return try setVIPGroupsResult.get()
+    }
     func removeVIP(email: String) async throws -> String { try removeVIPResult.get() }
 }
 
@@ -94,12 +110,13 @@ final class MCPRouterTests: XCTestCase {
         let obj = try jsonObject(body)
         let result = try XCTUnwrap(obj["result"] as? [String: Any])
         let tools = try XCTUnwrap(result["tools"] as? [[String: Any]])
-        XCTAssertEqual(tools.count, 11)
+        XCTAssertEqual(tools.count, 13)
         let names = Set(tools.compactMap { $0["name"] as? String })
         XCTAssertEqual(names, [
             "list_accounts", "list_threads", "search_threads", "get_thread",
             "list_drafts", "create_draft", "set_thread_summary",
-            "clear_thread_summary", "list_vips", "add_vip", "remove_vip",
+            "clear_thread_summary", "list_vips", "add_vip", "add_vips",
+            "set_vip_groups", "remove_vip",
         ])
         for tool in tools {
             let schema = try XCTUnwrap(tool["inputSchema"] as? [String: Any])
@@ -107,6 +124,63 @@ final class MCPRouterTests: XCTestCase {
             XCTAssertNotNil(schema["properties"])
             XCTAssertFalse((tool["description"] as? String ?? "").isEmpty)
         }
+    }
+
+    func testAddVIPDispatchesGroupsArray() async throws {
+        let stub = StubTools()
+        let body = rpc("tools/call", params: [
+            "name": "add_vip",
+            "arguments": [
+                "email": "Ada@Example.org",
+                "groups": ["investors", "board"],
+            ] as [String: Any],
+        ])
+        _ = await MCPRouter.handle(body: body, tools: stub)
+        XCTAssertEqual(stub.lastAddVIP?.email, "Ada@Example.org")
+        XCTAssertNil(stub.lastAddVIP?.group)
+        XCTAssertEqual(stub.lastAddVIP?.groups, ["investors", "board"])
+    }
+
+    func testAddVIPsBulkDispatch() async throws {
+        let stub = StubTools()
+        let body = rpc("tools/call", params: [
+            "name": "add_vips",
+            "arguments": [
+                "emails": ["a@x.com", "b@x.com"],
+                "group": "family",
+                "groups": ["friends"],
+            ] as [String: Any],
+        ])
+        _ = await MCPRouter.handle(body: body, tools: stub)
+        XCTAssertEqual(stub.lastAddVIPs?.emails, ["a@x.com", "b@x.com"])
+        XCTAssertEqual(stub.lastAddVIPs?.group, "family")
+        XCTAssertEqual(stub.lastAddVIPs?.groups, ["friends"])
+    }
+
+    func testSetVIPGroupsDispatch() async throws {
+        let stub = StubTools()
+        let body = rpc("tools/call", params: [
+            "name": "set_vip_groups",
+            "arguments": [
+                "email": "a@x.com",
+                "groups": ["work", "family"],
+            ] as [String: Any],
+        ])
+        _ = await MCPRouter.handle(body: body, tools: stub)
+        XCTAssertEqual(stub.lastSetVIPGroups?.email, "a@x.com")
+        XCTAssertEqual(stub.lastSetVIPGroups?.groups, ["work", "family"])
+    }
+
+    func testAddVIPsRequiresEmails() async throws {
+        let body = rpc("tools/call", params: [
+            "name": "add_vips",
+            "arguments": [:] as [String: Any],
+        ])
+        let (status, data) = await MCPRouter.handle(body: body, tools: StubTools())
+        XCTAssertEqual(status, 200)
+        let obj = try jsonObject(data)
+        let error = try XCTUnwrap(obj["error"] as? [String: Any])
+        XCTAssertEqual(error["code"] as? Int, -32602)
     }
 
     func testToolsCallDispatch() async throws {

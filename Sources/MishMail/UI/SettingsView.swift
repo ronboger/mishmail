@@ -1140,11 +1140,15 @@ private struct VIPManager: View {
     private var groupedEmails: [String: [String]] {
         var groups: [String: [String]] = [:]
         for email in visibleEmails {
-            let group = store.vipGroups[email] ?? "No group"
-            if groups[group] == nil {
-                groups[group] = []
+            let tags = store.vipGroups[email] ?? []
+            if tags.isEmpty {
+                groups["No group", default: []].append(email)
+            } else {
+                // Multi-group: list the sender under every tagged section.
+                for group in tags {
+                    groups[group, default: []].append(email)
+                }
             }
-            groups[group]?.append(email)
         }
         return groups
     }
@@ -1281,10 +1285,11 @@ private struct VIPManager: View {
                         }) {
                             ForEach(groupedEmails[groupName]?.sorted() ?? [], id: \.self) { email in
                                 VIPRow(email: email,
-                                       groupName: store.vipGroups[email],
+                                       groupNames: store.vipGroups[email] ?? [],
                                        allGroups: store.allVIPGroupNames,
                                        remove: { store.removeVIP(email) },
-                                       setGroup: { store.setVIPGroup(email, group: $0) })
+                                       setGroups: { store.setVIPGroups(email, groups: $0) },
+                                       toggleGroup: { store.toggleVIPGroup(email, group: $0) })
                                     .opacity(enabled ? 1 : 0.45)
                             }
                         }
@@ -1293,10 +1298,11 @@ private struct VIPManager: View {
                         Section(header: Text("No group").font(.system(size: 11, weight: .semibold)).foregroundStyle(.secondary)) {
                             ForEach(noGroupEmails, id: \.self) { email in
                                 VIPRow(email: email,
-                                       groupName: store.vipGroups[email],
+                                       groupNames: store.vipGroups[email] ?? [],
                                        allGroups: store.allVIPGroupNames,
                                        remove: { store.removeVIP(email) },
-                                       setGroup: { store.setVIPGroup(email, group: $0) })
+                                       setGroups: { store.setVIPGroups(email, groups: $0) },
+                                       toggleGroup: { store.toggleVIPGroup(email, group: $0) })
                             }
                         }
                     }
@@ -1310,10 +1316,11 @@ private struct VIPManager: View {
                 List {
                     ForEach(visibleEmails, id: \.self) { email in
                         VIPRow(email: email,
-                               groupName: store.vipGroups[email],
+                               groupNames: store.vipGroups[email] ?? [],
                                allGroups: store.allVIPGroupNames,
                                remove: { store.removeVIP(email) },
-                               setGroup: { store.setVIPGroup(email, group: $0) })
+                               setGroups: { store.setVIPGroups(email, groups: $0) },
+                               toggleGroup: { store.toggleVIPGroup(email, group: $0) })
                     }
                     if store.vipEmails.isEmpty {
                         Text("No VIP senders yet — add one above, paste a list below, click a sender name in a message, or right-click any thread → Add sender to VIPs.")
@@ -1377,38 +1384,52 @@ private struct VIPManager: View {
     }
 }
 
-/// Shared group menu: pick an existing group (checkmark on the current one),
-/// create a suggested group in one click, or name a new one in a popover.
+/// Shared group menu. Single-select mode (`select`) for the add/bulk fields;
+/// multi-select mode (`toggle` + `clear`) for VIP rows that can hold several tags.
 private struct GroupMenuButton: View {
     /// Neutral starter group names — no personal taxonomy committed in-repo.
     /// Hidden once the user has created them (or an equivalent).
     static let suggested = ["work", "family", "friends"]
 
-    let current: String?          // nil = no group
+    /// Currently assigned groups (empty = ungrouped).
+    let current: [String]
     let allGroups: [String]
-    let select: (String?) -> Void
+    /// Single-select path: replace membership with one group or clear.
+    var select: ((String?) -> Void)? = nil
+    /// Multi-select path: toggle one group on/off.
+    var toggle: ((String) -> Void)? = nil
+    /// Multi-select clear-all.
+    var clear: (() -> Void)? = nil
     @State private var showNewGroup = false
     @State private var newGroupText = ""
+
+    private var multi: Bool { toggle != nil }
 
     private var remainingSuggestions: [String] {
         Self.suggested.filter { !allGroups.contains($0) }
     }
 
+    private var labelText: String {
+        if current.isEmpty { return "No group" }
+        if current.count == 1 { return current[0] }
+        return current.sorted().joined(separator: ", ")
+    }
+
     var body: some View {
         Menu {
             Button {
-                select(nil)
+                if multi { clear?() } else { select?(nil) }
             } label: {
-                if current == nil { Label("No group", systemImage: "checkmark") }
+                if current.isEmpty { Label("No group", systemImage: "checkmark") }
                 else { Text("No group") }
             }
             if !allGroups.isEmpty {
                 Divider()
                 ForEach(allGroups.sorted(), id: \.self) { group in
                     Button {
-                        select(group)
+                        if multi { toggle?(group) } else { select?(group) }
                     } label: {
-                        if group == current { Label(group, systemImage: "checkmark") }
+                        if current.contains(group) { Label(group, systemImage: "checkmark") }
                         else { Text(group) }
                     }
                 }
@@ -1417,7 +1438,9 @@ private struct GroupMenuButton: View {
                 Divider()
                 Section("Suggested") {
                     ForEach(remainingSuggestions, id: \.self) { group in
-                        Button(group) { select(group) }
+                        Button(group) {
+                            if multi { toggle?(group) } else { select?(group) }
+                        }
                     }
                 }
             }
@@ -1427,7 +1450,7 @@ private struct GroupMenuButton: View {
             HStack(spacing: 3) {
                 Image(systemName: "folder")
                     .font(.system(size: 11))
-                Text(current ?? "No group")
+                Text(labelText)
                     .font(.system(size: 12))
                     .lineLimit(1)
             }
@@ -1450,7 +1473,7 @@ private struct GroupMenuButton: View {
     private func commitNewGroup() {
         let name = newGroupText.trimmingCharacters(in: .whitespaces)
         guard !name.isEmpty else { return }
-        select(name)
+        if multi { toggle?(name) } else { select?(name) }
         newGroupText = ""
         showNewGroup = false
     }
@@ -1462,26 +1485,33 @@ private struct GroupPickerCompact: View {
     let allGroups: [String]
 
     var body: some View {
-        GroupMenuButton(current: selectedGroup.isEmpty ? nil : selectedGroup,
-                        allGroups: allGroups) { selectedGroup = $0 ?? "" }
+        GroupMenuButton(
+            current: selectedGroup.isEmpty ? [] : [selectedGroup],
+            allGroups: allGroups,
+            select: { selectedGroup = $0 ?? "" })
     }
 }
 
-/// One VIP list row with group picker and always-visible remove button.
+/// One VIP list row with multi-group picker and always-visible remove button.
 private struct VIPRow: View {
     let email: String
-    let groupName: String?
+    let groupNames: [String]
     let allGroups: [String]
     let remove: () -> Void
-    let setGroup: (String?) -> Void
+    let setGroups: ([String]) -> Void
+    let toggleGroup: (String) -> Void
 
     var body: some View {
         HStack {
             Text(email)
                 .lineLimit(1)
             Spacer()
-            GroupMenuButton(current: groupName, allGroups: allGroups, select: setGroup)
-                .help("Move to a group — or create a new one")
+            GroupMenuButton(
+                current: groupNames,
+                allGroups: allGroups,
+                toggle: toggleGroup,
+                clear: { setGroups([]) })
+                .help("Tag with one or more groups — click again to remove a tag")
             Button(action: remove) {
                 Image(systemName: "xmark.circle.fill")
                     .foregroundStyle(.secondary)

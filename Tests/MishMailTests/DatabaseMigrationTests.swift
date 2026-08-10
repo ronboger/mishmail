@@ -14,6 +14,7 @@ final class DatabaseMigrationTests: XCTestCase {
             }
             XCTAssertTrue(try db.tableExists("message_fts"))
             XCTAssertTrue(try db.tableExists("vipSender"), "v11 must add vipSender")
+            XCTAssertTrue(try db.tableExists("vipSenderGroup"), "v34 must add vipSenderGroup")
             let messageCols = try db.columns(in: "message").map(\.name)
             XCTAssertTrue(messageCols.contains("bccHeader"), "v4 must add bccHeader")
             XCTAssertTrue(messageCols.contains("hasAttachment"))

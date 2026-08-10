@@ -403,30 +403,50 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
     // MARK: - VIP tools
 
     func listVIPs() async throws -> String {
-        let (senders, groups): ([VIPSender], [VIPGroupRow]) =
+        let (senders, tags, groups): ([VIPSender], [VIPSenderGroup], [VIPGroupRow]) =
             try await AppDatabase.shared.dbPool.read { db in
-                (try VIPSender.fetchAll(db), try VIPGroupRow.fetchAll(db))
+                (try VIPSender.fetchAll(db),
+                 try VIPSenderGroup.fetchAll(db),
+                 try VIPGroupRow.fetchAll(db))
             }
         let enabledByName = Dictionary(uniqueKeysWithValues: groups.map { ($0.name, $0.enabled) })
+        var tagsByEmail: [String: [String]] = [:]
+        for tag in tags {
+            tagsByEmail[tag.email.lowercased(), default: []].append(tag.groupName)
+        }
         let payload = senders.map { s -> [String: Any] in
-            var row: [String: Any] = ["email": s.email]
-            if let g = s.groupName {
-                row["group"] = g
-                row["groupEnabled"] = enabledByName[g] ?? true
+            let email = s.email.lowercased()
+            var membership = VIPMembership.normalizeGroups(tagsByEmail[email] ?? [])
+            // Pre-v34 / dual-write fallback.
+            if membership.isEmpty, let g = s.groupName, !g.isEmpty {
+                membership = [g]
+            }
+            var row: [String: Any] = [
+                "email": s.email,
+                "groups": membership,
+                "active": VIPMembership.isActive(groups: membership, groupEnabled: enabledByName),
+            ]
+            // Backward-compat single-group field (first tag, if any).
+            if let first = membership.first {
+                row["group"] = first
+                row["groupEnabled"] = enabledByName[first] ?? true
+            }
+            if !membership.isEmpty {
+                row["groupsEnabled"] = Dictionary(uniqueKeysWithValues: membership.map {
+                    ($0, enabledByName[$0] ?? true)
+                })
             }
             return row
         }
         return try encodeJSON(payload)
     }
 
-    func addVIP(email: String, group: String?) async throws -> String {
+    func addVIP(email: String, group: String?, groups: [String]?) async throws -> String {
         let e = email.trimmingCharacters(in: .whitespaces).lowercased()
         guard e.contains("@") else {
             throw MCPToolError("Invalid email: \(email)")
         }
-        let groupName = (group?.trimmingCharacters(in: .whitespaces)).flatMap {
-            $0.isEmpty ? nil : $0
-        } ?? "Suggested"
+        let resolved = Self.resolvedVIPGroups(group: group, groups: groups)
 
         guard let store else {
             throw MCPToolError("Mail store is unavailable")
@@ -435,10 +455,81 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         if await MainActor.run(body: { store.demoMode }) {
             throw MCPToolError("VIP changes are disabled in the demo inbox")
         }
-        await MainActor.run {
-            store.addVIP(e, group: groupName)
+        let finalGroups = await MainActor.run { () -> [String] in
+            store.addVIP(e, groups: resolved)
+            return store.vipGroups[e] ?? resolved
         }
-        return try encodeJSON(["email": e, "group": groupName] as [String: Any])
+        return try encodeJSON(Self.vipResultJSON(email: e, groups: finalGroups))
+    }
+
+    func addVIPs(emails: [String], group: String?, groups: [String]?) async throws -> String {
+        let normalized = Array(Set(
+            emails.map { $0.trimmingCharacters(in: .whitespaces).lowercased() }
+                .filter { $0.contains("@") }
+        )).sorted()
+        guard !normalized.isEmpty else {
+            throw MCPToolError("No valid email addresses in emails")
+        }
+        // Count raw entries that failed validation (not de-duped).
+        let invalid = emails.filter {
+            let e = $0.trimmingCharacters(in: .whitespaces).lowercased()
+            return e.isEmpty || !e.contains("@")
+        }.count
+        let resolved = Self.resolvedVIPGroups(group: group, groups: groups)
+
+        guard let store else {
+            throw MCPToolError("Mail store is unavailable")
+        }
+        if await MainActor.run(body: { store.demoMode }) {
+            throw MCPToolError("VIP changes are disabled in the demo inbox")
+        }
+        let (added, results) = await MainActor.run { () -> (Int, [[String: Any]]) in
+            let before = store.vipEmails
+            let newCount = store.addVIPs(normalized, groups: resolved)
+            let rows: [[String: Any]] = normalized.map { e in
+                var row = Self.vipResultJSON(email: e, groups: store.vipGroups[e] ?? resolved)
+                row["created"] = !before.contains(e)
+                return row
+            }
+            return (newCount, rows)
+        }
+        return try encodeJSON([
+            "added": added,
+            "updated": normalized.count - added,
+            "skippedInvalid": invalid,
+            "groups": resolved,
+            "vips": results,
+        ] as [String: Any])
+    }
+
+    func setVIPGroups(email: String, groups: [String]) async throws -> String {
+        let e = email.trimmingCharacters(in: .whitespaces).lowercased()
+        guard e.contains("@") else {
+            throw MCPToolError("Invalid email: \(email)")
+        }
+        let names = VIPMembership.normalizeGroups(groups)
+        guard let store else {
+            throw MCPToolError("Mail store is unavailable")
+        }
+        if await MainActor.run(body: { store.demoMode }) {
+            throw MCPToolError("VIP changes are disabled in the demo inbox")
+        }
+        let exists = await MainActor.run { store.vipEmails.contains(e) }
+        guard exists else {
+            throw MCPToolError("Not a VIP: \(e). Use add_vip / add_vips first.")
+        }
+        await MainActor.run {
+            store.setVIPGroups(e, groups: names)
+        }
+        return try encodeJSON(Self.vipResultJSON(email: e, groups: names))
+    }
+
+    private static func vipResultJSON(email: String, groups: [String]) -> [String: Any] {
+        var row: [String: Any] = ["email": email, "groups": groups]
+        if let first = groups.first {
+            row["group"] = first
+        }
+        return row
     }
 
     func removeVIP(email: String) async throws -> String {
@@ -456,6 +547,12 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
             store.removeVIP(e)
         }
         return try encodeJSON(["email": e, "removed": true] as [String: Any])
+    }
+
+    /// MCP default group is "Suggested" when neither group nor groups is given.
+    private static func resolvedVIPGroups(group: String?, groups: [String]?) -> [String] {
+        let resolved = VIPMembership.resolveGroups(group: group, groups: groups)
+        return resolved.isEmpty ? ["Suggested"] : resolved
     }
 
     // MARK: - Helpers

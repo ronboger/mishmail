@@ -357,11 +357,21 @@ struct ThreadSummaryRow: Codable, Identifiable, Hashable, FetchableRecord, Persi
 
 /// A VIP sender: mail from this address pins to the Inbox Priority section.
 /// Emails are stored lowercased; the list is global across accounts.
+///
+/// Multi-group membership lives in `vipSenderGroup`. `groupName` remains as a
+/// denormalized "primary" (first) group for older rows and simple display paths.
 struct VIPSender: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "vipSender"
     var email: String
     var groupName: String? = nil
     var id: String { email }
+}
+
+/// Many-to-many VIP group tags (v34). Cascade-deletes with the sender.
+struct VIPSenderGroup: Codable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "vipSenderGroup"
+    var email: String
+    var groupName: String
 }
 
 /// A VIP group definition: persists even with no members, and `enabled`
@@ -1373,6 +1383,22 @@ final class AppDatabase: @unchecked Sendable {
             try db.execute(sql: """
                 CREATE VIRTUAL TABLE message_fts_vocab
                 USING fts5vocab('message_fts', 'row')
+                """)
+        }
+
+        // v34: multi-group VIP tags. A sender can belong to several groups
+        // (e.g. investors + board). Backfill from the single groupName column.
+        m.registerMigration("v34") { db in
+            try db.create(table: "vipSenderGroup") { t in
+                t.column("email", .text).notNull()
+                    .references("vipSender", onDelete: .cascade)
+                t.column("groupName", .text).notNull()
+                t.primaryKey(["email", "groupName"])
+            }
+            try db.execute(sql: """
+                INSERT OR IGNORE INTO vipSenderGroup (email, groupName)
+                SELECT email, groupName FROM vipSender
+                WHERE groupName IS NOT NULL AND TRIM(groupName) != ''
                 """)
         }
         return m

@@ -202,7 +202,28 @@ enum MCPRouter {
             guard let email = stringArg(args, "email") else {
                 throw ToolDispatchError.invalidParams("email is required")
             }
-            return try await tools.addVIP(email: email, group: stringArg(args, "group"))
+            return try await tools.addVIP(
+                email: email,
+                group: stringArg(args, "group"),
+                groups: stringArrayArg(args, "groups"))
+
+        case "add_vips":
+            guard let emails = stringArrayArg(args, "emails"), !emails.isEmpty else {
+                throw ToolDispatchError.invalidParams("emails must be a non-empty array")
+            }
+            return try await tools.addVIPs(
+                emails: emails,
+                group: stringArg(args, "group"),
+                groups: stringArrayArg(args, "groups"))
+
+        case "set_vip_groups":
+            guard let email = stringArg(args, "email") else {
+                throw ToolDispatchError.invalidParams("email is required")
+            }
+            guard let groups = stringArrayArg(args, "groups") else {
+                throw ToolDispatchError.invalidParams("groups is required (use [] to clear)")
+            }
+            return try await tools.setVIPGroups(email: email, groups: groups)
 
         case "remove_vip":
             guard let email = stringArg(args, "email") else {
