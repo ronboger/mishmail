@@ -75,8 +75,8 @@ final class HTMLBodyDarkModeTests: XCTestCase {
         let onDark = HTMLBodyDarkMode.fgOnDarkClass
         let onLight = HTMLBodyDarkMode.fgOnLightClass
         guard let whereRange = css.range(of: ":not(:where("),
-              let onDarkRule = css.range(of: ".\(onDark)"),
-              let onLightRule = css.range(of: ".\(onLight)")
+              let onDarkRule = css.range(of: ".\(onDark):not("),
+              let onLightRule = css.range(of: ".\(onLight):not(")
         else {
             XCTFail("missing :where exclusion or fg class rules")
             return
