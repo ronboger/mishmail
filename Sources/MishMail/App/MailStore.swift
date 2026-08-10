@@ -2282,6 +2282,25 @@ struct ComposeRequest: Identifiable {
         // Primary badge tracks the inbox category hide set (Updates/Forums),
         // not only the fixed promo/social tab split.
         let inboxHideCategories = inboxBadgeHideCategories
+        // Priority candidate fetch (inbox only): snapshot settings on MainActor.
+        // Defaults match ThreadListView @AppStorage (starred / 7 days / 10).
+        let priorityMode: PrioritySplit.Mode = {
+            let raw = UserDefaults.standard.string(forKey: "priorityMode")
+            return PrioritySplit.Mode(rawValue: raw ?? "") ?? .starred
+        }()
+        let priorityWindowDays: Int = {
+            if UserDefaults.standard.object(forKey: "priorityWindowDays") == nil {
+                return 7
+            }
+            return UserDefaults.standard.integer(forKey: "priorityWindowDays")
+        }()
+        let priorityMaxCount: Int = {
+            if UserDefaults.standard.object(forKey: "priorityMaxCount") == nil {
+                return 10
+            }
+            return UserDefaults.standard.integer(forKey: "priorityMaxCount")
+        }()
+        let priorityHiddenCategories = chips.category.hide
         let pool = db
 
         threadReloadTask?.cancel()
@@ -2292,10 +2311,18 @@ struct ComposeRequest: Identifiable {
                 var counts: [String: Int]
                 var badge: Int
                 var hasMore: Bool
+                /// Cursor from the unmerged page bottom — not the Priority-
+                /// merged list, so Load older cannot skip rows between the
+                /// true page end and an older starred candidate.
+                var nextCursor: ThreadListCursor?
             }
             let reloadKind = search.isEmpty ? "view" : "search"
             let totalInterval = PerfMetrics.begin(.reloadTotal, meta: reloadKind)
             let payload: ReloadPayload? = try? await pool.read { db -> ReloadPayload in
+                // Non-search: keep the filtered request so Priority candidates
+                // can re-use the same base+chips+account scope after the page fetch.
+                var listRequest: QueryInterfaceRequest<MailThread>?
+                var inboundSort = false
                 let result: [MailThread] = try PerfMetrics.measure(
                     .reloadList, meta: "\(reloadKind) limit=\(windowLimit)"
                 ) {
@@ -2408,23 +2435,47 @@ struct ComposeRequest: Identifiable {
                         q = MailStore.applyChips(q, chips, keepIds: keepIds, starKeepIds: starKeepIds)
                         if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
                         let inbound = MailStore.usesInboundSort(for: view)
+                        inboundSort = inbound
+                        listRequest = q
                         let key = ThreadListPaging.sortDateSQL(inboundSort: inbound)
                         return try q.order(sql: "\(key) DESC, id DESC")
                             .limit(fetchLimit).fetchAll(db)
                     }
                 }
                 let (page, hasMore) = ThreadListPaging.splitPage(result, pageSize: windowLimit)
-                let vipHits = try PerfMetrics.measure(.reloadVIP, meta: "n=\(page.count)") {
+                // Paging cursor from the unmerged page only — Priority merge
+                // can append older starred candidates that must not advance
+                // the Load-older watermark.
+                let nextCursor = ThreadListPaging.nextCursor(
+                    after: page, inboundSort: inboundSort)
+                // Inbox Priority: merge deterministic candidates so stars outside
+                // the page window still pin. hasMore stays on the original probe.
+                var listPage = page
+                if search.isEmpty, view == .inbox,
+                   priorityMode == .starred || priorityMode == .starredImportant,
+                   let base = listRequest,
+                   let candReq = PriorityCandidates.request(
+                       base, mode: priorityMode,
+                       hiddenCategories: priorityHiddenCategories,
+                       newerThan: PrioritySplit.cutoff(days: priorityWindowDays),
+                       maxCount: priorityMaxCount,
+                       inboundSort: inboundSort) {
+                    let candidates = try candReq.fetchAll(db)
+                    listPage = PriorityCandidates.merge(
+                        page: page, candidates: candidates, inboundSort: inboundSort)
+                }
+                let vipHits = try PerfMetrics.measure(.reloadVIP, meta: "n=\(listPage.count)") {
                     try MailStore.computeVIPThreadIds(
-                        threads: page, activeVIP: activeVIP, db: db)
+                        threads: listPage, activeVIP: activeVIP, db: db)
                 }
                 let (counts, badge) = try PerfMetrics.measure(.reloadCounts) {
                     try MailStore.fetchSidebarCounts(
                         db: db, activeAccount: activeAccount, badgeAccount: badgeAccount,
                         hideCategories: inboxHideCategories)
                 }
-                return ReloadPayload(threads: page, vipHits: vipHits,
-                                     counts: counts, badge: badge, hasMore: hasMore)
+                return ReloadPayload(threads: listPage, vipHits: vipHits,
+                                     counts: counts, badge: badge, hasMore: hasMore,
+                                     nextCursor: nextCursor)
             }
             if let payload {
                 totalInterval.end(extraMeta: "n=\(payload.threads.count)")
@@ -2471,12 +2522,11 @@ struct ComposeRequest: Identifiable {
                 if search.isEmpty {
                     self.listWindowLimit = max(self.listWindowLimit, list.count)
                     self.hasMoreThreads = payload.hasMore
+                    self.listCursor = payload.nextCursor
                 } else {
                     self.hasMoreThreads = false
+                    self.listCursor = nil
                 }
-                let inbound = MailStore.usesInboundSort(for: self.selectedView)
-                self.listCursor = ThreadListPaging.nextCursor(
-                    after: list, inboundSort: inbound)
                 self.vipThreadIds = payload.vipHits
                 // Local sidebar counts only: they use the same denorm filters as
                 // the visible lists (inbox/promotions/social exclude spam, and
@@ -2616,9 +2666,12 @@ struct ComposeRequest: Identifiable {
                 self.vipThreadIds.formUnion(vipHits)
                 self.listWindowLimit = max(self.listWindowLimit, self.threads.count)
                 self.hasMoreThreads = split.hasMore
+                // Cursor from this fetched page only — not self.threads, which
+                // may still hold older Priority-merged candidates past the
+                // true page bottom.
                 let inbound = MailStore.usesInboundSort(for: self.selectedView)
                 self.listCursor = ThreadListPaging.nextCursor(
-                    after: self.threads, inboundSort: inbound)
+                    after: page, inboundSort: inbound)
             }
         }
     }

@@ -161,6 +161,7 @@ targets:
       - Sources/MishMail/Support/SnoozePresets.swift
       - Sources/MishMail/Support/PollCadence.swift
       - Sources/MishMail/Support/PrioritySplit.swift
+      - Sources/MishMail/Support/PriorityCandidates.swift
       - Sources/MishMail/Support/PrioritySectionAdvance.swift
       - Sources/MishMail/Support/StarNavAnchor.swift
       - Sources/MishMail/Support/ParticipantMenuVIP.swift
