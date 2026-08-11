@@ -504,6 +504,13 @@ enum Markdown {
                         var depth = 1
                         j = input.index(after: j)
                         while j < input.endIndex, depth > 0 {
+                            if input[j] == "\\" {
+                                // Skip escaped char so \{ \} don't affect depth
+                                // (mirrors takeBraceGroup).
+                                j = input.index(after: j)
+                                if j < input.endIndex { j = input.index(after: j) }
+                                continue
+                            }
                             if input[j] == "{" { depth += 1 }
                             else if input[j] == "}" { depth -= 1 }
                             j = input.index(after: j)
