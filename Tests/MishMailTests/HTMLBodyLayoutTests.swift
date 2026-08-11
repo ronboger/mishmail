@@ -447,9 +447,17 @@ final class HTMLBodyLayoutTests: XCTestCase {
         XCTAssertTrue(js.contains(HTMLBodyLayout.heightHandlerName))
         XCTAssertTrue(js.contains("addEventListener('load'"))
         XCTAssertTrue(js.contains("addEventListener('error'"))
-        // Still prefer visible child bottoms (no dead quote gap regression).
+        // Visible child bottoms (no dead quote gap regression) plus scrollHeight
+        // so height-constrained wrappers that clip overflow still measure tall.
         XCTAssertTrue(js.contains("body.children"))
         XCTAssertTrue(js.contains("getBoundingClientRect"))
+        XCTAssertTrue(js.contains("scrollHeight"),
+                      "measure must consult scrollHeight for clipped wrappers")
+        XCTAssertTrue(js.contains("r.top + sh") || js.contains("r.top + (el.scrollHeight"),
+                      "measure edge must be max(border-box, top+scrollHeight)")
+        // Never re-introduce documentElement.scrollHeight (viewport floor → grow).
+        XCTAssertFalse(js.contains("documentElement.scrollHeight"),
+                       "documentElement.scrollHeight floors at viewport")
         // Infinite-scroll breakers.
         XCTAssertTrue(js.contains("neutralizeViewportHeights"))
         XCTAssertTrue(js.contains("__mmFrozenH"))
@@ -468,10 +476,31 @@ final class HTMLBodyLayoutTests: XCTestCase {
         XCTAssertTrue(js.contains("setProperty('height', 'auto'"))
         XCTAssertTrue(js.contains("authoredPct"))
         XCTAssertTrue(js.contains("charAt") && js.contains("'%'"))
+        // Stylesheet/clip + inline vh height neutralization (Fidelity cut-off).
+        XCTAssertTrue(js.contains("clipsContent"),
+                      "must neutralize viewport-tall boxes that clip overflow")
+        XCTAssertTrue(js.contains("authoredVh"),
+                      "must neutralize inline height:NNvh")
+        XCTAssertTrue(js.contains("nearVH"))
+        // Image events re-arm neutralize (placeholders can establish clip after first pass).
+        XCTAssertTrue(js.contains("window.__mmLastNeutralVH = 0"))
         // Below-viewport freeze guard anchored to streak-start viewport.
         XCTAssertTrue(js.contains("__mmFeedbackBaseVH"))
         XCTAssertTrue(js.contains("base + DELTA_TOL >= baseVH")
                       || js.contains("base + DELTA_TOL >= window.__mmFeedbackBaseVH"))
+    }
+
+    func testClippedViewportWrapperFixtureHasTallBodyAndShell() {
+        // Structure-level regression for Fidelity-like cut-off: shell clips,
+        // body copy must remain in the markup for measure/scrollHeight.
+        let html = Transactional2FAFixture.clippedViewportWrapperHTML
+        XCTAssertTrue(html.contains("height: 100%"))
+        XCTAssertTrue(html.contains("overflow: hidden"))
+        XCTAssertTrue(html.contains("Your trade confirmation is available"))
+        XCTAssertTrue(html.contains("Symbol: EXAMPLE"))
+        XCTAssertTrue(html.contains("cdn.example-fidelity.test"))
+        // Logo has authored dimensions so blocked-image path keeps layout.
+        XCTAssertTrue(html.contains("width=\"140\"") && html.contains("height=\"36\""))
     }
 
     func testTeardownJSDisconnectsObserverAndClearsFeedbackState() {

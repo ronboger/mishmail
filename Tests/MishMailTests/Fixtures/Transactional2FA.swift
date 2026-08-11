@@ -111,4 +111,71 @@ enum Transactional2FAFixture {
           <blockquote>On Mon, someone wrote:<br>old history that should hide</blockquote>
         </div>
         """
+
+    /// Transactional shell that clips tall content inside a viewport-tied
+    /// wrapper (Fidelity trade-confirm style). Stylesheet `height: 100%` on
+    /// the outer table + `overflow: hidden` makes border-box measure report
+    /// only the host frame while the body rows below the header are real
+    /// content. Layout JS must use scrollHeight (and neutralize clipping
+    /// heights) so the card is not permanently cut off.
+    static let clippedViewportWrapperHTML = """
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="utf-8">
+          <title>Your trade confirmation is available</title>
+          <style type="text/css">
+            html, body { margin: 0; padding: 0; height: 100%; }
+            .shell {
+              width: 100%;
+              height: 100%;
+              overflow: hidden;
+              background: #348123;
+            }
+            .card {
+              margin: 24px auto;
+              width: 560px;
+              background: #ffffff;
+              border-radius: 8px;
+            }
+            .hero { padding: 20px 24px; border-bottom: 1px solid #e5e5e5; }
+            .body { padding: 24px; font: 15px/1.4 -apple-system, sans-serif; color: #222; }
+            .row { margin: 0 0 12px 0; }
+          </style>
+        </head>
+        <body>
+          <table class="shell" width="100%" cellpadding="0" cellspacing="0" role="presentation">
+            <tr>
+              <td align="center">
+                <table class="card" width="560" cellpadding="0" cellspacing="0" role="presentation">
+                  <tr>
+                    <td class="hero">
+                      <img src="https://cdn.example-fidelity.test/logo.png"
+                           width="140" height="36" alt="Example Broker" border="0">
+                      <span style="float:right;font:13px -apple-system,sans-serif;color:#222;">
+                        RON BOGER<br>
+                        <a href="https://example-fidelity.test/login">Log in</a>
+                      </span>
+                    </td>
+                  </tr>
+                  <tr>
+                    <td class="body">
+                      <p class="row">Your trade confirmation is available.</p>
+                      <p class="row">Symbol: EXAMPLE &nbsp; Qty: 10 &nbsp; Side: Buy</p>
+                      <p class="row">Trade date: 2026-08-11</p>
+                      <p class="row">Account: ****1234</p>
+                      <p class="row">Additional settlement details and disclosures
+                      continue for several paragraphs so the body is clearly taller
+                      than a short reading-pane host frame. Line two of the long
+                      block. Line three of the long block. Line four.</p>
+                      <p class="row">Please review the confirmation in your account.</p>
+                    </td>
+                  </tr>
+                </table>
+              </td>
+            </tr>
+          </table>
+        </body>
+        </html>
+        """
 }

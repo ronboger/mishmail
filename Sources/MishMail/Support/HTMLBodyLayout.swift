@@ -26,6 +26,14 @@ import Foundation
 /// re-measures while frozen and adopts a taller height only when the viewport
 /// is stable — still bounded by an adoption budget and `maxContentHeight`.
 ///
+/// Measure uses each body child's border-box **and** its `scrollHeight`. A
+/// wrapper with stylesheet `height: 100vh` / `height: 100%` reports a short
+/// border box equal to the WebView frame while real content overflows inside
+/// (often with `overflow: hidden`). Border-box-only measure froze recovery at
+/// that short height — transactional mail (Fidelity confirmations, 2FA) looked
+/// permanently cut off. `documentElement.scrollHeight` is still avoided: it
+/// floors at the viewport and re-latches to the host frame.
+///
 /// ## Security
 /// Email HTML is untrusted. Authored dimensions are capped so
 /// `<img height="100000">` cannot create an enormous card. Caps apply only to
@@ -522,14 +530,12 @@ enum HTMLBodyLayout {
           }
 
           /* Kill computed *min-heights* that track the WKWebView viewport, and
-             computed *heights* whose authored value is percentage-based and
-             resolves ≈ viewport. Email stylesheets often set min-height:100vh
-             or height:100% on wrappers; attribute CSS cannot see stylesheet
-             rules. Fixed px heights (e.g. height:600px hero that briefly
-             equals the viewport) must not be permanently collapsed — only
-             percentage-authored heights are sticky-neutralized on the height
-             axis. Min-height threshold: within 2px of the current viewport
-             and at least 200px. */
+             computed *heights* that couple content to the viewport:
+             - percentage- or vh-authored (inline / attribute)
+             - stylesheet height that equals the viewport *and* clips overflow
+               (scrollHeight >> border box) — fixed-px heroes that merely equal
+               the viewport do not clip and stay intact.
+             Attribute CSS cannot see stylesheet rules; this walk covers them. */
           function neutralizeViewportHeights(){
             var vh = viewportHeight();
             if (vh < 200) return false;
@@ -551,16 +557,29 @@ enum HTMLBodyLayout {
               if (!cs) continue;
               var mh = parseFloat(cs.minHeight);
               var killMin = (mh === mh) && mh >= 200 && Math.abs(mh - vh) <= 2;
-              /* Percentage-authored height only — never fixed px heroes. */
               var styleH = '';
               try { styleH = (el.style && el.style.height) ? el.style.height : ''; } catch (e) {}
               var attrH = '';
               try { attrH = el.getAttribute('height') || ''; } catch (e) {}
+              var styleHTrim = styleH ? String(styleH).replace(/\\s+/g, '') : '';
               var authoredPct =
                 (styleH && styleH.charAt(styleH.length - 1) === '%')
                 || (attrH && String(attrH).charAt(String(attrH).length - 1) === '%');
+              /* Inline height:100vh / 100dvh etc. (attribute CSS may miss
+                 spacing variants; stylesheet rules never appear in styleH). */
+              var authoredVh = false;
+              if (styleHTrim) {
+                var lower = styleHTrim.toLowerCase();
+                authoredVh = /\\d+(\\.\\d+)?(vh|dvh|svh|lvh)$/.test(lower);
+              }
               var ch = parseFloat(cs.height);
-              var killHeight = authoredPct && (ch === ch) && Math.abs(ch - vh) <= 2;
+              var nearVH = (ch === ch) && ch >= 200 && Math.abs(ch - vh) <= 2;
+              /* Content clipped inside a viewport-tall box (stylesheet
+                 height:100% / 100vh with overflow). Fixed heroes that fill
+                 the viewport without overflow keep scrollHeight ≈ ch. */
+              var clipsContent = nearVH
+                && ((el.scrollHeight || 0) > ch + 8);
+              var killHeight = nearVH && (authoredPct || authoredVh || clipsContent);
               if (!killMin && !killHeight) continue;
               if (killMin) el.style.setProperty('min-height', '0', 'important');
               if (killHeight) el.style.setProperty('height', 'auto', 'important');
@@ -577,13 +596,23 @@ enum HTMLBodyLayout {
             var bottom = bodyTop;
             var kids = body.children;
             for (var i = 0; i < kids.length; i++) {
-              var r = kids[i].getBoundingClientRect();
-              /* display:none quote containers report height 0 — skip them. */
-              if (r.height > 0) bottom = Math.max(bottom, r.bottom);
+              var el = kids[i];
+              var r = el.getBoundingClientRect();
+              /* display:none quote containers report height 0 and scrollHeight
+                 0 — skip them so collapsed trails do not re-open a dead gap. */
+              var sh = el.scrollHeight || 0;
+              if (r.height <= 0 && sh <= 0) continue;
+              /* Border-box alone under-reports wrappers with CSS height equal
+                 to the WebView frame while real content overflows inside
+                 (transactional/marketing templates). Child scrollHeight
+                 includes that overflow; avoid the documentElement height
+                 property (viewport floor re-latches to the host frame). */
+              var edge = Math.max(r.bottom, r.top + sh);
+              bottom = Math.max(bottom, edge);
             }
             var content = bottom - bodyTop;
             if (content < 1) {
-              content = Math.max(body.scrollHeight, body.getBoundingClientRect().height);
+              content = Math.max(body.scrollHeight || 0, body.getBoundingClientRect().height);
             }
             return Math.ceil(Math.max(Math.min(content, MAX_CONTENT_H), MIN_H));
           }
@@ -705,6 +734,10 @@ enum HTMLBodyLayout {
               window.__mmFeedbackBaseVH = 0;
               window.__mmFreezeStableVH = 0;
             }
+            /* Placeholders can establish viewport-tied heights after first
+               neutralize pass; force a re-walk (VH may be unchanged). */
+            window.__mmLastNeutralVH = 0;
+            neutralizeViewportHeights();
             report();
           }
 
