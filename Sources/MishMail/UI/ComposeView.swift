@@ -1167,6 +1167,15 @@ struct ComposeView: View {
                         .keyboardShortcut("/", modifiers: .command)
                         .help(ComposeToolbarItem.snippets.help)
                         .accessibilityLabel(ComposeToolbarItem.snippets.title)
+                    } else {
+                        // Keep ⌘/ even when the button is hidden (Settings only
+                        // hides chrome; slash insert and the panel still work).
+                        Button {
+                            withAnimation(.easeOut(duration: 0.12)) { showSnippets.toggle() }
+                        } label: { EmptyView() }
+                        .frame(width: 0, height: 0)
+                        .accessibilityHidden(true)
+                        .keyboardShortcut("/", modifiers: .command)
                     }
 
                     // Available for replies, forwards, and new mail — the draft is

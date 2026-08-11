@@ -405,10 +405,22 @@ enum Markdown {
                     i = after
                     continue
                 }
-                // \| \{ \} etc. single-char escapes
+                // Single-char escapes / spacing: \, \; \! \  \{ \} \| …
                 let next = input[after]
                 if !next.isLetter {
-                    out += html ? escapeHTML(String(next)) : String(next)
+                    let spaced: String?
+                    switch next {
+                    case ",", ":", ">": spaced = html ? "&nbsp;" : " "
+                    case ";": spaced = html ? "&nbsp;&nbsp;" : " "
+                    case "!": spaced = ""  // negative thin space — drop
+                    case " ": spaced = " "
+                    default: spaced = nil
+                    }
+                    if let spaced {
+                        out += spaced
+                    } else {
+                        out += html ? escapeHTML(String(next)) : String(next)
+                    }
                     i = input.index(after: after)
                     continue
                 }
@@ -479,6 +491,26 @@ enum Markdown {
                 let body: String
                 if i < input.endIndex, input[i] == "{" {
                     body = takeBraceGroup(input, from: &i) ?? ""
+                } else if i < input.endIndex, input[i] == "\\" {
+                    // Bare command script: e^\pi, x_\alpha — take \name (and an
+                    // optional brace group for \sqrt{…}-style) as the body.
+                    // Without this, only `\` is consumed and "pi" leaks as text.
+                    let cmdStart = i
+                    var j = input.index(after: i)
+                    while j < input.endIndex, input[j].isLetter {
+                        j = input.index(after: j)
+                    }
+                    if j < input.endIndex, input[j] == "{" {
+                        var depth = 1
+                        j = input.index(after: j)
+                        while j < input.endIndex, depth > 0 {
+                            if input[j] == "{" { depth += 1 }
+                            else if input[j] == "}" { depth -= 1 }
+                            j = input.index(after: j)
+                        }
+                    }
+                    body = String(input[cmdStart..<j])
+                    i = j
                 } else if i < input.endIndex {
                     body = String(input[i])
                     i = input.index(after: i)
@@ -578,7 +610,6 @@ enum Markdown {
         return out
     }
 
-    /// Longer names first so `\rightarrow` wins over `\to` when both exist.
     private static let mathCommands: [String: String] = [
         "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ",
         "epsilon": "ε", "varepsilon": "ε", "zeta": "ζ", "eta": "η",
@@ -611,7 +642,6 @@ enum Markdown {
         "angle": "∠", "perp": "⊥", "parallel": "∥",
         "degree": "°", "prime": "′",
         "quad": "&nbsp;&nbsp;", "qquad": "&nbsp;&nbsp;&nbsp;&nbsp;",
-        " ": " ", ",": " ",
     ]
 
     // MARK: - Internals

@@ -162,6 +162,13 @@ final class MarkdownTests: XCTestCase {
         let sqrt = Markdown.mathToHTML("\\sqrt{x^2}")
         XCTAssertTrue(sqrt.contains("√"))
         XCTAssertTrue(sqrt.contains("x²") || sqrt.contains("x"))
+
+        // Bare command scripts must not leave "pi" as plain text after `^\`.
+        let bare = Markdown.mathToHTML("e^\\pi")
+        XCTAssertTrue(bare.contains("π"), bare)
+        XCTAssertFalse(bare.contains("pi"), bare)
+        XCTAssertEqual(Markdown.prettyMath("e^\\pi"), "e^(π)")
+        XCTAssertEqual(Markdown.prettyMath("x_\\alpha"), "x_(α)")
     }
 
     func testMathEscapesHTMLInBody() {

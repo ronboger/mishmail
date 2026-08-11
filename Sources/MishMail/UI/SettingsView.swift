@@ -1115,7 +1115,7 @@ struct AppearanceSettings: View {
                 } header: {
                     Text("Compose toolbar")
                 } footer: {
-                    Text("Hide buttons you don't use (math, AI draft, format tools…) so the footer stays roomy on narrow windows. Shortcuts still work for hidden format actions; markdown you type is unchanged.")
+                    Text("Hide buttons you don't use (math, AI draft, format tools…) so the footer stays roomy on narrow windows. Keyboard shortcuts (⌘B, ⌘⇧M, ⌘/, …) and markdown you type still work.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
