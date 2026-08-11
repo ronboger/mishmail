@@ -820,14 +820,23 @@ struct ThreadDetailView: View {
     }
 
     /// Seed open cards for the active policy and hydrate each body.
+    ///
+    /// Multiple mode always re-applies the full seed: MessageCard's last-card
+    /// `onAppear` can race and open only the newest id before this runs, which
+    /// would otherwise leave older cards collapsed in side-by-side.
     private func seedExpandedMessagesIfNeeded() {
-        guard expandedMessageIds.isEmpty else { return }
         let seed = MessageExpandPolicy.initialExpandedIds(
             policy: messageExpandPolicy,
             nonDraftIds: nonDraftMessageIds,
             lastNonDraftId: lastNonDraftId)
-        expandedMessageIds = seed
-        for id in seed {
+        switch messageExpandPolicy {
+        case .multiple:
+            expandedMessageIds = seed
+        case .single:
+            guard expandedMessageIds.isEmpty else { return }
+            expandedMessageIds = seed
+        }
+        for id in expandedMessageIds {
             loadBodyIfNeeded(id: id)
         }
     }
