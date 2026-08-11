@@ -183,8 +183,8 @@ final class ContactMinerTests: XCTestCase {
     func testRankedScrubsLegacyEmailShapedNames() {
         // Older weight maps may still hold email-as-name until a full rebuild.
         let legacy: ContactMiner.WeightMap = [
-            "john@ormoni.bio": (name: "John@ormoni.bio", weight: 3),
-            "alice@x.com": (name: "Alice Smith", weight: 1),
+            "john@ormoni.bio": (name: "John@ormoni.bio", weight: 3, nameFromSelf: false),
+            "alice@x.com": (name: "Alice Smith", weight: 1, nameFromSelf: true),
         ]
         let ranked = ContactMiner.ranked(from: legacy)
         let byEmail = Dictionary(uniqueKeysWithValues: ranked.map { ($0.email, $0.name) })
@@ -210,5 +210,118 @@ final class ContactMinerTests: XCTestCase {
             into: &weights,
             excluding: [])
         XCTAssertTrue(weights.isEmpty)
+    }
+
+    // MARK: - Display name selection (From > To/Cc, reject glued typos)
+
+    /// Vas-style To typo "jJoshua Yang" must not beat Josh's own From name.
+    func testFromNameBeatsLongerToTypo() {
+        var weights: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(
+            messages: [
+                msg(rowid: 1,
+                    to: "jJoshua Yang <joshua@glyphic.bio>",
+                    labels: "INBOX"),
+                msg(rowid: 2,
+                    from: "Joshua Yang <joshua@glyphic.bio>",
+                    labels: "INBOX"),
+            ],
+            into: &weights,
+            excluding: ["me@x.com"])
+        XCTAssertEqual(weights["joshua@glyphic.bio"]?.name, "Joshua Yang")
+        XCTAssertEqual(weights["joshua@glyphic.bio"]?.nameFromSelf, true)
+    }
+
+    /// Once a From name is locked in, a longer To typo must not replace it.
+    func testToTypoDoesNotOverwriteExistingFromName() {
+        var weights: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(
+            messages: [
+                msg(rowid: 1,
+                    from: "Joshua Yang <joshua@glyphic.bio>",
+                    labels: "INBOX"),
+                msg(rowid: 2,
+                    to: "jJoshua Yang <joshua@glyphic.bio>",
+                    labels: "INBOX"),
+            ],
+            into: &weights,
+            excluding: ["me@x.com"])
+        XCTAssertEqual(weights["joshua@glyphic.bio"]?.name, "Joshua Yang")
+        XCTAssertEqual(weights["joshua@glyphic.bio"]?.nameFromSelf, true)
+    }
+
+    /// Even without a From sighting, a glued 1-char prefix should not win on length.
+    func testTypoPrefixRejectedAmongToNames() {
+        var weights: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(
+            messages: [
+                msg(rowid: 1, to: "Joshua Yang <joshua@glyphic.bio>"),
+                msg(rowid: 2, to: "jJoshua Yang <joshua@glyphic.bio>"),
+            ],
+            into: &weights,
+            excluding: ["me@x.com"])
+        XCTAssertEqual(weights["joshua@glyphic.bio"]?.name, "Joshua Yang")
+        XCTAssertEqual(weights["joshua@glyphic.bio"]?.nameFromSelf, false)
+    }
+
+    /// Reverse order: typo first, then correct To — correct wins via typo rule.
+    func testCorrectToNameBeatsPriorTypoPrefix() {
+        var weights: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(
+            messages: [
+                msg(rowid: 1, to: "jJoshua Yang <joshua@glyphic.bio>"),
+                msg(rowid: 2, to: "Joshua Yang <joshua@glyphic.bio>"),
+            ],
+            into: &weights,
+            excluding: ["me@x.com"])
+        XCTAssertEqual(weights["joshua@glyphic.bio"]?.name, "Joshua Yang")
+    }
+
+    /// Titles / real longer forms still win over short nicknames (same From tier).
+    func testLongerFromNameStillWinsOverShortFrom() {
+        var weights: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(
+            messages: [
+                msg(rowid: 1, from: "F <friend@x.com>"),
+                msg(rowid: 2, from: "Friendly Person <friend@x.com>"),
+            ],
+            into: &weights,
+            excluding: [])
+        XCTAssertEqual(weights["friend@x.com"]?.name, "Friendly Person")
+        XCTAssertEqual(weights["friend@x.com"]?.nameFromSelf, true)
+    }
+
+    /// "Dr " (3 chars + space) is not a typo prefix — longer professional name wins.
+    func testTitlePrefixNotTreatedAsTypo() {
+        var weights: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(
+            messages: [
+                msg(rowid: 1, from: "Jane Doe <jane@x.com>"),
+                msg(rowid: 2, from: "Dr Jane Doe <jane@x.com>"),
+            ],
+            into: &weights,
+            excluding: [])
+        XCTAssertEqual(weights["jane@x.com"]?.name, "Dr Jane Doe")
+    }
+
+    func testIsLikelyTypoPrefix() {
+        XCTAssertTrue(ContactMiner.isLikelyTypoPrefix(
+            longer: "jJoshua Yang", shorter: "Joshua Yang"))
+        XCTAssertTrue(ContactMiner.isLikelyTypoPrefix(
+            longer: "xxAlice", shorter: "Alice"))
+        XCTAssertFalse(ContactMiner.isLikelyTypoPrefix(
+            longer: "Dr Jane Doe", shorter: "Jane Doe"))
+        XCTAssertFalse(ContactMiner.isLikelyTypoPrefix(
+            longer: "Joshua Yang", shorter: "Josh"))
+        XCTAssertFalse(ContactMiner.isLikelyTypoPrefix(
+            longer: "Alice", shorter: "Alice"))
+    }
+
+    func testPreferredNameFromBeatsTo() {
+        let r = ContactMiner.preferredName(
+            current: "jJoshua Yang", currentFromSelf: false,
+            candidate: "Joshua Yang", candidateFromSelf: true)
+        XCTAssertEqual(r.name, "Joshua Yang")
+        XCTAssertTrue(r.fromSelf)
     }
 }

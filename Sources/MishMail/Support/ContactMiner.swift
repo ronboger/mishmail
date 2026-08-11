@@ -11,8 +11,8 @@ enum ContactMiner {
         var display: String { name.isEmpty ? email : "\(name) — \(email)" }
     }
 
-    /// email → (best display name, cumulative weight)
-    typealias WeightMap = [String: (name: String, weight: Int)]
+    /// email → (best display name, cumulative weight, whether name was seen on From)
+    typealias WeightMap = [String: (name: String, weight: Int, nameFromSelf: Bool)]
 
     /// One message's address headers + SQLite rowid for high-water marks.
     struct MessageHeaders: Equatable {
@@ -35,10 +35,63 @@ enum ContactMiner {
         return true
     }
 
+    /// True when `longer` looks like `shorter` with 1–2 non-space characters
+    /// glued on the front (e.g. `"jJoshua Yang"` vs `"Joshua Yang"`). Titles
+    /// like `"Dr "` are three characters and are not treated as typos.
+    static func isLikelyTypoPrefix(longer: String, shorter: String) -> Bool {
+        let l = longer.trimmingCharacters(in: .whitespacesAndNewlines)
+        let s = shorter.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard l.count > s.count else { return false }
+        let extra = l.count - s.count
+        guard (1...2).contains(extra) else { return false }
+        let lFold = l.lowercased()
+        let sFold = s.lowercased()
+        guard lFold.hasSuffix(sFold) else { return false }
+        let prefix = lFold.dropLast(sFold.count)
+        return !prefix.contains(where: \.isWhitespace)
+    }
+
+    /// Choose which display name to keep. From-header names beat To/Cc (self-
+    /// identification over third-party address-book typos). Same tier: reject
+    /// likely glued prefixes, then prefer the longer usable name.
+    static func preferredName(
+        current: String, currentFromSelf: Bool,
+        candidate: String, candidateFromSelf: Bool
+    ) -> (name: String, fromSelf: Bool) {
+        if candidate.isEmpty {
+            return (current, currentFromSelf)
+        }
+        if current.isEmpty {
+            return (candidate, candidateFromSelf)
+        }
+        // Same name (any casing): promote to From-sourced if either was.
+        if current.caseInsensitiveCompare(candidate) == .orderedSame {
+            return (currentFromSelf ? current : candidate,
+                    currentFromSelf || candidateFromSelf)
+        }
+        if candidateFromSelf && !currentFromSelf {
+            return (candidate, true)
+        }
+        if currentFromSelf && !candidateFromSelf {
+            return (current, true)
+        }
+        if isLikelyTypoPrefix(longer: candidate, shorter: current) {
+            return (current, currentFromSelf)
+        }
+        if isLikelyTypoPrefix(longer: current, shorter: candidate) {
+            return (candidate, candidateFromSelf)
+        }
+        if candidate.count > current.count {
+            return (candidate, candidateFromSelf)
+        }
+        return (current, currentFromSelf)
+    }
+
     /// Merge `messages` into `weights`. Returns the max rowid seen (0 if empty).
     /// Sent mail (`labelIds` contains `SENT`) counts +5; everything else +1.
-    /// Prefers the longer *usable* display name; skips own addresses and junk
-    /// tokens. Email-shaped "names" are stored as empty so ranking stays clean.
+    /// Prefers From-header names over To/Cc, then longer usable names (rejecting
+    /// glued typo prefixes). Skips own addresses and junk tokens. Email-shaped
+    /// "names" are stored as empty so ranking stays clean.
     @discardableResult
     static func merge(messages: [MessageHeaders],
                       into weights: inout WeightMap,
@@ -47,7 +100,12 @@ enum ContactMiner {
         for msg in messages {
             if msg.rowid > maxRowId { maxRowId = msg.rowid }
             let isSent = msg.labelIds.contains("SENT")
-            for header in [msg.fromHeader, msg.toHeader, msg.ccHeader] {
+            let headers: [(String, Bool)] = [
+                (msg.fromHeader, true),
+                (msg.toHeader, false),
+                (msg.ccHeader, false),
+            ]
+            for (header, isFrom) in headers {
                 for piece in MessageParser.splitAddresses(header) {
                     let email = MessageParser.emailAddress(piece).lowercased()
                     guard email.contains("@"), !email.contains(" "),
@@ -55,18 +113,11 @@ enum ContactMiner {
                     let raw = MessageParser.displayName(fromHeader: piece)
                     let name = isUsableDisplayName(raw, email: email) ? raw : ""
                     let add = isSent ? 5 : 1
-                    let prev = weights[email] ?? ("", 0)
-                    // Prefer longer usable names; never let an empty "win" over
-                    // a prior real name (count 0 would otherwise replace).
-                    let bestName: String
-                    if name.isEmpty {
-                        bestName = prev.name
-                    } else if prev.name.isEmpty || name.count > prev.name.count {
-                        bestName = name
-                    } else {
-                        bestName = prev.name
-                    }
-                    weights[email] = (bestName, prev.weight + add)
+                    let prev = weights[email] ?? ("", 0, false)
+                    let chosen = preferredName(
+                        current: prev.name, currentFromSelf: prev.nameFromSelf,
+                        candidate: name, candidateFromSelf: isFrom && !name.isEmpty)
+                    weights[email] = (chosen.name, prev.weight + add, chosen.fromSelf)
                 }
             }
         }
