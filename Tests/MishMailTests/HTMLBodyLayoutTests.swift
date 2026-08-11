@@ -504,6 +504,12 @@ final class HTMLBodyLayoutTests: XCTestCase {
         let html = Transactional2FAFixture.clippedViewportWrapperHTML
         XCTAssertTrue(html.contains("height: 100%"))
         XCTAssertTrue(html.contains("overflow: hidden"))
+        // div shell — table height is only a minimum in standards mode and
+        // would expand instead of clipping (pass-2 fable finding).
+        XCTAssertTrue(html.contains("class=\"shell\""))
+        XCTAssertTrue(html.contains("<div class=\"shell\">"))
+        XCTAssertFalse(html.contains("<table class=\"shell\""),
+                       "table shell does not clip under CSS height:100%")
         XCTAssertTrue(html.contains("Your trade confirmation is available"))
         XCTAssertTrue(html.contains("Symbol: EXAMPLE"))
         XCTAssertTrue(html.contains("cdn.example-fidelity.test"))
