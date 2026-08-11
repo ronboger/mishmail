@@ -753,6 +753,9 @@ struct ThreadDetailView: View {
             // Superseded initial .task leaves messages empty; when merge is
             // the first population, apply the same anchor/seed as open.
             let wasEmpty = messages.isEmpty
+            // Capture before merge so "new" means arrived-this-refresh, not
+            // "user collapsed" (which would re-open on every sync).
+            let priorIds = Set(messages.map(\.id))
             let merged = ThreadRefresh.merge(
                 current: messages, fresh: load.payload.messages)
             attachmentsByMessageId = load.payload.attachmentsByMessageId
@@ -783,13 +786,14 @@ struct ThreadDetailView: View {
                 // Drop ids that left the thread (send/discard renumber).
                 let live = Set(nonDraftMessageIds)
                 expandedMessageIds = expandedMessageIds.intersection(live)
-                // Side-by-side: open newly arrived sent messages so the draft
-                // always sees the full conversation.
+                // Side-by-side: open only messages that arrived this refresh.
+                // Diff against prior message ids so a manual collapse survives
+                // background sync / draft-suppression refreshes.
                 if messageExpandPolicy == .multiple {
-                    let missing = live.subtracting(expandedMessageIds)
-                    if !missing.isEmpty {
-                        expandedMessageIds.formUnion(missing)
-                        for id in missing { loadBodyIfNeeded(id: id) }
+                    let arrived = live.subtracting(priorIds)
+                    if !arrived.isEmpty {
+                        expandedMessageIds.formUnion(arrived)
+                        for id in arrived { loadBodyIfNeeded(id: id) }
                     }
                 }
             }
