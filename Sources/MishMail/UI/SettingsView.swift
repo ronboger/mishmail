@@ -979,6 +979,8 @@ struct AppearanceSettings: View {
     @AppStorage(RemoteImagePolicy.defaultsKey) private var remoteImagePolicyRaw =
         RemoteImagePolicy.ask.rawValue
     @AppStorage(AppTheme.storageKey) private var appThemeRaw = AppTheme.system.rawValue
+    /// Comma-separated raw values of compose footer / format buttons the user hid.
+    @AppStorage(ComposeToolbarVisibility.storageKey) private var composeToolbarHidden = ""
     @State private var showVIPManager = false
 
     private var priorityMode: PrioritySplit.Mode {
@@ -1088,6 +1090,32 @@ struct AppearanceSettings: View {
                 } footer: {
                     Text((RemoteImagePolicy(rawValue: remoteImagePolicyRaw) ?? .ask).footer
                          + " Cleartext image URLs stay blocked either way.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    ForEach(ComposeToolbarItem.displayOrder) { item in
+                        Toggle(isOn: Binding(
+                            get: { ComposeToolbarVisibility.isVisible(item, hiddenRaw: composeToolbarHidden) },
+                            set: { show in
+                                composeToolbarHidden = ComposeToolbarVisibility.setting(
+                                    item, hidden: !show, in: composeToolbarHidden)
+                            }
+                        )) {
+                            Label(item.title, systemImage: item.systemImage)
+                        }
+                        .help(item.help)
+                    }
+                    if !composeToolbarHidden.isEmpty {
+                        Button("Show all compose buttons") {
+                            composeToolbarHidden = ""
+                        }
+                        .font(.system(size: 12))
+                    }
+                } header: {
+                    Text("Compose toolbar")
+                } footer: {
+                    Text("Hide buttons you don't use (math, AI draft, format tools…) so the footer stays roomy on narrow windows. Shortcuts still work for hidden format actions; markdown you type is unchanged.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

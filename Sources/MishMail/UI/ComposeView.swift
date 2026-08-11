@@ -71,6 +71,9 @@ struct ComposeView: View {
     @State private var bodyFocused = false
     /// Bridge so the format toolbar mutates the live text view + selection.
     @State private var formatTarget = ComposeBodyFormatTarget()
+    /// Comma-separated raw values of footer / format buttons the user hid
+    /// (Settings → Appearance → Compose toolbar). Empty = show all.
+    @AppStorage(ComposeToolbarVisibility.storageKey) private var composeToolbarHidden = ""
 
     @State private var initialBody = ""
     @State private var initialSubject = ""
@@ -1136,40 +1139,59 @@ struct ComposeView: View {
             // children used to overflow and cut "Saving…" mid-word + Send.
             HStack(spacing: 10) {
                 HStack(spacing: 10) {
-                    footerButton("paperclip", help: "Attach files") { showFilePicker = true }
-
-                    footerButton("link", help: "Insert link (⌘K)") { openLinkSheet() }
-
-                    Button {
-                        withAnimation(.easeOut(duration: 0.12)) { showSnippets.toggle() }
-                    } label: {
-                        HStack(spacing: 4) {
-                            Image(systemName: "text.badge.plus")
-                            Text("Snippets")
-                                .font(.system(size: 12))
-                                .lineLimit(1)
-                        }
-                        .foregroundStyle(showSnippets ? Color.notionAccent : Color.secondary)
+                    if composeToolVisible(.attach) {
+                        footerButton(ComposeToolbarItem.attach) { showFilePicker = true }
                     }
-                    .buttonStyle(.plain)
-                    // Same as Send: never wrap/compress when "Draft saved" appears.
-                    .fixedSize()
-                    .keyboardShortcut("/", modifiers: .command)
-                    .help("Insert a saved snippet (⌘/)")
+
+                    if composeToolVisible(.link) {
+                        // Slightly roomier cell than the format strip so the
+                        // chain glyph isn't clipped on its left bearing.
+                        footerButton(ComposeToolbarItem.link) { openLinkSheet() }
+                    }
+
+                    if composeToolVisible(.snippets) {
+                        Button {
+                            withAnimation(.easeOut(duration: 0.12)) { showSnippets.toggle() }
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: ComposeToolbarItem.snippets.systemImage)
+                                Text("Snippets")
+                                    .font(.system(size: 12))
+                                    .lineLimit(1)
+                            }
+                            .foregroundStyle(showSnippets ? Color.notionAccent : Color.secondary)
+                        }
+                        .buttonStyle(.plain)
+                        // Same as Send: never wrap/compress when "Draft saved" appears.
+                        .fixedSize()
+                        .keyboardShortcut("/", modifiers: .command)
+                        .help(ComposeToolbarItem.snippets.help)
+                        .accessibilityLabel(ComposeToolbarItem.snippets.title)
+                    }
 
                     // Available for replies, forwards, and new mail — the draft is
                     // generated locally and streamed into the body.
-                    footerButton(drafting ? "hourglass" : "sparkles",
-                                 help: "Draft with local AI (Ollama)") { draftWithAI() }
-                        .disabled(drafting)
+                    if composeToolVisible(.ai) {
+                        footerButton(
+                            drafting ? "hourglass" : ComposeToolbarItem.ai.systemImage,
+                            help: ComposeToolbarItem.ai.help,
+                            label: ComposeToolbarItem.ai.title
+                        ) { draftWithAI() }
+                            .disabled(drafting)
+                    }
 
                     // Markdown format strip (bold/italic/headers/math…). Link is
-                    // the dedicated button above (⌘K sheet); bar routes the rest.
-                    ComposeFormatBar { action in
-                        if action == .link { openLinkSheet() }
-                        else { formatTarget.run(action) }
+                    // only the dedicated button above (⌘K sheet) — not duplicated
+                    // at the trailing edge where clipping used to bite.
+                    if ComposeToolbarItem.formatOrder.contains(where: {
+                        ComposeToolbarVisibility.isVisible($0, hiddenRaw: composeToolbarHidden)
+                    }) {
+                        ComposeFormatBar(action: { action in
+                            if action == .link { openLinkSheet() }
+                            else { formatTarget.run(action) }
+                        }, hiddenRaw: composeToolbarHidden)
+                        .padding(.leading, 2)
                     }
-                    .padding(.leading, 2)
                 }
                 // minWidth 0 lets the left cluster shrink below its ideal so the
                 // right cluster keeps Send + status fully visible; clip hides
@@ -1353,12 +1375,31 @@ struct ComposeView: View {
         }
     }
 
-    private func footerButton(_ icon: String, help: String, action: @escaping () -> Void) -> some View {
-        Button(action: action) {
-            Image(systemName: icon).foregroundStyle(.secondary)
+    private func composeToolVisible(_ item: ComposeToolbarItem) -> Bool {
+        ComposeToolbarVisibility.isVisible(item, hiddenRaw: composeToolbarHidden)
+    }
+
+    private func footerButton(_ item: ComposeToolbarItem,
+                              action: @escaping () -> Void) -> some View {
+        footerButton(item.systemImage, help: item.help, label: item.title, action: action)
+    }
+
+    private func footerButton(_ icon: String, help: String, label: String? = nil,
+                              action: @escaping () -> Void) -> some View {
+        // VoiceOver label is the bare action name; hover tooltip keeps the shortcut.
+        let a11y = label ?? (help.split(separator: " (").first.map(String.init) ?? help)
+        return Button(action: action) {
+            Image(systemName: icon)
+                .font(.system(size: 12, weight: .medium))
+                .foregroundStyle(.secondary)
+                // Fixed cell so the chain/paperclip glyphs aren't clipped on the
+                // left bearing (the original "link button is cut off" report).
+                .frame(width: 24, height: 22)
+                .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .help(help)
+        .accessibilityLabel(a11y)
     }
 
     private func prefill() {

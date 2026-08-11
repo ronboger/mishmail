@@ -369,44 +369,250 @@ enum Markdown {
 
     // MARK: - Math helpers
 
-    /// Light LaTeX-ish cleanup for email: no engine, just readable HTML.
+    /// Plain-text LaTeX cleanup (readable fallback, tests). Prefer `mathToHTML`
+    /// when building the HTML alternative for send.
     static func prettyMath(_ latex: String) -> String {
-        var s = latex.trimmingCharacters(in: .whitespacesAndNewlines)
-        // \frac{a}{b} → (a)/(b)
-        if let fracRe = try? NSRegularExpression(pattern: #"\\frac\{([^{}]+)\}\{([^{}]+)\}"#) {
-            while true {
-                let ns = s as NSString
-                let full = NSRange(location: 0, length: ns.length)
-                guard let m = fracRe.firstMatch(in: s, range: full),
-                      m.numberOfRanges == 3 else { break }
-                let a = ns.substring(with: m.range(at: 1))
-                let b = ns.substring(with: m.range(at: 2))
-                guard let r = Range(m.range, in: s) else { break }
-                s.replaceSubrange(r, with: "(\(a))/(\(b))")
-            }
-        }
-        let commands: [(String, String)] = [
-            ("\\alpha", "α"), ("\\beta", "β"), ("\\gamma", "γ"), ("\\delta", "δ"),
-            ("\\epsilon", "ε"), ("\\theta", "θ"), ("\\lambda", "λ"), ("\\mu", "μ"),
-            ("\\pi", "π"), ("\\sigma", "σ"), ("\\omega", "ω"), ("\\Omega", "Ω"),
-            ("\\sum", "∑"), ("\\prod", "∏"), ("\\int", "∫"), ("\\infty", "∞"),
-            ("\\pm", "±"), ("\\times", "×"), ("\\cdot", "·"), ("\\div", "÷"),
-            ("\\leq", "≤"), ("\\geq", "≥"), ("\\neq", "≠"), ("\\approx", "≈"),
-            ("\\rightarrow", "→"), ("\\leftarrow", "←"), ("\\Rightarrow", "⇒"),
-            ("\\ldots", "…"), ("\\cdots", "⋯"),
-            ("\\sqrt", "√"), ("\\partial", "∂"), ("\\nabla", "∇"),
-        ]
-        for (cmd, rep) in commands {
-            s = s.replacingOccurrences(of: cmd, with: rep)
-        }
-        // Simple superscripts: x^2, x^{10}
-        s = applyScripts(s, open: "^", map: superscripts)
-        s = applyScripts(s, open: "_", map: subscripts)
-        // Drop remaining braces used only for grouping.
-        s = s.replacingOccurrences(of: "{", with: "")
-            .replacingOccurrences(of: "}", with: "")
-        return s
+        renderMath(latex, html: false)
     }
+
+    /// Email-safe HTML for a math fragment: stacked fractions, real `<sup>` /
+    /// `<sub>`, Greek/operator unicode. No JS engine — Gmail and friends strip
+    /// scripts; this renders cleanly as static HTML + inline styles.
+    static func mathToHTML(_ latex: String) -> String {
+        renderMath(latex, html: true)
+    }
+
+    /// Shared LaTeX-ish walker. `html: true` emits tags/fractions; false emits
+    /// a plain unicode approximation (`(a)/(b)`, superscripts).
+    private static func renderMath(_ input: String, html: Bool) -> String {
+        let src = input.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !src.isEmpty else { return "" }
+        return renderMathExpr(src, html: html)
+    }
+
+    /// Recursive LaTeX-ish → text/HTML. Handles `\frac{a}{b}`, `\sqrt{x}`, `^{}`,
+    /// `_{}`, named commands, and nested braces. Unknown control sequences
+    /// fall through as literal text (escaped when html).
+    private static func renderMathExpr(_ input: String, html: Bool) -> String {
+        var i = input.startIndex
+        var out = ""
+        while i < input.endIndex {
+            let ch = input[i]
+            if ch == "\\" {
+                let after = input.index(after: i)
+                guard after < input.endIndex else {
+                    out += "\\"
+                    i = after
+                    continue
+                }
+                // \| \{ \} etc. single-char escapes
+                let next = input[after]
+                if !next.isLetter {
+                    out += html ? escapeHTML(String(next)) : String(next)
+                    i = input.index(after: after)
+                    continue
+                }
+                // Named command: \frac, \alpha, \sqrt, …
+                let nameStart = after
+                var nameEnd = nameStart
+                while nameEnd < input.endIndex, input[nameEnd].isLetter {
+                    nameEnd = input.index(after: nameEnd)
+                }
+                let name = String(input[nameStart..<nameEnd])
+                i = nameEnd
+                switch name {
+                case "frac":
+                    let num = takeBraceGroup(input, from: &i) ?? ""
+                    let den = takeBraceGroup(input, from: &i) ?? ""
+                    let n = renderMathExpr(num, html: html)
+                    let d = renderMathExpr(den, html: html)
+                    if html {
+                        out += htmlFraction(n, d)
+                    } else {
+                        out += "(\(n))/(\(d))"
+                    }
+                case "sqrt":
+                    let body = takeBraceGroup(input, from: &i) ?? ""
+                    let inner = renderMathExpr(body, html: html)
+                    if html {
+                        out += "√" + (body.isEmpty ? "" : htmlGroup(inner))
+                    } else {
+                        out += body.isEmpty ? "√" : "√(\(inner))"
+                    }
+                case "left", "right":
+                    // Sizing hints — drop the command, keep the delimiter if present.
+                    if i < input.endIndex {
+                        let d = input[i]
+                        if "()[]|.".contains(d) {
+                            if d != "." {
+                                out += html ? escapeHTML(String(d)) : String(d)
+                            }
+                            i = input.index(after: i)
+                        }
+                    }
+                case "text", "mathrm", "operatorname":
+                    let body = takeBraceGroup(input, from: &i) ?? ""
+                    if html {
+                        out += "<span style=\"font-style:normal\">\(escapeHTML(body))</span>"
+                    } else {
+                        out += body
+                    }
+                default:
+                    if let rep = mathCommands[name] {
+                        // HTML entities for spacing commands only apply in HTML.
+                        if !html, rep.contains("&") {
+                            out += name == "quad" || name == "qquad" ? " " : rep
+                                .replacingOccurrences(of: "&nbsp;", with: " ")
+                        } else {
+                            out += rep
+                        }
+                    } else {
+                        let lit = "\\" + name
+                        out += html ? escapeHTML(lit) : lit
+                    }
+                }
+                continue
+            }
+            if ch == "^" || ch == "_" {
+                let isSuper = ch == "^"
+                i = input.index(after: i)
+                let body: String
+                if i < input.endIndex, input[i] == "{" {
+                    body = takeBraceGroup(input, from: &i) ?? ""
+                } else if i < input.endIndex {
+                    body = String(input[i])
+                    i = input.index(after: i)
+                } else {
+                    body = ""
+                }
+                let inner = renderMathExpr(body, html: html)
+                if let mapped = mapScript(body, superScript: isSuper) {
+                    // All characters have unicode super/sub forms (x², y¹⁰).
+                    out += mapped
+                } else if html {
+                    let tag = isSuper ? "sup" : "sub"
+                    out += "<\(tag)>\(inner)</\(tag)>"
+                } else if isSuper {
+                    out += "^(\(inner))"
+                } else {
+                    out += "_(\(inner))"
+                }
+                continue
+            }
+            if ch == "{" {
+                let group = takeBraceGroup(input, from: &i) ?? ""
+                out += renderMathExpr(group, html: html)
+                continue
+            }
+            if ch == "}" {
+                // Unmatched closer — skip rather than leak into the message.
+                i = input.index(after: i)
+                continue
+            }
+            out += html ? escapeHTML(String(ch)) : String(ch)
+            i = input.index(after: i)
+        }
+        return out
+    }
+
+    /// Consume `{...}` with nested braces from `i` (which should be on `{` or
+    /// whitespace before it). Advances `i` past the closing `}`. Returns the
+    /// interior, or nil if no group is present.
+    private static func takeBraceGroup(_ input: String, from i: inout String.Index) -> String? {
+        while i < input.endIndex, input[i].isWhitespace {
+            i = input.index(after: i)
+        }
+        guard i < input.endIndex, input[i] == "{" else { return nil }
+        i = input.index(after: i)
+        let start = i
+        var depth = 1
+        while i < input.endIndex {
+            let ch = input[i]
+            if ch == "{" { depth += 1 }
+            else if ch == "}" {
+                depth -= 1
+                if depth == 0 {
+                    let inner = String(input[start..<i])
+                    i = input.index(after: i)
+                    return inner
+                }
+            } else if ch == "\\" {
+                // Skip the escaped char so `\{` doesn't affect depth.
+                i = input.index(after: i)
+                if i < input.endIndex { i = input.index(after: i) }
+                continue
+            }
+            i = input.index(after: i)
+        }
+        // Unclosed — take the rest.
+        let inner = String(input[start...])
+        i = input.endIndex
+        return inner
+    }
+
+    private static func htmlFraction(_ num: String, _ den: String) -> String {
+        // Stacked fraction: email-safe inline-block + border (no JS). Gmail and
+        // Apple Mail keep display/border on spans reasonably well.
+        """
+        <span style="display:inline-block;vertical-align:middle;text-align:center;line-height:1.15;margin:0 0.15em;font-style:normal">\
+        <span style="display:block;padding:0 0.2em 0.05em;border-bottom:1px solid currentColor">\(num)</span>\
+        <span style="display:block;padding:0.05em 0.2em 0">\(den)</span>\
+        </span>
+        """
+    }
+
+    private static func htmlGroup(_ inner: String) -> String {
+        "<span style=\"white-space:nowrap\">\(inner)</span>"
+    }
+
+    /// Unicode super/sub when every character maps; otherwise nil (caller uses
+    /// `<sup>`/`<sub>` or a plain `^(…)` fallback).
+    private static func mapScript(_ raw: String, superScript: Bool) -> String? {
+        guard !raw.isEmpty else { return nil }
+        let map = superScript ? superscripts : subscripts
+        var out = ""
+        for ch in raw {
+            guard let mapped = map[ch] else { return nil }
+            out.append(mapped)
+        }
+        return out
+    }
+
+    /// Longer names first so `\rightarrow` wins over `\to` when both exist.
+    private static let mathCommands: [String: String] = [
+        "alpha": "α", "beta": "β", "gamma": "γ", "delta": "δ",
+        "epsilon": "ε", "varepsilon": "ε", "zeta": "ζ", "eta": "η",
+        "theta": "θ", "vartheta": "ϑ", "iota": "ι", "kappa": "κ",
+        "lambda": "λ", "mu": "μ", "nu": "ν", "xi": "ξ",
+        "pi": "π", "rho": "ρ", "sigma": "σ", "tau": "τ",
+        "upsilon": "υ", "phi": "φ", "varphi": "ϕ", "chi": "χ",
+        "psi": "ψ", "omega": "ω",
+        "Gamma": "Γ", "Delta": "Δ", "Theta": "Θ", "Lambda": "Λ",
+        "Xi": "Ξ", "Pi": "Π", "Sigma": "Σ", "Upsilon": "Υ",
+        "Phi": "Φ", "Psi": "Ψ", "Omega": "Ω",
+        "sum": "∑", "prod": "∏", "int": "∫", "oint": "∮",
+        "infty": "∞", "partial": "∂", "nabla": "∇",
+        "pm": "±", "mp": "∓", "times": "×", "cdot": "·", "div": "÷",
+        "ast": "∗", "star": "⋆", "circ": "∘",
+        "leq": "≤", "geq": "≥", "neq": "≠", "approx": "≈",
+        "equiv": "≡", "sim": "∼", "simeq": "≃", "cong": "≅",
+        "ll": "≪", "gg": "≫", "prec": "≺", "succ": "≻",
+        "subset": "⊂", "supset": "⊃", "subseteq": "⊆", "supseteq": "⊇",
+        "in": "∈", "notin": "∉", "ni": "∋",
+        "cap": "∩", "cup": "∪", "land": "∧", "lor": "∨",
+        "neg": "¬", "lnot": "¬",
+        "rightarrow": "→", "to": "→", "leftarrow": "←",
+        "Rightarrow": "⇒", "Leftarrow": "⇐", "leftrightarrow": "↔",
+        "Leftrightarrow": "⇔", "mapsto": "↦",
+        "uparrow": "↑", "downarrow": "↓",
+        "ldots": "…", "cdots": "⋯", "vdots": "⋮", "ddots": "⋱",
+        "forall": "∀", "exists": "∃", "emptyset": "∅",
+        "hbar": "ℏ", "ell": "ℓ", "Re": "ℜ", "Im": "ℑ",
+        "angle": "∠", "perp": "⊥", "parallel": "∥",
+        "degree": "°", "prime": "′",
+        "quad": "&nbsp;&nbsp;", "qquad": "&nbsp;&nbsp;&nbsp;&nbsp;",
+        " ": " ", ",": " ",
+    ]
 
     // MARK: - Internals
 
@@ -528,13 +734,13 @@ enum Markdown {
     }
 
     private static func renderInlineMath(_ latex: String) -> String {
-        let pretty = escapeHTML(prettyMath(latex))
-        return "<span style=\"font-family:Cambria,'Times New Roman',serif;font-style:italic\">\(pretty)</span>"
+        let body = mathToHTML(latex)
+        return "<span style=\"font-family:Cambria,'Times New Roman',serif;font-style:italic\">\(body)</span>"
     }
 
     private static func renderDisplayMath(_ latex: String) -> String {
-        let pretty = escapeHTML(prettyMath(latex))
-        return "<div style=\"text-align:center;margin:0.75em 0;font-family:Cambria,'Times New Roman',serif;font-style:italic;font-size:1.05em\">\(pretty)</div>"
+        let body = mathToHTML(latex)
+        return "<div style=\"text-align:center;margin:0.75em 0;font-family:Cambria,'Times New Roman',serif;font-style:italic;font-size:1.05em\">\(body)</div>"
     }
 
     private static let superscripts: [Character: Character] = [
@@ -549,27 +755,6 @@ enum Markdown {
         "+": "₊", "-": "₋", "=": "₌", "(": "₍", ")": "₎",
         "a": "ₐ", "e": "ₑ", "o": "ₒ", "x": "ₓ", "i": "ᵢ", "j": "ⱼ", "n": "ₙ",
     ]
-
-    private static func applyScripts(_ input: String, open: Character,
-                                     map: [Character: Character]) -> String {
-        var s = input
-        // ^{...} or _{...}
-        let bracePat = open == "^" ? #"\^\{([^{}]+)\}"# : #"_\{([^{}]+)\}"#
-        while let range = s.range(of: bracePat, options: .regularExpression) {
-            let inner = String(s[range])
-                .drop(while: { $0 != "{" }).dropFirst()
-                .prefix(while: { $0 != "}" })
-            let mapped = String(inner.map { map[$0] ?? $0 })
-            s.replaceSubrange(range, with: mapped)
-        }
-        // ^2 or _i single char
-        let singlePat = open == "^" ? #"\^([0-9n+\-=()])"# : #"_([0-9aeoxijn+\-=()])"#
-        while let range = s.range(of: singlePat, options: .regularExpression) {
-            let ch = s[range].last!
-            s.replaceSubrange(range, with: String(map[ch] ?? ch))
-        }
-        return s
-    }
 
     private static func escapeHTML(_ s: String) -> String {
         // Match ComposeLinks so linkified + markdown paths escape identically.

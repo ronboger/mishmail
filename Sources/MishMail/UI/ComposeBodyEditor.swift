@@ -761,36 +761,74 @@ final class ComposeBodyTextView: NSTextView {
 // MARK: - Format toolbar
 
 /// Compact markdown format strip for the compose footer.
+///
+/// Link lives on the dedicated footer button (⌘K sheet), not here — a second
+/// chain icon at the trailing edge was the first thing clipped when the left
+/// cluster ran out of room.
 struct ComposeFormatBar: View {
     let action: (ComposeBodyEditor.FormatAction) -> Void
+    /// Raw values from `ComposeToolbarVisibility.storageKey` (empty = show all).
+    var hiddenRaw: String = ""
 
-    var body: some View {
-        HStack(spacing: 2) {
-            fmt("bold", "Bold (⌘B)") { action(.bold) }
-            fmt("italic", "Italic (⌘I)") { action(.italic) }
-            fmt("strikethrough", "Strikethrough (⌘⇧X)") { action(.strikethrough) }
-            fmt("chevron.left.forwardslash.chevron.right", "Code (⌘E)") { action(.code) }
-            Divider().frame(height: 12).padding(.horizontal, 2)
-            fmt("number", "Heading (⌘⌥1)") { action(.heading1) }
-            fmt("text.quote", "Quote (⌘⇧.)") { action(.quote) }
-            fmt("list.bullet", "Bullet list (⌘⇧8)") { action(.bullet) }
-            fmt("function", "Math (⌘⇧M)") { action(.math) }
-            fmt("link", "Link (⌘K)") { action(.link) }
+    private var visible: [ComposeToolbarItem] {
+        ComposeToolbarItem.formatOrder.filter {
+            ComposeToolbarVisibility.isVisible($0, hiddenRaw: hiddenRaw)
         }
     }
 
-    private func fmt(_ systemName: String, _ help: String, _ act: @escaping () -> Void) -> some View {
-        // Help strings are "Bold (⌘B)" — VoiceOver label is the bare action name.
-        let label = help.split(separator: " (").first.map(String.init) ?? help
-        return Button(action: act) {
-            Image(systemName: systemName)
+    var body: some View {
+        let items = visible
+        // Split at the first "structure" control so the bar keeps a hairline
+        // between character styles and block markers when both sides exist.
+        let styleEnd = items.firstIndex(where: {
+            switch $0 {
+            case .heading, .quote, .bullet, .math: return true
+            default: return false
+            }
+        }) ?? items.endIndex
+        let styles = Array(items.prefix(styleEnd))
+        let structure = Array(items.suffix(from: styleEnd))
+
+        return HStack(spacing: 2) {
+            ForEach(styles) { item in
+                fmt(item) { run(item) }
+            }
+            if !styles.isEmpty, !structure.isEmpty {
+                Divider().frame(height: 12).padding(.horizontal, 2)
+            }
+            ForEach(structure) { item in
+                fmt(item) { run(item) }
+            }
+        }
+    }
+
+    private func run(_ item: ComposeToolbarItem) {
+        switch item {
+        case .bold: action(.bold)
+        case .italic: action(.italic)
+        case .strikethrough: action(.strikethrough)
+        case .code: action(.code)
+        case .heading: action(.heading1)
+        case .quote: action(.quote)
+        case .bullet: action(.bullet)
+        case .math: action(.math)
+        case .attach, .link, .snippets, .ai: break
+        }
+    }
+
+    private func fmt(_ item: ComposeToolbarItem, _ act: @escaping () -> Void) -> some View {
+        Button(action: act) {
+            Image(systemName: item.systemImage)
                 .font(.system(size: 11, weight: .medium))
                 .foregroundStyle(.secondary)
-                .frame(width: 22, height: 20)
+                // 24×22 so wide glyphs (function / list) aren't optically clipped
+                // inside the icon cell.
+                .frame(width: 24, height: 22)
                 .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .help(help)
-        .accessibilityLabel(label)
+        .help(item.help)
+        .accessibilityLabel(item.title)
+        .accessibilityIdentifier("composeFormat.\(item.rawValue)")
     }
 }

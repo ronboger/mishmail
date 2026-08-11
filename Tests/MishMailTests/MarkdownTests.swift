@@ -125,7 +125,10 @@ final class MarkdownTests: XCTestCase {
         XCTAssertTrue(inline.contains("font-family:Cambria"))
 
         let display = Markdown.toHTML("$$\\frac{a}{b}$$")
-        XCTAssertTrue(display.contains("(a)/(b)"))
+        // Stacked HTML fraction (not the old plain "(a)/(b)" approximation).
+        XCTAssertTrue(display.contains("border-bottom:1px solid"))
+        XCTAssertTrue(display.contains(">a</span>") || display.contains(">a<"))
+        XCTAssertTrue(display.contains(">b</span>") || display.contains(">b<"))
         XCTAssertTrue(display.contains("text-align:center"))
     }
 
@@ -133,6 +136,38 @@ final class MarkdownTests: XCTestCase {
         XCTAssertEqual(Markdown.prettyMath("\\alpha + \\beta"), "α + β")
         XCTAssertEqual(Markdown.prettyMath("x^2 + y^{10}"), "x² + y¹⁰")
         XCTAssertEqual(Markdown.prettyMath("\\frac{1}{2}"), "(1)/(2)")
+        XCTAssertEqual(Markdown.prettyMath("x^{n+1}"), "xⁿ⁺¹")
+        // Letters without unicode forms fall back to ^(…).
+        XCTAssertEqual(Markdown.prettyMath("x^{ab}"), "x^(ab)")
+    }
+
+    func testMathToHTMLFractionAndScripts() {
+        let frac = Markdown.mathToHTML("\\frac{a}{b}")
+        XCTAssertTrue(frac.contains("border-bottom:1px solid"))
+        XCTAssertTrue(frac.contains("a"))
+        XCTAssertTrue(frac.contains("b"))
+        XCTAssertFalse(frac.contains("(a)/(b)"))
+
+        let nested = Markdown.mathToHTML("\\frac{1}{x^{n+1}}")
+        // n+1 all map to unicode supers; multi-letter without maps uses <sup>.
+        XCTAssertTrue(nested.contains("xⁿ⁺¹") || nested.contains("<sup>"))
+        XCTAssertTrue(nested.contains("border-bottom:1px solid"))
+
+        let multi = Markdown.mathToHTML("x^{ab}")
+        XCTAssertTrue(multi.contains("<sup>ab</sup>") || multi.contains("<sup>"))
+
+        let greek = Markdown.mathToHTML("\\alpha + \\beta")
+        XCTAssertEqual(greek, "α + β")
+
+        let sqrt = Markdown.mathToHTML("\\sqrt{x^2}")
+        XCTAssertTrue(sqrt.contains("√"))
+        XCTAssertTrue(sqrt.contains("x²") || sqrt.contains("x"))
+    }
+
+    func testMathEscapesHTMLInBody() {
+        let html = Markdown.mathToHTML("<script>")
+        XCTAssertFalse(html.contains("<script>"))
+        XCTAssertTrue(html.contains("&lt;script&gt;"))
     }
 
     // MARK: - Editor helpers
