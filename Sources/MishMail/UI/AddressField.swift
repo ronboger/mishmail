@@ -265,8 +265,18 @@ struct TokenAddressField: View {
             let tokensBinding = $tokens
             let draftBinding = $draft
             let store = self.store
-            keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                Self.handleKeyDown(
+            // keyDown for chip keys; leftMouseDown clears chip selection when
+            // the user clicks into the draft (Gmail) without changing draft text.
+            keyMonitor = NSEvent.addLocalMonitorForEvents(
+                matching: [.keyDown, .leftMouseDown]
+            ) { event in
+                if event.type == .leftMouseDown {
+                    if keyboard.selection != nil {
+                        keyboard.selection = nil
+                    }
+                    return event
+                }
+                return Self.handleKeyDown(
                     event,
                     tokens: tokensBinding,
                     draft: draftBinding,
@@ -306,25 +316,31 @@ struct TokenAddressField: View {
         let currentTokens = tokens.wrappedValue
 
         // Cmd+C / Cmd+X with a chip selection → clipboard (Gmail form).
-        if cmd, let selection = keyboard.selection,
-           flags.intersection([.option, .control]).isEmpty,
+        // Exact .command only — don't swallow Cmd+Shift+C/X.
+        if cmd, !shift, !flags.contains(.option), !flags.contains(.control),
+           let selection = keyboard.selection,
            let chars = event.charactersIgnoringModifiers?.lowercased(),
            chars == "c" || chars == "x" {
             let emails = selection.range.compactMap {
                 currentTokens.indices.contains($0) ? currentTokens[$0] : nil
             }
-            if !emails.isEmpty {
-                let text = TokenAddressEditing.clipboardText(
-                    emails: emails, nameForEmail: nameForEmail)
-                NSPasteboard.general.clearContents()
-                NSPasteboard.general.setString(text, forType: .string)
-            }
+            guard !emails.isEmpty else { return event }
+            let text = TokenAddressEditing.clipboardText(
+                emails: emails, nameForEmail: nameForEmail)
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(text, forType: .string)
             if chars == "x" {
                 // Selection presence owns cut — draft text does not block it.
                 applyBackspace(
                     tokens: tokens, draftEmpty: draftEmpty,
                     keyboard: keyboard, allowSelect: false)
             }
+            return nil
+        }
+
+        // Escape (53) clears chip selection (field editor may eat onKeyPress).
+        if onlyShiftOrNone, event.keyCode == 53, keyboard.selection != nil {
+            keyboard.selection = nil
             return nil
         }
 
