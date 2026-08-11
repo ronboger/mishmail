@@ -1,10 +1,25 @@
 import SwiftUI
+import AppKit
+
+/// Mutable chip-selection state for the key monitor. `@State` on a View struct
+/// is unsafe to mutate from an escaping `NSEvent` monitor (the monitor captures
+/// a stale View value); a reference type keeps one live selection box.
+@Observable
+private final class ChipKeyboardState {
+    var selection: TokenAddressEditing.ChipSelection?
+}
 
 /// Notion Mail-style recipient field: accepted addresses render as chips,
 /// with autocomplete backed by contacts mined from synced mail.
 ///
 /// Chips are clickable: click the address to re-open it in the text field for
 /// editing (typos, wrong contact). × still removes without editing.
+///
+/// Keyboard (Gmail / Superhuman):
+/// - Empty draft + Backspace or ← selects the last chip (highlight).
+/// - Shift+← / Shift+→ extends the selection.
+/// - Backspace with a selection deletes it.
+/// - Cmd+C copies `Name <email>` (Cmd+X cuts).
 struct TokenAddressField: View {
     @Environment(MailStore.self) var store
     let label: String
@@ -13,8 +28,11 @@ struct TokenAddressField: View {
     var autoFocus = false
     @FocusState private var focused: Bool
     @State private var highlighted = 0
-    /// Backspace never reaches onKeyPress — the field editor eats it —
-    /// so an NSEvent monitor (active only while focused) pops the last chip.
+    /// Live selection box shared with the NSEvent monitor.
+    @State private var keyboard = ChipKeyboardState()
+    /// Backspace / arrows / Cmd+C never reach onKeyPress reliably — the field
+    /// editor eats them — so an NSEvent monitor (active only while focused)
+    /// owns chip selection and clipboard.
     @State private var keyMonitor: Any?
     /// Hovered chip (for pointer + slightly stronger fill).
     @State private var hoveredToken: String?
@@ -33,8 +51,8 @@ struct TokenAddressField: View {
                     .frame(width: 30, alignment: .leading)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
-                        ForEach(tokens, id: \.self) { token in
-                            chip(token)
+                        ForEach(Array(tokens.enumerated()), id: \.offset) { index, token in
+                            chip(token, at: index)
                         }
                         TextField(tokens.isEmpty ? "Add recipients" : "", text: $draft)
                             .accessibilityIdentifier("addressField.\(label)")
@@ -44,6 +62,9 @@ struct TokenAddressField: View {
                             .focused($focused)
                             .onChange(of: draft) {
                                 highlighted = 0
+                                // Typing into the draft exits chip selection
+                                // (Gmail: first character replaces selection).
+                                if keyboard.selection != nil { keyboard.selection = nil }
                                 if draft.hasSuffix(",") { commitDraft() }
                             }
                             .onChange(of: focused) {
@@ -53,9 +74,14 @@ struct TokenAddressField: View {
                                 // AppKit drops the just-granted Subject focus
                                 // after the first keystroke.
                                 if !focused {
+                                    keyboard.selection = nil
                                     DispatchQueue.main.async { commitDraft() }
                                 }
                                 syncKeyMonitor()
+                            }
+                            .onChange(of: tokens.count) {
+                                keyboard.selection = TokenAddressEditing.clampedSelection(
+                                    keyboard.selection, tokenCount: tokens.count)
                             }
                             .onSubmit { commitDraft() }
                             .onKeyPress(.downArrow) {
@@ -78,6 +104,7 @@ struct TokenAddressField: View {
                                 // token mutation can't break the in-flight
                                 // focus traversal.
                                 guard focused else { return .ignored }
+                                keyboard.selection = nil
                                 let pick = suggestions[safe: highlighted]
                                 DispatchQueue.main.async {
                                     if let pick { accept(pick) } else { commitDraft() }
@@ -86,8 +113,14 @@ struct TokenAddressField: View {
                             }
                             .onKeyPress(.return) {
                                 guard focused, !draft.isEmpty else { return .ignored }
+                                keyboard.selection = nil
                                 if let pick = suggestions[safe: highlighted] { accept(pick) }
                                 else { commitDraft() }
+                                return .handled
+                            }
+                            .onKeyPress(.escape) {
+                                guard focused, keyboard.selection != nil else { return .ignored }
+                                keyboard.selection = nil
                                 return .handled
                             }
                     }
@@ -147,8 +180,9 @@ struct TokenAddressField: View {
 
     /// One recipient chip: click address → edit in the text field; × → remove.
     @ViewBuilder
-    private func chip(_ token: String) -> some View {
+    private func chip(_ token: String, at index: Int) -> some View {
         let isHovered = hoveredToken == token
+        let isSelected = keyboard.selection?.contains(index) == true
         HStack(spacing: 0) {
             // Address (or contact name) — click re-opens for editing.
             Button {
@@ -156,6 +190,7 @@ struct TokenAddressField: View {
             } label: {
                 Text(displayName(token))
                     .font(.system(size: 12))
+                    .foregroundStyle(isSelected ? Color.white : Color.primary)
                     .padding(.leading, 8)
                     .padding(.vertical, 3)
                     .padding(.trailing, 3)
@@ -168,6 +203,7 @@ struct TokenAddressField: View {
 
             Button {
                 clearChipHoverChrome()
+                keyboard.selection = nil
                 tokens = TokenAddressEditing.remove(tokens: tokens, token: token)
             } label: {
                 Image(systemName: "xmark")
@@ -178,11 +214,11 @@ struct TokenAddressField: View {
                     .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .foregroundStyle(.secondary)
+            .foregroundStyle(isSelected ? Color.white.opacity(0.9) : Color.secondary)
             .help("Remove")
         }
         .background(
-            Color.secondary.opacity(isHovered ? 0.22 : 0.14),
+            chipFill(isSelected: isSelected, isHovered: isHovered),
             in: Capsule()
         )
         .onHover { inside in
@@ -198,6 +234,11 @@ struct TokenAddressField: View {
         }
     }
 
+    private func chipFill(isSelected: Bool, isHovered: Bool) -> Color {
+        if isSelected { return Color.notionAccent }
+        return Color.secondary.opacity(isHovered ? 0.22 : 0.14)
+    }
+
     /// Pop pointing-hand + clear hover highlight. Safe to call when nothing
     /// is hovered (no-op). Must run when a chip is removed under the cursor
     /// so SwiftUI's missing hover-exit doesn't leave a stuck hand.
@@ -209,17 +250,29 @@ struct TokenAddressField: View {
         hoveredToken = nil
     }
 
-    /// Installs the backspace monitor while this field is focused.
+    /// Installs the keyboard monitor while this field is focused.
     private func syncKeyMonitor() {
         if focused {
             guard keyMonitor == nil else { return }
+            // Capture the reference-typed selection box + bindings, not `self`.
+            let keyboard = self.keyboard
+            let tokensBinding = $tokens
+            let draftBinding = $draft
+            let store = self.store
             keyMonitor = NSEvent.addLocalMonitorForEvents(matching: .keyDown) { event in
-                guard event.keyCode == 51,   // delete (backspace)
-                      event.modifierFlags.intersection([.command, .option, .control]).isEmpty,
-                      draft.isEmpty, !tokens.isEmpty
-                else { return event }
-                tokens.removeLast()
-                return nil
+                Self.handleKeyDown(
+                    event,
+                    tokens: tokensBinding,
+                    draft: draftBinding,
+                    keyboard: keyboard,
+                    nameForEmail: { email in
+                        store.contacts.first { $0.email == email }
+                            .flatMap { $0.name.isEmpty ? nil : $0.name }
+                    },
+                    clearHover: {
+                        // Hover chrome lives on the View; best-effort only.
+                    }
+                )
             }
         } else {
             removeKeyMonitor()
@@ -229,6 +282,108 @@ struct TokenAddressField: View {
     private func removeKeyMonitor() {
         if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
         keyMonitor = nil
+    }
+
+    /// Chip-selection keys the TextField editor would otherwise swallow.
+    /// Returns `nil` to consume the event, or the event to pass through.
+    private static func handleKeyDown(
+        _ event: NSEvent,
+        tokens: Binding<[String]>,
+        draft: Binding<String>,
+        keyboard: ChipKeyboardState,
+        nameForEmail: (String) -> String?,
+        clearHover: () -> Void
+    ) -> NSEvent? {
+        let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
+        let cmd = flags.contains(.command)
+        let shift = flags.contains(.shift)
+        let onlyShiftOrNone = flags.subtracting(.shift).isEmpty
+        let draftEmpty = draft.wrappedValue.isEmpty
+        let currentTokens = tokens.wrappedValue
+
+        // Cmd+C / Cmd+X with a chip selection → clipboard (Gmail form).
+        if cmd, let selection = keyboard.selection,
+           flags.intersection([.option, .control]).isEmpty,
+           let chars = event.charactersIgnoringModifiers?.lowercased(),
+           chars == "c" || chars == "x" {
+            let emails = selection.range.compactMap {
+                currentTokens.indices.contains($0) ? currentTokens[$0] : nil
+            }
+            if !emails.isEmpty {
+                let text = TokenAddressEditing.clipboardText(
+                    emails: emails, nameForEmail: nameForEmail)
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(text, forType: .string)
+            }
+            if chars == "x" {
+                applyBackspace(
+                    tokens: tokens, draftEmpty: draftEmpty,
+                    keyboard: keyboard, clearHover: clearHover)
+            }
+            return nil
+        }
+
+        // Backspace (51) / forward-delete (117).
+        if onlyShiftOrNone, event.keyCode == 51 || event.keyCode == 117 {
+            if applyBackspace(
+                tokens: tokens, draftEmpty: draftEmpty,
+                keyboard: keyboard, clearHover: clearHover
+            ) {
+                return nil
+            }
+            return event
+        }
+
+        // ← (123) / → (124) — select / move / Shift-extend chips.
+        if onlyShiftOrNone, event.keyCode == 123 || event.keyCode == 124 {
+            let direction: TokenAddressEditing.HorizontalDirection =
+                event.keyCode == 123 ? .left : .right
+            // When the draft has text, let the field editor own the caret
+            // unless a chip selection is already active.
+            if !draftEmpty, keyboard.selection == nil { return event }
+            let previous = keyboard.selection
+            let next = TokenAddressEditing.moveSelection(
+                tokens: currentTokens,
+                selection: previous,
+                direction: direction,
+                extend: shift,
+                draftIsEmpty: draftEmpty)
+            // Owned when selection changes, clears, or stays put at an edge
+            // while a selection is active (don't let the caret escape mid-select).
+            if next != previous || previous != nil {
+                keyboard.selection = next
+                return nil
+            }
+            return event
+        }
+
+        return event
+    }
+
+    /// Apply Gmail-style backspace. Returns true when the event was handled.
+    @discardableResult
+    private static func applyBackspace(
+        tokens: Binding<[String]>,
+        draftEmpty: Bool,
+        keyboard: ChipKeyboardState,
+        clearHover: () -> Void
+    ) -> Bool {
+        let outcome = TokenAddressEditing.handleBackspace(
+            tokens: tokens.wrappedValue,
+            draftIsEmpty: draftEmpty,
+            selection: keyboard.selection)
+        switch outcome {
+        case .ignore:
+            return false
+        case .select(let sel):
+            keyboard.selection = sel
+            return true
+        case .remove(let next, let sel):
+            clearHover()
+            tokens.wrappedValue = next
+            keyboard.selection = sel
+            return true
+        }
     }
 
     private var suggestions: [MailStore.Contact] {
@@ -243,6 +398,7 @@ struct TokenAddressField: View {
 
     private func accept(_ contact: MailStore.Contact) {
         // Same dedup as commit — autocomplete shouldn't re-add an existing chip.
+        keyboard.selection = nil
         if !tokens.contains(contact.email) {
             tokens.append(contact.email)
         }
@@ -260,6 +416,7 @@ struct TokenAddressField: View {
 
     private func beginEdit(_ token: String) {
         clearChipHoverChrome()
+        keyboard.selection = nil
         let result = TokenAddressEditing.beginEdit(tokens: tokens, draft: draft, token: token)
         tokens = result.tokens
         draft = result.draft

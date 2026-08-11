@@ -143,4 +143,172 @@ final class TokenAddressEditingTests: XCTestCase {
             TokenAddressEditing.remove(tokens: ["a@x.com"], token: "missing@z.com"),
             ["a@x.com"])
     }
+
+    // MARK: - Gmail-style selection (Backspace / ← first highlights)
+
+    func testBackspaceEmptyDraftSelectsLastChip() {
+        let outcome = TokenAddressEditing.handleBackspace(
+            tokens: ["a@x.com", "b@y.com"],
+            draftIsEmpty: true,
+            selection: nil)
+        XCTAssertEqual(outcome, .select(.single(1)))
+    }
+
+    func testBackspaceWithSelectionRemovesSelectedChips() {
+        let sel = TokenAddressEditing.ChipSelection(anchor: 0, focus: 1)
+        let outcome = TokenAddressEditing.handleBackspace(
+            tokens: ["a@x.com", "b@y.com", "c@z.com"],
+            draftIsEmpty: true,
+            selection: sel)
+        XCTAssertEqual(outcome, .remove(tokens: ["c@z.com"], selection: nil))
+    }
+
+    func testBackspaceWithSingleSelectionRemovesOnlyThatChip() {
+        let outcome = TokenAddressEditing.handleBackspace(
+            tokens: ["a@x.com", "b@y.com", "c@z.com"],
+            draftIsEmpty: true,
+            selection: .single(1))
+        XCTAssertEqual(outcome, .remove(tokens: ["a@x.com", "c@z.com"], selection: nil))
+    }
+
+    func testBackspaceIgnoresWhenDraftHasText() {
+        let outcome = TokenAddressEditing.handleBackspace(
+            tokens: ["a@x.com"],
+            draftIsEmpty: false,
+            selection: nil)
+        XCTAssertEqual(outcome, .ignore)
+    }
+
+    func testBackspaceIgnoresWhenNoTokens() {
+        let outcome = TokenAddressEditing.handleBackspace(
+            tokens: [],
+            draftIsEmpty: true,
+            selection: nil)
+        XCTAssertEqual(outcome, .ignore)
+    }
+
+    func testLeftArrowEmptyDraftSelectsLastChip() {
+        let sel = TokenAddressEditing.moveSelection(
+            tokens: ["a@x.com", "b@y.com"],
+            selection: nil,
+            direction: .left,
+            extend: false,
+            draftIsEmpty: true)
+        XCTAssertEqual(sel, .single(1))
+    }
+
+    func testLeftArrowMovesSelectionLeft() {
+        let sel = TokenAddressEditing.moveSelection(
+            tokens: ["a@x.com", "b@y.com", "c@z.com"],
+            selection: .single(2),
+            direction: .left,
+            extend: false,
+            draftIsEmpty: true)
+        XCTAssertEqual(sel, .single(1))
+    }
+
+    func testShiftLeftExtendsSelection() {
+        let sel = TokenAddressEditing.moveSelection(
+            tokens: ["a@x.com", "b@y.com", "c@z.com"],
+            selection: .single(2),
+            direction: .left,
+            extend: true,
+            draftIsEmpty: true)
+        XCTAssertEqual(sel, TokenAddressEditing.ChipSelection(anchor: 2, focus: 1))
+        XCTAssertEqual(sel?.range, 1...2)
+    }
+
+    func testRightArrowPastLastClearsSelection() {
+        let sel = TokenAddressEditing.moveSelection(
+            tokens: ["a@x.com", "b@y.com"],
+            selection: .single(1),
+            direction: .right,
+            extend: false,
+            draftIsEmpty: true)
+        XCTAssertNil(sel)
+    }
+
+    func testRightArrowEmptyDraftIsNoOp() {
+        let sel = TokenAddressEditing.moveSelection(
+            tokens: ["a@x.com"],
+            selection: nil,
+            direction: .right,
+            extend: false,
+            draftIsEmpty: true)
+        XCTAssertNil(sel)
+    }
+
+    func testLeftArrowClampsAtFirstChip() {
+        let sel = TokenAddressEditing.moveSelection(
+            tokens: ["a@x.com", "b@y.com"],
+            selection: .single(0),
+            direction: .left,
+            extend: false,
+            draftIsEmpty: true)
+        // At edge without extend: stay on first chip
+        XCTAssertEqual(sel, .single(0))
+    }
+
+    func testRemoveSelectedRangeHighToLow() {
+        let next = TokenAddressEditing.removeSelected(
+            tokens: ["a@x.com", "b@y.com", "c@z.com", "d@w.com"],
+            selection: TokenAddressEditing.ChipSelection(anchor: 1, focus: 2))
+        XCTAssertEqual(next, ["a@x.com", "d@w.com"])
+    }
+
+    func testClampedSelectionAfterTokenShrink() {
+        let sel = TokenAddressEditing.ChipSelection(anchor: 2, focus: 4)
+        let clamped = TokenAddressEditing.clampedSelection(sel, tokenCount: 2)
+        XCTAssertEqual(clamped, TokenAddressEditing.ChipSelection(anchor: 1, focus: 1))
+    }
+
+    func testClampedSelectionNilWhenEmpty() {
+        XCTAssertNil(TokenAddressEditing.clampedSelection(.single(0), tokenCount: 0))
+    }
+
+    // MARK: - clipboard format (Gmail / Superhuman)
+
+    func testClipboardNamedAddress() {
+        let text = TokenAddressEditing.formatMailbox(
+            email: "josh@glyphic.bio", name: "Josh Yang")
+        XCTAssertEqual(text, "Josh Yang <josh@glyphic.bio>")
+    }
+
+    func testClipboardBareEmailWhenNoName() {
+        XCTAssertEqual(
+            TokenAddressEditing.formatMailbox(email: "josh@glyphic.bio", name: nil),
+            "josh@glyphic.bio")
+        XCTAssertEqual(
+            TokenAddressEditing.formatMailbox(email: "josh@glyphic.bio", name: ""),
+            "josh@glyphic.bio")
+        XCTAssertEqual(
+            TokenAddressEditing.formatMailbox(email: "josh@glyphic.bio", name: "josh@glyphic.bio"),
+            "josh@glyphic.bio")
+    }
+
+    func testClipboardQuotesNameWithComma() {
+        let text = TokenAddressEditing.formatMailbox(
+            email: "jane@x.com", name: "Doe, Jane")
+        XCTAssertEqual(text, "\"Doe, Jane\" <jane@x.com>")
+    }
+
+    func testClipboardQuotesNameWithQuotes() {
+        let text = TokenAddressEditing.formatMailbox(
+            email: "a@x.com", name: "Jo \"JJ\" Smith")
+        XCTAssertEqual(text, "\"Jo \\\"JJ\\\" Smith\" <a@x.com>")
+    }
+
+    func testClipboardJoinsMultipleWithCommaSpace() {
+        let names: [String: String] = [
+            "josh@glyphic.bio": "Josh Yang",
+            "alice@example.com": "Alice",
+        ]
+        let text = TokenAddressEditing.clipboardText(
+            emails: ["josh@glyphic.bio", "bare@x.com", "alice@example.com"]
+        ) { names[$0] }
+        XCTAssertEqual(
+            text,
+            "Josh Yang <josh@glyphic.bio>, bare@x.com, Alice <alice@example.com>")
+    }
 }
+
