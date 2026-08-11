@@ -38,14 +38,14 @@ enum ContactMiner {
     /// True when `longer` looks like `shorter` with 1–2 non-space characters
     /// glued on the front (e.g. `"jJoshua Yang"` vs `"Joshua Yang"`). Titles
     /// like `"Dr "` are three characters and are not treated as typos.
+    /// Counts use case-folded strings so Unicode lowercasing cannot desync
+    /// `extra` from the suffix check (e.g. `İ` → multi-scalar `i̇`).
     static func isLikelyTypoPrefix(longer: String, shorter: String) -> Bool {
-        let l = longer.trimmingCharacters(in: .whitespacesAndNewlines)
-        let s = shorter.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard l.count > s.count else { return false }
-        let extra = l.count - s.count
+        let lFold = longer.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        let sFold = shorter.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        guard lFold.count > sFold.count else { return false }
+        let extra = lFold.count - sFold.count
         guard (1...2).contains(extra) else { return false }
-        let lFold = l.lowercased()
-        let sFold = s.lowercased()
         guard lFold.hasSuffix(sFold) else { return false }
         let prefix = lFold.dropLast(sFold.count)
         return !prefix.contains(where: \.isWhitespace)

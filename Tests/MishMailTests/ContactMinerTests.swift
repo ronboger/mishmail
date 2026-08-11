@@ -324,4 +324,18 @@ final class ContactMinerTests: XCTestCase {
         XCTAssertEqual(r.name, "Joshua Yang")
         XCTAssertTrue(r.fromSelf)
     }
+
+    /// Same name, different casing: adopt From casing and mark fromSelf.
+    func testSameNameDifferentCasePromotesFromSelf() {
+        var weights: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(
+            messages: [
+                msg(rowid: 1, to: "joshua yang <joshua@glyphic.bio>"),
+                msg(rowid: 2, from: "Joshua Yang <joshua@glyphic.bio>"),
+            ],
+            into: &weights,
+            excluding: ["me@x.com"])
+        XCTAssertEqual(weights["joshua@glyphic.bio"]?.name, "Joshua Yang")
+        XCTAssertEqual(weights["joshua@glyphic.bio"]?.nameFromSelf, true)
+    }
 }
