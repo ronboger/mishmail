@@ -179,6 +179,34 @@ final class TokenAddressEditingTests: XCTestCase {
         XCTAssertEqual(outcome, .ignore)
     }
 
+    /// Selection owns delete even if draft text is present (Cmd+X path).
+    func testBackspaceWithSelectionRemovesEvenWhenDraftHasText() {
+        let outcome = TokenAddressEditing.handleBackspace(
+            tokens: ["a@x.com", "b@y.com"],
+            draftIsEmpty: false,
+            selection: .single(0))
+        XCTAssertEqual(outcome, .remove(tokens: ["b@y.com"], selection: nil))
+    }
+
+    /// Forward-delete must not start a selection (Gmail).
+    func testBackspaceDisallowSelectIsNoOpWithoutSelection() {
+        let outcome = TokenAddressEditing.handleBackspace(
+            tokens: ["a@x.com", "b@y.com"],
+            draftIsEmpty: true,
+            selection: nil,
+            allowSelect: false)
+        XCTAssertEqual(outcome, .ignore)
+    }
+
+    func testBackspaceDisallowSelectStillRemovesSelection() {
+        let outcome = TokenAddressEditing.handleBackspace(
+            tokens: ["a@x.com", "b@y.com"],
+            draftIsEmpty: true,
+            selection: .single(1),
+            allowSelect: false)
+        XCTAssertEqual(outcome, .remove(tokens: ["a@x.com"], selection: nil))
+    }
+
     func testBackspaceIgnoresWhenNoTokens() {
         let outcome = TokenAddressEditing.handleBackspace(
             tokens: [],
@@ -296,6 +324,18 @@ final class TokenAddressEditingTests: XCTestCase {
         let text = TokenAddressEditing.formatMailbox(
             email: "a@x.com", name: "Jo \"JJ\" Smith")
         XCTAssertEqual(text, "\"Jo \\\"JJ\\\" Smith\" <a@x.com>")
+    }
+
+    func testClipboardQuotesNameWithColonSemicolonAt() {
+        XCTAssertEqual(
+            TokenAddressEditing.formatMailbox(email: "a@x.com", name: "Team: Infra"),
+            "\"Team: Infra\" <a@x.com>")
+        XCTAssertEqual(
+            TokenAddressEditing.formatMailbox(email: "a@x.com", name: "A; B"),
+            "\"A; B\" <a@x.com>")
+        XCTAssertEqual(
+            TokenAddressEditing.formatMailbox(email: "a@x.com", name: "ron@home"),
+            "\"ron@home\" <a@x.com>")
     }
 
     func testClipboardJoinsMultipleWithCommaSpace() {

@@ -51,7 +51,10 @@ struct TokenAddressField: View {
                     .frame(width: 30, alignment: .leading)
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: 4) {
-                        ForEach(Array(tokens.enumerated()), id: \.offset) { index, token in
+                        // Tokens are deduped on commit, so email is a stable id.
+                        // Prefer element identity over offset so mid-list deletes
+                        // don't reuse hover/animation state on the wrong chip.
+                        ForEach(Array(tokens.enumerated()), id: \.element) { index, token in
                             chip(token, at: index)
                         }
                         TextField(tokens.isEmpty ? "Add recipients" : "", text: $draft)
@@ -82,6 +85,9 @@ struct TokenAddressField: View {
                             .onChange(of: tokens.count) {
                                 keyboard.selection = TokenAddressEditing.clampedSelection(
                                     keyboard.selection, tokenCount: tokens.count)
+                                // Keyboard delete under the cursor skips SwiftUI
+                                // hover-exit; clear hand/highlight here.
+                                clearChipHoverChrome()
                             }
                             .onSubmit { commitDraft() }
                             .onKeyPress(.downArrow) {
@@ -266,11 +272,10 @@ struct TokenAddressField: View {
                     draft: draftBinding,
                     keyboard: keyboard,
                     nameForEmail: { email in
-                        store.contacts.first { $0.email == email }
-                            .flatMap { $0.name.isEmpty ? nil : $0.name }
-                    },
-                    clearHover: {
-                        // Hover chrome lives on the View; best-effort only.
+                        store.contacts.first {
+                            $0.email.caseInsensitiveCompare(email) == .orderedSame
+                        }
+                        .flatMap { $0.name.isEmpty ? nil : $0.name }
                     }
                 )
             }
@@ -291,8 +296,7 @@ struct TokenAddressField: View {
         tokens: Binding<[String]>,
         draft: Binding<String>,
         keyboard: ChipKeyboardState,
-        nameForEmail: (String) -> String?,
-        clearHover: () -> Void
+        nameForEmail: (String) -> String?
     ) -> NSEvent? {
         let flags = event.modifierFlags.intersection([.command, .option, .control, .shift])
         let cmd = flags.contains(.command)
@@ -316,19 +320,31 @@ struct TokenAddressField: View {
                 NSPasteboard.general.setString(text, forType: .string)
             }
             if chars == "x" {
+                // Selection presence owns cut — draft text does not block it.
                 applyBackspace(
                     tokens: tokens, draftEmpty: draftEmpty,
-                    keyboard: keyboard, clearHover: clearHover)
+                    keyboard: keyboard, allowSelect: false)
             }
             return nil
         }
 
-        // Backspace (51) / forward-delete (117).
-        if onlyShiftOrNone, event.keyCode == 51 || event.keyCode == 117 {
+        // Backspace (51): select-then-delete. Forward-delete (117): only
+        // removes an existing selection (never starts one).
+        if onlyShiftOrNone, event.keyCode == 51 {
             if applyBackspace(
                 tokens: tokens, draftEmpty: draftEmpty,
-                keyboard: keyboard, clearHover: clearHover
+                keyboard: keyboard, allowSelect: true
             ) {
+                return nil
+            }
+            return event
+        }
+        if onlyShiftOrNone, event.keyCode == 117 {
+            if keyboard.selection != nil,
+               applyBackspace(
+                tokens: tokens, draftEmpty: draftEmpty,
+                keyboard: keyboard, allowSelect: false
+               ) {
                 return nil
             }
             return event
@@ -366,12 +382,13 @@ struct TokenAddressField: View {
         tokens: Binding<[String]>,
         draftEmpty: Bool,
         keyboard: ChipKeyboardState,
-        clearHover: () -> Void
+        allowSelect: Bool
     ) -> Bool {
         let outcome = TokenAddressEditing.handleBackspace(
             tokens: tokens.wrappedValue,
             draftIsEmpty: draftEmpty,
-            selection: keyboard.selection)
+            selection: keyboard.selection,
+            allowSelect: allowSelect)
         switch outcome {
         case .ignore:
             return false
@@ -379,7 +396,6 @@ struct TokenAddressField: View {
             keyboard.selection = sel
             return true
         case .remove(let next, let sel):
-            clearHover()
             tokens.wrappedValue = next
             keyboard.selection = sel
             return true
@@ -393,7 +409,10 @@ struct TokenAddressField: View {
     }
 
     private func displayName(_ email: String) -> String {
-        store.contacts.first { $0.email == email }.flatMap { $0.name.isEmpty ? nil : $0.name } ?? email
+        store.contacts.first {
+            $0.email.caseInsensitiveCompare(email) == .orderedSame
+        }
+        .flatMap { $0.name.isEmpty ? nil : $0.name } ?? email
     }
 
     private func accept(_ contact: MailStore.Contact) {

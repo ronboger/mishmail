@@ -99,19 +99,25 @@ enum TokenAddressEditing {
         return next
     }
 
-    /// Gmail-style Backspace when the draft is empty:
-    /// - no selection → select the last chip (do not delete yet)
-    /// - selection → delete selected chips and clear selection
+    /// Gmail-style Backspace:
+    /// - selection present → delete selected chips (draft text ignored)
+    /// - no selection + empty draft → select the last chip (do not delete yet)
+    /// - no selection + non-empty draft → ignore (field editor owns the key)
+    ///
+    /// `allowSelect` is false for forward-delete (keyCode 117): Gmail only
+    /// removes an existing selection and never starts one from forward-delete.
     static func handleBackspace(
         tokens: [String],
         draftIsEmpty: Bool,
-        selection: ChipSelection?
+        selection: ChipSelection?,
+        allowSelect: Bool = true
     ) -> BackspaceOutcome {
-        guard draftIsEmpty, !tokens.isEmpty else { return .ignore }
+        guard !tokens.isEmpty else { return .ignore }
         if let selection {
             let next = removeSelected(tokens: tokens, selection: selection)
             return .remove(tokens: next, selection: nil)
         }
+        guard allowSelect, draftIsEmpty else { return .ignore }
         return .select(.single(tokens.count - 1))
     }
 
@@ -185,9 +191,10 @@ enum TokenAddressEditing {
     }
 
     /// True when the display name must be RFC-quoted (comma, quotes, angle
-    /// brackets, or leading/trailing specials that confuse address parsers).
+    /// brackets, semicolon/colon/at that confuse address parsers, or
+    /// leading/trailing whitespace).
     static func needsDisplayNameQuotes(_ name: String) -> Bool {
-        name.contains(where: { ",\"<>()".contains($0) })
+        name.contains(where: { ",\"<>();:@".contains($0) })
             || name.first?.isWhitespace == true
             || name.last?.isWhitespace == true
     }
