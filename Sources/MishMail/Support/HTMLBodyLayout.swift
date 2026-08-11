@@ -574,10 +574,18 @@ enum HTMLBodyLayout {
               }
               var ch = parseFloat(cs.height);
               var nearVH = (ch === ch) && ch >= 200 && Math.abs(ch - vh) <= 2;
-              /* Content clipped inside a viewport-tall box (stylesheet
-                 height:100% / 100vh with overflow). Fixed heroes that fill
-                 the viewport without overflow keep scrollHeight ≈ ch. */
-              var clipsContent = nearVH
+              /* Stylesheet height:100%/100vh with clipping overflow. Fixed-px
+                 heroes that merely equal the viewport stay intact: require
+                 overflow clipping + real overflow, and never kill a height
+                 whose authored form is plain px (no % / vh unit). */
+              var oy = '';
+              try { oy = (cs.overflowY || cs.overflow || '').toLowerCase(); } catch (e) {}
+              var overflowClips = (oy === 'hidden' || oy === 'clip' || oy === 'scroll' || oy === 'auto');
+              var styleLooksPx = false;
+              if (styleHTrim) {
+                styleLooksPx = /\\d+(\\.\\d+)?px$/i.test(styleHTrim);
+              }
+              var clipsContent = nearVH && overflowClips && !styleLooksPx
                 && ((el.scrollHeight || 0) > ch + 8);
               var killHeight = nearVH && (authoredPct || authoredVh || clipsContent);
               if (!killMin && !killHeight) continue;
@@ -598,16 +606,20 @@ enum HTMLBodyLayout {
             for (var i = 0; i < kids.length; i++) {
               var el = kids[i];
               var r = el.getBoundingClientRect();
-              /* display:none quote containers report height 0 and scrollHeight
-                 0 — skip them so collapsed trails do not re-open a dead gap. */
               var sh = el.scrollHeight || 0;
-              if (r.height <= 0 && sh <= 0) continue;
-              /* Border-box alone under-reports wrappers with CSS height equal
-                 to the WebView frame while real content overflows inside
-                 (transactional/marketing templates). Child scrollHeight
-                 includes that overflow; avoid the documentElement height
-                 property (viewport floor re-latches to the host frame). */
-              var edge = Math.max(r.bottom, r.top + sh);
+              /* display:none → height 0. max-height:0 / height:0 overflow
+                 preheaders keep full scrollHeight — never extend bottom from
+                 a zero border-box (dead-gap regression for quote trails). */
+              if (r.height <= 0) continue;
+              /* Border-box alone under-reports height-constrained wrappers
+                 whose content overflows (Fidelity-style shells). Only add
+                 scrollHeight when it exceeds the border box — otherwise it
+                 floors at clientHeight and a short height:100% child below a
+                 spacer would re-latch measure to offset+viewport. */
+              var edge = r.bottom;
+              if (sh > r.height + 8) {
+                edge = Math.max(edge, r.top + sh);
+              }
               bottom = Math.max(bottom, edge);
             }
             var content = bottom - bodyTop;

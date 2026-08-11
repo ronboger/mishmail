@@ -447,14 +447,20 @@ final class HTMLBodyLayoutTests: XCTestCase {
         XCTAssertTrue(js.contains(HTMLBodyLayout.heightHandlerName))
         XCTAssertTrue(js.contains("addEventListener('load'"))
         XCTAssertTrue(js.contains("addEventListener('error'"))
-        // Visible child bottoms (no dead quote gap regression) plus scrollHeight
-        // so height-constrained wrappers that clip overflow still measure tall.
+        // Visible child bottoms (no dead quote gap). scrollHeight only when it
+        // exceeds the border box so short height:100% shells do not re-latch.
         XCTAssertTrue(js.contains("body.children"))
         XCTAssertTrue(js.contains("getBoundingClientRect"))
         XCTAssertTrue(js.contains("scrollHeight"),
                       "measure must consult scrollHeight for clipped wrappers")
         XCTAssertTrue(js.contains("r.top + sh") || js.contains("r.top + (el.scrollHeight"),
-                      "measure edge must be max(border-box, top+scrollHeight)")
+                      "overflowing children use top+scrollHeight")
+        XCTAssertTrue(js.contains("sh > r.height + 8") || js.contains("sh > r.height+8"),
+                      "scrollHeight only when content clearly overflows border box")
+        // Zero border-box kids (display:none / max-height:0) never extend bottom.
+        XCTAssertTrue(js.contains("if (r.height <= 0) continue")
+                      || js.contains("if (r.height <= 0)continue"),
+                      "zero-height kids must not open a dead gap via scrollHeight")
         // Never re-introduce documentElement.scrollHeight (viewport floor → grow).
         XCTAssertFalse(js.contains("documentElement.scrollHeight"),
                        "documentElement.scrollHeight floors at viewport")
@@ -482,6 +488,8 @@ final class HTMLBodyLayoutTests: XCTestCase {
         XCTAssertTrue(js.contains("authoredVh"),
                       "must neutralize inline height:NNvh")
         XCTAssertTrue(js.contains("nearVH"))
+        XCTAssertTrue(js.contains("styleLooksPx") || js.contains("overflowClips"),
+                      "fixed-px heroes must not be collapsed as clipsContent")
         // Image events re-arm neutralize (placeholders can establish clip after first pass).
         XCTAssertTrue(js.contains("window.__mmLastNeutralVH = 0"))
         // Below-viewport freeze guard anchored to streak-start viewport.
