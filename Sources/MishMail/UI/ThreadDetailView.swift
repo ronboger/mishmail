@@ -776,6 +776,22 @@ struct ThreadDetailView: View {
                 bodyLoadAttempted.formUnion(
                     ThreadRefresh.initialBodyLoadSeedIds(in: merged))
                 scrolledMessageId = ThreadRefresh.initialScrolledMessageId(in: merged)
+                // First population via refresh (initial .task was superseded):
+                // open the policy default set, same as applyDetailPayload.
+                seedExpandedMessagesIfNeeded()
+            } else {
+                // Drop ids that left the thread (send/discard renumber).
+                let live = Set(nonDraftMessageIds)
+                expandedMessageIds = expandedMessageIds.intersection(live)
+                // Side-by-side: open newly arrived sent messages so the draft
+                // always sees the full conversation.
+                if messageExpandPolicy == .multiple {
+                    let missing = live.subtracting(expandedMessageIds)
+                    if !missing.isEmpty {
+                        expandedMessageIds.formUnion(missing)
+                        for id in missing { loadBodyIfNeeded(id: id) }
+                    }
+                }
             }
         }
     }
