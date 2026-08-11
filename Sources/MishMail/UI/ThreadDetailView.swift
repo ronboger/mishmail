@@ -83,9 +83,10 @@ struct ThreadDetailView: View {
     @State private var cidResolveAttempted: Set<String> = []
     /// Avoid re-fetching the same message for missing-attachment recovery every expand.
     @State private var attachmentRecoverAttempted: Set<String> = []
-    /// Only one sent message owns a live body renderer at a time. This keeps
-    /// HTML-heavy threads from accumulating WKWebViews and helper processes.
-    @State private var expandedMessageId: String?
+    /// Open message cards (live HTML body renderers). The reading pane keeps
+    /// this to one id (`MessageExpandPolicy.single`); side-by-side compose
+    /// opens every sent card so the draft can reference the full thread.
+    @State private var expandedMessageIds: Set<String> = []
     /// Reading position to restore when inline compose closes.
     @State private var inlineScrollRestore: InlineScrollRestore = .unset
     @State private var inlineScrollTargetId: String?
@@ -222,7 +223,8 @@ struct ThreadDetailView: View {
                                         bodyPrep: bodyPrepByMessageId[message.id],
                                         cidInlinedHTML: cidInlinedHTMLById[message.id],
                                         cidPreInlineBytes: cidPreInlineBytesById[message.id],
-                                        expandedMessageId: $expandedMessageId,
+                                        expandPolicy: messageExpandPolicy,
+                                        expandedMessageIds: $expandedMessageIds,
                                         loadImagesForThread: $loadRemoteImagesForThread,
                                         onReply: { onReply(message) },
                                         onNeedBody: { loadBodyIfNeeded(id: message.id) },
@@ -472,7 +474,7 @@ struct ThreadDetailView: View {
                 cidPreInlineBytesById = [:]
                 cidResolveAttempted = []
                 loadRemoteImagesForThread = false
-                expandedMessageId = nil
+                expandedMessageIds = []
                 neighborPrerenderArmed = false
                 // Cancel any in-flight neighbor paints from the previous open.
                 HTMLBodyNeighborPrerender.cancel()
@@ -805,6 +807,31 @@ struct ThreadDetailView: View {
         ForwardComposer.newestSentMessage(in: messages)?.id
     }
 
+    /// Side-by-side opens every sent card; the reading pane stays single-active.
+    private var messageExpandPolicy: MessageExpandPolicy {
+        splitMode ? .multiple : .single
+    }
+
+    /// Non-draft message ids in display order (drafts render as `DraftMessageCard`).
+    private var nonDraftMessageIds: [String] {
+        messages
+            .filter { !ForwardComposer.isLiveDraft($0.labelIds) }
+            .map(\.id)
+    }
+
+    /// Seed open cards for the active policy and hydrate each body.
+    private func seedExpandedMessagesIfNeeded() {
+        guard expandedMessageIds.isEmpty else { return }
+        let seed = MessageExpandPolicy.initialExpandedIds(
+            policy: messageExpandPolicy,
+            nonDraftIds: nonDraftMessageIds,
+            lastNonDraftId: lastNonDraftId)
+        expandedMessageIds = seed
+        for id in seed {
+            loadBodyIfNeeded(id: id)
+        }
+    }
+
     /// Hydrate one message's body into `messages` when the user expands it.
     private func loadBodyIfNeeded(id: String) {
         guard let idx = messages.firstIndex(where: { $0.id == id }) else { return }
@@ -940,12 +967,12 @@ struct ThreadDetailView: View {
             beginInlineComposeScroll(proxy: proxy)
         }
         aiSummary = nil; summaryError = nil; summarizing = false
-        // Newest sent is expanded by default and may already be hydrated —
-        // kick attachment recovery + CID resolve without waiting for a second expand.
-        if let focus = ThreadRefresh.initialScrolledMessageId(in: messages)
-            ?? lastNonDraftId {
-            recoverAttachmentsIfNeeded(id: focus)
-            resolveCIDImagesIfNeeded(id: focus)
+        // Open the policy's default card set (newest only, or every sent card
+        // in side-by-side) and hydrate bodies + CID/attachment recovery.
+        seedExpandedMessagesIfNeeded()
+        for id in expandedMessageIds {
+            recoverAttachmentsIfNeeded(id: id)
+            resolveCIDImagesIfNeeded(id: id)
         }
     }
 
@@ -1398,7 +1425,9 @@ struct MessageCard: View {
     /// When set, preferred over `message.bodyHTML` / preassembled docs.
     let cidInlinedHTML: String?
     let cidPreInlineBytes: Int?
-    @Binding var expandedMessageId: String?
+    /// Single-active reading pane vs multi-open side-by-side compose.
+    let expandPolicy: MessageExpandPolicy
+    @Binding var expandedMessageIds: Set<String>
     /// Session-wide opt-in shared by every card in the open thread.
     @Binding var loadImagesForThread: Bool
     let onReply: () -> Void
@@ -1479,7 +1508,8 @@ struct MessageCard: View {
          bodyPrep: MessageHTMLPrep? = nil,
          cidInlinedHTML: String? = nil,
          cidPreInlineBytes: Int? = nil,
-         expandedMessageId: Binding<String?>,
+         expandPolicy: MessageExpandPolicy = .single,
+         expandedMessageIds: Binding<Set<String>>,
          loadImagesForThread: Binding<Bool> = .constant(false),
          onReply: @escaping () -> Void,
          onNeedBody: @escaping () -> Void = {},
@@ -1490,7 +1520,8 @@ struct MessageCard: View {
         self.bodyPrep = bodyPrep
         self.cidInlinedHTML = cidInlinedHTML
         self.cidPreInlineBytes = cidPreInlineBytes
-        self._expandedMessageId = expandedMessageId
+        self.expandPolicy = expandPolicy
+        self._expandedMessageIds = expandedMessageIds
         self._loadImagesForThread = loadImagesForThread
         self.onReply = onReply
         self.onNeedBody = onNeedBody
@@ -1594,7 +1625,8 @@ struct MessageCard: View {
     private func toggleExpanded() {
         let willExpand = !expanded
         withAnimation(.easeOut(duration: 0.12)) {
-            expandedMessageId = willExpand ? message.id : nil
+            expandedMessageIds = expandPolicy.applyingToggle(
+                id: message.id, currently: expandedMessageIds)
         }
         if willExpand { onNeedBody() }
     }
@@ -1602,14 +1634,15 @@ struct MessageCard: View {
     private func expandCard() {
         if !expanded {
             withAnimation(.easeOut(duration: 0.12)) {
-                expandedMessageId = message.id
+                expandedMessageIds = expandPolicy.applyingExpand(
+                    id: message.id, currently: expandedMessageIds)
             }
             onNeedBody()
         }
     }
 
     private var expanded: Bool {
-        expandedMessageId == message.id
+        expandedMessageIds.contains(message.id)
     }
 
     private var remoteImagePolicy: RemoteImagePolicy {
@@ -1990,9 +2023,12 @@ struct MessageCard: View {
             }
         }
         .onAppear {
-            // Last card starts expanded; ask parent to hydrate if still headers-only.
-            if isLast, expandedMessageId == nil {
-                expandedMessageId = message.id
+            // Parent seeds the open set on payload apply. Cards that land
+            // already expanded (or the single last-card default before seed)
+            // still need body hydration.
+            if isLast, expandedMessageIds.isEmpty {
+                expandedMessageIds = expandPolicy.applyingExpand(
+                    id: message.id, currently: expandedMessageIds)
                 onNeedBody()
             } else if expanded {
                 onNeedBody()

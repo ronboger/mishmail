@@ -217,6 +217,7 @@ targets:
       - Sources/MishMail/Support/ThreadDetailCache.swift
       - Sources/MishMail/Support/DefaultMailClient.swift
       - Sources/MishMail/Support/MarkReadOnOpen.swift
+      - Sources/MishMail/Support/MessageExpandPolicy.swift
       - Sources/MishMail/Support/GmailMarkReadKeys.swift
       - Sources/MishMail/Support/PendingDraftVisibility.swift
       - Sources/MishMail/Support/ComposingDraftVisibility.swift

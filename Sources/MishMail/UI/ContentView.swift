@@ -479,32 +479,41 @@ struct ContentView: View {
     /// full-height. The right column is empty space the overlay-hosted
     /// ComposeView pins itself to (same view identity as floating/inline,
     /// so entering/leaving split keeps the typed body).
+    ///
+    /// `NavigationStack` hosts the detail toolbar (exit split, archive/star,
+    /// reply, ⋯ More) — without it the column is a bare HStack child and
+    /// principal/editor toolbar items never mount.
     @ViewBuilder
     private func splitComposeLayout(hostWidth: CGFloat) -> some View {
         let composeWidth = ComposePlacement.splitComposeWidth(hostWidth: hostWidth)
         HStack(spacing: 0) {
-            Group {
-                if let id = store.composeRequest?.boundThreadId,
-                   let thread = store.thread(withId: id) {
-                    ThreadDetailView(
-                        thread: thread,
-                        compactMode: false,
-                        focusMode: true,
-                        splitMode: true,
-                        onBack: { store.exitSplitCompose() },
-                        onReply: { msg in
-                            store.openCompose(.init(replyTo: msg))
-                        })
-                } else {
-                    Text("Conversation unavailable")
-                        .frame(maxWidth: .infinity, maxHeight: .infinity)
-                        .foregroundStyle(.secondary)
+            NavigationStack {
+                Group {
+                    if let id = store.composeRequest?.boundThreadId,
+                       let thread = store.thread(withId: id) {
+                        ThreadDetailView(
+                            thread: thread,
+                            compactMode: false,
+                            focusMode: true,
+                            splitMode: true,
+                            onBack: { store.exitSplitCompose() },
+                            onReply: { msg in
+                                store.openCompose(.init(replyTo: msg))
+                            })
+                    } else {
+                        Text("Conversation unavailable")
+                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .foregroundStyle(.secondary)
+                    }
                 }
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             .background(Color.notionContent)
             Color.clear
                 .frame(width: composeWidth)
+                // Reserve width only — clicks land on the trailing compose
+                // overlay card, not this spacer.
+                .allowsHitTesting(false)
         }
     }
 

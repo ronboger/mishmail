@@ -7,6 +7,12 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Fixed
+- **Side-by-side compose opens every message in the conversation.** The
+  reading pane still keeps one live body renderer (WebKit cost), but ⇧⌘↩
+  expands all sent cards so you can read the full thread while drafting.
+  Quoted trails stay behind each card's "…" pill. The conversation column
+  is also hosted in a `NavigationStack` so the detail toolbar (exit split,
+  archive/star, reply, ⋯ More) mounts again.
 - **Switching mailboxes on a narrow window no longer dumps you into a
   conversation.** On windows below the three-pane width (~1080pt), clicking a
   sidebar mailbox could land with the top conversation auto-opened, replacing
