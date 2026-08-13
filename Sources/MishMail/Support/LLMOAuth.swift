@@ -47,7 +47,13 @@ enum LLMOAuth {
 
         static func generate() -> PKCE {
             var bytes = [UInt8](repeating: 0, count: 32)
-            _ = SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes)
+            // If the system CSPRNG refuses, fall back to the standard library
+            // generator. A weaker verifier still protects the flow; a constant
+            // all-zero verifier (the old discarded-status behaviour) does not.
+            if SecRandomCopyBytes(kSecRandomDefault, bytes.count, &bytes) != errSecSuccess {
+                var generator = SystemRandomNumberGenerator()
+                bytes = (0..<32).map { _ in UInt8.random(in: .min ... .max, using: &generator) }
+            }
             let verifier = Data(bytes).base64EncodedString()
                 .replacingOccurrences(of: "+", with: "-")
                 .replacingOccurrences(of: "/", with: "_")
@@ -97,14 +103,16 @@ enum LLMOAuth {
         let response = try JSONDecoder().decode(Response.self, from: data)
         return LLMOAuthTokens(
             accessToken: response.access_token,
-            refreshToken: response.refresh_token ?? "",
+            refreshToken: response.refresh_token,
             expiresAt: now.addingTimeInterval(TimeInterval(response.expires_in ?? 3600)))
     }
 }
 
 struct LLMOAuthTokens: Codable, Equatable, Sendable {
     var accessToken: String
-    var refreshToken: String
+    /// nil when the vendor sent no refresh_token, so callers can tell
+    /// "none issued" apart from an empty value.
+    var refreshToken: String?
     var expiresAt: Date
 
     /// A 60-second safety margin so a token that expires mid-request

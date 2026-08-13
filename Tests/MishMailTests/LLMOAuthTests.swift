@@ -36,6 +36,13 @@ final class LLMOAuthTests: XCTestCase {
         XCTAssertTrue(tokens.isExpired(now: now.addingTimeInterval(3600)))
     }
 
+    func testParseTokensKeepsMissingRefreshTokenNil() throws {
+        let json = #"{"access_token":"at2","expires_in":60}"#
+        let tokens = try LLMOAuth.parseTokens(from: Data(json.utf8), now: Date())
+        XCTAssertEqual(tokens.accessToken, "at2")
+        XCTAssertNil(tokens.refreshToken)
+    }
+
     func testRefreshFormContainsGrantAndClient() {
         let form = LLMOAuth.refreshRequestForm(vendor: .chatGPT, refreshToken: "rt9")
         XCTAssertEqual(form["grant_type"], "refresh_token")
