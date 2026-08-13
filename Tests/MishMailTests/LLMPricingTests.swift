@@ -9,6 +9,51 @@ final class LLMPricingTests: XCTestCase {
         XCTAssertNil(LLMPricing.price(model: "totally-unknown-model", overrides: [:]))
     }
 
+    func testOverlappingOverrideKeysPickLongestPrefix() {
+        // Two override keys both prefix-match the model id. The longest must win,
+        // deterministically, no matter how the dictionary happens to iterate.
+        let overrides = [
+            "grok-4": LLMPrice(inputPerMTok: 3, outputPerMTok: 15),
+            "grok-4-1": LLMPrice(inputPerMTok: 0.2, outputPerMTok: 0.5),
+        ]
+        for _ in 0..<50 {
+            XCTAssertEqual(LLMPricing.price(model: "grok-4-1212", overrides: overrides),
+                           LLMPrice(inputPerMTok: 0.2, outputPerMTok: 0.5))
+        }
+    }
+
+    func testShippedCheapVariantsBeatShorterPrefix() {
+        let mini = LLMPricing.price(model: "gpt-5-mini-2026", overrides: [:])
+        XCTAssertEqual(mini, LLMPrice(inputPerMTok: 0.25, outputPerMTok: 2))
+        XCTAssertEqual(LLMPricing.price(model: "gpt-5-nano", overrides: [:]),
+                       LLMPrice(inputPerMTok: 0.05, outputPerMTok: 0.4))
+        XCTAssertEqual(LLMPricing.price(model: "grok-4-fast-reasoning", overrides: [:]),
+                       LLMPrice(inputPerMTok: 0.2, outputPerMTok: 0.5))
+        // The plain rows still resolve for ids that are not a cheap variant.
+        XCTAssertEqual(LLMPricing.price(model: "gpt-5-2026-01-01", overrides: [:]),
+                       LLMPrice(inputPerMTok: 1.25, outputPerMTok: 10))
+    }
+
+    func testEmptyOverrideKeyIsIgnored() {
+        let overrides = ["": LLMPrice(inputPerMTok: 999, outputPerMTok: 999)]
+        XCTAssertEqual(LLMPricing.price(model: "claude-sonnet-5", overrides: overrides),
+                       LLMPrice(inputPerMTok: 3, outputPerMTok: 15))
+        XCTAssertNil(LLMPricing.price(model: "totally-unknown-model", overrides: overrides))
+    }
+
+    func testMatchKeyTrimsNewlines() {
+        XCTAssertEqual(LLMPricing.matchKey(model: " GPT-5-Mini\n"), "gpt-5-mini")
+        XCTAssertEqual(LLMPricing.price(model: "gpt-5-mini\n", overrides: [:]),
+                       LLMPrice(inputPerMTok: 0.25, outputPerMTok: 2))
+    }
+
+    func testCompactCountUnits() {
+        XCTAssertEqual(LLMPricing.compactCount(999), "999")
+        XCTAssertEqual(LLMPricing.compactCount(1200), "1.2k")
+        XCTAssertEqual(LLMPricing.compactCount(2_000_000), "2.0M")
+        XCTAssertEqual(LLMPricing.compactCount(1_500_000), "1.5M")
+    }
+
     func testCostMath() {
         let price = LLMPrice(inputPerMTok: 3, outputPerMTok: 15)
         let usage = LLMUsage(promptTokens: 1_000_000, completionTokens: 2_000_000)
@@ -34,6 +79,12 @@ final class LLMPricingTests: XCTestCase {
             usage: usage, config: keyed, model: "grok-4-0709",
             overrides: ["grok-4-0709": LLMPrice(inputPerMTok: 3, outputPerMTok: 15)])!
         XCTAssertTrue(keyedLabel.contains("$"))
+        // Keyed but the model has no shipped or override price: tokens only, no dollars.
+        let unpricedLabel = LLMPricing.costLabel(usage: usage, config: keyed,
+                                                 model: "totally-unknown-model",
+                                                 overrides: [:])!
+        XCTAssertEqual(unpricedLabel, "1.2k in · 300 out")
+        XCTAssertFalse(unpricedLabel.contains("$"))
         // No usage → no label.
         XCTAssertNil(LLMPricing.costLabel(usage: nil, config: keyed,
                                           model: "grok-4-0709", overrides: [:]))
