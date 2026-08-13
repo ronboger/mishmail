@@ -23,6 +23,18 @@ enum ContactMiner {
         var labelIds: String
     }
 
+    /// Every address considered "me": account primaries plus send-as aliases,
+    /// lowercased. The single source of truth for rebuildContacts' start
+    /// snapshot AND its mid-flight restart check — computing the two sides
+    /// differently (primaries-only on one side) made the check always fire
+    /// once an alias existed, looping full rebuilds at 100% CPU.
+    static func ownAddresses(accountIds: [String],
+                             aliasEmails: [String]) -> Set<String> {
+        var set = Set(accountIds.map { $0.lowercased() })
+        for email in aliasEmails { set.insert(email.lowercased()) }
+        return set
+    }
+
     /// Spam and deleted mail are not evidence that the user knows a sender.
     /// Gmail can cache both kinds of messages locally, and mining their headers
     /// turns unsolicited senders into compose suggestions. Match whole label
