@@ -27,6 +27,22 @@ final class LLMProviderStoreTests: XCTestCase {
         XCTAssertTrue(loaded.contains { $0.kind == .ollama })
     }
 
+    func testLoadKeepsValidRowsWhenOneStoredRowIsGarbage() {
+        let good = LLMProviderConfig(
+            id: UUID(uuidString: "11111111-2222-3333-4444-555555555555")!,
+            kind: .openAICompatible, label: "Grok",
+            baseURL: "https://api.x.ai/v1", defaultModel: "grok-4-0709",
+            authMode: .apiKey)
+        let goodJSON = String(data: try! JSONEncoder().encode(good), encoding: .utf8)!
+        let json = "[\(goodJSON),{\"id\":\"66666666-7777-8888-9999-AAAAAAAAAAAA\"}]"
+        defaults.set(Data(json.utf8), forKey: LLMProviderStore.defaultsKey)
+
+        let loaded = LLMProviderStore.load(from: defaults)
+        XCTAssertEqual(loaded.count, 2)
+        XCTAssertTrue(loaded.contains(good))
+        XCTAssertTrue(loaded.contains { $0.id == LLMProviderStore.builtInOllamaID })
+    }
+
     func testKeychainKeyNamesDeriveFromID() {
         let id = UUID(uuidString: "AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")!
         XCTAssertEqual(LLMProviderStore.keychainKey(for: id),

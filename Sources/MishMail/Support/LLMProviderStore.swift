@@ -29,11 +29,28 @@ enum LLMProviderStore {
     /// live `Ollama` settings; stored rows never shadow it.
     static func load(from defaults: UserDefaults = .standard) -> [LLMProviderConfig] {
         var providers: [LLMProviderConfig] = []
-        if let data = defaults.data(forKey: defaultsKey),
-           let stored = try? JSONDecoder().decode([LLMProviderConfig].self, from: data) {
-            providers = stored.filter { $0.id != builtInOllamaID }
+        if let data = defaults.data(forKey: defaultsKey) {
+            providers = decodeProviders(from: data).filter { $0.id != builtInOllamaID }
         }
         return providers + [builtInOllama()]
+    }
+
+    /// Decodes the stored array. One bad row must not discard the others,
+    /// which would orphan Keychain secrets, so fall back to a per-row pass.
+    static func decodeProviders(from data: Data) -> [LLMProviderConfig] {
+        let decoder = JSONDecoder()
+        if let stored = try? decoder.decode([LLMProviderConfig].self, from: data) {
+            return stored
+        }
+        guard let rows = (try? JSONSerialization.jsonObject(with: data)) as? [Any] else {
+            return []
+        }
+        return rows.compactMap { row in
+            guard let rowData = try? JSONSerialization.data(withJSONObject: row) else {
+                return nil
+            }
+            return try? decoder.decode(LLMProviderConfig.self, from: rowData)
+        }
     }
 
     static func save(_ providers: [LLMProviderConfig],
