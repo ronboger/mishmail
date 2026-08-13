@@ -25,6 +25,9 @@ cloud backend. MishMail stays local-first.
 
 - Scope: Phases 1–3 now.
 - Providers at launch: Anthropic, OpenAI-compatible, Ollama.
+- Grok ships as an OpenAI-compatible preset (`https://api.x.ai/v1`).
+- Auth modes: API key, or subscription OAuth sign-in like the Aside browser
+  (Claude and ChatGPT accounts).
 - Chat surface: right-hand panel in the main split view.
 - Agent loop: native Swift, tools routed in-process to `MCPBridge`.
 
@@ -63,6 +66,26 @@ Codecs are pure functions `(messages, tools, model) -> URLRequest body` and
 task). Endpoint rule, same as Ollama today: loopback URLs are always allowed;
 remote URLs require HTTPS.
 
+**Auth modes.** Each provider row authenticates one of two ways:
+
+- *API key* — the user pastes a key (default for OpenAI-compatible and
+  Anthropic; the only mode for generic base URLs).
+- *Subscription OAuth* — "Sign in with Claude" and "Sign in with ChatGPT",
+  like the Aside browser. The flow is PKCE with a loopback redirect and
+  reuses the patterns in `Auth/OAuth.swift` (state check, port handling,
+  browser hand-off). New pure module `Support/LLMOAuth.swift` holds the
+  per-vendor constants (authorize URL, token URL, client id, scopes) and
+  the token refresh state machine; the app side reuses the existing
+  loopback listener approach.
+  - Claude sign-in yields tokens that call `api.anthropic.com` with an
+    OAuth bearer header instead of `x-api-key`.
+  - ChatGPT sign-in follows the Codex-CLI OAuth flow and its chat endpoint.
+  - Tokens and refresh tokens live in the Keychain; refresh happens in
+    `LLMClient` on 401, single-flight per provider.
+  - Vendor OAuth details drift. The implementation plan must verify the
+    current constants against Aside/Codex/Claude-Code behavior at build
+    time, and the UI must degrade to API-key mode if sign-in breaks.
+
 **Key storage.** One Keychain item per provider account:
 `llm.key.<uuid>` via `Keychain.existingOrCreate` semantics (store on save,
 `read()` on use, fail closed on `.unavailable`). All Keychain access sits
@@ -79,9 +102,11 @@ from `id`. Ollama remains a built-in row that needs no key.
 The existing `AISettings` pane gains a **Providers** section:
 - List of configured providers with kind badge and model.
 - Add sheet: kind picker (Anthropic / OpenAI-compatible / Ollama), label,
-  base URL (prefilled per kind: `api.anthropic.com`, `api.openai.com`,
-  `openrouter.ai/api`, local Ollama), SecureField for the key, model field
-  with a "Fetch models" button (`/v1/models` or Ollama `/api/tags`).
+  base URL with presets (`api.anthropic.com`, `api.openai.com`,
+  `openrouter.ai/api`, `api.x.ai` for Grok, local Ollama), auth mode
+  (SecureField for a key, or a "Sign in with Claude / ChatGPT" button),
+  model field with a "Fetch models" button (`/v1/models` or Ollama
+  `/api/tags`).
 - "Test" button does a 1-token round trip and reports pass/fail.
 - Per-task default pickers (used by Phase 3): Drafts, Summaries, Triage,
   Ask Mish. Each picker lists `provider / model` pairs.
