@@ -58,9 +58,16 @@ enum OpenAIWire {
         private var pendingToolEvents: [LLMEvent] = []
 
         mutating func consume(line: String) -> [LLMEvent] {
-            guard line.hasPrefix("data: ") else { return [] }
-            let payload = String(line.dropFirst(6))
+            // Accept "data:" with or without a space, and tolerate a trailing
+            // CR from CRLF transports.
+            guard line.hasPrefix("data:") else { return [] }
+            var payload = String(line.dropFirst(5))
+            if payload.hasSuffix("\r") { payload.removeLast() }
+            payload = payload.trimmingCharacters(in: .whitespaces)
             if payload == "[DONE]" {
+                // Flush regardless of finish_reason: some servers report
+                // "stop" on a chunk that carried tool_calls.
+                flushPartialCalls()
                 let events = pendingToolEvents + [LLMEvent.done(stopReason: stopReason, usage: usage)]
                 pendingToolEvents = []
                 return events
@@ -92,16 +99,21 @@ enum OpenAIWire {
             }
             if let reason = choice["finish_reason"] as? String {
                 stopReason = reason
-                if reason == "tool_calls" {
-                    for index in partial.keys.sorted() {
-                        let call = partial[index]!
-                        pendingToolEvents.append(.toolCall(LLMToolCall(
-                            id: call.id, name: call.name, argumentsJSON: call.args)))
-                    }
-                    partial = [:]
-                }
+                if reason == "tool_calls" { flushPartialCalls() }
             }
             return events
+        }
+
+        /// Move accumulated tool calls into pending events, in index order.
+        /// Skips fully empty entries.
+        private mutating func flushPartialCalls() {
+            for index in partial.keys.sorted() {
+                let call = partial[index]!
+                if call.id.isEmpty, call.name.isEmpty, call.args.isEmpty { continue }
+                pendingToolEvents.append(.toolCall(LLMToolCall(
+                    id: call.id, name: call.name, argumentsJSON: call.args)))
+            }
+            partial = [:]
         }
     }
 }

@@ -59,6 +59,29 @@ final class LLMWireOpenAITests: XCTestCase {
         ])
     }
 
+    func testToolCallFlushesWhenFinishReasonIsStop() {
+        var state = OpenAIWire.StreamState()
+        var events: [LLMEvent] = []
+        events += state.consume(line: #"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"id":"c9","function":{"name":"get_thread","arguments":"{\"id\":"}}]}}]}"#)
+        events += state.consume(line: #"data: {"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"\"t1\"}"}}]},"finish_reason":"stop"}]}"#)
+        events += state.consume(line: "data: [DONE]")
+        XCTAssertEqual(events, [
+            .toolCall(LLMToolCall(id: "c9", name: "get_thread", argumentsJSON: #"{"id":"t1"}"#)),
+            .done(stopReason: "stop", usage: nil),
+        ])
+    }
+
+    func testDataFieldWithoutSpaceAndTrailingCarriageReturn() {
+        var state = OpenAIWire.StreamState()
+        var events: [LLMEvent] = []
+        events += state.consume(line: #"data:{"choices":[{"delta":{"content":"Hi"}}]}"#)
+        events += state.consume(line: "data: [DONE]\r")
+        XCTAssertEqual(events, [
+            .token("Hi"),
+            .done(stopReason: "stop", usage: nil),
+        ])
+    }
+
     func testNonDataLinesAreIgnored() {
         var state = OpenAIWire.StreamState()
         XCTAssertEqual(state.consume(line: ""), [])
