@@ -143,6 +143,7 @@ targets:
       - Sources/MishMail/Support/HTMLEntities.swift
       - Sources/MishMail/Support/KeyBindings.swift
       - Sources/MishMail/Support/LabelSearch.swift
+      - Sources/MishMail/Support/LLMChat.swift
       - Sources/MishMail/Support/Keychain.swift
       - Sources/MishMail/Support/SearchQuery.swift
       - Sources/MishMail/Support/SelectionAdvance.swift
