@@ -1560,7 +1560,6 @@ struct AISettings: View {
     @State private var editingProvider: LLMProviderConfig?
     @State private var addingProvider = false
     @State private var usage: [LLMUsageLog.TaskSpend] = []
-    @State private var priceOverrides: [String: LLMPrice] = LLMPricing.loadOverrides()
     @State private var showingClearUsageAlert = false
 
     private var endpointIsRemote: Bool {
@@ -1661,26 +1660,6 @@ struct AISettings: View {
                 }
 
                 Section {
-                    ForEach(mergedPrices, id: \.key) { item in
-                        ModelPriceEditorRow(model: item.key, price: item.value) { updated in
-                            savePrice(updated, for: item.key)
-                        }
-                        .id(item.key)
-                    }
-                    Button("Reset to defaults", role: .destructive) {
-                        LLMPricing.saveOverrides([:])
-                        priceOverrides = [:]
-                        loadUsage()
-                    }
-                    .buttonStyle(.borderless)
-                } header: {
-                    Text("Model prices")
-                } footer: {
-                    Text("Prices are in USD per million tokens. Changes affect new estimates.")
-                        .font(.caption).foregroundStyle(.secondary)
-                }
-
-                Section {
                     Toggle("Auto-sort new mail", isOn: $autoClassify)
                 } footer: {
                     Text("After each sync, quietly tag new inbox threads (Reply needed, FYI, Newsletter, Receipt) with the local model. Skips silently when Ollama isn't running. A small fast model like llama3.2:3b is ideal here.")
@@ -1701,7 +1680,6 @@ struct AISettings: View {
                 }
             }
             .onAppear {
-                priceOverrides = LLMPricing.loadOverrides()
                 loadUsage()
             }
             .alert("Clear usage data?", isPresented: $showingClearUsageAlert) {
@@ -1710,16 +1688,6 @@ struct AISettings: View {
             } message: {
                 Text("This removes all saved model usage data.")
             }
-        }
-    }
-
-    private var mergedPrices: [(key: String, value: LLMPrice)] {
-        let merged = LLMPricing.shippedDefaults().merging(priceOverrides) { _, override in
-            override
-        }
-        return merged.keys.sorted().compactMap { key in
-            guard let price = merged[key] else { return nil }
-            return (key: key, value: price)
         }
     }
 
@@ -1751,7 +1719,7 @@ struct AISettings: View {
     private func clearUsage() {
         Task {
             do {
-                try await AppDatabase.shared.dbPool.write { db in
+                _ = try await AppDatabase.shared.dbPool.write { db in
                     try LLMUsageRow.deleteAll(db)
                 }
                 await MainActor.run {
@@ -1761,17 +1729,6 @@ struct AISettings: View {
                 // The button is intentionally quiet if the database is closing.
             }
         }
-    }
-
-    private func savePrice(_ price: LLMPrice, for model: String) {
-        var overrides = LLMPricing.loadOverrides()
-        guard LLMPricing.price(model: model, overrides: overrides) != price else {
-            return
-        }
-        overrides[model] = price
-        LLMPricing.saveOverrides(overrides)
-        priceOverrides = overrides
-        loadUsage()
     }
 
     /// Drops the provider, its secrets, and any task still pointing at it, so
@@ -1792,112 +1749,6 @@ struct AISettings: View {
                 LLMTaskAssignment(providerID: fallback.id, model: fallback.defaultModel),
                 for: task)
         }
-    }
-}
-
-/// One editable model price row. Text is committed with Return or when the
-/// field loses focus; invalid values restore the previous value.
-private struct ModelPriceEditorRow: View {
-    enum Field: Hashable {
-        case input, output
-    }
-
-    let model: String
-    let price: LLMPrice
-    let save: (LLMPrice) -> Void
-
-    @State private var inputText: String
-    @State private var outputText: String
-    @FocusState private var focusedField: Field?
-
-    init(model: String, price: LLMPrice, save: @escaping (LLMPrice) -> Void) {
-        self.model = model
-        self.price = price
-        self.save = save
-        _inputText = State(initialValue: Self.format(price.inputPerMTok))
-        _outputText = State(initialValue: Self.format(price.outputPerMTok))
-    }
-
-    var body: some View {
-        HStack(spacing: 8) {
-            Text(model)
-                .font(.system(size: 12, design: .monospaced))
-                .lineLimit(1)
-                .frame(maxWidth: .infinity, alignment: .leading)
-            TextField("In", text: $inputText)
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.trailing)
-                .frame(width: 76)
-                .focused($focusedField, equals: .input)
-                .onSubmit { commitInput() }
-                .accessibilityLabel("\(model) input price per million tokens")
-            Text("in")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-            TextField("Out", text: $outputText)
-                .textFieldStyle(.roundedBorder)
-                .multilineTextAlignment(.trailing)
-                .frame(width: 76)
-                .focused($focusedField, equals: .output)
-                .onSubmit { commitOutput() }
-                .accessibilityLabel("\(model) output price per million tokens")
-            Text("out")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-        .onChange(of: focusedField) { _, field in
-            switch field {
-            case .input: commitOutput()
-            case .output: commitInput()
-            case nil: commitInput(); commitOutput()
-            }
-        }
-        .onChange(of: price.inputPerMTok) { _, value in
-            if focusedField != .input {
-                inputText = Self.format(value)
-            }
-        }
-        .onChange(of: price.outputPerMTok) { _, value in
-            if focusedField != .output {
-                outputText = Self.format(value)
-            }
-        }
-    }
-
-    private func commitInput() {
-        guard let value = Self.validValue(inputText) else {
-            inputText = Self.format(price.inputPerMTok)
-            return
-        }
-        guard value != price.inputPerMTok else { return }
-        save(LLMPrice(inputPerMTok: value, outputPerMTok: outputValue))
-    }
-
-    private func commitOutput() {
-        guard let value = Self.validValue(outputText) else {
-            outputText = Self.format(price.outputPerMTok)
-            return
-        }
-        guard value != price.outputPerMTok else { return }
-        save(LLMPrice(inputPerMTok: inputValue, outputPerMTok: value))
-    }
-
-    private var inputValue: Double {
-        Self.validValue(inputText) ?? price.inputPerMTok
-    }
-
-    private var outputValue: Double {
-        Self.validValue(outputText) ?? price.outputPerMTok
-    }
-
-    private static func validValue(_ text: String) -> Double? {
-        guard let value = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)),
-              value.isFinite, value >= 0 else { return nil }
-        return value
-    }
-
-    private static func format(_ value: Double) -> String {
-        String(format: "%.6g", value)
     }
 }
 
@@ -1961,21 +1812,28 @@ private struct ProviderEditSheet: View {
         let name: String
         let kind: LLMProviderKind
         let baseURL: String
+        let defaultModel: String
+        let keyHint: String
     }
     private static let presets: [Preset] = [
-        Preset(name: "Anthropic", kind: .anthropic, baseURL: "https://api.anthropic.com"),
-        Preset(name: "OpenAI", kind: .openAICompatible, baseURL: "https://api.openai.com/v1"),
-        Preset(name: "OpenRouter", kind: .openAICompatible, baseURL: "https://openrouter.ai/api/v1"),
-        Preset(name: "Grok (xAI)", kind: .openAICompatible, baseURL: "https://api.x.ai/v1"),
-        Preset(name: "Groq", kind: .openAICompatible, baseURL: "https://api.groq.com/openai/v1"),
+        Preset(name: "Anthropic", kind: .anthropic, baseURL: "https://api.anthropic.com",
+               defaultModel: "claude-opus-5", keyHint: "console.anthropic.com"),
+        Preset(name: "OpenAI", kind: .openAICompatible, baseURL: "https://api.openai.com/v1",
+               defaultModel: "gpt-5", keyHint: "platform.openai.com"),
+        Preset(name: "OpenRouter", kind: .openAICompatible, baseURL: "https://openrouter.ai/api/v1",
+               defaultModel: "", keyHint: "openrouter.ai/keys"),
+        Preset(name: "Grok (xAI)", kind: .openAICompatible, baseURL: "https://api.x.ai/v1",
+               defaultModel: "grok-4", keyHint: "console.x.ai"),
+        Preset(name: "Groq", kind: .openAICompatible, baseURL: "https://api.groq.com/openai/v1",
+               defaultModel: "", keyHint: "console.groq.com"),
     ]
 
     @State private var presetIndex = 0
-    @State private var label = ""
+    @State private var label = ProviderEditSheet.presets[0].name
     @State private var baseURL = ProviderEditSheet.presets[0].baseURL
-    @State private var modelID = ""
+    @State private var modelID = ProviderEditSheet.presets[0].defaultModel
     @State private var apiKey = ""
-    @State private var useOAuth = false
+    @State private var useOAuth = true
     @State private var models: [String] = []
     @State private var status = ""
     /// One id per sheet lifetime for a brand-new provider. Both fetchModels()
@@ -2021,19 +1879,31 @@ private struct ProviderEditSheet: View {
                     suppressPresetApply = false
                     return
                 }
-                baseURL = Self.presets[presetIndex].baseURL
-                if label.isEmpty { label = Self.presets[presetIndex].name }
-                if oauthVendor == nil { useOAuth = false }
+                let preset = Self.presets[presetIndex]
+                baseURL = preset.baseURL
+                label = preset.name
+                modelID = preset.defaultModel
+                useOAuth = oauthVendor != nil && provider == nil
             }
-            TextField("Label", text: $label)
-            TextField("Base URL", text: $baseURL)
             if let vendor = oauthVendor {
-                Toggle("Sign in with \(vendor == .claude ? "Claude" : "ChatGPT") instead of a key",
-                       isOn: $useOAuth)
+                Picker("Sign in with", selection: $useOAuth) {
+                    Text("\(vendor == .claude ? "Claude" : "ChatGPT") subscription").tag(true)
+                    Text("API key").tag(false)
+                }
+                .pickerStyle(.segmented)
+                Text(useOAuth
+                     ? "Save opens your browser to sign in. No key is needed. Usage counts against your subscription, so no dollar cost is shown."
+                     : "Paste an API key from \(Self.presets[presetIndex].keyHint). The key stays in your Keychain.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else {
+                Text("\(Self.presets[presetIndex].name) does not offer a subscription sign-in. Paste an API key from \(Self.presets[presetIndex].keyHint).")
+                    .font(.caption).foregroundStyle(.secondary)
             }
             if !useOAuth {
                 SecureField("API key", text: $apiKey)
             }
+            TextField("Label", text: $label)
+            TextField("Base URL", text: $baseURL)
             HStack {
                 TextField("Model", text: $modelID)
                 Button("Fetch models") { Task { await fetchModels() } }
@@ -2073,7 +1943,7 @@ private struct ProviderEditSheet: View {
                 suppressPresetApply = true
                 presetIndex = matched
             }
-            if case .oauth = existing.authMode { useOAuth = true }
+            if case .oauth = existing.authMode { useOAuth = true } else { useOAuth = false }
         }
     }
 

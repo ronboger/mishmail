@@ -251,9 +251,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
             publishSelection(textView)
             // Selection moves the ghost anchor (or hides it when length > 0).
             // Property `ghostText` may be unchanged, so didSet won't redraw.
-            if let body = textView as? ComposeBodyTextView {
-                body.invalidateGhostDisplay()
-            }
+            textView.invalidateGhostDisplay()
         }
 
         func apply(_ action: FormatAction) {

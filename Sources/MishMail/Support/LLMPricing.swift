@@ -20,9 +20,11 @@ enum LLMPricing {
     /// user overrides win.
     static func shippedDefaults() -> [String: LLMPrice] {
         [
-            "claude-fable-5": LLMPrice(inputPerMTok: 20, outputPerMTok: 100),
-            "claude-opus-5": LLMPrice(inputPerMTok: 12, outputPerMTok: 60),
+            "claude-fable-5": LLMPrice(inputPerMTok: 10, outputPerMTok: 50),
+            "claude-opus-5": LLMPrice(inputPerMTok: 5, outputPerMTok: 25),
+            "claude-opus-4": LLMPrice(inputPerMTok: 5, outputPerMTok: 25),
             "claude-sonnet-5": LLMPrice(inputPerMTok: 3, outputPerMTok: 15),
+            "claude-sonnet-4": LLMPrice(inputPerMTok: 3, outputPerMTok: 15),
             "claude-haiku-4-5": LLMPrice(inputPerMTok: 1, outputPerMTok: 5),
             "gpt-5": LLMPrice(inputPerMTok: 1.25, outputPerMTok: 10),
             "gpt-5-mini": LLMPrice(inputPerMTok: 0.25, outputPerMTok: 2),
