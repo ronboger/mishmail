@@ -112,12 +112,38 @@ final class AskMishController {
         resolvePendingConfirmation(allow: allow)
     }
 
+    /// Longest the quit path waits for a cancelled turn to unwind.
+    private static let shutdownWaitSeconds: Double = 3
+
+    /// Holds the "the turn finished" bit for the bounded wait below. A captured
+    /// local `var` cannot be written from another task.
+    @MainActor private final class DoneFlag { var isSet = false }
+
     /// Cancel and await the in-flight turn. Called from
     /// `MailStore.executeTermination` before the database pool closes.
+    ///
+    /// The wait is **bounded**. Declining the parked confirm card and
+    /// cancelling the task releases every stage that checks cancellation, but a
+    /// tool call already inside `MCPRouter` (an IMAP or HTTP round-trip) may not
+    /// observe it, and an unbounded `await turnTask?.value` then stalls the
+    /// whole quit path — the failure mode the app has hit before. After
+    /// `shutdownWaitSeconds` we stop waiting and let termination continue: an
+    /// orphaned request can only fail harmlessly once the pool closes.
     func shutdown() async {
         resolvePendingConfirmation(allow: false)
         turnTask?.cancel()
-        _ = await turnTask?.value
+        if let task = turnTask {
+            let flag = DoneFlag()
+            let waiter = Task { @MainActor in
+                _ = await task.value
+                flag.isSet = true
+            }
+            let deadline = Date().addingTimeInterval(Self.shutdownWaitSeconds)
+            while !flag.isSet, Date() < deadline, !Task.isCancelled {
+                try? await Task.sleep(nanoseconds: 20_000_000)
+            }
+            waiter.cancel()
+        }
         turnTask = nil
         isRunning = false
     }
@@ -183,7 +209,12 @@ final class AskMishController {
 
     /// Deletes a conversation and its messages. Clears the panel when it is
     /// the one on screen.
+    ///
+    /// Refused while a turn is running: deleting the live conversation would
+    /// leave `conversationID` pointing at a deleted row, and the turn's next
+    /// write would fail the foreign key. The UI disables the control instead.
     func deleteConversation(id: String) {
+        guard !isRunning else { return }
         _ = try? AppDatabase.shared.dbPool.write { db in
             try ChatConversationRow.deleteOne(db, key: id)
         }
@@ -396,8 +427,16 @@ final class AskMishController {
             threadMarkdown: ThreadExporter.markdown(subject: thread.subject, messages: bodies))
     }
 
+    /// Appends one assistant turn to the wire history.
+    ///
+    /// The empty guard mirrors `persistTurn`: an assistant message with no text
+    /// and no calls serializes to `{"role":"assistant","content":[]}`, which
+    /// Anthropic rejects with a 400. A stop before the first token used to
+    /// append exactly that and poison every later send in the conversation.
+    /// The guard lives here so no caller can bypass it.
     private func appendToHistory(assistantText: String, calls: [LLMToolCall],
                                 results: [LLMToolResult]? = nil) {
+        guard !assistantText.isEmpty || !calls.isEmpty else { return }
         history.append(LLMMessage(role: .assistant, text: assistantText, toolCalls: calls))
         if let results, !results.isEmpty {
             history.append(LLMMessage(role: .tool, text: "", toolResults: results))
