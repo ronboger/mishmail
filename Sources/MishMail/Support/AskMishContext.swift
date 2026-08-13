@@ -8,6 +8,7 @@ enum AskMishContext {
 
     static func systemPrompt(date: Date, accountEmails: [String]) -> String {
         let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.dateStyle = .full
         formatter.timeStyle = .none
         let accounts = accountEmails.isEmpty ? "none connected" : accountEmails.joined(separator: ", ")
@@ -41,7 +42,7 @@ enum AskMishContext {
     }
 
     static func llmMessages(history: [ChatMessageRow]) -> [LLMMessage] {
-        history.compactMap { row in
+        let decoded: [LLMMessage] = history.compactMap { row in
             guard let role = LLMRole(rawValue: row.role) else { return nil }
             let calls = (try? JSONDecoder().decode([LLMToolCall].self,
                                                    from: Data(row.toolCallsJSON.utf8))) ?? []
@@ -49,6 +50,28 @@ enum AskMishContext {
                                                      from: Data(row.toolResultsJSON.utf8))) ?? []
             return LLMMessage(role: role, text: row.text, toolCalls: calls, toolResults: results)
         }
+        // A tool result whose call ID has no matching tool_use in the preceding
+        // assistant message makes the whole request invalid for Anthropic and
+        // OpenAI. Tool call JSON can fail to decode (stored garbage), so drop
+        // any tool message that is now orphaned rather than send a broken turn.
+        var kept: [LLMMessage] = []
+        for message in decoded {
+            guard message.role == .tool else {
+                kept.append(message)
+                continue
+            }
+            let previous = kept.last
+            guard let previous, previous.role == .assistant, !previous.toolCalls.isEmpty else {
+                continue
+            }
+            let callIDs = Set(previous.toolCalls.map(\.id))
+            guard !message.toolResults.isEmpty,
+                  message.toolResults.allSatisfy({ callIDs.contains($0.callID) }) else {
+                continue
+            }
+            kept.append(message)
+        }
+        return kept
     }
 
     static func title(fromFirstUserText text: String) -> String {

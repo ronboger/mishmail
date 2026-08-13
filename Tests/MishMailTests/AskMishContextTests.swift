@@ -36,6 +36,49 @@ final class AskMishContextTests: XCTestCase {
         XCTAssertEqual(messages[1].toolCalls, calls)
     }
 
+    func testOrphanedToolResultsAreDropped() throws {
+        let results = [LLMToolResult(callID: "c1", content: "{}", isError: false)]
+        let resultsJSON = String(decoding: try JSONEncoder().encode(results), as: UTF8.self)
+        let rows = [
+            ChatMessageRow(id: "1", conversationId: "c", role: "assistant", text: "",
+                           toolCallsJSON: "not json at all", toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "2", conversationId: "c", role: "tool", text: "",
+                           toolCallsJSON: "[]", toolResultsJSON: resultsJSON,
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+        ]
+        let messages = AskMishContext.llmMessages(history: rows)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .assistant)
+        XCTAssertTrue(messages[0].toolCalls.isEmpty)
+    }
+
+    func testMatchingToolResultsSurvive() throws {
+        let calls = [LLMToolCall(id: "c1", name: "get_thread", argumentsJSON: "{}")]
+        let callsJSON = String(decoding: try JSONEncoder().encode(calls), as: UTF8.self)
+        let results = [LLMToolResult(callID: "c1", content: "{}", isError: false)]
+        let resultsJSON = String(decoding: try JSONEncoder().encode(results), as: UTF8.self)
+        let rows = [
+            ChatMessageRow(id: "1", conversationId: "c", role: "assistant", text: "",
+                           toolCallsJSON: callsJSON, toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "2", conversationId: "c", role: "tool", text: "",
+                           toolCallsJSON: "[]", toolResultsJSON: resultsJSON,
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+        ]
+        let messages = AskMishContext.llmMessages(history: rows)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages[1].toolResults, results)
+    }
+
+    func testContextMessageNamesThreadAndUntrustedContent() {
+        let message = AskMishContext.contextMessage(threadId: "t-42", threadMarkdown: "hello")
+        XCTAssertEqual(message.role, .user)
+        XCTAssertTrue(message.text.contains("t-42"))
+        XCTAssertTrue(message.text.lowercased().contains("untrusted"))
+        XCTAssertTrue(message.text.contains("hello"))
+    }
+
     func testTitleTrimsAndCaps() {
         XCTAssertEqual(AskMishContext.title(fromFirstUserText: "  find the acme thread  \nplease"),
                        "find the acme thread")
