@@ -13,6 +13,15 @@ final class PassthroughWebView: WKWebView {
     /// it at alpha 0 until its own first navigation commits.
     var hasForeignContent = false
 
+    /// Overriding `scrollWheel` flips this class property to `false`, and one
+    /// incompatible descendant makes AppKit disable responsive (asynchronous)
+    /// scrolling for the entire enclosing `NSScrollView` — every wheel event
+    /// in the reading pane then runs synchronously on the main thread and
+    /// stutters whenever the app does main-actor work. The override below only
+    /// forwards events (the web view's frame always fits its content, so it
+    /// never scrolls internally), so responsive scrolling is safe to restore.
+    override class var isCompatibleWithResponsiveScrolling: Bool { true }
+
     override func scrollWheel(with event: NSEvent) {
         nextResponder?.scrollWheel(with: event)
     }
