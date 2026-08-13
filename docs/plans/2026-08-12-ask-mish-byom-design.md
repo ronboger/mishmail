@@ -32,6 +32,8 @@ cloud backend. MishMail stays local-first.
 - Chat surface: right-hand panel in the main split view.
 - Agent loop: native Swift, tools routed in-process to `MCPBridge`.
 - Phase 1 landed: commits 93d162d..9bde382 (provider layer, OAuth, Settings).
+- Phase 2 landed: commits 0b6cc5d..b2354fd (chat tables, pricing, agent loop,
+  tool plumbing with send_draft, panel UI).
 
 ## Phase 1 — LLM provider layer
 
