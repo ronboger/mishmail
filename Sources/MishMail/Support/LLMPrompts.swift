@@ -118,6 +118,8 @@ enum LLMPrompts {
             guard !line.isEmpty else { return nil }
             return line
         }
-        return Array(suggestions.prefix(3))
+        var seen = Set<String>()
+        let unique = suggestions.filter { seen.insert($0).inserted }
+        return Array(unique.prefix(3))
     }
 }

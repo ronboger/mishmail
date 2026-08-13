@@ -68,6 +68,7 @@ struct ThreadDetailView: View {
     @State private var suggestingReplies = false
     @State private var quickRepliesError: String?
     @State private var quickRepliesTask: Task<Void, Never>?
+    @State private var quickRepliesGeneration = 0
     /// Persisted MCP / agent summary (`threadSummary` row). Shown only when no
     /// ephemeral model summary is present.
     @State private var persistedSummary: ThreadSummaryRow?
@@ -240,6 +241,7 @@ struct ThreadDetailView: View {
                     }
 
                     quickReplySection
+                        .id(Self.quickReplyScrollID)
                 }
                 .scrollTargetLayout()
                 .padding(.vertical)
@@ -489,6 +491,7 @@ struct ThreadDetailView: View {
                 cidResolveAttempted = []
                 loadRemoteImagesForThread = false
                 expandedMessageIds = []
+                quickRepliesGeneration &+= 1
                 quickRepliesTask?.cancel()
                 quickRepliesTask = nil
                 quickReplies = []
@@ -568,6 +571,14 @@ struct ThreadDetailView: View {
             .onChange(of: store.suppressedDraftMessageIds) {
                 refreshMessages()
             }
+            .onChange(of: quickReplies) { _, replies in
+                guard !replies.isEmpty else { return }
+                scrollQuickReplySection(proxy: proxy)
+            }
+            .onChange(of: quickRepliesError) { _, error in
+                guard error != nil else { return }
+                scrollQuickReplySection(proxy: proxy)
+            }
             .onChange(of: inlineComposeActive) { _, active in
                 if active {
                     beginInlineComposeScroll(proxy: proxy)
@@ -597,6 +608,7 @@ struct ThreadDetailView: View {
                 detailLoadGeneration &+= 1
                 refreshTask?.cancel()
                 refreshTask = nil
+                quickRepliesGeneration &+= 1
                 quickRepliesTask?.cancel()
                 quickRepliesTask = nil
                 neighborPrerenderArmed = false
@@ -1246,6 +1258,17 @@ struct ThreadDetailView: View {
         }
     }
 
+    private static let quickReplyScrollID = "threadQuickReplies"
+
+    private func scrollQuickReplySection(proxy: ScrollViewProxy) {
+        DispatchQueue.main.async {
+            guard !quickReplies.isEmpty || quickRepliesError != nil else { return }
+            withAnimation(.easeOut(duration: 0.2)) {
+                proxy.scrollTo(Self.quickReplyScrollID, anchor: .bottom)
+            }
+        }
+    }
+
     @ViewBuilder
     private var quickReplySection: some View {
         if !quickReplies.isEmpty || quickRepliesError != nil {
@@ -1292,12 +1315,13 @@ struct ThreadDetailView: View {
     private func suggestQuickReplies() {
         guard !suggestingReplies, let latest = latestInboundMessage else { return }
 
+        quickRepliesGeneration &+= 1
+        let generation = quickRepliesGeneration
         quickRepliesTask?.cancel()
         quickReplies = []
         quickRepliesError = nil
         suggestingReplies = true
 
-        let threadId = thread.id
         let fullBody = store.messagesWithBodies(ids: [latest.id])
             .first?.bodyText ?? latest.bodyText
         let prompt = LLMPrompts.quickReplies(
@@ -1313,7 +1337,7 @@ struct ThreadDetailView: View {
                 let parsed = Array(LLMPrompts.parseQuickReplies(raw).prefix(3))
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    guard self.thread.id == threadId else { return }
+                    guard quickRepliesGeneration == generation else { return }
                     quickReplies = parsed
                     quickRepliesError = parsed.isEmpty
                         ? "No replies were suggested."
@@ -1326,7 +1350,7 @@ struct ThreadDetailView: View {
             } catch {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
-                    guard self.thread.id == threadId else { return }
+                    guard quickRepliesGeneration == generation else { return }
                     quickReplies = []
                     quickRepliesError = LLMTaskRunner.errorMessage(
                         error, task: .triage)

@@ -1617,6 +1617,10 @@ struct ComposeView: View {
         // cursor lands at the top. Shape must match ReplyComposer.plainQuote
         // exactly so send can upgrade to Gmail-style HTML when untouched.
         quotedTail = ReplyComposer.plainQuote(of: original)
+        if let b = request.prefillBody {
+            setBody(b, caretUTF16: (b as NSString).length)
+            initialBody = b
+        }
         // Tone once per compose — greeting ghost re-reads this on each keystroke.
         let body = MessageParser.replyQuotableText(
             text: original.bodyText, html: original.bodyHTML)

@@ -98,6 +98,10 @@ final class LLMPromptsTests: XCTestCase {
         XCTAssertEqual(LLMPrompts.parseQuickReplies("- a\n- b\n- c\n- d"), ["a", "b", "c"])
     }
 
+    func testParseQuickRepliesDeduplicatesPreservingOrder() {
+        XCTAssertEqual(LLMPrompts.parseQuickReplies("- yes\n- yes\n- no"), ["yes", "no"])
+    }
+
     func testParseQuickRepliesDropsBlanksAndStripsNumbering() {
         XCTAssertEqual(LLMPrompts.parseQuickReplies("\n1. x\n\n2. y\n3. z\n"), ["x", "y", "z"])
     }
