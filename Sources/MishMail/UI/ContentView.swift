@@ -855,7 +855,8 @@ private extension ContentView {
             // text field owns the caret (⌘arrows are line start/end there).
             if mods == .command, !event.modifierFlags.contains(.shift),
                event.keyCode == 125 || event.keyCode == 126,
-               !store.showCommandPalette, store.editingView == nil,
+               !store.showCommandPalette, !store.showLabelPicker,
+               store.editingView == nil,
                !TextFocus.isEditing(event.window?.firstResponder) {
                 browseKeyIsRepeat = event.isARepeat
                 store.jumpSelection(toEnd: event.keyCode == 125)
