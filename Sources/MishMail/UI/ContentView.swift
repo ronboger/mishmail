@@ -1104,6 +1104,10 @@ private extension ContentView {
             let finishingCompose = store.composeFinishing
             let textEditing = TextFocus.isEditing(event.window?.firstResponder)
             guard mods.isEmpty,
+                  // A window other than the main one (e.g. Settings) being
+                  // key must not let these shortcuts act on the invisible
+                  // main-window thread list behind it.
+                  event.window == NSApp.mainWindow,
                   !store.showCommandPalette,
                   !store.showLabelPicker,
                   ComposeKeyOwnership.allowsMailboxKeys(
