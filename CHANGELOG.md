@@ -6,6 +6,16 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Added
+- **⌘A selects every thread currently loaded in the list** — Gmail-style
+  select-all for the existing checkbox multi-select, so the bulk-action bar
+  (archive/trash/star/etc.) can act on the whole list at once instead of
+  clicking or shift-clicking every row by hand. Only checks what's already
+  loaded (the list is infinite-scroll); scrolling in more rows afterward
+  doesn't retroactively check them. Never intercepts ⌘A in a text field
+  (search, compose, Settings…) — native select-all-text keeps working
+  everywhere it already does.
+
 ### Fixed
 - **Side-by-side compose opens every message in the conversation.** The
   reading pane still keeps one live body renderer (WebKit cost), but ⇧⌘↩
