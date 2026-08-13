@@ -1665,13 +1665,12 @@ struct AISettings: View {
                         ModelPriceEditorRow(model: item.key, price: item.value) { updated in
                             savePrice(updated, for: item.key)
                         }
-                        // Recreate a row after reset or a committed edit so
-                        // its text fields reflect the stored value.
-                        .id("\(item.key)-\(item.value.inputPerMTok)-\(item.value.outputPerMTok)")
+                        .id(item.key)
                     }
                     Button("Reset to defaults", role: .destructive) {
                         LLMPricing.saveOverrides([:])
                         priceOverrides = [:]
+                        loadUsage()
                     }
                     .buttonStyle(.borderless)
                 } header: {
@@ -1762,9 +1761,13 @@ struct AISettings: View {
 
     private func savePrice(_ price: LLMPrice, for model: String) {
         var overrides = LLMPricing.loadOverrides()
+        guard LLMPricing.price(model: model, overrides: overrides) != price else {
+            return
+        }
         overrides[model] = price
         LLMPricing.saveOverrides(overrides)
         priceOverrides = overrides
+        loadUsage()
     }
 
     /// Drops the provider, its secrets, and any task still pointing at it, so
@@ -1845,6 +1848,16 @@ private struct ModelPriceEditorRow: View {
             case nil: commitInput(); commitOutput()
             }
         }
+        .onChange(of: price.inputPerMTok) { _, value in
+            if focusedField != .input {
+                inputText = Self.format(value)
+            }
+        }
+        .onChange(of: price.outputPerMTok) { _, value in
+            if focusedField != .output {
+                outputText = Self.format(value)
+            }
+        }
     }
 
     private func commitInput() {
@@ -1852,6 +1865,7 @@ private struct ModelPriceEditorRow: View {
             inputText = Self.format(price.inputPerMTok)
             return
         }
+        guard value != price.inputPerMTok else { return }
         save(LLMPrice(inputPerMTok: value, outputPerMTok: outputValue))
     }
 
@@ -1860,6 +1874,7 @@ private struct ModelPriceEditorRow: View {
             outputText = Self.format(price.outputPerMTok)
             return
         }
+        guard value != price.outputPerMTok else { return }
         save(LLMPrice(inputPerMTok: inputValue, outputPerMTok: value))
     }
 
