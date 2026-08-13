@@ -1849,7 +1849,16 @@ private struct ProviderEditSheet: View {
         switch Self.presets[presetIndex].name {
         case "Anthropic": return .claude
         case "OpenAI": return .chatGPT
+        case "Grok (xAI)": return .grok
         default: return nil
+        }
+    }
+
+    private static func vendorLabel(_ vendor: LLMOAuthVendor) -> String {
+        switch vendor {
+        case .claude: return "Claude"
+        case .chatGPT: return "ChatGPT"
+        case .grok: return "Grok"
         }
     }
 
@@ -1887,7 +1896,7 @@ private struct ProviderEditSheet: View {
             }
             if let vendor = oauthVendor {
                 Picker("Sign in with", selection: $useOAuth) {
-                    Text("\(vendor == .claude ? "Claude" : "ChatGPT") subscription").tag(true)
+                    Text("\(Self.vendorLabel(vendor)) subscription").tag(true)
                     Text("API key").tag(false)
                 }
                 .pickerStyle(.segmented)
@@ -1975,7 +1984,9 @@ private struct ProviderEditSheet: View {
         do {
             if useOAuth, let vendor = oauthVendor {
                 status = "Waiting for browser sign-in…"
-                try await LLMOAuthFlow.signIn(vendor: vendor, providerID: id)
+                try await LLMOAuthFlow.signIn(vendor: vendor, providerID: id) { code, uri in
+                    status = "Enter code \(code) at \(uri) to finish sign-in…"
+                }
             } else if !apiKey.isEmpty {
                 try Keychain.set(apiKey, forKey: LLMProviderStore.keychainKey(for: id))
             }
