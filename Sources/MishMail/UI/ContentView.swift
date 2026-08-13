@@ -903,6 +903,27 @@ private extension ContentView {
                 store.perform(.undo)
                 return nil
             }
+            // ⌘A selects every thread currently loaded in the list (Gmail-
+            // style select-all), mirroring the checkbox multi-select. Any
+            // editable text field (search, compose, address chips,
+            // Settings…) keeps the OS's native Select All instead — this
+            // never fires while one is focused.
+            if mods == .command,
+               !event.modifierFlags.contains(.shift),
+               event.charactersIgnoringModifiers?.lowercased() == "a",
+               event.window == NSApp.mainWindow,
+               !store.showCommandPalette,
+               !store.showLabelPicker,
+               !store.showShortcutsHelp,
+               store.editingView == nil,
+               ComposeKeyOwnership.allowsMailboxKeys(
+                   hasRequest: store.composeRequest != nil,
+                   minimized: store.composeMinimized,
+                   finishing: store.composeFinishing),
+               !TextFocus.isEditing(event.window?.firstResponder) {
+                store.checkAllVisibleThreads()
+                return nil
+            }
             if store.showCommandPalette, event.keyCode == 53 {  // esc
                 store.showCommandPalette = false
                 return nil
