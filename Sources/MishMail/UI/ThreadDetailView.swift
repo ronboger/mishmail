@@ -643,19 +643,38 @@ struct ThreadDetailView: View {
 
     /// User-scroll writes land here (not in a `@State`), so a fling through a
     /// long thread never invalidates the whole body. The disarm check that
-    /// used to live in `.onChange(of: scrolledMessageId)` runs in the setter.
+    /// used to live in `.onChange(of: scrolledMessageId)` runs in the setter,
+    /// deferred a turn (like `onChange` was) so the `@State` write never lands
+    /// inside the scroll machinery's own update.
     private var scrollAnchorBinding: Binding<String?> {
         Binding(
             get: { scrollAnchor.id },
             set: { newValue in
                 let changed = newValue != scrollAnchor.id
                 scrollAnchor.id = newValue
-                guard changed else { return }
-                guard newValue != Self.quickReplyScrollID else { return }
-                guard inlineComposeActive, autoPinInlineScroll,
-                      !writingScrollOffset else { return }
-                disarmAutoPin()
+                guard changed, newValue != Self.quickReplyScrollID else { return }
+                DispatchQueue.main.async {
+                    guard inlineComposeActive, autoPinInlineScroll,
+                          !writingScrollOffset else { return }
+                    disarmAutoPin()
+                }
             })
+    }
+
+    /// Programmatic anchor move: record it and scroll explicitly next turn,
+    /// after the freshly assigned `messages` have produced rows to target.
+    /// (`scrollAnchor` writes alone no longer re-render anything, so the old
+    /// binding-driven post-layout anchoring must be an explicit `scrollTo`.)
+    private func applyScrollAnchor(_ id: String?, proxy: ScrollViewProxy) {
+        scrollAnchor.id = id
+        guard let id else { return }
+        DispatchQueue.main.async {
+            var t = Transaction()
+            t.animation = nil
+            withTransaction(t) {
+                proxy.scrollTo(id, anchor: .top)
+            }
+        }
     }
 
     private enum InlineScrollRestore: Equatable {
@@ -763,8 +782,7 @@ struct ThreadDetailView: View {
                     DispatchQueue.main.async { writingScrollOffset = false }
                 }
             case .message(let id):
-                scrollAnchor.id = id
-                proxy.scrollTo(id, anchor: .top)
+                applyScrollAnchor(id, proxy: proxy)
                 DispatchQueue.main.async { writingScrollOffset = false }
             }
         }
@@ -842,10 +860,9 @@ struct ThreadDetailView: View {
             if wasEmpty {
                 bodyLoadAttempted.formUnion(
                     ThreadRefresh.initialBodyLoadSeedIds(in: merged))
-                scrollAnchor.id = ThreadRefresh.initialScrolledMessageId(in: merged)
-                if let anchorId = scrollAnchor.id {
-                    proxy.scrollTo(anchorId, anchor: .top)
-                }
+                applyScrollAnchor(
+                    ThreadRefresh.initialScrolledMessageId(in: merged),
+                    proxy: proxy)
                 // First population via refresh (initial .task was superseded):
                 // open the policy default set, same as applyDetailPayload.
                 seedExpandedMessagesIfNeeded()
@@ -1058,10 +1075,9 @@ struct ThreadDetailView: View {
         threadAttachments = ThreadRefresh.threadAttachments(in: payload)
         // Anchor on newest sent when multi-message; draft-only falls back to
         // the last row so a pure-draft pane still positions.
-        scrollAnchor.id = ThreadRefresh.initialScrolledMessageId(in: messages)
-        if let anchorId = scrollAnchor.id {
-            proxy.scrollTo(anchorId, anchor: .top)
-        }
+        applyScrollAnchor(
+            ThreadRefresh.initialScrolledMessageId(in: messages),
+            proxy: proxy)
         if inlineComposeActive {
             beginInlineComposeScroll(proxy: proxy)
         }
