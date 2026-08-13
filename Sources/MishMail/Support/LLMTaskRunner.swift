@@ -19,6 +19,21 @@ enum LLMTaskRunner {
         return Resolved(config: config, model: assignment.model)
     }
 
+    static func errorMessage(_ error: Error, task: LLMTask) -> String {
+        if let llmError = error as? LLMClientError,
+           case .missingCredential = llmError {
+            let taskName: String
+            switch task {
+            case .drafts: taskName = "drafts"
+            case .summaries: taskName = "summaries"
+            case .triage: taskName = "triage"
+            case .askMish: taskName = "Ask Mish"
+            }
+            return "No model configured for \(taskName). Check Settings → AI."
+        }
+        return error.localizedDescription
+    }
+
     static func stream(task: LLMTask, prompt: String) -> AsyncThrowingStream<String, Error> {
         guard let resolved = resolve(task) else {
             return AsyncThrowingStream { continuation in

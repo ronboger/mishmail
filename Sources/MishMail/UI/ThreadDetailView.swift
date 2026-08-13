@@ -1148,8 +1148,7 @@ struct ThreadDetailView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         HStack(spacing: 8) {
-                            let model = LLMTaskRunner.resolve(.summaries)?.model ?? persisted.model
-                            Text("Summarized by \(model)")
+                            Text("Summarized by \(persisted.model)")
                             Spacer(minLength: 8)
                             Text("Summary generated \(persisted.updatedAt.formatted(date: .abbreviated, time: .shortened))")
                         }
@@ -1218,18 +1217,12 @@ struct ThreadDetailView: View {
                     await MainActor.run { summaryError = "No summary was produced." }
                 }
             } catch {
-                await MainActor.run { summaryError = llmErrorMessage(error) }
+                await MainActor.run {
+                    summaryError = LLMTaskRunner.errorMessage(error, task: .summaries)
+                }
             }
             await MainActor.run { summarizing = false }
         }
-    }
-
-    private func llmErrorMessage(_ error: Error) -> String {
-        if let llmError = error as? LLMClientError,
-           case .missingCredential = llmError {
-            return "No model configured for summaries. Check Settings → AI."
-        }
-        return error.localizedDescription
     }
 
     /// User-created labels on this thread (system labels stay hidden).

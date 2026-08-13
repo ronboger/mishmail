@@ -1708,7 +1708,9 @@ struct ComposeView: View {
                     }
                 }
             } catch {
-                await MainActor.run { self.error = self.llmErrorMessage(error) }
+                await MainActor.run {
+                    self.error = LLMTaskRunner.errorMessage(error, task: .drafts)
+                }
             }
             await MainActor.run { drafting = false }
         }
@@ -1777,19 +1779,11 @@ struct ComposeView: View {
                         // replacements remain intact when a later token fails.
                         setBody(originalBody, caretUTF16: originalCaret)
                     }
-                    self.error = self.llmErrorMessage(error)
+                    self.error = LLMTaskRunner.errorMessage(error, task: .drafts)
                 }
             }
             await MainActor.run { drafting = false }
         }
-    }
-
-    private func llmErrorMessage(_ error: Error) -> String {
-        if let llmError = error as? LLMClientError,
-           case .missingCredential = llmError {
-            return "No model configured for drafts. Check Settings → AI."
-        }
-        return error.localizedDescription
     }
 
     private var aiEditSystemImage: String {
