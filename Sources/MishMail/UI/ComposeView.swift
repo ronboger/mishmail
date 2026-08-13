@@ -52,6 +52,10 @@ struct ComposeView: View {
     @State private var slashDismissed = false
     /// UTF-16 caret in the body editor — drives caret-aware `/` detection.
     @State private var bodyCaretUTF16 = 0
+    /// UTF-16 body selection, mirrored from the live NSTextView so inline AI
+    /// edits can be enabled only when there is text to replace.
+    @State private var bodySelectionLocation = 0
+    @State private var bodySelectionLength = 0
     /// Local keyDown monitor that steals ↑/↓/Return/Tab/Esc while the `/`
     /// picker is up — the NSTextView behind TextEditor consumes those keys
     /// before SwiftUI's onKeyPress ever sees them.
@@ -599,6 +603,14 @@ struct ComposeView: View {
         // Publish `/` picker visibility for ContentView's Esc ladder (explicit
         // gate — local monitors fire FIFO and must not rely on order).
         .onChange(of: slashActive) { store.slashPickerVisible = slashActive }
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSTextView.didChangeSelectionNotification)) { notification in
+            guard let textView = notification.object as? ComposeBodyTextView,
+                  textView.string == body_ else { return }
+            let selection = textView.selectedRange()
+            bodySelectionLocation = selection.location
+            bodySelectionLength = selection.length
+        }
         .onChange(of: store.slashPickerDismissToken) {
             slashDismissed = true
             store.slashPickerVisible = false
@@ -1194,6 +1206,39 @@ struct ComposeView: View {
                             label: ComposeToolbarItem.ai.title
                         ) { draftWithAI() }
                             .disabled(drafting)
+
+                        Menu {
+                            Button("Rewrite") {
+                                inlineEdit(.rewrite)
+                            }
+                            Button("Shorten") {
+                                inlineEdit(.shorten)
+                            }
+                            Menu("Change tone") {
+                                Button("Friendly") {
+                                    inlineEdit(.changeTone, tone: "Friendly")
+                                }
+                                Button("Formal") {
+                                    inlineEdit(.changeTone, tone: "Formal")
+                                }
+                                Button("Direct") {
+                                    inlineEdit(.changeTone, tone: "Direct")
+                                }
+                            }
+                        } label: {
+                            Image(systemName: "sparkles")
+                                .font(.system(size: 12, weight: .medium))
+                                .foregroundStyle(.secondary)
+                                .frame(width: 24, height: 22)
+                                .contentShape(Rectangle())
+                        }
+                        .menuStyle(.button)
+                        .buttonStyle(.plain)
+                        .menuIndicator(.hidden)
+                        .fixedSize()
+                        .help("Edit selection with AI")
+                        .accessibilityLabel("AI edit")
+                        .disabled(drafting || bodySelectionLength == 0)
                     }
 
                     // Markdown format strip (bold/italic/headers/math…). Link is
@@ -1641,21 +1686,21 @@ struct ComposeView: View {
             .trimmingCharacters(in: .whitespacesAndNewlines)
         let prompt: String
         if let original {
-            prompt = Ollama.draftReply(
+            prompt = LLMPrompts.draftReply(
                 originalFrom: original.fromHeader,
                 originalBody: MessageParser.replyQuotableText(
                     text: original.bodyText, html: original.bodyHTML),
                 intent: intent,
                 userEmail: fromEmail)
         } else {
-            prompt = Ollama.draftNew(intent: intent, userEmail: fromEmail)
+            prompt = LLMPrompts.draftNew(intent: intent, userEmail: fromEmail)
         }
         let quoteTail = quote.isEmpty ? "" : "\n" + quote
         Task {
             do {
                 // Stream tokens in as the local model produces them.
                 var accumulated = ""
-                for try await piece in Ollama.generateStream(prompt: prompt) {
+                for try await piece in LLMTaskRunner.stream(task: .drafts, prompt: prompt) {
                     accumulated += piece
                     let snapshot = accumulated
                     await MainActor.run {
@@ -1665,7 +1710,78 @@ struct ComposeView: View {
                     }
                 }
             } catch {
-                await MainActor.run { self.error = error.localizedDescription }
+                await MainActor.run {
+                    if let llmError = error as? LLMClientError,
+                       case .missingCredential = llmError {
+                        self.error = "No model configured for drafts. Check Settings → AI."
+                    } else {
+                        self.error = error.localizedDescription
+                    }
+                }
+            }
+            await MainActor.run { drafting = false }
+        }
+    }
+
+    /// The current body selection, preferring the live editor over the last
+    /// notification-backed snapshot because a toolbar/menu click can move
+    /// first responder before its selection notification is delivered.
+    private func currentBodySelection() -> NSRange? {
+        let nsBody = body_ as NSString
+        var selection = NSRange(location: bodySelectionLocation,
+                                 length: bodySelectionLength)
+        if let textView = NSApp.keyWindow?.firstResponder as? ComposeBodyTextView,
+           textView.string == body_ {
+            selection = textView.selectedRange()
+        }
+        guard selection.location != NSNotFound,
+              selection.location >= 0,
+              selection.location <= nsBody.length else { return nil }
+        selection.length = min(max(selection.length, 0),
+                               nsBody.length - selection.location)
+        guard selection.length > 0 else { return nil }
+        return selection
+    }
+
+    /// Replace the selected text, then stream the replacement into the same
+    /// anchor. The prefix/suffix snapshot mirrors draftWithAI's accumulated
+    /// streaming writes while allowing an arbitrary insertion point.
+    private func inlineEdit(_ edit: LLMPrompts.InlineEdit, tone: String? = nil) {
+        guard !drafting, let selection = currentBodySelection() else { return }
+        let source = body_ as NSString
+        let selectedText = source.substring(with: selection)
+        let prompt = LLMPrompts.inlineEdit(edit, selection: selectedText, tone: tone)
+        let prefix = source.substring(to: selection.location)
+        let suffix = source.substring(from: selection.location + selection.length)
+        let insertionLocation = selection.location
+
+        setBody(prefix + suffix, caretUTF16: insertionLocation)
+        bodySelectionLocation = insertionLocation
+        bodySelectionLength = 0
+        bodyFocused = true
+        drafting = true
+        error = nil
+
+        Task {
+            do {
+                var accumulated = ""
+                for try await piece in LLMTaskRunner.stream(task: .drafts, prompt: prompt) {
+                    accumulated += piece
+                    let snapshot = accumulated
+                    await MainActor.run {
+                        setBody(prefix + snapshot + suffix,
+                                caretUTF16: insertionLocation + (snapshot as NSString).length)
+                    }
+                }
+            } catch {
+                await MainActor.run {
+                    if let llmError = error as? LLMClientError,
+                       case .missingCredential = llmError {
+                        self.error = "No model configured for drafts. Check Settings → AI."
+                    } else {
+                        self.error = error.localizedDescription
+                    }
+                }
             }
             await MainActor.run { drafting = false }
         }
