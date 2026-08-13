@@ -236,11 +236,17 @@ final class OAuthService {
     /// out / cancels, tearing the listener down either way).
     ///
     /// Internal so unit tests can exercise the catcher without Google.
-    func startLoopbackListener(expectedState: String) throws -> (UInt16, Task<String, Error>) {
+    ///
+    /// `preferredPort` binds one exact port instead of an ephemeral one. Some
+    /// vendors (the Codex CLI client) register a single fixed redirect URI and
+    /// reject every other port. Binding fails if that port is already in use.
+    func startLoopbackListener(expectedState: String,
+                               preferredPort: UInt16? = nil) throws -> (UInt16, Task<String, Error>) {
         // Bind to 127.0.0.1 only (RFC 8252 §8.3): the redirect catcher must
         // not be reachable from other machines on the network.
         let params = NWParameters.tcp
-        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: .any)
+        let wanted = preferredPort.flatMap { NWEndpoint.Port(rawValue: $0) } ?? .any
+        params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: wanted)
         let listener = try NWListener(using: params)
         // Serialize finish/yield so a second concurrent connection can't race
         // the stream after the first legitimate callback already completed.
@@ -341,10 +347,12 @@ final class OAuthService {
         return (port, task)
     }
 
-    /// True for the registered redirect path (`/oauth2/callback`) and the
-    /// bare `/` Google sometimes normalizes empty paths to.
+    /// True for every registered redirect path this app uses — Google's
+    /// `/oauth2/callback`, the LLM vendors' `/callback` and `/auth/callback` —
+    /// plus the bare `/` Google sometimes normalizes empty paths to.
     static func isOAuthCallbackPath(_ path: String) -> Bool {
-        path == "/oauth2/callback" || path == "/" || path.isEmpty
+        path == "/oauth2/callback" || path == "/callback" || path == "/auth/callback"
+            || path == "/" || path.isEmpty
     }
 
     /// Reads a connection until the HTTP request line's CRLF arrives, then

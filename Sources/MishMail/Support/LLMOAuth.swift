@@ -11,6 +11,12 @@ enum LLMOAuth {
         let clientID: String
         let scopes: String
         let redirectPath: String
+        /// Host the vendor registered for the loopback redirect. Vendors match
+        /// the redirect URI as an exact string, so "localhost" and "127.0.0.1"
+        /// are not interchangeable.
+        let redirectHost: String
+        /// Port the vendor registered, or nil when any ephemeral port works.
+        let fixedPort: UInt16?
     }
 
     /// Publicly known Claude Code / Codex CLI flow constants. Verified at
@@ -24,15 +30,29 @@ enum LLMOAuth {
                 tokenURL: "https://console.anthropic.com/v1/oauth/token",
                 clientID: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
                 scopes: "org:create_api_key user:profile user:inference",
-                redirectPath: "/callback")
+                redirectPath: "/callback",
+                redirectHost: "127.0.0.1",
+                fixedPort: nil)
         case .chatGPT:
+            // The Codex CLI client registers exactly one redirect URI:
+            // http://localhost:1455/auth/callback. Any other host, port, or
+            // path is rejected by the authorize endpoint.
             return Constants(
                 authorizeURL: "https://auth.openai.com/oauth/authorize",
                 tokenURL: "https://auth.openai.com/oauth/token",
                 clientID: "app_EMoamEEZ73f0CkXaXp7hrann",
                 scopes: "openid profile email offline_access",
-                redirectPath: "/callback")
+                redirectPath: "/auth/callback",
+                redirectHost: "localhost",
+                fixedPort: 1455)
         }
+    }
+
+    /// Builds the redirect URI for a vendor from the port the local listener
+    /// actually bound. Pure string math so the flow stays testable.
+    static func redirectURI(vendor: LLMOAuthVendor, port: UInt16) -> String {
+        let constants = constants(for: vendor)
+        return "http://\(constants.redirectHost):\(port)\(constants.redirectPath)"
     }
 
     struct PKCE {

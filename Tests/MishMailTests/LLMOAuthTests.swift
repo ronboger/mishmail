@@ -43,6 +43,19 @@ final class LLMOAuthTests: XCTestCase {
         XCTAssertNil(tokens.refreshToken)
     }
 
+    func testRedirectURIMatchesTheRegisteredClient() {
+        // The Codex CLI client registers exactly one redirect URI.
+        let chatGPT = LLMOAuth.constants(for: .chatGPT)
+        XCTAssertEqual(chatGPT.fixedPort, 1455)
+        XCTAssertEqual(LLMOAuth.redirectURI(vendor: .chatGPT, port: 1455),
+                       "http://localhost:1455/auth/callback")
+        // Claude takes any ephemeral loopback port.
+        let claude = LLMOAuth.constants(for: .claude)
+        XCTAssertNil(claude.fixedPort)
+        XCTAssertEqual(LLMOAuth.redirectURI(vendor: .claude, port: 53682),
+                       "http://127.0.0.1:53682/callback")
+    }
+
     func testRefreshFormContainsGrantAndClient() {
         let form = LLMOAuth.refreshRequestForm(vendor: .chatGPT, refreshToken: "rt9")
         XCTAssertEqual(form["grant_type"], "refresh_token")

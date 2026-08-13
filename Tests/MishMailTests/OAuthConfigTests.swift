@@ -57,6 +57,11 @@ final class OAuthConfigTests: XCTestCase {
         XCTAssertTrue(OAuthService.isOAuthCallbackPath("/oauth2/callback"))
         XCTAssertTrue(OAuthService.isOAuthCallbackPath("/"))
         XCTAssertTrue(OAuthService.isOAuthCallbackPath(""))
+        // LLM vendor redirect paths use the same listener.
+        XCTAssertTrue(OAuthService.isOAuthCallbackPath("/callback"))
+        XCTAssertTrue(OAuthService.isOAuthCallbackPath("/auth/callback"))
+        XCTAssertEqual(LLMOAuth.constants(for: .claude).redirectPath, "/callback")
+        XCTAssertEqual(LLMOAuth.constants(for: .chatGPT).redirectPath, "/auth/callback")
     }
 
     func testCallbackPathRejectsUnrelatedProbes() {
