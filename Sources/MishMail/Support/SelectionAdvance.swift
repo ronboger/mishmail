@@ -116,6 +116,48 @@ enum SelectionAdvance {
     }
 }
 
+/// Shift+↑/↓ range select (Gmail/Finder-style): the anchor is where the
+/// gesture started; each shifted arrow press moves focus and re-derives the
+/// checked range anchor→focus. Reversing direction shrinks the range. Checks
+/// made outside the swept range are preserved.
+enum ShiftArrowSelection {
+    struct Result: Equatable {
+        var checked: Set<String>
+        var focusId: String
+        var anchorId: String
+    }
+
+    /// One shifted arrow step. `anchor` is the sticky gesture anchor (nil on
+    /// the first press — the current focus becomes the anchor). Returns nil
+    /// when `order` is empty.
+    static func extend(order: [String], checked: Set<String>,
+                       anchor: String?, focus: String?, delta: Int)
+        -> Result? {
+        guard !order.isEmpty else { return nil }
+        // No focused row yet: land like a plain arrow press and check the row.
+        guard let focus, order.contains(focus) else {
+            guard let landed = ThreadListNavigation.move(
+                selected: nil, delta: delta, order: order) else { return nil }
+            return Result(checked: checked.union([landed]),
+                          focusId: landed, anchorId: landed)
+        }
+        let anchorId: String = {
+            if let anchor, order.contains(anchor) { return anchor }
+            return focus
+        }()
+        guard let next = ThreadListNavigation.move(
+            selected: focus, delta: delta, order: order),
+            let oldRange = SelectionAdvance.rangeIds(
+                in: order, from: anchorId, to: focus),
+            let newRange = SelectionAdvance.rangeIds(
+                in: order, from: anchorId, to: next) else { return nil }
+        // At a list boundary the focus can't move; still check the current
+        // range so the first press at the edge selects the focused row.
+        let result = checked.subtracting(oldRange).union(newRange)
+        return Result(checked: result, focusId: next, anchorId: anchorId)
+    }
+}
+
 /// Pure list-focus navigation: move highlight without I/O.
 ///
 /// `indexById` is the O(1) map rebuilt whenever `displayOrder` changes. When
