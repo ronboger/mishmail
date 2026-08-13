@@ -218,7 +218,16 @@ closes) keeps the partial text and marks the turn interrupted.
 
 ## Phase 4 — follow-up reminders
 
-No LLM involved. Track sent threads that got no reply.
+**Resolved 2026-08-13 without new code.** MishMail already ships this
+feature, discovered during Phase 4 planning: `MailThread.reminderAt` /
+`reminderSetAt` (the no-reply cutoff), a "Remind me" menu on threads
+(Tomorrow / 3 days / week), cancel-on-reply semantics, `fireDueReminders()`
+in the due-sweep, and a Reminders mailbox in the sidebar. The design below
+would duplicate that subsystem, so it stays unbuilt. Possible future
+polish: a compose-time "remind if no reply" toggle and a default-interval
+setting.
+
+Original design (superseded — kept for reference):
 
 - New GRDB record `FollowUpReminder`: id, threadID, accountEmail,
   sentMessageID, dueAt, state (`pending`, `fired`, `dismissed`, `replied`).
