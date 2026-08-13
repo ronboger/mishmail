@@ -49,90 +49,98 @@ struct TokenAddressField: View {
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .frame(width: 30, alignment: .leading)
-                ScrollView(.horizontal, showsIndicators: false) {
-                    HStack(spacing: 4) {
-                        // Tokens are deduped on commit, so email is a stable id.
-                        // Prefer element identity over offset so mid-list deletes
-                        // don't reuse hover/animation state on the wrong chip.
-                        ForEach(Array(tokens.enumerated()), id: \.element) { index, token in
-                            chip(token, at: index)
-                        }
-                        TextField(tokens.isEmpty ? "Add recipients" : "", text: $draft)
-                            .accessibilityIdentifier("addressField.\(label)")
-                            .textFieldStyle(.plain)
-                            .font(.system(size: 13))
-                            .frame(minWidth: 160)
-                            .focused($focused)
-                            .onChange(of: draft) {
-                                highlighted = 0
-                                // Typing into the draft exits chip selection
-                                // (Gmail: first character replaces selection).
-                                if keyboard.selection != nil { keyboard.selection = nil }
-                                if draft.hasSuffix(",") { commitDraft() }
+                ScrollViewReader { scrollProxy in
+                    ScrollView(.horizontal, showsIndicators: false) {
+                        HStack(spacing: 4) {
+                            // Tokens are deduped on commit, so email is a stable id.
+                            // Prefer element identity over offset so mid-list deletes
+                            // don't reuse hover/animation state on the wrong chip.
+                            ForEach(Array(tokens.enumerated()), id: \.element) { index, token in
+                                chip(token, at: index)
                             }
-                            .onChange(of: focused) {
-                                // Leaving the field turns typed text into a chip.
-                                // Deferred: mutating tokens *during* the Tab
-                                // traversal restructures the row mid-move and
-                                // AppKit drops the just-granted Subject focus
-                                // after the first keystroke.
-                                if !focused {
+                            TextField(tokens.isEmpty ? "Add recipients" : "", text: $draft)
+                                .id("addressDraft.\(label)")
+                                .accessibilityIdentifier("addressField.\(label)")
+                                .textFieldStyle(.plain)
+                                .font(.system(size: 13))
+                                .frame(minWidth: 160)
+                                .focused($focused)
+                                .onChange(of: draft) {
+                                    highlighted = 0
+                                    // Typing into the draft exits chip selection
+                                    // (Gmail: first character replaces selection).
+                                    if keyboard.selection != nil { keyboard.selection = nil }
+                                    if draft.hasSuffix(",") { commitDraft() }
+                                    keepDraftVisible(using: scrollProxy)
+                                }
+                                .onChange(of: focused) {
+                                    // Leaving the field turns typed text into a chip.
+                                    // Deferred: mutating tokens *during* the Tab
+                                    // traversal restructures the row mid-move and
+                                    // AppKit drops the just-granted Subject focus
+                                    // after the first keystroke.
+                                    if !focused {
+                                        keyboard.selection = nil
+                                        DispatchQueue.main.async { commitDraft() }
+                                    }
+                                    syncKeyMonitor()
+                                }
+                                .onChange(of: tokens.count) {
+                                    keyboard.selection = TokenAddressEditing.clampedSelection(
+                                        keyboard.selection, tokenCount: tokens.count)
+                                    // Keyboard delete under the cursor skips SwiftUI
+                                    // hover-exit; clear hand/highlight here.
+                                    clearChipHoverChrome()
+                                    keepDraftVisible(using: scrollProxy)
+                                }
+                                .onSubmit { commitDraft() }
+                                .onKeyPress(.downArrow) {
+                                    guard focused, !suggestions.isEmpty else { return .ignored }
+                                    highlighted = min(highlighted + 1, suggestions.count - 1)
+                                    return .handled
+                                }
+                                .onKeyPress(.upArrow) {
+                                    guard focused, !suggestions.isEmpty else { return .ignored }
+                                    highlighted = max(highlighted - 1, 0)
+                                    return .handled
+                                }
+                                .onKeyPress(.tab) {
+                                    // Tab always travels on to the next field
+                                    // (Subject) — returning .handled here used to
+                                    // trap the user in To, so their subject text
+                                    // landed in the recipient draft. Accept the
+                                    // highlighted suggestion (or commit the typed
+                                    // address) on the next runloop turn so the
+                                    // token mutation can't break the in-flight
+                                    // focus traversal.
+                                    guard focused else { return .ignored }
                                     keyboard.selection = nil
-                                    DispatchQueue.main.async { commitDraft() }
+                                    let pick = suggestions[safe: highlighted]
+                                    DispatchQueue.main.async {
+                                        if let pick { accept(pick) } else { commitDraft() }
+                                    }
+                                    return .ignored
                                 }
-                                syncKeyMonitor()
-                            }
-                            .onChange(of: tokens.count) {
-                                keyboard.selection = TokenAddressEditing.clampedSelection(
-                                    keyboard.selection, tokenCount: tokens.count)
-                                // Keyboard delete under the cursor skips SwiftUI
-                                // hover-exit; clear hand/highlight here.
-                                clearChipHoverChrome()
-                            }
-                            .onSubmit { commitDraft() }
-                            .onKeyPress(.downArrow) {
-                                guard focused, !suggestions.isEmpty else { return .ignored }
-                                highlighted = min(highlighted + 1, suggestions.count - 1)
-                                return .handled
-                            }
-                            .onKeyPress(.upArrow) {
-                                guard focused, !suggestions.isEmpty else { return .ignored }
-                                highlighted = max(highlighted - 1, 0)
-                                return .handled
-                            }
-                            .onKeyPress(.tab) {
-                                // Tab always travels on to the next field
-                                // (Subject) — returning .handled here used to
-                                // trap the user in To, so their subject text
-                                // landed in the recipient draft. Accept the
-                                // highlighted suggestion (or commit the typed
-                                // address) on the next runloop turn so the
-                                // token mutation can't break the in-flight
-                                // focus traversal.
-                                guard focused else { return .ignored }
-                                keyboard.selection = nil
-                                let pick = suggestions[safe: highlighted]
-                                DispatchQueue.main.async {
-                                    if let pick { accept(pick) } else { commitDraft() }
+                                .onKeyPress(.return) {
+                                    guard focused, !draft.isEmpty else { return .ignored }
+                                    keyboard.selection = nil
+                                    if let pick = suggestions[safe: highlighted] { accept(pick) }
+                                    else { commitDraft() }
+                                    return .handled
                                 }
-                                return .ignored
-                            }
-                            .onKeyPress(.return) {
-                                guard focused, !draft.isEmpty else { return .ignored }
-                                keyboard.selection = nil
-                                if let pick = suggestions[safe: highlighted] { accept(pick) }
-                                else { commitDraft() }
-                                return .handled
-                            }
-                            .onKeyPress(.escape) {
-                                guard focused, keyboard.selection != nil else { return .ignored }
-                                keyboard.selection = nil
-                                return .handled
-                            }
+                                .onKeyPress(.escape) {
+                                    guard focused, keyboard.selection != nil else { return .ignored }
+                                    keyboard.selection = nil
+                                    return .handled
+                                }
+                        }
+                        // Fixed row height tall enough for chips, so adding the
+                        // first recipient doesn't grow the row.
+                        .frame(height: 22)
                     }
-                    // Fixed row height tall enough for chips, so adding the
-                    // first recipient doesn't grow the row.
-                    .frame(height: 22)
+                    .onChange(of: focused) {
+                        if focused { keepDraftVisible(using: scrollProxy) }
+                    }
                 }
             }
             .padding(.vertical, 7)
@@ -147,6 +155,11 @@ struct TokenAddressField: View {
                     ForEach(Array(suggestions.enumerated()), id: \.element.id) { idx, contact in
                         Button {
                             accept(contact)
+                            // Clicking an autocomplete row makes its Button the
+                            // first responder. Put the insertion point back in
+                            // the address draft so another recipient can be
+                            // typed immediately.
+                            DispatchQueue.main.async { focused = true }
                         } label: {
                             HStack {
                                 Text(contact.name.isEmpty ? contact.email : contact.name)
@@ -161,6 +174,7 @@ struct TokenAddressField: View {
                             .background(idx == highlighted ? Color.notionAccent.opacity(0.18) : .clear)
                             .contentShape(Rectangle())
                         }
+                        .accessibilityIdentifier("addressSuggestion.\(label).\(contact.email)")
                         .buttonStyle(.plain)
                         .onHover { if $0 { highlighted = idx } }
                     }
@@ -441,12 +455,32 @@ struct TokenAddressField: View {
     }
 
     private func commitDraft() {
+        let wasFocused = focused
         let result = TokenAddressEditing.commit(tokens: tokens, draft: draft)
         // Skip no-op writes: blur-time commits run right after a Tab
         // traversal, and a gratuitous tokens/draft invalidation there can
         // re-render the row and knock focus off the field Tab just reached.
         if result.tokens != tokens { tokens = result.tokens }
         if result.draft != draft { draft = result.draft }
+        // Updating the chips restructures the HStack around the live AppKit
+        // field editor. SwiftUI normally preserves first responder, but can
+        // briefly drop it on a busy render. Repair only in-field commits; a
+        // blur/Tab commit must leave focus at its new destination.
+        if wasFocused {
+            DispatchQueue.main.async {
+                if !focused { focused = true }
+            }
+        }
+    }
+
+    /// Keep the live draft/caret in view as chips are appended to its left.
+    /// A horizontal ScrollView otherwise preserves its old origin and makes a
+    /// still-focused TextField look unfocused once enough recipients exist.
+    private func keepDraftVisible(using proxy: ScrollViewProxy) {
+        guard focused else { return }
+        DispatchQueue.main.async {
+            proxy.scrollTo("addressDraft.\(label)", anchor: .trailing)
+        }
     }
 
     private func beginEdit(_ token: String) {

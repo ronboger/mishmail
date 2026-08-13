@@ -109,4 +109,44 @@ final class ComposeTabFocusUITests: XCTestCase {
         assertSubjectKeepsFocusAndText(subject, expected: "Quarterly plan")
         XCTAssertEqual(to.value as? String ?? "", "")
     }
+
+    /// Committing one recipient must leave the insertion point in To so the
+    /// next address can be typed immediately. This is the normal multi-address
+    /// flow: type an address, comma, then continue with the next address.
+    func testCommaCommittedRecipientsKeepToFocused() {
+        let app = launchDemo()
+        let (to, _) = openCompose(app)
+
+        for address in ["first@example.net", "second@example.net", "third@example.net"] {
+            app.typeText(address + ",")
+            XCTAssertTrue(waitForKeyboardFocus(to, timeout: 1),
+                          "To should keep keyboard focus after committing \(address)")
+            XCTAssertEqual(to.value as? String ?? "", "",
+                           "the committed address should become a chip")
+        }
+
+        app.typeText("next@example.net")
+        XCTAssertTrue(hasKeyboardFocus(to))
+        XCTAssertEqual(to.value as? String, "next@example.net",
+                       "typing should continue naturally after several chips")
+    }
+
+    /// A mouse-picked autocomplete suggestion should behave like Return: it
+    /// commits the chip and leaves To ready for the next recipient.
+    func testClickedSuggestionReturnsFocusToRecipientDraft() {
+        let app = launchDemo()
+        let (to, _) = openCompose(app)
+
+        app.typeText("dana")
+        let suggestion = app.buttons
+            .matching(identifier: "addressSuggestion.To.dana@brightloop.io")
+            .firstMatch
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 3))
+        suggestion.click()
+
+        XCTAssertTrue(waitForKeyboardFocus(to, timeout: 2),
+                      "To should regain focus after clicking a suggestion")
+        app.typeText("next@example.net")
+        XCTAssertEqual(to.value as? String, "next@example.net")
+    }
 }
