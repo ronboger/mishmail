@@ -612,9 +612,9 @@ final class MailStore {
     }
 
     /// Auto-triage: after each sync, quietly classify new inbox mail with the
-    /// local model. Quiet on purpose — Ollama may simply not be running — and
-    /// backs off ten minutes after a failure so a down server isn't retried
-    /// on every 60-second sync tick.
+    /// selected provider. Quiet on purpose — the provider may be unconfigured
+    /// or unreachable — and backs off ten minutes after a failure so a down
+    /// server isn't retried on every 60-second sync tick.
     static let autoClassifyKey = "autoClassifyEnabled"
     @ObservationIgnored
     private var autoClassifyPausedUntil: Date?
@@ -641,10 +641,10 @@ final class MailStore {
             var done = 0
             for thread in targets {
                 let from = thread.participants.isEmpty ? thread.fromDisplay : thread.participants
-                let prompt = Ollama.classify(subject: thread.subject, from: from,
-                                             snippet: thread.snippet, categories: Classifier.categories)
+                let prompt = LLMPrompts.classify(subject: thread.subject, from: from,
+                                                 snippet: thread.snippet, categories: Classifier.categories)
                 do {
-                    let raw = try await Ollama.generate(prompt: prompt)
+                    let raw = try await LLMTaskRunner.generate(task: .triage, prompt: prompt)
                     let category = Classifier.normalize(raw)
                     try? await db.write { database in
                         try ThreadAICategory(threadId: thread.id, category: category).save(database)
@@ -659,9 +659,14 @@ final class MailStore {
                         classifying = false
                         syncStatus = ""
                         if quiet {
+                            // The old Ollama client collapsed missing-model,
+                            // HTTP, and URL-session failures into
+                            // `.unreachable`; the provider layer surfaces
+                            // those as LLMClientError.missingCredential/http
+                            // or URLError. Keep all of them silent here.
                             autoClassifyPausedUntil = Date().addingTimeInterval(600)
                         } else {
-                            showNotice(error.localizedDescription)
+                            showNotice(LLMTaskRunner.errorMessage(error, task: .triage))
                         }
                     }
                     return

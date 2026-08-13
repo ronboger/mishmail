@@ -48,8 +48,7 @@ final class OllamaEndpointTests: XCTestCase {
 extension Ollama.OllamaError: Equatable {
     public static func == (lhs: Ollama.OllamaError, rhs: Ollama.OllamaError) -> Bool {
         switch (lhs, rhs) {
-        case (.unreachable, .unreachable),
-             (.insecureEndpoint, .insecureEndpoint),
+        case (.insecureEndpoint, .insecureEndpoint),
              (.remoteNotAllowed, .remoteNotAllowed):
             return true
         default:

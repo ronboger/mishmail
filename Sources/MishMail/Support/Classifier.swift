@@ -1,8 +1,8 @@
 import Foundation
 
 /// On-device email triage. Owns the label set and result normalization; the
-/// actual model call lives in `Ollama`. Everything here is pure (no network,
-/// no SwiftUI) so it's unit-testable.
+/// actual model call lives in the provider layer. Everything here is pure (no
+/// network, no SwiftUI) so it's unit-testable.
 enum Classifier {
     /// Default triage buckets. Deliberately short so a small local model is
     /// reliable and the sidebar stays legible.
