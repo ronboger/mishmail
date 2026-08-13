@@ -39,6 +39,12 @@ struct AskMishPanelView: View {
         .onChange(of: controller.conversationID) {
             Task { await refreshConversations() }
         }
+        .onChange(of: store.showAskMish) { _, shown in
+            if !shown { declinePendingConfirmation() }
+        }
+        .onDisappear {
+            declinePendingConfirmation()
+        }
     }
 
     // MARK: - Header
@@ -131,7 +137,14 @@ struct AskMishPanelView: View {
         }
         .menuStyle(.borderlessButton)
         .fixedSize()
+        .disabled(controller.isRunning)
         .help("Model for this chat")
+    }
+
+    private func declinePendingConfirmation() {
+        if controller.pendingConfirmation != nil {
+            controller.confirmPendingTool(allow: false)
+        }
     }
 
     // MARK: - Transcript

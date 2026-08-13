@@ -1,4 +1,5 @@
 import AppKit
+import GRDB
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -1558,6 +1559,9 @@ struct AISettings: View {
     @State private var providers: [LLMProviderConfig] = LLMProviderStore.load()
     @State private var editingProvider: LLMProviderConfig?
     @State private var addingProvider = false
+    @State private var usage: [LLMUsageLog.TaskSpend] = []
+    @State private var priceOverrides: [String: LLMPrice] = LLMPricing.loadOverrides()
+    @State private var showingClearUsageAlert = false
 
     private var endpointIsRemote: Bool {
         guard let host = URL(string: url)?.host?.lowercased() else { return false }
@@ -1628,6 +1632,56 @@ struct AISettings: View {
                 }
 
                 Section {
+                    if usage.isEmpty {
+                        Text("No model usage in the last 30 days.")
+                            .foregroundStyle(.secondary)
+                    } else {
+                        ForEach(usage, id: \.task) { spend in
+                            HStack(spacing: 8) {
+                                Text(taskTitle(spend.task))
+                                    .frame(maxWidth: .infinity, alignment: .leading)
+                                Text("\(LLMPricing.compactCount(spend.promptTokens)) in / \(LLMPricing.compactCount(spend.completionTokens)) out")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                                Text(spend.estimatedUSD.map(LLMPricing.formatUSD) ?? "—")
+                                    .font(.caption.monospacedDigit())
+                                    .frame(width: 62, alignment: .trailing)
+                            }
+                        }
+                    }
+                    Button("Clear usage data", role: .destructive) {
+                        showingClearUsageAlert = true
+                    }
+                    .buttonStyle(.borderless)
+                } header: {
+                    Text("Usage (30 days)")
+                } footer: {
+                    Text("Costs are estimates based on the saved model prices.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    ForEach(mergedPrices, id: \.key) { item in
+                        ModelPriceEditorRow(model: item.key, price: item.value) { updated in
+                            savePrice(updated, for: item.key)
+                        }
+                        // Recreate a row after reset or a committed edit so
+                        // its text fields reflect the stored value.
+                        .id("\(item.key)-\(item.value.inputPerMTok)-\(item.value.outputPerMTok)")
+                    }
+                    Button("Reset to defaults", role: .destructive) {
+                        LLMPricing.saveOverrides([:])
+                        priceOverrides = [:]
+                    }
+                    .buttonStyle(.borderless)
+                } header: {
+                    Text("Model prices")
+                } footer: {
+                    Text("Prices are in USD per million tokens. Changes affect new estimates.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
                     Toggle("Auto-sort new mail", isOn: $autoClassify)
                 } footer: {
                     Text("After each sync, quietly tag new inbox threads (Reply needed, FYI, Newsletter, Receipt) with the local model. Skips silently when Ollama isn't running. A small fast model like llama3.2:3b is ideal here.")
@@ -1647,7 +1701,70 @@ struct AISettings: View {
                     providers = LLMProviderStore.load()
                 }
             }
+            .onAppear {
+                priceOverrides = LLMPricing.loadOverrides()
+                loadUsage()
+            }
+            .alert("Clear usage data?", isPresented: $showingClearUsageAlert) {
+                Button("Clear", role: .destructive) { clearUsage() }
+                Button("Cancel", role: .cancel) { }
+            } message: {
+                Text("This removes all saved model usage data.")
+            }
         }
+    }
+
+    private var mergedPrices: [(key: String, value: LLMPrice)] {
+        let merged = LLMPricing.shippedDefaults().merging(priceOverrides) { _, override in
+            override
+        }
+        return merged.keys.sorted().compactMap { key in
+            guard let price = merged[key] else { return nil }
+            return (key: key, value: price)
+        }
+    }
+
+    private func taskTitle(_ task: LLMTask) -> String {
+        switch task {
+        case .drafts: return "Drafts"
+        case .summaries: return "Summaries"
+        case .triage: return "Triage"
+        case .askMish: return "Ask Mish"
+        }
+    }
+
+    private func loadUsage() {
+        let cutoff = Date().addingTimeInterval(-30 * 24 * 60 * 60)
+        Task {
+            let rows = (try? await AppDatabase.shared.dbPool.read { db in
+                try LLMUsageRow
+                    .filter(Column("createdAt") >= cutoff)
+                    .fetchAll(db)
+            }) ?? []
+            let summary = LLMUsageLog.summarize(
+                rows: rows, since: cutoff, overrides: LLMPricing.loadOverrides())
+            usage = summary
+        }
+    }
+
+    private func clearUsage() {
+        Task {
+            do {
+                try await AppDatabase.shared.dbPool.write { db in
+                    try LLMUsageRow.deleteAll(db)
+                }
+                usage = []
+            } catch {
+                // The button is intentionally quiet if the database is closing.
+            }
+        }
+    }
+
+    private func savePrice(_ price: LLMPrice, for model: String) {
+        var overrides = LLMPricing.loadOverrides()
+        overrides[model] = price
+        LLMPricing.saveOverrides(overrides)
+        priceOverrides = overrides
     }
 
     /// Drops the provider, its secrets, and any task still pointing at it, so
@@ -1668,6 +1785,100 @@ struct AISettings: View {
                 LLMTaskAssignment(providerID: fallback.id, model: fallback.defaultModel),
                 for: task)
         }
+    }
+}
+
+/// One editable model price row. Text is committed with Return or when the
+/// field loses focus; invalid values restore the previous value.
+private struct ModelPriceEditorRow: View {
+    enum Field: Hashable {
+        case input, output
+    }
+
+    let model: String
+    let price: LLMPrice
+    let save: (LLMPrice) -> Void
+
+    @State private var inputText: String
+    @State private var outputText: String
+    @FocusState private var focusedField: Field?
+
+    init(model: String, price: LLMPrice, save: @escaping (LLMPrice) -> Void) {
+        self.model = model
+        self.price = price
+        self.save = save
+        _inputText = State(initialValue: Self.format(price.inputPerMTok))
+        _outputText = State(initialValue: Self.format(price.outputPerMTok))
+    }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            Text(model)
+                .font(.system(size: 12, design: .monospaced))
+                .lineLimit(1)
+                .frame(maxWidth: .infinity, alignment: .leading)
+            TextField("In", text: $inputText)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 76)
+                .focused($focusedField, equals: .input)
+                .onSubmit { commitInput() }
+                .accessibilityLabel("\(model) input price per million tokens")
+            Text("in")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            TextField("Out", text: $outputText)
+                .textFieldStyle(.roundedBorder)
+                .multilineTextAlignment(.trailing)
+                .frame(width: 76)
+                .focused($focusedField, equals: .output)
+                .onSubmit { commitOutput() }
+                .accessibilityLabel("\(model) output price per million tokens")
+            Text("out")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        .onChange(of: focusedField) { _, field in
+            switch field {
+            case .input: commitOutput()
+            case .output: commitInput()
+            case nil: commitInput(); commitOutput()
+            }
+        }
+    }
+
+    private func commitInput() {
+        guard let value = Self.validValue(inputText) else {
+            inputText = Self.format(price.inputPerMTok)
+            return
+        }
+        save(LLMPrice(inputPerMTok: value, outputPerMTok: outputValue))
+    }
+
+    private func commitOutput() {
+        guard let value = Self.validValue(outputText) else {
+            outputText = Self.format(price.outputPerMTok)
+            return
+        }
+        save(LLMPrice(inputPerMTok: inputValue, outputPerMTok: value))
+    }
+
+    private var inputValue: Double {
+        Self.validValue(inputText) ?? price.inputPerMTok
+    }
+
+    private var outputValue: Double {
+        Self.validValue(outputText) ?? price.outputPerMTok
+    }
+
+    private static func validValue(_ text: String) -> Double? {
+        guard let value = Double(text.trimmingCharacters(in: .whitespacesAndNewlines)),
+              value.isFinite, value >= 0 else { return nil }
+        return value
+    }
+
+    private static func format(_ value: Double) -> String {
+        String(format: "%.6g", value)
     }
 }
 
