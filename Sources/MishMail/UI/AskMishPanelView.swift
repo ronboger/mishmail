@@ -280,7 +280,10 @@ struct AskMishPanelView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(isSend ? .red : Color.notionAccent)
-                .keyboardShortcut(.defaultAction)
+                // A send needs a real click: the composer is disabled while
+                // the card is up, so ↩ would otherwise queue mail from a
+                // keystroke meant for the chat.
+                .keyboardShortcut(isSend ? nil : KeyboardShortcut.defaultAction)
                 Button("Don't allow") {
                     controller.confirmPendingTool(allow: false)
                 }
