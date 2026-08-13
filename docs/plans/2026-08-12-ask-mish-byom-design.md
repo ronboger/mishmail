@@ -34,6 +34,8 @@ cloud backend. MishMail stays local-first.
 - Phase 1 landed: commits 93d162d..9bde382 (provider layer, OAuth, Settings).
 - Phase 2 landed: commits 0b6cc5d..b2354fd (chat tables, pricing, agent loop,
   tool plumbing with send_draft, panel UI).
+- Phase 3 landed: commits 7054972..218d378 (drafts/summaries/triage on the
+  provider layer, inline edits, quick-reply chips, usage log + price editor).
 
 ## Phase 1 — LLM provider layer
 
