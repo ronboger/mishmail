@@ -1501,6 +1501,18 @@ struct ComposeRequest: Identifiable {
         applyThreadLongStarPinDrops(selectionIntent: nil)
     }
 
+    /// Cmd-A: check every thread currently loaded in the list (Gmail-style
+    /// select-all). Does not fetch further pages — only what's already in
+    /// `selectionOrder`.
+    func checkAllVisibleThreads() {
+        let order = selectionOrder
+        guard !order.isEmpty else { return }
+        let result = SelectionAdvance.selectAll(order: order)
+        checkedThreadIds = result.checked
+        lastCheckedThreadId = result.anchor
+        applyThreadLongStarPinDrops(selectionIntent: nil)
+    }
+
     /// Gmail `x`: toggle check on the focused conversation.
     func toggleCheckSelected() {
         guard let id = selectedThreadId else { return }
