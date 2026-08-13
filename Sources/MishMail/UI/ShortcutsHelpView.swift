@@ -23,6 +23,7 @@ struct ShortcutsHelpView: View {
             ("⇧⌘↩", "Compose side by side with the conversation"),
             ("x", "Select / deselect (multi-select)"),
             ("Shift-click checkbox", "Select a range"),
+            ("⌘A", "Select all (multi-select)"),
             ("/", "Search"),
             ("Esc", "Drop field focus → clear checks → exit focus → clear search → close pane"),
             ("⌘K", "Command palette (Insert link while composing)"),

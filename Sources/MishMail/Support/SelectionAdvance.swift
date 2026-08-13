@@ -105,6 +105,15 @@ enum SelectionAdvance {
         let hi = max(a, b)
         return Array(order[lo...hi])
     }
+
+    /// Cmd-A "select all": every id in display order becomes checked, and
+    /// the last id becomes the shift-range anchor so a following
+    /// shift-click extends from a sensible point. Only ever counts ids
+    /// already in `order` — never triggers loading more of a paginated
+    /// list.
+    static func selectAll(order: [String]) -> (checked: Set<String>, anchor: String?) {
+        (Set(order), order.last)
+    }
 }
 
 /// Pure list-focus navigation: move highlight without I/O.
