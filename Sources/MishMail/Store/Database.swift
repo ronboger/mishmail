@@ -381,6 +381,17 @@ struct ChatMessageRow: Codable, Identifiable, Hashable, FetchableRecord, Persist
     var createdAt: Date
 }
 
+struct LLMUsageRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "llmUsage"
+    var id: String            // UUID string
+    var task: String          // LLMTask.rawValue
+    var providerID: String
+    var model: String
+    var promptTokens: Int
+    var completionTokens: Int
+    var createdAt: Date
+}
+
 /// A VIP sender: mail from this address pins to the Inbox Priority section.
 /// Emails are stored lowercased; the list is global across accounts.
 ///
@@ -1459,6 +1470,21 @@ final class AppDatabase: @unchecked Sendable {
             try db.execute(sql: """
                 CREATE INDEX chatConversation_on_updatedAt
                 ON chatConversation (updatedAt)
+                """)
+        }
+        // v36: per-task LLM usage log for the 30-day spend summary.
+        m.registerMigration("v36") { db in
+            try db.create(table: "llmUsage") { t in
+                t.column("id", .text).primaryKey()
+                t.column("task", .text).notNull()
+                t.column("providerID", .text).notNull()
+                t.column("model", .text).notNull()
+                t.column("promptTokens", .integer).notNull()
+                t.column("completionTokens", .integer).notNull()
+                t.column("createdAt", .datetime).notNull()
+            }
+            try db.execute(sql: """
+                CREATE INDEX llmUsage_on_createdAt ON llmUsage(createdAt)
                 """)
         }
         return m
