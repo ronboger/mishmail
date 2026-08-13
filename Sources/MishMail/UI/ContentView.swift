@@ -47,6 +47,9 @@ struct ContentView: View {
     /// Last browse keyDown's auto-repeat flag — single presses open at 0 ms;
     /// held-key repeats coalesce via `DetailOpenPolicy.keyRepeatSettleNanoseconds`.
     @State private var browseKeyIsRepeat = false
+    /// Width the Ask Mish panel currently claims (0 when hidden). The compose
+    /// overlay is window-trailing, so it shifts left by this much.
+    @State private var askMishPanelWidth: CGFloat = 0
 
     private var fullWindowThreads: Bool {
         ThreadOpenStyle(rawValue: threadOpenStyleRaw) != .readingPane
@@ -75,28 +78,53 @@ struct ContentView: View {
             // Compact mode swaps list ↔ detail on whether a conversation is
             // actually OPEN — the quiet auto-highlight of the top row is a
             // selection without an open, and must keep showing the list.
+            // Ask Mish takes width from the mailbox, so the layout mode must be
+            // derived from what is left — otherwise a window that is wide
+            // enough only with the panel closed keeps a three-pane layout it
+            // can no longer fit.
+            let askMishVisible = AskMishLayout.showsPanel(
+                hostWidth: proxy.size.width, enabled: store.showAskMish)
+            let panelWidth = askMishVisible
+                ? AskMishLayout.panelWidth(hostWidth: proxy.size.width) : 0
             let mode = MailLayout.mode(
-                width: proxy.size.width,
+                width: proxy.size.width - panelWidth,
                 readingPaneHidden: readingPaneHidden,
                 hasSelection: store.openedThreadId != nil,
                 threadFocus: store.threadFocusMode,
                 fullWindowThreads: fullWindowThreads)
-            Group {
-                if splitComposeActive {
-                    splitComposeLayout(hostWidth: proxy.size.width)
-                } else {
-                    mailboxLayout(mode)
+            HStack(spacing: 0) {
+                Group {
+                    if splitComposeActive {
+                        splitComposeLayout(hostWidth: proxy.size.width - panelWidth)
+                    } else {
+                        mailboxLayout(mode)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                // Compose pins itself to this host, so the frame must exclude
+                // the panel or a floating card would sit under it.
+                .background(
+                    GeometryReader { host in
+                        Color.clear.preference(
+                            key: ComposeHostFrameKey.self,
+                            value: host.frame(in: .global))
+                    }
+                )
+                if askMishVisible {
+                    Divider()
+                    AskMishPanelView(
+                        controller: store.askMishControllerCreatingIfNeeded())
+                        .frame(width: panelWidth)
+                        .transition(.move(edge: .trailing))
                 }
             }
-            .onAppear { layoutMode = mode }
+            .animation(.easeOut(duration: 0.18), value: askMishVisible)
+            .onAppear {
+                layoutMode = mode
+                askMishPanelWidth = panelWidth
+            }
             .onChange(of: mode) { layoutMode = mode }
-            .background(
-                GeometryReader { host in
-                    Color.clear.preference(
-                        key: ComposeHostFrameKey.self,
-                        value: host.frame(in: .global))
-                }
-            )
+            .onChange(of: panelWidth) { askMishPanelWidth = panelWidth }
         }
         .onPreferenceChange(ReadingPaneFrameKey.self) { frame in
             readingPaneFrame = frame
@@ -256,6 +284,13 @@ struct ContentView: View {
                 .help(store.threadFocusMode
                       ? "Exit full-app conversation (esc or ⌘↩)"
                       : "Open conversation full-app (⌘↩)")
+                Button {
+                    store.showAskMish.toggle()
+                } label: {
+                    Label("Ask Mish", systemImage: "sparkles")
+                }
+                .keyboardShortcut("m", modifiers: [.command, .option])
+                .help("Ask Mish (⌥⌘M)")
             }
         }
         // Single ComposeView host for both floating and inline so presentation
@@ -274,6 +309,8 @@ struct ContentView: View {
                        value: store.composeMinimized)
             .animation(.spring(response: 0.3, dampingFraction: 0.85),
                        value: store.composeRequest?.presentation)
+            // Keep the card inside the mailbox column when Ask Mish is open.
+            .padding(.trailing, askMishPanelWidth)
         }
         .animation(.easeOut(duration: 0.2), value: store.threadFocusMode)
         .animation(.easeOut(duration: 0.1), value: splitComposeActive)

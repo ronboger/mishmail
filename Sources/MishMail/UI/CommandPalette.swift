@@ -78,6 +78,7 @@ struct CommandPalette: View {
             Command(id: "sync", title: "Sync All Accounts", icon: "arrow.clockwise") { s in
                 Task { await s.syncAll() }
             },
+            Command(id: "askmish", title: "Ask Mish", icon: "sparkles") { $0.showAskMish.toggle() },
             Command(id: "aisort", title: "Sort Inbox with AI", icon: "sparkles") { $0.classifyInbox() },
             Command(id: "newview", title: "Add View…", icon: "plus") {
                 $0.editingView = SavedView.empty()
