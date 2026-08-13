@@ -17,3 +17,6 @@ mishmail.project
 # Personal signing overrides (see Config/Signing.xcconfig)
 Config/Local.xcconfig
 __pycache__/
+
+# Personal dev-workflow scripts (fork+branches specific, not a shared tool)
+scripts/dev-sync.sh
