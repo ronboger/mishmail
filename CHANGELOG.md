@@ -23,6 +23,12 @@ minor versions may still change behavior.
   select-all, so reading an email and hitting ⌘A still selects the email.
 
 ### Fixed
+- **Multi-select `h`/`b` snooze only snoozed the last-focused thread, not
+  the whole selection.** Every other bulk action (archive, trash, star,
+  read/unread, spam) already checked the multi-select before falling back
+  to the single focused thread; snooze never got that treatment. Picking a
+  date now applies to every checked thread at once, with one combined
+  undo toast.
 - **Side-by-side compose opens every message in the conversation.** The
   reading pane still keeps one live body renderer (WebKit cost), but ⇧⌘↩
   expands all sent cards so you can read the full thread while drafting.

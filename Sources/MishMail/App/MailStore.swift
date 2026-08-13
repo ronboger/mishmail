@@ -523,6 +523,13 @@ final class MailStore {
     var showLabelPicker = false
     var showLabelOrganizer = false
     var snoozingThread: MailThread?   // custom snooze date overlay
+    /// True while the snooze-date overlay is open for the current
+    /// multi-select (`checkedThreadIds`) rather than a single thread.
+    /// Mutually exclusive with `snoozingThread` — only one snooze overlay is
+    /// ever shown, enforced by ContentView's key-monitor ordering and the
+    /// sheet's click-blocking scrim (see the overlay in ContentView.swift),
+    /// not by anything here.
+    var snoozingChecked = false
     /// Draft message pending the "Delete this draft?" alert (per-message so
     /// multi-draft threads discard the card that was clicked, not always the newest).
     var confirmingDraftDelete: Message?
@@ -4089,7 +4096,9 @@ struct ComposeRequest: Identifiable {
         case .toggleRead:
             if !checkedThreadIds.isEmpty { toggleReadChecked() }
             else if let t = selectedThread { setRead(t, read: t.isUnread) }
-        case .snooze: if let t = selectedThread { snoozingThread = t }
+        case .snooze:
+            if !checkedThreadIds.isEmpty { snoozingChecked = true }
+            else if let t = selectedThread { snoozingThread = t }
         case .markSpam:
             if !checkedThreadIds.isEmpty { markSpamChecked() }
             else if let t = selectedThread {
@@ -5302,10 +5311,10 @@ struct ComposeRequest: Identifiable {
     /// still defer the reading-pane swap after a pick, so clear without
     /// animation even though the picker is no longer a modal sheet.
     func dismissSnoozePicker() {
-        guard snoozingThread != nil else { return }
+        guard snoozingThread != nil || snoozingChecked else { return }
         var t = Transaction()
         t.disablesAnimations = true
-        withTransaction(t) { snoozingThread = nil }
+        withTransaction(t) { snoozingThread = nil; snoozingChecked = false }
     }
 
     /// Snooze mirrors what Gmail's own snooze looks like over the API: the
@@ -5340,6 +5349,45 @@ struct ComposeRequest: Identifiable {
         offerUndo(SnoozeDateParser.undoLabel(until: date)) { [weak self] in
             guard let self else { return }
             self.snooze(thread, until: nil)
+            self.undoAction = nil
+        }
+    }
+
+    /// Bulk snooze: apply one picked date to every checked thread at once,
+    /// mirroring archiveChecked/trashChecked. `perform(.snooze)` routes here
+    /// instead of `snooze(_:until:)` whenever `checkedThreadIds` is
+    /// non-empty — previously the sheet was always opened for just
+    /// `selectedThread`, so multi-select `h`/`b` silently snoozed only the
+    /// last-focused row.
+    func snoozeChecked(until date: Date) {
+        let targets = checkedThreadsInOrder
+        guard !targets.isEmpty else { return }
+        let focus = selectedThreadId
+        // Tear the picker down *before* the optimistic mutation — same
+        // reason as the single-thread path above.
+        dismissSnoozePicker()
+        mutateThreads(targets, autoAdvanceAction: "snooze", local: {
+            $0.snoozeUntil = date
+            $0.inInbox = false
+        }, remote: { client, id in
+            try await client.modifyThread(id: id, remove: ["INBOX"])
+        })
+        clearCheckedThreads()
+        let n = targets.count
+        let ids = targets.map(\.id)
+        let label = n == 1
+            ? SnoozeDateParser.undoLabel(until: date)
+            : "Snoozed \(n) conversations until \(SnoozeDateParser.format(date))"
+        offerUndo(label) { [weak self] in
+            guard let self else { return }
+            self.pinReadStateKeep(ids)
+            self.mutateThreads(targets, local: {
+                $0.snoozeUntil = nil
+                $0.inInbox = true
+            }, remote: { client, id in
+                try await client.modifyThread(id: id, add: ["INBOX"])
+            })
+            self.restoreSelectionFocus(focus)
             self.undoAction = nil
         }
     }

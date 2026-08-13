@@ -365,6 +365,19 @@ struct ContentView: View {
                 )
                 // Reset query/highlight if the target thread changes while open.
                 .id(thread.id)
+            } else if store.snoozingChecked {
+                // Multi-select `h`/`b`: no single "current" snooze date to
+                // show, so the sheet's "Unsnooze" clear option stays hidden
+                // (it only appears when `current != nil`) and `snooze` is
+                // never called with `nil` here.
+                SnoozeSheet(
+                    current: nil,
+                    snooze: { date in
+                        guard let date else { return }
+                        store.snoozeChecked(until: date)
+                    },
+                    cancel: { store.dismissSnoozePicker() }
+                )
             }
         }
         // Wide command-K-style search panel, floated at the window level so it
@@ -755,8 +768,9 @@ private extension ContentView {
             // Settings is capturing a key for rebinding — don't run shortcuts.
             if store.keyBindings.capturing { return event }
             // The snooze overlay runs its own monitor (↑/↓/Return/Esc while
-            // typing a date) — everything must pass through untouched.
-            if store.snoozingThread != nil { return event }
+            // typing a date) — everything must pass through untouched. Same
+            // for the bulk variant opened over a multi-select.
+            if store.snoozingThread != nil || store.snoozingChecked { return event }
             // ⇧⌘↩ toggles side-by-side compose (conversation | draft). Runs
             // before the compose-typing passthrough so it works mid-sentence.
             if event.modifierFlags.intersection([.command, .shift, .option, .control])
