@@ -31,6 +31,30 @@ enum Ollama {
         }
     }
 
+    /// Models the user switched off in Settings → AI. They stay installed in
+    /// Ollama; they just stop appearing in MishMail's model pickers.
+    static var disabledModels: Set<String> {
+        get { Set(UserDefaults.standard.stringArray(forKey: "ollama.disabledModels") ?? []) }
+        set { UserDefaults.standard.set(newValue.sorted(), forKey: "ollama.disabledModels") }
+    }
+
+    /// All models installed in the local Ollama (GET /api/tags).
+    static func installedModels() async throws -> [String] {
+        let base = LLMEndpoint.trimmedBase(baseURL)
+        guard let url = URL(string: "\(base)/api/tags") else { return [] }
+        try validateEndpoint(url)
+        var request = URLRequest(url: url)
+        request.timeoutInterval = 5
+        let (data, _) = try await URLSession.shared.data(for: request)
+        return LLMEndpoint.modelNames(fromJSONObject: try? JSONSerialization.jsonObject(with: data))
+    }
+
+    /// Installed models minus the ones the user disabled.
+    static func enabledModels(installed: [String]) -> [String] {
+        let disabled = disabledModels
+        return installed.filter { !disabled.contains($0) }
+    }
+
     /// True when the configured endpoint is this machine.
     static var isLoopback: Bool {
         guard let host = URL(string: baseURL)?.host?.lowercased() else { return false }

@@ -27,6 +27,9 @@ struct LLMProviderConfig: Codable, Equatable, Identifiable, Sendable {
     var baseURL: String
     var defaultModel: String
     var authMode: LLMAuthMode
+    /// Model list pulled from the provider after connect (nil = never fetched).
+    /// Optional so rows stored before this field existed still decode.
+    var models: [String]? = nil
 }
 
 enum LLMRole: String, Codable, Sendable { case system, user, assistant, tool }

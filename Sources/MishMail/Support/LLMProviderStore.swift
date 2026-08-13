@@ -61,6 +61,42 @@ enum LLMProviderStore {
         }
     }
 
+    struct SubscriptionPreset {
+        let label: String
+        let kind: LLMProviderKind
+        let baseURL: String
+        /// Shown if the provider's /models endpoint rejects subscription
+        /// tokens; sign-in must not fail just because listing did.
+        let fallbackModels: [String]
+    }
+
+    /// One-click subscription sign-in targets (Settings → AI → Subscriptions).
+    static func subscriptionPreset(for vendor: LLMOAuthVendor) -> SubscriptionPreset {
+        switch vendor {
+        case .claude:
+            return SubscriptionPreset(
+                label: "Claude", kind: .anthropic,
+                baseURL: "https://api.anthropic.com",
+                fallbackModels: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"])
+        case .chatGPT:
+            return SubscriptionPreset(
+                label: "ChatGPT", kind: .openAICompatible,
+                baseURL: "https://api.openai.com/v1",
+                fallbackModels: ["gpt-5", "gpt-5-mini"])
+        case .grok:
+            return SubscriptionPreset(
+                label: "Grok", kind: .openAICompatible,
+                baseURL: "https://api.x.ai/v1",
+                fallbackModels: ["grok-4", "grok-4-fast"])
+        }
+    }
+
+    /// The stored provider row for one subscription vendor, if connected.
+    static func subscriptionProvider(for vendor: LLMOAuthVendor,
+                                     in providers: [LLMProviderConfig]) -> LLMProviderConfig? {
+        providers.first { $0.authMode == .oauth(vendor) }
+    }
+
     static func keychainKey(for id: UUID) -> String { "llm.key.\(id.uuidString)" }
     static func oauthKeychainKey(for id: UUID) -> String { "llm.oauth.\(id.uuidString)" }
 

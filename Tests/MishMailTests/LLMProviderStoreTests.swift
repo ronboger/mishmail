@@ -58,4 +58,29 @@ final class LLMProviderStoreTests: XCTestCase {
         LLMProviderStore.setAssignment(custom, for: .drafts, to: defaults)
         XCTAssertEqual(LLMProviderStore.assignment(for: .drafts, from: defaults), custom)
     }
+
+    func testSubscriptionPresetAndLookup() {
+        let preset = LLMProviderStore.subscriptionPreset(for: .grok)
+        XCTAssertEqual(preset.kind, .openAICompatible)
+        XCTAssertEqual(preset.baseURL, "https://api.x.ai/v1")
+        XCTAssertFalse(preset.fallbackModels.isEmpty)
+
+        let connected = LLMProviderConfig(
+            id: UUID(), kind: .anthropic, label: "Claude",
+            baseURL: "https://api.anthropic.com", defaultModel: "claude-opus-5",
+            authMode: .oauth(.claude), models: ["claude-opus-5"])
+        XCTAssertEqual(
+            LLMProviderStore.subscriptionProvider(for: .claude, in: [connected])?.id,
+            connected.id)
+        XCTAssertNil(LLMProviderStore.subscriptionProvider(for: .grok, in: [connected]))
+    }
+
+    func testProviderRowWithoutModelsFieldStillDecodes() throws {
+        let json = """
+        [{"id":"11111111-2222-3333-4444-555555555555","kind":"anthropic",        "label":"Claude","baseURL":"https://api.anthropic.com",        "defaultModel":"claude-opus-5","authMode":{"apiKey":{}}}]
+        """
+        let rows = LLMProviderStore.decodeProviders(from: Data(json.utf8))
+        XCTAssertEqual(rows.count, 1)
+        XCTAssertNil(rows[0].models)
+    }
 }
