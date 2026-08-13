@@ -164,9 +164,16 @@ demo: build
 # my machine" verb. Replaces whatever MishMail.app is there. Never silently
 # install ad-hoc: doing so changes MishMail's identity on the next rebuild and
 # causes recurring Keychain prompts.
+# Local-install speedups, deliberately NOT applied to `make release`:
+# ONLY_ACTIVE_ARCH skips the x86_64 slice this Mac never runs, and
+# incremental compilation recompiles only changed files (whole-module
+# was one ~70s SwiftCompile after any edit). Optimization stays -O.
+INSTALL_SPEED_FLAGS = ONLY_ACTIVE_ARCH=YES SWIFT_COMPILATION_MODE=incremental
+
 install: gen require-stable-signing
 	xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
-		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet $(INSTALL_SIGN_FLAGS)
+		-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet \
+		$(INSTALL_SPEED_FLAGS) $(INSTALL_SIGN_FLAGS)
 	$(call check_relauncher,$(RELEASE_APP))
 	rm -rf /Applications/MishMail.app
 	ditto "$(RELEASE_APP)" /Applications/MishMail.app
