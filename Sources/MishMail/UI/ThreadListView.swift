@@ -1644,9 +1644,7 @@ struct ThreadRow: View, Equatable {
     }
 
     private var relativeFormat: Date.FormatStyle {
-        Calendar.current.isDateInToday(thread.lastDate)
-            ? .dateTime.hour().minute()
-            : .dateTime.month(.abbreviated).day()
+        thread.lastDate.threadListFormat
     }
 }
 

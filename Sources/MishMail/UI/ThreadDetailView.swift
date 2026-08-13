@@ -1334,7 +1334,7 @@ struct DraftMessageCard: View {
                         .font(.system(size: 12 * fontScale, weight: .medium))
                         .foregroundStyle(Color.orange)
                     Spacer(minLength: 8)
-                    Text(message.date, format: .dateTime.month(.abbreviated).day().hour().minute())
+                    Text(message.date, format: message.date.messageHeaderFormat)
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
@@ -1776,7 +1776,7 @@ struct MessageCard: View {
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help("Forward this message (\(store.keyBindings.key(for: .forward))) · starts a new conversation")
                 }
-                Text(message.date, format: .dateTime.month(.abbreviated).day().hour().minute())
+                Text(message.date, format: message.date.messageHeaderFormat)
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                 Button {
                     toggleExpanded()
