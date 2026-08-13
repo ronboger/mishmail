@@ -585,3 +585,78 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         return s
     }
 }
+
+// MARK: - Ask Mish send executor
+
+@MainActor
+extension MailStore {
+    /// Sends an existing draft through the normal pending-send path, so the
+    /// undo window, the "Sending…" toast, and the Gmail-style HTML upgrade all
+    /// behave exactly as they do for a Send from compose.
+    ///
+    /// Ask Mish only — this is not an MCP tool. The panel calls it after the
+    /// user confirms the `send_draft` card. Failures throw `MCPToolError` so
+    /// the model sees an `isError` tool result and can explain the refusal.
+    ///
+    /// - Returns: a short JSON receipt.
+    func askMishSendDraft(draftId: String) async throws -> String {
+        let id = draftId.trimmingCharacters(in: .whitespaces)
+        guard !id.isEmpty else {
+            throw MCPToolError("draft_id is required")
+        }
+        // Same refusal queueSend makes, raised before anything is queued.
+        guard !demoMode else {
+            throw MCPToolError("Sending is disabled in the demo inbox")
+        }
+        guard let draft = messageBody(id: id) else {
+            throw MCPToolError("Draft not found: \(id)")
+        }
+        guard ForwardComposer.isLiveDraft(draft.labelIds) else {
+            throw MCPToolError("Not an unsent draft: \(id)")
+        }
+        let hasRecipient = [draft.toHeader, draft.ccHeader, draft.bccHeader]
+            .contains { $0.contains("@") }
+        guard hasRecipient else {
+            throw MCPToolError("Draft \(id) has no recipient. Edit it before sending.")
+        }
+        // The send path rebuilds MIME from the fields below, so attachments
+        // already on the server draft would be dropped silently. Refuse
+        // instead — the user can send those from the compose window.
+        guard !draft.hasAttachment else {
+            throw MCPToolError(
+                "Draft \(id) has attachments. Open it in MishMail and send it there.")
+        }
+
+        // Reply drafts recover their parent so In-Reply-To / References and the
+        // quoted HTML survive — the same resolution `editDraft(_:)` uses.
+        let parent = Self.replyParent(
+            forDraft: draft, inThread: messages(inThread: draft.threadId))
+        queueSend(PendingSend(
+            accountId: draft.accountId,
+            // Send-as identity written on the draft; empty falls back to the
+            // account's primary address.
+            fromEmail: MessageParser.emailAddress(draft.fromHeader),
+            to: draft.toHeader,
+            cc: draft.ccHeader,
+            bcc: draft.bccHeader,
+            subject: draft.subject,
+            body: draft.bodyText,
+            replyTo: parent,
+            forward: false,
+            attachments: [],
+            replacingDraft: draft))
+
+        let data = try JSONSerialization.data(
+            withJSONObject: [
+                "sent": true,
+                "draftId": draft.id,
+                "threadId": draft.threadId,
+                "undoSeconds": Int(MailStore.undoSendWindow),
+            ] as [String: Any],
+            options: [.sortedKeys])
+        guard let receipt = String(data: data, encoding: .utf8) else {
+            throw MCPToolError("Failed to encode send receipt")
+        }
+        return receipt
+    }
+}

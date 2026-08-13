@@ -1,0 +1,164 @@
+import XCTest
+
+final class AskMishToolsTests: XCTestCase {
+    func testSpecsIncludeCatalogAndSendDraft() throws {
+        let specs = AskMishTools.llmToolSpecs()
+        let names = specs.map(\.name)
+        XCTAssertTrue(names.contains("search_threads"))
+        XCTAssertTrue(names.contains("create_draft"))
+        XCTAssertTrue(names.contains("send_draft"))
+        XCTAssertEqual(names.count, MCPTools.catalog.count + 1)
+        // Schemas are valid JSON objects.
+        for spec in specs {
+            let object = try JSONSerialization.jsonObject(with: Data(spec.inputSchemaJSON.utf8))
+            XCTAssertNotNil(object as? [String: Any], spec.name)
+        }
+    }
+
+    /// send_draft is Ask Mish-only: external MCP clients must not see it.
+    func testSendDraftIsNotInMCPCatalog() {
+        XCTAssertFalse(MCPTools.catalog.map(\.name).contains(AskMishTools.sendDraftToolName))
+    }
+
+    func testSendDraftSchemaRequiresDraftId() throws {
+        let specs = AskMishTools.llmToolSpecs()
+        guard let spec = specs.first(where: { $0.name == "send_draft" }) else {
+            return XCTFail("send_draft missing")
+        }
+        let object = try JSONSerialization.jsonObject(
+            with: Data(spec.inputSchemaJSON.utf8)) as? [String: Any]
+        XCTAssertEqual(object?["type"] as? String, "object")
+        XCTAssertEqual(object?["required"] as? [String], ["draft_id"])
+        let properties = object?["properties"] as? [String: Any]
+        XCTAssertNotNil(properties?["draft_id"])
+        XCTAssertFalse(spec.description.isEmpty)
+    }
+
+    func testWriteToolClassification() {
+        XCTAssertTrue(AskMishTools.isWriteTool("create_draft"))
+        XCTAssertTrue(AskMishTools.isWriteTool("send_draft"))
+        XCTAssertTrue(AskMishTools.isWriteTool("remove_vip"))
+        XCTAssertTrue(AskMishTools.isWriteTool("set_thread_summary"))
+        XCTAssertTrue(AskMishTools.isWriteTool("clear_thread_summary"))
+        XCTAssertTrue(AskMishTools.isWriteTool("add_vip"))
+        XCTAssertTrue(AskMishTools.isWriteTool("add_vips"))
+        XCTAssertTrue(AskMishTools.isWriteTool("set_vip_groups"))
+        XCTAssertFalse(AskMishTools.isWriteTool("search_threads"))
+        XCTAssertFalse(AskMishTools.isWriteTool("get_thread"))
+        XCTAssertFalse(AskMishTools.isWriteTool("list_accounts"))
+        XCTAssertFalse(AskMishTools.isWriteTool("list_threads"))
+        XCTAssertFalse(AskMishTools.isWriteTool("list_drafts"))
+        XCTAssertFalse(AskMishTools.isWriteTool("list_vips"))
+    }
+
+    /// Every offered tool is classified read or write on purpose — a new
+    /// mutating tool must be added to the write set, not default to read.
+    func testEveryOfferedToolIsClassified() {
+        let names = Set(AskMishTools.llmToolSpecs().map(\.name))
+        XCTAssertTrue(AskMishTools.writeToolNames.isSubset(of: names))
+    }
+
+    func testDecodeArgumentsRejectsNonObject() {
+        XCTAssertNoThrow(try AskMishTools.decodeArguments(#"{"query":"acme"}"#))
+        XCTAssertThrowsError(try AskMishTools.decodeArguments(#"["not","object"]"#))
+        XCTAssertThrowsError(try AskMishTools.decodeArguments("not json"))
+        XCTAssertThrowsError(try AskMishTools.decodeArguments("42"))
+    }
+
+    func testDecodeArgumentsProducesDispatcherValues() throws {
+        let args = try AskMishTools.decodeArguments(
+            #"{"query":"acme","limit":10,"unread_only":true,"to":["a@b.com"]}"#)
+        XCTAssertEqual(args["query"], .string("acme"))
+        XCTAssertEqual(args["limit"], .int(10))
+        XCTAssertEqual(args["unread_only"], .bool(true))
+        XCTAssertEqual(args["to"], .array([.string("a@b.com")]))
+    }
+
+    /// No-arg tools (list_accounts) arrive with an empty or missing argument
+    /// blob from some providers; that means "no arguments", not a parse error.
+    func testDecodeArgumentsAcceptsEmptyInput() throws {
+        XCTAssertEqual(try AskMishTools.decodeArguments(""), [:])
+        XCTAssertEqual(try AskMishTools.decodeArguments("   "), [:])
+        XCTAssertEqual(try AskMishTools.decodeArguments("{}"), [:])
+    }
+
+    func testConfirmSummaryNamesTheAction() {
+        let summary = AskMishTools.confirmSummary(
+            toolName: "create_draft",
+            argumentsJSON: #"{"account":"a@b.com","to":["c@d.com"],"subject":"Hello","body":"x"}"#)
+        XCTAssertTrue(summary.contains("c@d.com"))
+        XCTAssertTrue(summary.contains("Hello"))
+    }
+
+    func testConfirmSummaryCoversEveryWriteTool() {
+        let cases: [(String, String, [String])] = [
+            ("send_draft", #"{"draft_id":"acct:1234"}"#, ["Send", "acct:1234"]),
+            ("set_thread_summary",
+             #"{"thread_id":"a:t1","summary":"s","model":"m"}"#, ["a:t1"]),
+            ("clear_thread_summary", #"{"thread_id":"a:t1"}"#, ["a:t1"]),
+            ("add_vip", #"{"email":"v@x.com"}"#, ["v@x.com"]),
+            ("add_vips", #"{"emails":["v@x.com","w@x.com"]}"#, ["v@x.com"]),
+            ("set_vip_groups",
+             #"{"email":"v@x.com","groups":["Team"]}"#, ["v@x.com", "Team"]),
+            ("remove_vip", #"{"email":"v@x.com"}"#, ["v@x.com"]),
+        ]
+        for (name, json, needles) in cases {
+            let summary = AskMishTools.confirmSummary(toolName: name, argumentsJSON: json)
+            XCTAssertFalse(summary.isEmpty, name)
+            for needle in needles {
+                XCTAssertTrue(summary.contains(needle), "\(name) missing \(needle): \(summary)")
+            }
+        }
+    }
+
+    /// Bad JSON must still produce a card line — never an empty confirm.
+    func testConfirmSummaryToleratesBadArguments() {
+        let summary = AskMishTools.confirmSummary(toolName: "add_vip", argumentsJSON: "not json")
+        XCTAssertFalse(summary.isEmpty)
+        XCTAssertTrue(summary.contains("add_vip"))
+    }
+
+    /// The Ask Mish executor reuses the MCP dispatcher, so it must be callable.
+    func testDispatchIsReachableFromAskMish() async throws {
+        let tools = StubToolProvider()
+        let text = try await MCPRouter.dispatch(
+            name: "search_threads", args: ["query": .string("acme")], tools: tools)
+        XCTAssertEqual(text, "searched:acme")
+    }
+
+    func testDispatchRejectsUnknownTool() async {
+        do {
+            _ = try await MCPRouter.dispatch(name: "nope", args: [:], tools: StubToolProvider())
+            XCTFail("expected throw")
+        } catch let error as MCPRouter.ToolDispatchError {
+            guard case .unknownTool = error else {
+                return XCTFail("expected unknownTool, got \(error)")
+            }
+        } catch {
+            XCTFail("expected ToolDispatchError, got \(error)")
+        }
+    }
+}
+
+/// Minimal provider for the dispatch-visibility check.
+private struct StubToolProvider: MCPToolProvider {
+    func listAccounts() async throws -> String { "[]" }
+    func listThreads(mailbox: String, unreadOnly: Bool?, limit: Int, offset: Int,
+                     account: String?) async throws -> String { "[]" }
+    func searchThreads(query: String, limit: Int, offset: Int) async throws -> String {
+        "searched:\(query)"
+    }
+    func getThread(threadId: String) async throws -> String { "" }
+    func listDrafts(account: String?) async throws -> String { "[]" }
+    func createDraft(account: String, to: [String], cc: [String]?, bcc: [String]?,
+                     subject: String, body: String,
+                     replyToThreadId: String?) async throws -> String { "{}" }
+    func setThreadSummary(threadId: String, summary: String,
+                          model: String) async throws -> String { "{}" }
+    func clearThreadSummary(threadId: String) async throws -> String { "{}" }
+    func listVIPs() async throws -> String { "[]" }
+    func addVIP(email: String, group: String?, groups: [String]?) async throws -> String { "{}" }
+    func addVIPs(emails: [String], group: String?, groups: [String]?) async throws -> String { "{}" }
+    func setVIPGroups(email: String, groups: [String]) async throws -> String { "{}" }
+    func removeVIP(email: String) async throws -> String { "{}" }
+}

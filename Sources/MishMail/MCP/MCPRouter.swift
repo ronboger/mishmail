@@ -112,13 +112,20 @@ enum MCPRouter {
         }
     }
 
-    private enum ToolDispatchError: Error {
+    /// Argument / lookup failures raised by `dispatch`. Internal so the
+    /// Ask Mish executor can map them onto chat tool results.
+    enum ToolDispatchError: Error {
         case unknownTool
         case invalidParams(String)
         case execution(String)
     }
 
-    private static func dispatch(
+    /// One tool call, decoded args in, text result out.
+    ///
+    /// Internal (not private) on purpose: the Ask Mish panel runs its tool
+    /// calls through this exact function, so in-app chat and external MCP
+    /// clients share one implementation.
+    static func dispatch(
         name: String,
         args: [String: JSONValue],
         tools: any MCPToolProvider
