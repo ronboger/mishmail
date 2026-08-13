@@ -126,7 +126,11 @@ actor LLMClient {
             body = try OllamaChatWire.requestBody(model: model, messages: messages, tools: tools)
         }
         guard let url = URL(string: path) else { throw LLMClientError.http(0) }
-        try LLMEndpoint.validate(url)
+        if config.kind == .ollama {
+            try Ollama.validateEndpoint(url)
+        } else {
+            try LLMEndpoint.validate(url)
+        }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.timeoutInterval = 300
@@ -227,7 +231,11 @@ actor LLMClient {
                                allowRefresh: Bool) async throws -> [String] {
         let path = LLMEndpoint.modelsPath(kind: config.kind, base: config.baseURL)
         guard let url = URL(string: path) else { throw LLMClientError.http(0) }
-        try LLMEndpoint.validate(url)
+        if config.kind == .ollama {
+            try Ollama.validateEndpoint(url)
+        } else {
+            try LLMEndpoint.validate(url)
+        }
         var request = URLRequest(url: url)
         try applyAuth(to: &request, config: config)
         let (data, response) = try await URLSession.shared.data(for: request)
