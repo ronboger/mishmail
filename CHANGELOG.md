@@ -1,5 +1,10 @@
 # Changelog
 
+- **Compose links now read naturally** — links with display text render as the
+  blue underlined label in the editor; MishMail no longer exposes the backing
+  `[label](URL)` syntax while drafting. Draft storage, ⌘K editing, and sent HTML
+  remain unchanged.
+
 All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.

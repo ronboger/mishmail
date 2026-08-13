@@ -12,8 +12,18 @@ enum ComposeLinks {
     struct MarkdownLink: Equatable {
         /// Full span including brackets and parentheses.
         let range: Range<String.Index>
+        /// Just the human-readable label inside the opening brackets.
+        let textRange: Range<String.Index>
         let text: String
         let url: String
+    }
+
+    /// How one link should appear in the compose editor. Markdown remains in
+    /// the backing `String` for draft/send compatibility, while the editor can
+    /// render only `visibleRange` and collapse the source-only syntax ranges.
+    struct EditorPresentation: Equatable {
+        let visibleRange: NSRange
+        let concealedRanges: [NSRange]
     }
 
     // MARK: - URL normalization
@@ -99,12 +109,40 @@ enum ComposeLinks {
         return normalizeURL(trimmed)
     }
 
-    /// UTF-16 ranges the compose highlighter should paint as hyperlinks:
-    /// markdown `[label](url)` spans **and** bare URLs/hosts that
-    /// `htmlFragment` would turn into anchors. Single source of truth so
-    /// editor blue matches send-time linkify without wrapping as `[url](url)`.
+    /// Editor-facing link spans. A Markdown link presents only its label and
+    /// conceals `[` plus `](url)`; bare URLs remain visible in full. This keeps
+    /// the persisted plain-text source unchanged while compose reads like a
+    /// normal rich-text email.
+    static func editorPresentations(in body: String) -> [EditorPresentation] {
+        let markdown = markdownLinks(in: body)
+        var occupied = markdown.map(\.range)
+        var result = markdown.map { link in
+            let prefix = link.range.lowerBound..<link.textRange.lowerBound
+            let suffix = link.textRange.upperBound..<link.range.upperBound
+            return EditorPresentation(
+                visibleRange: nsRange(of: link.textRange, in: body),
+                concealedRanges: [
+                    nsRange(of: prefix, in: body),
+                    nsRange(of: suffix, in: body),
+                ].filter { $0.length > 0 })
+        }
+
+        for match in bareURLMatches(in: body) {
+            guard !occupied.contains(where: { rangesOverlap($0, match.range) }) else {
+                continue
+            }
+            result.append(EditorPresentation(
+                visibleRange: nsRange(of: match.range, in: body),
+                concealedRanges: []))
+            occupied.append(match.range)
+        }
+        return result.sorted { $0.visibleRange.location < $1.visibleRange.location }
+    }
+
+    /// UTF-16 ranges painted as hyperlinks (labels for Markdown links, entire
+    /// spans for bare URLs/hosts).
     static func editorLinkStyleRanges(in body: String) -> [NSRange] {
-        nonOverlappingLinkSpans(in: body).map { nsRange(of: $0.range, in: body) }
+        editorPresentations(in: body).map(\.visibleRange)
     }
 
     /// ⌘K decision when the selection is already a bare URL/email.
@@ -403,6 +441,7 @@ enum ComposeLinks {
             // Only keep schemes we'd emit as hrefs (or scheme-less hosts).
             guard normalizeURL(url) != nil else { return nil }
             return MarkdownLink(range: fullRange,
+                                textRange: textRange,
                                 text: String(body[textRange]),
                                 url: url)
         }
