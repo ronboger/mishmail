@@ -25,6 +25,12 @@
 # launch the test app via `make run`; only the real /Applications app is indexed.
 # `make clean` reclaims it all.
 
+# xcodebuild folds the caller's PATH into its task signatures: a different
+# PATH re-runs every Ld and CodeSign task, so builds from different shells
+# (conda vs plain vs an agent) endlessly invalidate each other's incremental
+# state. Pin PATH so every shell produces the same build graph.
+export PATH := /opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+
 PROJECT = MishMail.xcodeproj
 # Single source of truth for the version: MARKETING_VERSION in project.yml.
 # First match only — the app's. Without `exit`, a MARKETING_VERSION on any
@@ -88,7 +94,10 @@ gen:
 		ln -s "$$main_root/Config/Local.xcconfig" Config/Local.xcconfig; \
 		echo "Linked Config/Local.xcconfig from $$main_root (stable signing identity)"; \
 	fi
-	xcodegen generate
+	@# --use-cache: skip rewriting the .xcodeproj when project.yml is unchanged.
+	@# An unconditional rewrite dirties the project file and forces xcodebuild
+	@# into a full rebuild on every make invocation.
+	xcodegen generate --use-cache
 
 test: gen
 	# No -quiet: show "Executed N tests" (silent pass looked like a no-op).
