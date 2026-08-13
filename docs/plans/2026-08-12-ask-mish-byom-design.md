@@ -182,6 +182,14 @@ closes) keeps the partial text and marks the turn interrupted.
 - **Inline AI edits:** compose selection gains Rewrite / Shorten / Change
   tone actions that stream a replacement for the selected text through the
   Drafts task model. Reuses `draftWithAI`'s streaming-into-editor plumbing.
+- **Quick-reply chips:** the thread detail view offers up to three short
+  reply suggestions for the latest inbound message (e.g. "Interested",
+  "Need more details"). One model call per selected thread, on demand (a
+  small "Suggest replies" affordance near the reply box — not automatic,
+  to avoid background token spend). Tapping a chip opens compose with the
+  suggestion expanded into a full draft in the user's voice, using the
+  Drafts task model. Chip generation uses the Triage task model (cheap).
+  Pure suggestion parsing/validation lives in `Support/` with tests.
 - `Ollama.swift`'s public surface stays until all call sites move; then the
   prompt statics are deleted.
 
