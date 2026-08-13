@@ -54,8 +54,7 @@ struct ComposeView: View {
     @State private var bodyCaretUTF16 = 0
     /// UTF-16 body selection, mirrored from the live NSTextView so inline AI
     /// edits can be enabled only when there is text to replace.
-    @State private var bodySelectionLocation = 0
-    @State private var bodySelectionLength = 0
+    @State private var bodySelection = NSRange(location: 0, length: 0)
     /// Local keyDown monitor that steals ↑/↓/Return/Tab/Esc while the `/`
     /// picker is up — the NSTextView behind TextEditor consumes those keys
     /// before SwiftUI's onKeyPress ever sees them.
@@ -292,9 +291,14 @@ struct ComposeView: View {
     /// goes through here so ComposeBodyEditor's rewrite path never teleports
     /// the caret to a stale `caretUTF16` left over from a prior edit.
     private func setBody(_ newBody: String, caretUTF16: Int) {
-        body_ = newBody
         let maxLen = (newBody as NSString).length
-        bodyCaretUTF16 = max(0, min(caretUTF16, maxLen))
+        let caret = max(0, min(caretUTF16, maxLen))
+        body_ = newBody
+        bodyCaretUTF16 = caret
+        let nextSelection = NSRange(location: caret, length: 0)
+        if bodySelection != nextSelection {
+            bodySelection = nextSelection
+        }
     }
 
     /// Content the user actually authored (quoted/reply prefill doesn't count).
@@ -603,14 +607,6 @@ struct ComposeView: View {
         // Publish `/` picker visibility for ContentView's Esc ladder (explicit
         // gate — local monitors fire FIFO and must not rely on order).
         .onChange(of: slashActive) { store.slashPickerVisible = slashActive }
-        .onReceive(NotificationCenter.default.publisher(
-            for: NSTextView.didChangeSelectionNotification)) { notification in
-            guard let textView = notification.object as? ComposeBodyTextView,
-                  textView.string == body_ else { return }
-            let selection = textView.selectedRange()
-            bodySelectionLocation = selection.location
-            bodySelectionLength = selection.length
-        }
         .onChange(of: store.slashPickerDismissToken) {
             slashDismissed = true
             store.slashPickerVisible = false
@@ -1005,6 +1001,7 @@ struct ComposeView: View {
             // a thread; Tab (via slashKeyMonitor) commits it into the body.
             ComposeBodyEditor(text: $body_, isFocused: $bodyFocused,
                               caretUTF16: $bodyCaretUTF16,
+                              selection: $bodySelection,
                               ghostText: greetingGhostText,
                               formatTarget: formatTarget, fontSize: 14,
                               onFilesDropped: { ingestDroppedFiles($0) })
@@ -1226,7 +1223,7 @@ struct ComposeView: View {
                                 }
                             }
                         } label: {
-                            Image(systemName: "sparkles")
+                            Image(systemName: aiEditSystemImage)
                                 .font(.system(size: 12, weight: .medium))
                                 .foregroundStyle(.secondary)
                                 .frame(width: 24, height: 22)
@@ -1238,7 +1235,8 @@ struct ComposeView: View {
                         .fixedSize()
                         .help("Edit selection with AI")
                         .accessibilityLabel("AI edit")
-                        .disabled(drafting || bodySelectionLength == 0)
+                        .accessibilityIdentifier("compose.aiEdit")
+                        .disabled(drafting || bodySelection.length == 0)
                     }
 
                     // Markdown format strip (bold/italic/headers/math…). Link is
@@ -1710,28 +1708,19 @@ struct ComposeView: View {
                     }
                 }
             } catch {
-                await MainActor.run {
-                    if let llmError = error as? LLMClientError,
-                       case .missingCredential = llmError {
-                        self.error = "No model configured for drafts. Check Settings → AI."
-                    } else {
-                        self.error = error.localizedDescription
-                    }
-                }
+                await MainActor.run { self.error = self.llmErrorMessage(error) }
             }
             await MainActor.run { drafting = false }
         }
     }
 
     /// The current body selection, preferring the live editor over the last
-    /// notification-backed snapshot because a toolbar/menu click can move
-    /// first responder before its selection notification is delivered.
+    /// coordinator-published snapshot because a toolbar/menu click can move
+    /// first responder before its selection callback is delivered.
     private func currentBodySelection() -> NSRange? {
         let nsBody = body_ as NSString
-        var selection = NSRange(location: bodySelectionLocation,
-                                 length: bodySelectionLength)
-        if let textView = NSApp.keyWindow?.firstResponder as? ComposeBodyTextView,
-           textView.string == body_ {
+        var selection = bodySelection
+        if let textView = NSApp.keyWindow?.firstResponder as? ComposeBodyTextView {
             selection = textView.selectedRange()
         }
         guard selection.location != NSNotFound,
@@ -1754,17 +1743,17 @@ struct ComposeView: View {
         let prefix = source.substring(to: selection.location)
         let suffix = source.substring(from: selection.location + selection.length)
         let insertionLocation = selection.location
+        let originalBody = prefix + selectedText + suffix
+        let originalCaret = insertionLocation + (selectedText as NSString).length
 
         setBody(prefix + suffix, caretUTF16: insertionLocation)
-        bodySelectionLocation = insertionLocation
-        bodySelectionLength = 0
         bodyFocused = true
         drafting = true
         error = nil
 
         Task {
+            var accumulated = ""
             do {
-                var accumulated = ""
                 for try await piece in LLMTaskRunner.stream(task: .drafts, prompt: prompt) {
                     accumulated += piece
                     let snapshot = accumulated
@@ -1773,18 +1762,40 @@ struct ComposeView: View {
                                 caretUTF16: insertionLocation + (snapshot as NSString).length)
                     }
                 }
+                if accumulated.isEmpty {
+                    await MainActor.run {
+                        // Empty successful streams are failures too: do not
+                        // leave the user's selection deleted without undo.
+                        setBody(originalBody, caretUTF16: originalCaret)
+                        self.error = "The model returned no replacement."
+                    }
+                }
             } catch {
                 await MainActor.run {
-                    if let llmError = error as? LLMClientError,
-                       case .missingCredential = llmError {
-                        self.error = "No model configured for drafts. Check Settings → AI."
-                    } else {
-                        self.error = error.localizedDescription
+                    if accumulated.isEmpty {
+                        // Restore before presenting the provider error. Partial
+                        // replacements remain intact when a later token fails.
+                        setBody(originalBody, caretUTF16: originalCaret)
                     }
+                    self.error = self.llmErrorMessage(error)
                 }
             }
             await MainActor.run { drafting = false }
         }
+    }
+
+    private func llmErrorMessage(_ error: Error) -> String {
+        if let llmError = error as? LLMClientError,
+           case .missingCredential = llmError {
+            return "No model configured for drafts. Check Settings → AI."
+        }
+        return error.localizedDescription
+    }
+
+    private var aiEditSystemImage: String {
+        NSImage(systemSymbolName: "wand.and.sparkles", accessibilityDescription: nil) != nil
+            ? "wand.and.sparkles"
+            : "character.cursor.ibeam"
     }
 
     /// Where the quoted original starts (reply/forward), or the end of the

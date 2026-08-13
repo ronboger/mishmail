@@ -24,6 +24,8 @@ struct ComposeBodyEditor: NSViewRepresentable {
     /// compose's `/` snippet trigger so the token ends at the caret, not the
     /// end of the body — multi-snippet and mid-message `/` depend on this.
     @Binding var caretUTF16: Int
+    /// UTF-16 body selection, published only for user-driven selection changes.
+    @Binding var selection: NSRange
     /// Gmail-style grey suffix drawn after the caret (greeting autocomplete).
     /// Not part of the model string — Tab in ComposeView commits it.
     var ghostText: String = ""
@@ -35,6 +37,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, isFocused: $isFocused, caretUTF16: $caretUTF16,
+                    selection: $selection,
                     formatTarget: formatTarget, onFilesDropped: onFilesDropped)
     }
 
@@ -75,7 +78,11 @@ struct ComposeBodyEditor: NSViewRepresentable {
         textView.minSize = .zero
         textView.maxSize = NSSize(width: CGFloat.greatestFiniteMagnitude,
                                   height: CGFloat.greatestFiniteMagnitude)
+        // Initial population is also programmatic: setting the string can
+        // synchronously emit text/selection callbacks before the view mounts.
+        context.coordinator.isProgrammaticUpdate = true
         textView.string = text
+        context.coordinator.isProgrammaticUpdate = false
         textView.onFormat = { [weak coord = context.coordinator] action in
             coord?.apply(action)
         }
@@ -170,6 +177,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
         var text: Binding<String>
         var isFocused: Binding<Bool>
         var caretUTF16: Binding<Int>
+        var selection: Binding<NSRange>
         var formatTarget: ComposeBodyFormatTarget?
         var onFilesDropped: (([URL]) -> Void)?
         weak var textView: ComposeBodyTextView?
@@ -181,11 +189,13 @@ struct ComposeBodyEditor: NSViewRepresentable {
 
         init(text: Binding<String>, isFocused: Binding<Bool>,
              caretUTF16: Binding<Int>,
+             selection: Binding<NSRange>,
              formatTarget: ComposeBodyFormatTarget?,
              onFilesDropped: (([URL]) -> Void)?) {
             self.text = text
             self.isFocused = isFocused
             self.caretUTF16 = caretUTF16
+            self.selection = selection
             self.formatTarget = formatTarget
             self.onFilesDropped = onFilesDropped
         }
@@ -204,6 +214,16 @@ struct ComposeBodyEditor: NSViewRepresentable {
             }
         }
 
+        private func publishSelection(_ textView: NSTextView) {
+            // Selection callbacks fire synchronously during updateNSView's
+            // string/setSelectedRange rewrite; never publish state mid-update.
+            guard !isProgrammaticUpdate else { return }
+            let range = textView.selectedRange()
+            if selection.wrappedValue != range {
+                selection.wrappedValue = range
+            }
+        }
+
         func textDidChange(_ notification: Notification) {
             guard let textView = notification.object as? NSTextView else { return }
             // textDidChange also fires for some programmatic edits; skip the
@@ -213,6 +233,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
                 text.wrappedValue = textView.string
             }
             publishCaret(textView)
+            publishSelection(textView)
             Self.highlight(textView, fontSize: fontSize)
             // Ghost is drawn outside the text system — force a full body
             // redraw after every edit so deleted glyphs + old ghost suffix
@@ -224,8 +245,10 @@ struct ComposeBodyEditor: NSViewRepresentable {
         }
 
         func textViewDidChangeSelection(_ notification: Notification) {
-            guard let textView = notification.object as? NSTextView else { return }
+            guard let textView = notification.object as? ComposeBodyTextView,
+                  textView === self.textView else { return }
             publishCaret(textView)
+            publishSelection(textView)
             // Selection moves the ghost anchor (or hides it when length > 0).
             // Property `ghostText` may be unchanged, so didSet won't redraw.
             if let body = textView as? ComposeBodyTextView {
