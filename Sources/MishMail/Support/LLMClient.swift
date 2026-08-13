@@ -209,7 +209,7 @@ actor LLMClient {
         guard let refreshToken = tokens.refreshToken, !refreshToken.isEmpty
         else { throw LLMClientError.missingCredential }
         let form = LLMOAuth.refreshRequestForm(vendor: vendor, refreshToken: refreshToken)
-        let data = try await Self.postForm(LLMOAuth.constants(for: vendor).tokenURL, form)
+        let data = try await Self.postToken(vendor: vendor, form)
         var merged = try LLMOAuth.parseTokens(from: data, now: Date())
         if merged.refreshToken?.isEmpty ?? true { merged.refreshToken = refreshToken }
         let encoded = try JSONEncoder().encode(merged)
@@ -249,17 +249,48 @@ actor LLMClient {
     }
 
     static func postForm(_ urlString: String, _ form: [String: String]) async throws -> Data {
+        let (status, data) = try await postFormRaw(urlString, form)
+        guard (200..<300).contains(status) else { throw LLMClientError.http(status) }
+        return data
+    }
+
+    /// Form POST that also returns error bodies, for device-code polling where
+    /// "authorization_pending" arrives as a 4xx with a JSON body.
+    static func postFormRaw(_ urlString: String,
+                            _ form: [String: String]) async throws -> (Int, Data) {
         guard let url = URL(string: urlString) else { throw LLMClientError.http(0) }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
         request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
         var components = URLComponents()
         components.queryItems = form.map { URLQueryItem(name: $0.key, value: $0.value) }
         request.httpBody = Data((components.percentEncodedQuery ?? "").utf8)
         let (data, response) = try await URLSession.shared.data(for: request)
+        return ((response as? HTTPURLResponse)?.statusCode ?? 0, data)
+    }
+
+    /// Anthropic's OAuth token endpoint takes JSON, not a urlencoded form.
+    static func postJSON(_ urlString: String, _ body: [String: String]) async throws -> Data {
+        guard let url = URL(string: urlString) else { throw LLMClientError.http(0) }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.setValue("application/json", forHTTPHeaderField: "Accept")
+        request.httpBody = try JSONEncoder().encode(body)
+        let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         guard (200..<300).contains(status) else { throw LLMClientError.http(status) }
         return data
+    }
+
+    /// Token-endpoint POST in whichever encoding the vendor requires.
+    static func postToken(vendor: LLMOAuthVendor, _ form: [String: String]) async throws -> Data {
+        let constants = LLMOAuth.constants(for: vendor)
+        if constants.tokenBodyIsJSON {
+            return try await postJSON(constants.tokenURL, form)
+        }
+        return try await postForm(constants.tokenURL, form)
     }
 }
 
@@ -280,9 +311,16 @@ enum LLMOAuthFlowError: LocalizedError {
 /// same listener the Google OAuth flow uses. Stores tokens in the Keychain.
 @MainActor
 enum LLMOAuthFlow {
-    static func signIn(vendor: LLMOAuthVendor, providerID: UUID) async throws {
+    /// `onUserCode` fires for device-code vendors (Grok) so the UI can show
+    /// the code the user must confirm in the browser.
+    static func signIn(vendor: LLMOAuthVendor, providerID: UUID,
+                       onUserCode: ((String, String) -> Void)? = nil) async throws {
         guard OAuthConfig.usesKeychain(environment: ProcessInfo.processInfo.environment) else {
             throw LLMClientError.keychainUnavailable
+        }
+        if vendor == .grok {
+            return try await signInDeviceCode(vendor: vendor, providerID: providerID,
+                                              onUserCode: onUserCode)
         }
         let constants = LLMOAuth.constants(for: vendor)
         let pkce = LLMOAuth.PKCE.generate()
@@ -310,10 +348,58 @@ enum LLMOAuthFlow {
             throw LLMOAuthFlowError.signInUnavailable(
                 vendor: Self.name(of: vendor), reason: error.localizedDescription)
         }
-        let form = LLMOAuth.tokenRequestForm(vendor: vendor, code: code,
+        let form = LLMOAuth.tokenRequestForm(vendor: vendor, code: code, state: state,
                                              verifier: pkce.verifier, redirectURI: redirectURI)
-        let data = try await LLMClient.postForm(constants.tokenURL, form)
-        let tokens = try LLMOAuth.parseTokens(from: data, now: Date())
+        let data = try await LLMClient.postToken(vendor: vendor, form)
+        try store(tokenData: data, providerID: providerID)
+    }
+
+    /// RFC 8628 device-code sign-in (Grok): show a code, open the browser,
+    /// poll the token endpoint until the user confirms.
+    private static func signInDeviceCode(vendor: LLMOAuthVendor, providerID: UUID,
+                                         onUserCode: ((String, String) -> Void)?) async throws {
+        let constants = LLMOAuth.constants(for: vendor)
+        let device: LLMOAuth.DeviceCode
+        do {
+            let data = try await LLMClient.postForm(
+                constants.authorizeURL, LLMOAuth.deviceCodeRequestForm(vendor: vendor))
+            device = try LLMOAuth.parseDeviceCode(from: data)
+        } catch {
+            throw LLMOAuthFlowError.signInUnavailable(
+                vendor: name(of: vendor), reason: error.localizedDescription)
+        }
+        let verificationURI = device.verificationURIComplete ?? device.verificationURI
+        onUserCode?(device.userCode, verificationURI)
+        if let url = URL(string: verificationURI), url.scheme == "https" {
+            NSWorkspace.shared.open(url)
+        }
+        var interval = device.intervalSeconds
+        let deadline = Date().addingTimeInterval(TimeInterval(device.expiresInSeconds))
+        while Date() < deadline {
+            try await Task.sleep(nanoseconds: UInt64(interval) * 1_000_000_000)
+            let (status, data) = try await LLMClient.postFormRaw(
+                constants.tokenURL,
+                LLMOAuth.devicePollForm(vendor: vendor, deviceCode: device.deviceCode))
+            switch LLMOAuth.classifyDevicePoll(status: status, data: data, now: Date()) {
+            case .tokens(let tokens):
+                let encoded = try JSONEncoder().encode(tokens)
+                try Keychain.set(String(decoding: encoded, as: UTF8.self),
+                                 forKey: LLMProviderStore.oauthKeychainKey(for: providerID))
+                return
+            case .pending:
+                continue
+            case .slowDown(let seconds):
+                interval = seconds ?? (interval + 5)
+            case .failed(let reason):
+                throw LLMOAuthFlowError.signInUnavailable(vendor: name(of: vendor), reason: reason)
+            }
+        }
+        throw LLMOAuthFlowError.signInUnavailable(
+            vendor: name(of: vendor), reason: "device code expired before the sign-in finished")
+    }
+
+    private static func store(tokenData: Data, providerID: UUID) throws {
+        let tokens = try LLMOAuth.parseTokens(from: tokenData, now: Date())
         let encoded = try JSONEncoder().encode(tokens)
         try Keychain.set(String(decoding: encoded, as: UTF8.self),
                          forKey: LLMProviderStore.oauthKeychainKey(for: providerID))
@@ -323,6 +409,7 @@ enum LLMOAuthFlow {
         switch vendor {
         case .claude: return "Claude"
         case .chatGPT: return "ChatGPT"
+        case .grok: return "Grok"
         }
     }
 }

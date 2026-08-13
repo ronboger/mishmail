@@ -1,9 +1,10 @@
 import CryptoKit
 import Foundation
 
-/// Subscription OAuth for LLM providers (sign in with Claude / ChatGPT),
+/// Subscription OAuth for LLM providers (sign in with Claude / ChatGPT / Grok),
 /// the way the Aside browser does it. Pure: URL/form/JSON math only.
-/// The loopback listener and browser hand-off live in LLMOAuthFlow.
+/// The loopback listener, device-code polling, and browser hand-off live in
+/// LLMOAuthFlow.
 enum LLMOAuth {
     struct Constants {
         let authorizeURL: String
@@ -13,26 +14,36 @@ enum LLMOAuth {
         let redirectPath: String
         /// Host the vendor registered for the loopback redirect. Vendors match
         /// the redirect URI as an exact string, so "localhost" and "127.0.0.1"
-        /// are not interchangeable.
+        /// are not interchangeable. The listener always binds 127.0.0.1.
         let redirectHost: String
         /// Port the vendor registered, or nil when any ephemeral port works.
         let fixedPort: UInt16?
+        /// Vendor-specific authorize query additions (e.g. Anthropic's
+        /// "code=true", Codex's simplified-flow switches).
+        let extraAuthorizeParams: [(String, String)]
+        /// Anthropic's token endpoint takes JSON (with the state echoed back);
+        /// everyone else takes a classic urlencoded form.
+        let tokenBodyIsJSON: Bool
     }
 
-    /// Publicly known Claude Code / Codex CLI flow constants. Verified at
-    /// implementation time; if a vendor changes them, sign-in fails softly
-    /// and the UI falls back to API-key mode.
+    /// Publicly known Claude Code / Codex CLI / Grok CLI flow constants,
+    /// verified against the Aside daemon at implementation time. If a vendor
+    /// changes them, sign-in fails softly and the UI falls back to API-key mode.
     static func constants(for vendor: LLMOAuthVendor) -> Constants {
         switch vendor {
         case .claude:
+            // Registered redirect is exactly http://localhost:53692/callback.
             return Constants(
                 authorizeURL: "https://claude.ai/oauth/authorize",
-                tokenURL: "https://console.anthropic.com/v1/oauth/token",
+                tokenURL: "https://platform.claude.com/v1/oauth/token",
                 clientID: "9d1c250a-e61b-44d9-88ed-5944d1962f5e",
-                scopes: "org:create_api_key user:profile user:inference",
+                scopes: "org:create_api_key user:profile user:inference"
+                    + " user:sessions:claude_code user:mcp_servers user:file_upload",
                 redirectPath: "/callback",
-                redirectHost: "127.0.0.1",
-                fixedPort: nil)
+                redirectHost: "localhost",
+                fixedPort: 53692,
+                extraAuthorizeParams: [("code", "true")],
+                tokenBodyIsJSON: true)
         case .chatGPT:
             // The Codex CLI client registers exactly one redirect URI:
             // http://localhost:1455/auth/callback. Any other host, port, or
@@ -44,7 +55,27 @@ enum LLMOAuth {
                 scopes: "openid profile email offline_access",
                 redirectPath: "/auth/callback",
                 redirectHost: "localhost",
-                fixedPort: 1455)
+                fixedPort: 1455,
+                extraAuthorizeParams: [
+                    ("id_token_add_organizations", "true"),
+                    ("codex_cli_simplified_flow", "true"),
+                    ("originator", "codex_cli_rs"),
+                ],
+                tokenBodyIsJSON: false)
+        case .grok:
+            // Grok uses the RFC 8628 device-code flow: no browser redirect,
+            // so authorizeURL is the device-code endpoint and redirect fields
+            // are unused.
+            return Constants(
+                authorizeURL: "https://auth.x.ai/oauth2/device/code",
+                tokenURL: "https://auth.x.ai/oauth2/token",
+                clientID: "b1a00492-073a-47ea-816f-4c329264a828",
+                scopes: "openid profile email offline_access grok-cli:access api:access",
+                redirectPath: "",
+                redirectHost: "",
+                fixedPort: nil,
+                extraAuthorizeParams: [],
+                tokenBodyIsJSON: false)
         }
     }
 
@@ -94,17 +125,23 @@ enum LLMOAuth {
             URLQueryItem(name: "state", value: state),
             URLQueryItem(name: "code_challenge", value: challenge),
             URLQueryItem(name: "code_challenge_method", value: "S256"),
-        ]
+        ] + constants.extraAuthorizeParams.map { URLQueryItem(name: $0.0, value: $0.1) }
         return components.url!
     }
 
-    static func tokenRequestForm(vendor: LLMOAuthVendor, code: String,
+    /// Authorization-code exchange body. Anthropic requires the state echoed
+    /// back inside a JSON body; OpenAI takes a urlencoded form without state.
+    static func tokenRequestForm(vendor: LLMOAuthVendor, code: String, state: String,
                                  verifier: String, redirectURI: String) -> [String: String] {
-        ["grant_type": "authorization_code",
-         "code": code,
-         "code_verifier": verifier,
-         "redirect_uri": redirectURI,
-         "client_id": constants(for: vendor).clientID]
+        var form = [
+            "grant_type": "authorization_code",
+            "code": code,
+            "code_verifier": verifier,
+            "redirect_uri": redirectURI,
+            "client_id": constants(for: vendor).clientID,
+        ]
+        if constants(for: vendor).tokenBodyIsJSON { form["state"] = state }
+        return form
     }
 
     static func refreshRequestForm(vendor: LLMOAuthVendor,
@@ -125,6 +162,72 @@ enum LLMOAuth {
             accessToken: response.access_token,
             refreshToken: response.refresh_token,
             expiresAt: now.addingTimeInterval(TimeInterval(response.expires_in ?? 3600)))
+    }
+
+    // MARK: - Grok device-code flow (RFC 8628)
+
+    struct DeviceCode: Equatable, Sendable {
+        var deviceCode: String
+        var userCode: String
+        var verificationURI: String
+        /// URI with the user code embedded, when the vendor sends one.
+        var verificationURIComplete: String?
+        var intervalSeconds: Int
+        var expiresInSeconds: Int
+    }
+
+    static func deviceCodeRequestForm(vendor: LLMOAuthVendor) -> [String: String] {
+        let constants = constants(for: vendor)
+        return ["client_id": constants.clientID, "scope": constants.scopes]
+    }
+
+    static func parseDeviceCode(from data: Data) throws -> DeviceCode {
+        struct Response: Decodable {
+            let device_code: String
+            let user_code: String
+            let verification_uri: String
+            let verification_uri_complete: String?
+            let interval: Int?
+            let expires_in: Int
+        }
+        let response = try JSONDecoder().decode(Response.self, from: data)
+        return DeviceCode(
+            deviceCode: response.device_code,
+            userCode: response.user_code,
+            verificationURI: response.verification_uri,
+            verificationURIComplete: response.verification_uri_complete,
+            intervalSeconds: max(response.interval ?? 5, 1),
+            expiresInSeconds: response.expires_in)
+    }
+
+    static func devicePollForm(vendor: LLMOAuthVendor, deviceCode: String) -> [String: String] {
+        ["grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+         "client_id": constants(for: vendor).clientID,
+         "device_code": deviceCode]
+    }
+
+    /// One poll outcome, decided from the HTTP status and the OAuth `error`
+    /// field the vendor sends while authorization is still pending.
+    enum DevicePollResult: Equatable, Sendable {
+        case tokens(LLMOAuthTokens)
+        case pending
+        case slowDown(intervalSeconds: Int?)
+        case failed(String)
+    }
+
+    static func classifyDevicePoll(status: Int, data: Data, now: Date) -> DevicePollResult {
+        if (200..<300).contains(status), let tokens = try? parseTokens(from: data, now: now) {
+            return .tokens(tokens)
+        }
+        struct ErrorBody: Decodable { let error: String?; let interval: Int? }
+        let body = (try? JSONDecoder().decode(ErrorBody.self, from: data)) ?? ErrorBody(error: nil, interval: nil)
+        switch body.error {
+        case "authorization_pending": return .pending
+        case "slow_down": return .slowDown(intervalSeconds: body.interval)
+        case "access_denied", "authorization_denied": return .failed("authorization was denied")
+        case "expired_token": return .failed("device code expired")
+        default: return .failed("device token polling failed (HTTP \(status))")
+        }
     }
 }
 

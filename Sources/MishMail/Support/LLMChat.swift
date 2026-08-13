@@ -12,6 +12,7 @@ enum LLMProviderKind: String, Codable, CaseIterable, Sendable {
 enum LLMOAuthVendor: String, Codable, Sendable {
     case claude
     case chatGPT
+    case grok
 }
 
 enum LLMAuthMode: Codable, Equatable, Sendable {
