@@ -1971,9 +1971,9 @@ struct ComposeRequest: Identifiable {
     /// account primaries plus send-as aliases (so replying to own mail as an
     /// alias doesn't put that alias in To).
     var ownEmailAddresses: Set<String> {
-        var set = Set(accounts.map { $0.id.lowercased() })
-        for id in sendIdentities { set.insert(id.email.lowercased()) }
-        return set
+        ContactMiner.ownAddresses(
+            accountIds: accounts.map(\.id),
+            aliasEmails: sendIdentities.map(\.email))
     }
 
     /// From identities offered for a compose mode. Pass the mailbox that
@@ -2089,7 +2089,11 @@ struct ComposeRequest: Identifiable {
                       generation == self.contactsRebuildGeneration else { return }
                 // Accounts changed mid-flight — restart with the current set
                 // (we may have already cleared weights for a full pass).
-                let currentOwn = Set(self.accounts.map { $0.id.lowercased() })
+                // Must be the same primaries+aliases set captured at start:
+                // a primaries-only set here always differed once a send-as
+                // alias existed, restarting forever (full scan + publish per
+                // pass — the 100% CPU / janky-scroll bug).
+                let currentOwn = self.ownEmailAddresses
                 if ownAddresses != currentOwn {
                     self.rebuildContacts(forceFull: true)
                     return

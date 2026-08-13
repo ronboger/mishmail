@@ -379,4 +379,26 @@ final class ContactMinerTests: XCTestCase {
         XCTAssertEqual(weights["joshua@glyphic.bio"]?.name, "Joshua Yang")
         XCTAssertEqual(weights["joshua@glyphic.bio"]?.nameFromSelf, true)
     }
+
+    // MARK: - ownAddresses (rebuildContacts restart guard)
+
+    /// Regression: rebuildContacts compared "own addresses at start"
+    /// (primaries + send-as aliases) against primaries only, so any alias
+    /// made the mid-flight restart check always fire → infinite full-rebuild
+    /// loop at 100% CPU. Both sides must come from this one helper.
+    func testOwnAddressesIncludesAliasesLowercased() {
+        let own = ContactMiner.ownAddresses(
+            accountIds: ["Me@Gmail.com"],
+            aliasEmails: ["Alias@Work.com", "me@gmail.com"])
+        XCTAssertEqual(own, ["me@gmail.com", "alias@work.com"])
+    }
+
+    func testOwnAddressesStableAcrossRecomputeWithAliases() {
+        let start = ContactMiner.ownAddresses(
+            accountIds: ["me@gmail.com"], aliasEmails: ["alias@work.com"])
+        let finish = ContactMiner.ownAddresses(
+            accountIds: ["me@gmail.com"], aliasEmails: ["alias@work.com"])
+        // Equal inputs ⇒ equal sets ⇒ no restart loop.
+        XCTAssertEqual(start, finish)
+    }
 }
