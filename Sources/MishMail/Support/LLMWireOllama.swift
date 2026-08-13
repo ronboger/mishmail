@@ -7,9 +7,21 @@ enum OllamaChatWire {
         var wireMessages: [[String: Any]] = []
         for message in messages {
             switch message.role {
-            case .system, .user, .assistant:
+            case .system, .user:
                 wireMessages.append(["role": message.role.rawValue,
                                      "content": message.text])
+            case .assistant:
+                var wireMessage: [String: Any] = ["role": "assistant",
+                                                  "content": message.text]
+                if !message.toolCalls.isEmpty {
+                    // Ollama wants arguments as a JSON object, not a string.
+                    wireMessage["tool_calls"] = message.toolCalls.map { call -> [String: Any] in
+                        let arguments = (try? JSONSerialization.jsonObject(
+                            with: Data(call.argumentsJSON.utf8))) ?? [String: Any]()
+                        return ["function": ["name": call.name, "arguments": arguments]]
+                    }
+                }
+                wireMessages.append(wireMessage)
             case .tool:
                 for result in message.toolResults {
                     wireMessages.append(["role": "tool", "content": result.content])
@@ -58,7 +70,8 @@ enum OllamaChatWire {
                    let completion = object["eval_count"] as? Int {
                     usage = LLMUsage(promptTokens: prompt, completionTokens: completion)
                 }
-                events.append(.done(stopReason: "stop", usage: usage))
+                events.append(.done(stopReason: object["done_reason"] as? String ?? "stop",
+                                    usage: usage))
             }
             return events
         }
