@@ -595,6 +595,7 @@ struct ThreadDetailView: View {
                 scrollInlineComposeTarget(proxy, releaseTopPin: false)
             }
             .onChange(of: scrolledMessageId) { _, _ in
+                guard scrolledMessageId != Self.quickReplyScrollID else { return }
                 guard inlineComposeActive, autoPinInlineScroll,
                       !writingScrollOffset else { return }
                 disarmAutoPin()
@@ -690,7 +691,7 @@ struct ThreadDetailView: View {
             return
         }
         if inlineScrollRestore == .unset {
-            if let id = scrolledMessageId {
+            if let id = scrolledMessageId, id != Self.quickReplyScrollID {
                 inlineScrollRestore = .message(id)
             } else {
                 inlineScrollRestore = .threadTop
@@ -1261,10 +1262,16 @@ struct ThreadDetailView: View {
     private static let quickReplyScrollID = "threadQuickReplies"
 
     private func scrollQuickReplySection(proxy: ScrollViewProxy) {
+        guard !inlineComposeActive else { return }
         DispatchQueue.main.async {
-            guard !quickReplies.isEmpty || quickRepliesError != nil else { return }
+            guard !inlineComposeActive,
+                  !quickReplies.isEmpty || quickRepliesError != nil else { return }
+            writingScrollOffset = true
             withAnimation(.easeOut(duration: 0.2)) {
                 proxy.scrollTo(Self.quickReplyScrollID, anchor: .bottom)
+            }
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+                writingScrollOffset = false
             }
         }
     }
