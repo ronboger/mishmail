@@ -1,10 +1,26 @@
 # Changelog
 
+- **Compose links now read naturally** — links with display text render as the
+  blue underlined label in the editor; MishMail no longer exposes the backing
+  `[label](URL)` syntax while drafting. Draft storage, ⌘K editing, and sent HTML
+  remain unchanged.
+
 All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
 ## [Unreleased]
+
+### Added
+- **⌘A selects every thread currently loaded in the list** — Gmail-style
+  select-all for the existing checkbox multi-select, so the bulk-action bar
+  (archive/trash/star/etc.) can act on the whole list at once instead of
+  clicking or shift-clicking every row by hand. Only checks what's already
+  loaded (the list is infinite-scroll); scrolling in more rows afterward
+  doesn't retroactively check them. Never intercepts ⌘A where it already
+  means "select all text" — search, compose, Settings, the selectable
+  conversation text, and the message body itself all keep native
+  select-all, so reading an email and hitting ⌘A still selects the email.
 
 ### Fixed
 - **Side-by-side compose opens every message in the conversation.** The

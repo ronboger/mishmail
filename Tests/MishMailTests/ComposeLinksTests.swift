@@ -305,7 +305,7 @@ final class ComposeLinksTests: XCTestCase {
         let ranges = ComposeLinks.editorLinkStyleRanges(in: body)
         XCTAssertEqual(ranges.count, 1)
         XCTAssertEqual((body as NSString).substring(with: ranges[0]),
-                       "[the docs](https://example.com/a)")
+                       "the docs")
     }
 
     func testEditorLinkStyleRangesDoesNotDoubleCountMarkdownHref() {
@@ -314,7 +314,37 @@ final class ComposeLinksTests: XCTestCase {
         let ranges = ComposeLinks.editorLinkStyleRanges(in: body)
         XCTAssertEqual(ranges.count, 1)
         XCTAssertEqual((body as NSString).substring(with: ranges[0]),
-                       "[x](https://example.com)")
+                       "x")
+    }
+
+    func testEditorPresentationConcealsMarkdownSyntaxAndDestination() {
+        let body = "read [the docs](https://example.com/a) now"
+        let presentations = ComposeLinks.editorPresentations(in: body)
+        XCTAssertEqual(presentations.count, 1)
+        let presentation = presentations[0]
+        XCTAssertEqual((body as NSString).substring(with: presentation.visibleRange),
+                       "the docs")
+        XCTAssertEqual(presentation.concealedRanges.map {
+            (body as NSString).substring(with: $0)
+        }, ["[", "](https://example.com/a)"])
+    }
+
+    func testEditorPresentationLeavesBareURLFullyVisible() {
+        let body = "go https://example.com/a now"
+        let presentation = ComposeLinks.editorPresentations(in: body)[0]
+        XCTAssertEqual((body as NSString).substring(with: presentation.visibleRange),
+                       "https://example.com/a")
+        XCTAssertTrue(presentation.concealedRanges.isEmpty)
+    }
+
+    func testEditorPresentationHandlesMultipleLinksWithoutHrefDoubleCount() {
+        let body = "[one](https://one.com) and two.com"
+        let presentations = ComposeLinks.editorPresentations(in: body)
+        XCTAssertEqual(presentations.map {
+            (body as NSString).substring(with: $0.visibleRange)
+        }, ["one", "two.com"])
+        XCTAssertEqual(presentations[0].concealedRanges.count, 2)
+        XCTAssertTrue(presentations[1].concealedRanges.isEmpty)
     }
 
     func testEditorLinkStyleRangesSkipsPlainWords() {

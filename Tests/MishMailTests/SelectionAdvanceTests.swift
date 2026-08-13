@@ -134,6 +134,20 @@ final class SelectionAdvanceTests: XCTestCase {
         XCTAssertNil(SelectionAdvance.rangeIds(in: [], from: "a", to: "b"))
     }
 
+    // MARK: - Select all
+
+    func testSelectAllChecksEveryIdAndAnchorsOnTheLast() {
+        let result = SelectionAdvance.selectAll(order: ["a", "b", "c"])
+        XCTAssertEqual(result.checked, ["a", "b", "c"])
+        XCTAssertEqual(result.anchor, "c")
+    }
+
+    func testSelectAllOnEmptyOrderReturnsEmpty() {
+        let result = SelectionAdvance.selectAll(order: [])
+        XCTAssertEqual(result.checked, [])
+        XCTAssertNil(result.anchor)
+    }
+
     // MARK: - Detail open policy
 
     /// Regression: trash/archive auto-advance must open the neighbor

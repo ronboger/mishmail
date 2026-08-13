@@ -851,6 +851,17 @@ private extension ContentView {
                     return nil
                 }
             }
+            // ⌘↑/⌘↓: jump to the first / last conversation. Never while a
+            // text field owns the caret (⌘arrows are line start/end there).
+            if mods == .command, !event.modifierFlags.contains(.shift),
+               event.keyCode == 125 || event.keyCode == 126,
+               !store.showCommandPalette, !store.showLabelPicker,
+               store.editingView == nil,
+               !TextFocus.isEditing(event.window?.firstResponder) {
+                browseKeyIsRepeat = event.isARepeat
+                store.jumpSelection(toEnd: event.keyCode == 125)
+                return nil
+            }
             // ⌘1 = All accounts, ⌘2… = individual accounts, in popover order
             // (Notion Mail-style inbox switching).
             if mods == .command, let chars = event.charactersIgnoringModifiers,
@@ -901,6 +912,30 @@ private extension ContentView {
                          minimized: store.composeMinimized,
                          finishing: store.composeFinishing))) {
                 store.perform(.undo)
+                return nil
+            }
+            // ⌘A selects every thread currently loaded in the list (Gmail-
+            // style select-all), mirroring the checkbox multi-select. It
+            // yields to anything that already owns ⌘A: editable fields
+            // (search, compose, address chips, Settings…), the selectable
+            // conversation text, and the HTML body's web view all keep the
+            // OS's native Select All. Note this uses `ownsSelectAll`, not
+            // the bare-key `isEditing` — reading a message must not turn
+            // "select the message" into "check every thread".
+            if mods == .command,
+               !event.modifierFlags.contains(.shift),
+               event.charactersIgnoringModifiers?.lowercased() == "a",
+               event.window == NSApp.mainWindow,
+               !store.showCommandPalette,
+               !store.showLabelPicker,
+               !store.showShortcutsHelp,
+               store.editingView == nil,
+               ComposeKeyOwnership.allowsMailboxKeys(
+                   hasRequest: store.composeRequest != nil,
+                   minimized: store.composeMinimized,
+                   finishing: store.composeFinishing),
+               !TextFocus.ownsSelectAll(event.window?.firstResponder) {
+                store.checkAllVisibleThreads()
                 return nil
             }
             if store.showCommandPalette, event.keyCode == 53 {  // esc
@@ -1069,6 +1104,10 @@ private extension ContentView {
             let finishingCompose = store.composeFinishing
             let textEditing = TextFocus.isEditing(event.window?.firstResponder)
             guard mods.isEmpty,
+                  // A window other than the main one (e.g. Settings) being
+                  // key must not let these shortcuts act on the invisible
+                  // main-window thread list behind it.
+                  event.window == NSApp.mainWindow,
                   !store.showCommandPalette,
                   !store.showLabelPicker,
                   ComposeKeyOwnership.allowsMailboxKeys(
@@ -1113,13 +1152,21 @@ private extension ContentView {
             case 124:  // right — reveal the sidebar
                 withAnimation { sidebarHidden = false }
                 return nil
-            case 125:  // down
+            case 125:  // down (⇧↓ extends the multi-select range)
                 browseKeyIsRepeat = event.isARepeat
-                store.moveSelection(1, intent: .browse)
+                if event.modifierFlags.contains(.shift) {
+                    store.extendSelection(1)
+                } else {
+                    store.moveSelection(1, intent: .browse)
+                }
                 return nil
-            case 126:  // up
+            case 126:  // up (⇧↑ extends the multi-select range)
                 browseKeyIsRepeat = event.isARepeat
-                store.moveSelection(-1, intent: .browse)
+                if event.modifierFlags.contains(.shift) {
+                    store.extendSelection(-1)
+                } else {
+                    store.moveSelection(-1, intent: .browse)
+                }
                 return nil
             case 36:   // return
                 if let thread = store.selectedThread {
@@ -1134,6 +1181,33 @@ private extension ContentView {
                         } else {
                             readingPaneHidden = false
                         }
+                    }
+                }
+                return nil
+            case 115:  // home — first conversation
+                browseKeyIsRepeat = false
+                store.jumpSelection(toEnd: false)
+                return nil
+            case 119:  // end — last conversation
+                browseKeyIsRepeat = false
+                store.jumpSelection(toEnd: true)
+                return nil
+            case 49:   // space — page the reading pane (⇧ pages up); with
+                       // no open conversation it opens the selection (Gmail).
+                if store.openedThreadId != nil, !effectivePaneHidden,
+                   pageReadingPane(in: event.window,
+                                   up: event.modifierFlags.contains(.shift)) {
+                    return nil
+                }
+                if !event.modifierFlags.contains(.shift),
+                   let thread = store.selectedThread,
+                   !store.isDraftOnly(thread) {
+                    detailSelectionTask?.cancel()
+                    store.openDetail(thread.id)
+                    if fullWindowThreads {
+                        store.threadFocusMode = true
+                    } else {
+                        readingPaneHidden = false
                     }
                 }
                 return nil
@@ -1158,6 +1232,18 @@ private extension ContentView {
                 }
                 return nil
             }
+            // Shift + the next/prev browse keys (j/k by default) extends the
+            // multi-select range, matching ⇧↑/⇧↓. Checked before handleKey:
+            // letter normalization there would otherwise treat ⇧J as plain j.
+            // Letters only: a next/prev rebind to a symbol key (e.g. "!")
+            // already needs Shift to type, and must keep plain navigation.
+            if shiftOnly, chars.rangeOfCharacter(from: .letters) != nil,
+               let command = store.keyBindings.command(for: chars),
+               command == .next || command == .prev {
+                browseKeyIsRepeat = event.isARepeat
+                store.extendSelection(command == .next ? 1 : -1)
+                return nil
+            }
             // j/k (and other rebindable browse keys) also auto-repeat; pass
             // through so held navigation coalesces like ↑/↓.
             browseKeyIsRepeat = event.isARepeat
@@ -1172,6 +1258,55 @@ private extension ContentView {
                 return nil
             }
             return event
+        }
+    }
+
+    /// Page the reading pane one viewport (minus a reading overlap) for
+    /// Space / Shift+Space. Returns false when there is nothing to scroll
+    /// (short conversation, or already at the edge).
+    private func pageReadingPane(in window: NSWindow?, up: Bool) -> Bool {
+        guard let scrollView = Self.readingPaneScrollView(in: window) else {
+            return false
+        }
+        let clip = scrollView.contentView
+        guard let target = ReadingPaneSpaceScroll.pageTarget(
+            current: clip.bounds.origin.y,
+            viewportHeight: clip.bounds.height,
+            contentHeight: Double(scrollView.documentView?.frame.height ?? 0),
+            up: up) else { return false }
+        NSAnimationContext.runAnimationGroup { context in
+            context.duration = 0.18
+            context.allowsImplicitAnimation = true
+            clip.animator().setBoundsOrigin(
+                NSPoint(x: clip.bounds.origin.x, y: target))
+            scrollView.reflectScrolledClipView(clip)
+        }
+        return true
+    }
+
+    /// The conversation pane's vertical NSScrollView: the rightmost
+    /// scrollable scroll view that is not a List/table (thread list and
+    /// sidebar are NSTableViews) and not inside a text view.
+    private static func readingPaneScrollView(in window: NSWindow?)
+        -> NSScrollView? {
+        guard let root = window?.contentView else { return nil }
+        var candidates: [NSScrollView] = []
+        func walk(_ view: NSView) {
+            if let scroll = view as? NSScrollView {
+                let doc = scroll.documentView
+                let isText = doc is NSTableView || doc is NSTextView
+                let scrollable = (doc?.frame.height ?? 0)
+                    > scroll.contentView.bounds.height + 1
+                if !isText, scrollable, scroll.frame.height > 200 {
+                    candidates.append(scroll)
+                }
+            }
+            for sub in view.subviews { walk(sub) }
+        }
+        walk(root)
+        return candidates.max {
+            $0.convert($0.bounds.origin, to: nil).x
+                < $1.convert($1.bounds.origin, to: nil).x
         }
     }
 

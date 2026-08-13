@@ -399,15 +399,24 @@ struct ComposeBodyEditor: NSViewRepresentable {
             apply(reStrike, attrs: [.strikethroughStyle: NSUnderlineStyle.single.rawValue])
             apply(reItalicStar, attrs: [.obliqueness: 0.15])
             apply(reItalicUnder, attrs: [.obliqueness: 0.15])
-            // Markdown links + bare autolinkable URLs/hosts (same spans
-            // htmlFragment turns into anchors) — blue without requiring
-            // a [url](url) wrap that doubles the plain-text body.
+            // Present links as normal rich-text anchors. The backing string
+            // deliberately remains `[label](url)` for draft/send compatibility,
+            // but source-only brackets/destination glyphs collapse to nearly
+            // zero width so compose shows only the human-readable label.
             let linkAttrs: [NSAttributedString.Key: Any] = [
                 .foregroundColor: accent,
                 .underlineStyle: NSUnderlineStyle.single.rawValue,
             ]
-            for range in ComposeLinks.editorLinkStyleRanges(in: s) {
-                storage.addAttributes(linkAttrs, range: range)
+            let concealedAttrs: [NSAttributedString.Key: Any] = [
+                .font: NSFont.systemFont(ofSize: 0.01),
+                .foregroundColor: NSColor.clear,
+                .underlineStyle: 0,
+            ]
+            for presentation in ComposeLinks.editorPresentations(in: s) {
+                storage.addAttributes(linkAttrs, range: presentation.visibleRange)
+                for range in presentation.concealedRanges {
+                    storage.addAttributes(concealedAttrs, range: range)
+                }
             }
 
             reLineMarker.enumerateMatches(in: s, range: full) { match, _, _ in

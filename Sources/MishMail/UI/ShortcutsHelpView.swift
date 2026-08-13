@@ -15,6 +15,9 @@ struct ShortcutsHelpView: View {
         ]),
         ("Other", [
             ("↑ / ↓", "Browse conversations"),
+            ("⇧↑ / ⇧↓", "Select a range of conversations (also ⇧J / ⇧K)"),
+            ("⌘↑ / ⌘↓", "First / last conversation (also Home / End)"),
+            ("Space / ⇧Space", "Page the conversation down / up (Space opens it when closed)"),
             ("← / →", "Hide / show sidebar"),
             ("Return", "Open conversation"),
             ("⇧I", "Mark as read (unread if already read)"),
@@ -23,6 +26,7 @@ struct ShortcutsHelpView: View {
             ("⇧⌘↩", "Compose side by side with the conversation"),
             ("x", "Select / deselect (multi-select)"),
             ("Shift-click checkbox", "Select a range"),
+            ("⌘A", "Select all (multi-select)"),
             ("/", "Search"),
             ("Esc", "Drop field focus → clear checks → exit focus → clear search → close pane"),
             ("⌘K", "Command palette (Insert link while composing)"),

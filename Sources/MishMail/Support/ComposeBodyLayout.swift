@@ -56,7 +56,8 @@ enum ComposeBodyLayout {
     ///   scrolls internally).
     static func editorHeights(body: String,
                               hasCollapsedQuote: Bool,
-                              slashActive: Bool)
+                              slashActive: Bool,
+                              collapsedQuoteCap: CGFloat = collapsedCap)
         -> (min: CGFloat, max: CGFloat) {
         guard hasCollapsedQuote else {
             // Cap at content so an inlined quote's collapse pill hugs the
@@ -72,7 +73,7 @@ enum ComposeBodyLayout {
         // fixed card (addresses + long body) never clips the quote pill /
         // Send row; short drafts keep min == max == emptyFloor (no snap).
         let raw = contentHeight(body: body) + contentSlack
-        let h = min(max(raw, emptyFloor), collapsedCap)
+        let h = min(max(raw, emptyFloor), collapsedQuoteCap)
         return (Swift.min(h, emptyFloor), h)
     }
 }

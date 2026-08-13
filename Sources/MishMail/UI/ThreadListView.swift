@@ -479,6 +479,9 @@ struct ThreadListView: View {
             Text("\(store.checkedThreadIds.count) selected")
                 .font(.system(size: 12 * fontScale, weight: .semibold))
                 .monospacedDigit()
+            Text("esc to clear")
+                .font(.system(size: 11 * fontScale))
+                .foregroundStyle(.secondary)
             Spacer(minLength: 8)
             Button("Archive") { store.archiveChecked() }
                 .buttonStyle(.borderless)
