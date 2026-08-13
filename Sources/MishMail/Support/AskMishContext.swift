@@ -50,26 +50,42 @@ enum AskMishContext {
                                                      from: Data(row.toolResultsJSON.utf8))) ?? []
             return LLMMessage(role: role, text: row.text, toolCalls: calls, toolResults: results)
         }
-        // A tool result whose call ID has no matching tool_use in the preceding
-        // assistant message makes the whole request invalid for Anthropic and
-        // OpenAI. Tool call JSON can fail to decode (stored garbage), so drop
-        // any tool message that is now orphaned rather than send a broken turn.
+        // Anthropic and OpenAI reject a request that holds a tool_use without
+        // its results, or results without their tool_use. Stored JSON can fail
+        // to decode (garbage or a stale row), and a conversation can stop in
+        // the middle of a tool call. Keep an assistant turn together with its
+        // tool messages only when the call IDs match exactly. If they do not
+        // match, drop the tool messages and clear the assistant tool calls.
         var kept: [LLMMessage] = []
-        for message in decoded {
-            guard message.role == .tool else {
+        var index = 0
+        while index < decoded.count {
+            var message = decoded[index]
+            // A tool message with no assistant tool_use before it is orphaned.
+            if message.role == .tool {
+                index += 1
+                continue
+            }
+            guard message.role == .assistant, !message.toolCalls.isEmpty else {
                 kept.append(message)
+                index += 1
                 continue
             }
-            let previous = kept.last
-            guard let previous, previous.role == .assistant, !previous.toolCalls.isEmpty else {
-                continue
+            var next = index + 1
+            var answers: [LLMMessage] = []
+            while next < decoded.count, decoded[next].role == .tool {
+                if !decoded[next].toolResults.isEmpty { answers.append(decoded[next]) }
+                next += 1
             }
-            let callIDs = Set(previous.toolCalls.map(\.id))
-            guard !message.toolResults.isEmpty,
-                  message.toolResults.allSatisfy({ callIDs.contains($0.callID) }) else {
-                continue
+            let callIDs = Set(message.toolCalls.map(\.id))
+            let resultIDs = Set(answers.flatMap { $0.toolResults.map(\.callID) })
+            if resultIDs == callIDs {
+                kept.append(message)
+                kept.append(contentsOf: answers)
+            } else {
+                message.toolCalls = []
+                kept.append(message)
             }
-            kept.append(message)
+            index = next
         }
         return kept
     }

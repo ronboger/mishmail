@@ -23,6 +23,8 @@ final class AskMishContextTests: XCTestCase {
     func testHistoryDecodingRoundTripsToolCalls() throws {
         let calls = [LLMToolCall(id: "c1", name: "get_thread", argumentsJSON: #"{"thread_id":"t1"}"#)]
         let callsJSON = String(decoding: try JSONEncoder().encode(calls), as: UTF8.self)
+        let results = [LLMToolResult(callID: "c1", content: "{}", isError: false)]
+        let resultsJSON = String(decoding: try JSONEncoder().encode(results), as: UTF8.self)
         let rows = [
             ChatMessageRow(id: "1", conversationId: "c", role: "user", text: "hi",
                            toolCallsJSON: "[]", toolResultsJSON: "[]",
@@ -30,10 +32,14 @@ final class AskMishContextTests: XCTestCase {
             ChatMessageRow(id: "2", conversationId: "c", role: "assistant", text: "",
                            toolCallsJSON: callsJSON, toolResultsJSON: "[]",
                            promptTokens: 10, completionTokens: 5, createdAt: Date()),
+            ChatMessageRow(id: "3", conversationId: "c", role: "tool", text: "",
+                           toolCallsJSON: "[]", toolResultsJSON: resultsJSON,
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
         ]
         let messages = AskMishContext.llmMessages(history: rows)
-        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages.count, 3)
         XCTAssertEqual(messages[1].toolCalls, calls)
+        XCTAssertEqual(messages[2].toolResults, results)
     }
 
     func testOrphanedToolResultsAreDropped() throws {
@@ -69,6 +75,122 @@ final class AskMishContextTests: XCTestCase {
         let messages = AskMishContext.llmMessages(history: rows)
         XCTAssertEqual(messages.count, 2)
         XCTAssertEqual(messages[1].toolResults, results)
+    }
+
+    func testMismatchedToolResultsClearAssistantToolCalls() throws {
+        let calls = [LLMToolCall(id: "c1", name: "get_thread", argumentsJSON: "{}")]
+        let callsJSON = String(decoding: try JSONEncoder().encode(calls), as: UTF8.self)
+        // Stale row: the results answer a call ID that this assistant never made.
+        let results = [LLMToolResult(callID: "stale", content: "{}", isError: false)]
+        let resultsJSON = String(decoding: try JSONEncoder().encode(results), as: UTF8.self)
+        let rows = [
+            ChatMessageRow(id: "1", conversationId: "c", role: "user", text: "hi",
+                           toolCallsJSON: "[]", toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "2", conversationId: "c", role: "assistant", text: "",
+                           toolCallsJSON: callsJSON, toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "3", conversationId: "c", role: "tool", text: "",
+                           toolCallsJSON: "[]", toolResultsJSON: resultsJSON,
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+        ]
+        let messages = AskMishContext.llmMessages(history: rows)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages[1].role, .assistant)
+        XCTAssertTrue(messages[1].toolCalls.isEmpty)
+    }
+
+    func testCorruptedToolResultsClearAssistantToolCalls() throws {
+        let calls = [LLMToolCall(id: "c1", name: "get_thread", argumentsJSON: "{}")]
+        let callsJSON = String(decoding: try JSONEncoder().encode(calls), as: UTF8.self)
+        let rows = [
+            ChatMessageRow(id: "1", conversationId: "c", role: "assistant", text: "",
+                           toolCallsJSON: callsJSON, toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "2", conversationId: "c", role: "tool", text: "",
+                           toolCallsJSON: "[]", toolResultsJSON: "not json at all",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+        ]
+        let messages = AskMishContext.llmMessages(history: rows)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertEqual(messages[0].role, .assistant)
+        XCTAssertTrue(messages[0].toolCalls.isEmpty)
+    }
+
+    func testPartiallyAnsweredToolCallsAreDropped() throws {
+        let calls = [
+            LLMToolCall(id: "c1", name: "get_thread", argumentsJSON: "{}"),
+            LLMToolCall(id: "c2", name: "list_threads", argumentsJSON: "{}"),
+        ]
+        let callsJSON = String(decoding: try JSONEncoder().encode(calls), as: UTF8.self)
+        let results = [LLMToolResult(callID: "c1", content: "{}", isError: false)]
+        let resultsJSON = String(decoding: try JSONEncoder().encode(results), as: UTF8.self)
+        let rows = [
+            ChatMessageRow(id: "1", conversationId: "c", role: "assistant", text: "",
+                           toolCallsJSON: callsJSON, toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "2", conversationId: "c", role: "tool", text: "",
+                           toolCallsJSON: "[]", toolResultsJSON: resultsJSON,
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+        ]
+        let messages = AskMishContext.llmMessages(history: rows)
+        XCTAssertEqual(messages.count, 1)
+        XCTAssertTrue(messages[0].toolCalls.isEmpty)
+    }
+
+    func testInterruptedTailToolCallsAreCleared() throws {
+        let calls = [LLMToolCall(id: "c1", name: "get_thread", argumentsJSON: "{}")]
+        let callsJSON = String(decoding: try JSONEncoder().encode(calls), as: UTF8.self)
+        let rows = [
+            ChatMessageRow(id: "1", conversationId: "c", role: "user", text: "hi",
+                           toolCallsJSON: "[]", toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "2", conversationId: "c", role: "assistant", text: "looking",
+                           toolCallsJSON: callsJSON, toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+        ]
+        let messages = AskMishContext.llmMessages(history: rows)
+        XCTAssertEqual(messages.count, 2)
+        XCTAssertEqual(messages[1].role, .assistant)
+        XCTAssertEqual(messages[1].text, "looking")
+        XCTAssertTrue(messages[1].toolCalls.isEmpty)
+    }
+
+    func testMultipleToolRoundsSurviveIntact() throws {
+        let firstCalls = [LLMToolCall(id: "c1", name: "search_threads", argumentsJSON: "{}")]
+        let secondCalls = [LLMToolCall(id: "c2", name: "get_thread", argumentsJSON: "{}")]
+        let firstResults = [LLMToolResult(callID: "c1", content: "{}", isError: false)]
+        let secondResults = [LLMToolResult(callID: "c2", content: "{}", isError: false)]
+        func json(_ value: some Encodable) throws -> String {
+            String(decoding: try JSONEncoder().encode(value), as: UTF8.self)
+        }
+        let rows = [
+            ChatMessageRow(id: "1", conversationId: "c", role: "user", text: "hi",
+                           toolCallsJSON: "[]", toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "2", conversationId: "c", role: "assistant", text: "",
+                           toolCallsJSON: try json(firstCalls), toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "3", conversationId: "c", role: "tool", text: "",
+                           toolCallsJSON: "[]", toolResultsJSON: try json(firstResults),
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "4", conversationId: "c", role: "assistant", text: "",
+                           toolCallsJSON: try json(secondCalls), toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "5", conversationId: "c", role: "tool", text: "",
+                           toolCallsJSON: "[]", toolResultsJSON: try json(secondResults),
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "6", conversationId: "c", role: "assistant", text: "done",
+                           toolCallsJSON: "[]", toolResultsJSON: "[]",
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+        ]
+        let messages = AskMishContext.llmMessages(history: rows)
+        XCTAssertEqual(messages.count, 6)
+        XCTAssertEqual(messages[1].toolCalls, firstCalls)
+        XCTAssertEqual(messages[2].toolResults, firstResults)
+        XCTAssertEqual(messages[3].toolCalls, secondCalls)
+        XCTAssertEqual(messages[4].toolResults, secondResults)
+        XCTAssertEqual(messages[5].text, "done")
     }
 
     func testContextMessageNamesThreadAndUntrustedContent() {
