@@ -355,6 +355,32 @@ struct ThreadSummaryRow: Codable, Identifiable, Hashable, FetchableRecord, Persi
     var id: String { threadId }
 }
 
+/// One Ask Mish chat conversation (v35). Messages cascade-delete with it.
+struct ChatConversationRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "chatConversation"
+    var id: String            // UUID string
+    var title: String
+    var providerID: String    // LLMProviderConfig.id UUID string
+    var modelID: String
+    var createdAt: Date
+    var updatedAt: Date
+}
+
+/// One message inside an Ask Mish conversation (v35). Tool calls and results
+/// are JSON strings ("[]" when none); usage tokens are assistant-only.
+struct ChatMessageRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "chatMessage"
+    var id: String            // UUID string
+    var conversationId: String
+    var role: String          // LLMRole.rawValue
+    var text: String
+    var toolCallsJSON: String     // JSON [LLMToolCall]; "[]" when none
+    var toolResultsJSON: String   // JSON [LLMToolResult]; "[]" when none
+    var promptTokens: Int?        // usage, assistant rows only
+    var completionTokens: Int?
+    var createdAt: Date
+}
+
 /// A VIP sender: mail from this address pins to the Inbox Priority section.
 /// Emails are stored lowercased; the list is global across accounts.
 ///
@@ -1399,6 +1425,35 @@ final class AppDatabase: @unchecked Sendable {
                 INSERT OR IGNORE INTO vipSenderGroup (email, groupName)
                 SELECT email, TRIM(groupName) FROM vipSender
                 WHERE groupName IS NOT NULL AND TRIM(groupName) != ''
+                """)
+        }
+        // v35: Ask Mish chat persistence. Conversations + messages; messages
+        // cascade with their conversation. Tool calls/results stored as JSON
+        // strings; usage tokens persisted for cost accounting.
+        m.registerMigration("v35") { db in
+            try db.create(table: "chatConversation") { t in
+                t.column("id", .text).primaryKey()
+                t.column("title", .text).notNull()
+                t.column("providerID", .text).notNull()
+                t.column("modelID", .text).notNull()
+                t.column("createdAt", .datetime).notNull()
+                t.column("updatedAt", .datetime).notNull()
+            }
+            try db.create(table: "chatMessage") { t in
+                t.column("id", .text).primaryKey()
+                t.column("conversationId", .text).notNull()
+                    .references("chatConversation", onDelete: .cascade)
+                t.column("role", .text).notNull()
+                t.column("text", .text).notNull()
+                t.column("toolCallsJSON", .text).notNull()
+                t.column("toolResultsJSON", .text).notNull()
+                t.column("promptTokens", .integer)
+                t.column("completionTokens", .integer)
+                t.column("createdAt", .datetime).notNull()
+            }
+            try db.execute(sql: """
+                CREATE INDEX chatMessage_on_conversationId_createdAt
+                ON chatMessage (conversationId, createdAt)
                 """)
         }
         return m
