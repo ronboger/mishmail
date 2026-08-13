@@ -65,7 +65,7 @@ struct ThreadDetailView: View {
     @State private var summarizing = false
     @State private var summaryError: String?
     /// Persisted MCP / agent summary (`threadSummary` row). Shown only when no
-    /// ephemeral Ollama summary is present.
+    /// ephemeral model summary is present.
     @State private var persistedSummary: ThreadSummaryRow?
     /// Session opt-in: Load images for every card in this thread.
     @State private var loadRemoteImagesForThread = false
@@ -1116,10 +1116,10 @@ struct ThreadDetailView: View {
         return items
     }
 
-    /// On-device AI summary. Only offered for multi-message threads (a single
-    /// short message doesn't need one). Collapses to a one-line affordance
-    /// until asked; the summary streams in locally. Ephemeral Ollama output
-    /// takes precedence over a persisted MCP `threadSummary` row.
+    /// AI summary. Only offered for multi-message threads (a single short
+    /// message doesn't need one). Collapses to a one-line affordance until
+    /// asked; the summary streams from the selected provider. Ephemeral model
+    /// output takes precedence over a persisted MCP `threadSummary` row.
     @ViewBuilder
     private var summarySection: some View {
         if messages.count >= 2 || (messages.first?.bodyText.count ?? 0) > 800 {
@@ -1148,7 +1148,8 @@ struct ThreadDetailView: View {
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         HStack(spacing: 8) {
-                            Text("Summarized by \(persisted.model)")
+                            let model = LLMTaskRunner.resolve(.summaries)?.model ?? persisted.model
+                            Text("Summarized by \(model)")
                             Spacer(minLength: 8)
                             Text("Summary generated \(persisted.updatedAt.formatted(date: .abbreviated, time: .shortened))")
                         }
@@ -1168,7 +1169,7 @@ struct ThreadDetailView: View {
                     }
                     .buttonStyle(.plain)
                     .disabled(summarizing)
-                    .help("Generate a local, private TL;DR of this thread (Ollama)")
+                    .help("Generate an AI TL;DR of this thread")
                 }
                 if let summaryError {
                     Text(summaryError)
@@ -1204,11 +1205,11 @@ struct ThreadDetailView: View {
             store.messagesWithBodies(ids: ids).map { ($0.id, $0) })
         let body = messages.map { fullById[$0.id]?.bodyText ?? $0.bodyText }
             .joined(separator: "\n\n---\n\n")
-        let prompt = Ollama.summarize(subject: thread.subject, body: body)
+        let prompt = LLMPrompts.summarize(subject: thread.subject, body: body)
         Task {
             do {
                 var accumulated = ""
-                for try await piece in Ollama.generateStream(prompt: prompt) {
+                for try await piece in LLMTaskRunner.stream(task: .summaries, prompt: prompt) {
                     accumulated += piece
                     let snapshot = accumulated
                     await MainActor.run { aiSummary = snapshot }
@@ -1217,10 +1218,18 @@ struct ThreadDetailView: View {
                     await MainActor.run { summaryError = "No summary was produced." }
                 }
             } catch {
-                await MainActor.run { summaryError = error.localizedDescription }
+                await MainActor.run { summaryError = llmErrorMessage(error) }
             }
             await MainActor.run { summarizing = false }
         }
+    }
+
+    private func llmErrorMessage(_ error: Error) -> String {
+        if let llmError = error as? LLMClientError,
+           case .missingCredential = llmError {
+            return "No model configured for summaries. Check Settings → AI."
+        }
+        return error.localizedDescription
     }
 
     /// User-created labels on this thread (system labels stay hidden).
