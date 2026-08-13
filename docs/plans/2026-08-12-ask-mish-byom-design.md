@@ -1,8 +1,9 @@
 # Ask Mish + Bring-Your-Own-Model — Design
 
 Date: 2026-08-12
-Status: Draft for review
-Scope: Phases 1–3. Memory and automations are out of scope (future specs).
+Status: Approved 2026-08-12 (with send, cost accounting, and follow-up
+reminders added at review)
+Scope: Phases 1–4. Memory and automations are out of scope (future specs).
 
 ## Background
 
@@ -160,7 +161,24 @@ participants, latest bodies with head+tail truncation, same policy as
 (`search_threads`, `get_thread`, `list_*`) run freely. Write tools
 (`create_draft`, `trash_*`, labels, VIPs, summaries) render an inline
 confirm card in the chat; the tool result returns only after the user
-taps Allow. There is no "always allow" in v1. Ask Mish gets no send tool.
+taps Allow. There is no "always allow" in v1.
+
+**Sending.** Ask Mish gets a `send_draft` tool (Ask Mish–only executor; not
+added to the external MCP catalog in v1). The model must create the draft
+first, then request send. The confirm card shows To/Cc, subject, and the
+full body, and requires an explicit Send tap. Sends go through the normal
+`MailStore` send path, so the undo-send window still applies.
+
+**Cost accounting.** `LLMEvent.done` carries usage (prompt tokens,
+completion tokens) parsed from each wire format. `ChatMessage` persists
+both counts. Cost is computed from a local, editable price table
+(`Support/LLMPricing.swift`: per provider/model $ per Mtok in/out, with
+shipped defaults and a Settings editor; prices drift, tokens are the
+source of truth). The chat UI shows per-message cost on hover and a
+running per-conversation total. Subscription-OAuth providers show token
+counts only, with no dollar figure. Phase 3 call sites (drafts, summaries,
+triage, chips) log usage to a small `llmUsage` table so Settings can show
+a 30-day spend summary per task.
 
 **System prompt.** Short, fixed, includes today's date, account emails, and
 instructions to prefer search before answering inbox questions.
@@ -193,6 +211,22 @@ closes) keeps the partial text and marks the turn interrupted.
 - `Ollama.swift`'s public surface stays until all call sites move; then the
   prompt statics are deleted.
 
+## Phase 4 — follow-up reminders
+
+No LLM involved. Track sent threads that got no reply.
+
+- New GRDB record `FollowUpReminder`: id, threadID, accountEmail,
+  sentMessageID, dueAt, state (`pending`, `fired`, `dismissed`, `replied`).
+- Creation: a "Remind me if no reply" control in compose and on sent
+  threads, with a default interval in Settings (e.g. 3 days). Off by
+  default; no auto-tracking in v1.
+- Clearing: the sync engine marks a reminder `replied` when a newer inbound
+  message arrives on the thread from someone other than the sender.
+- Firing: the existing due-sweep pattern (`dueSweepTask`, like snooze)
+  moves due reminders to `fired`, posts a notice, and badges a
+  "Follow-ups" sidebar section listing fired and pending reminders.
+- Pure due/clear logic in `Support/FollowUpPolicy.swift` with tests.
+
 ## Testing
 
 - Codec round-trip tests per wire format (request body, SSE parse, tool
@@ -201,13 +235,14 @@ closes) keeps the partial text and marks the turn interrupted.
 - Agent-loop tests with a scripted fake provider: tool-call dispatch, cap
   enforcement, write-tool confirmation gating, cancellation.
 - Layout math tests for the panel.
-- Migration test additions for the two chat tables.
+- Migration test additions for the chat, usage, and reminder tables.
+- Usage parsing per wire format; pricing math; follow-up due/clear policy.
+- Send-tool gating: no send without a confirmed draft and an explicit tap.
 - Manual pass: each provider kind against a real endpoint; demo-mode build
   must run with zero Keychain prompts.
 
 ## Non-goals (v1)
 
-- Memory system, automations, follow-up reminders (future specs).
-- Sending mail from Ask Mish.
+- Memory system and automations (future specs).
 - Attachment upload to models; image inputs.
-- Per-message cost accounting.
+- Auto-tracking every sent mail for follow-ups (opt-in per message in v1).
