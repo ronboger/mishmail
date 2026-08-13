@@ -144,6 +144,7 @@ targets:
       - Sources/MishMail/Support/KeyBindings.swift
       - Sources/MishMail/Support/LabelSearch.swift
       - Sources/MishMail/Support/LLMChat.swift
+      - Sources/MishMail/Support/LLMOAuth.swift
       - Sources/MishMail/Support/LLMWireOpenAI.swift
       - Sources/MishMail/Support/LLMWireAnthropic.swift
       - Sources/MishMail/Support/LLMWireOllama.swift
