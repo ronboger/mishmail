@@ -598,7 +598,9 @@ extension MailStore {
     /// user confirms the `send_draft` card. Failures throw `MCPToolError` so
     /// the model sees an `isError` tool result and can explain the refusal.
     ///
-    /// - Returns: a short JSON receipt.
+    /// - Returns: a short JSON receipt. The mail is **queued**, not delivered:
+    ///   `{"status":"queued", …, "undoSeconds":N}`. It leaves after the undo
+    ///   window, so the model must not claim the mail is already sent.
     func askMishSendDraft(draftId: String) async throws -> String {
         let id = draftId.trimmingCharacters(in: .whitespaces)
         guard !id.isEmpty else {
@@ -613,6 +615,12 @@ extension MailStore {
         }
         guard ForwardComposer.isLiveDraft(draft.labelIds) else {
             throw MCPToolError("Not an unsent draft: \(id)")
+        }
+        // An open compose window owns the draft: it autosaves over the server
+        // copy, so sending the stored version here would send stale text and
+        // leave the editor pointing at a draft that no longer exists.
+        guard !composingDraftMessageIds.contains(draft.id) else {
+            throw MCPToolError("Close the compose window first.")
         }
         let hasRecipient = [draft.toHeader, draft.ccHeader, draft.bccHeader]
             .contains { $0.contains("@") }
@@ -646,9 +654,10 @@ extension MailStore {
             attachments: [],
             replacingDraft: draft))
 
+        // "queued", never "sent": the undo window still has to elapse.
         let data = try JSONSerialization.data(
             withJSONObject: [
-                "sent": true,
+                "status": "queued",
                 "draftId": draft.id,
                 "threadId": draft.threadId,
                 "undoSeconds": Int(MailStore.undoSendWindow),

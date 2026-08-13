@@ -111,6 +111,38 @@ final class AskMishToolsTests: XCTestCase {
         }
     }
 
+    /// The resolved send line names the recipients and the subject — the
+    /// confirm card is the last barrier before mail leaves.
+    func testSendDraftSummaryNamesRecipientsAndSubject() {
+        let line = AskMishTools.sendDraftSummary(
+            recipients: ["a@b.com", "c@d.com"], subject: "Q3 numbers")
+        XCTAssertTrue(line.contains("a@b.com"), line)
+        XCTAssertTrue(line.contains("c@d.com"), line)
+        XCTAssertTrue(line.contains("Q3 numbers"), line)
+        XCTAssertFalse(line.contains("draft_id"), line)
+    }
+
+    func testSendDraftSummaryHandlesMissingParts() {
+        let noSubject = AskMishTools.sendDraftSummary(
+            recipients: ["a@b.com"], subject: "   ")
+        XCTAssertEqual(noSubject, "Send the draft to a@b.com.")
+        let noRecipient = AskMishTools.sendDraftSummary(recipients: [], subject: "Hi")
+        XCTAssertTrue(noRecipient.hasPrefix("Send the draft"), noRecipient)
+        XCTAssertTrue(noRecipient.contains("Hi"), noRecipient)
+        XCTAssertFalse(
+            AskMishTools.sendDraftSummary(recipients: [], subject: "").isEmpty)
+    }
+
+    /// Long recipient lists and long subjects stay card-sized.
+    func testSendDraftSummaryTrimsLongValues() {
+        let many = (1...9).map { "user\($0)@example.com" }
+        let line = AskMishTools.sendDraftSummary(
+            recipients: many, subject: String(repeating: "x", count: 200))
+        XCTAssertTrue(line.contains("6 more"), line)
+        XCTAssertTrue(line.contains("…"), line)
+        XCTAssertLessThan(line.count, 160, line)
+    }
+
     /// Bad JSON must still produce a card line — never an empty confirm.
     func testConfirmSummaryToleratesBadArguments() {
         let summary = AskMishTools.confirmSummary(toolName: "add_vip", argumentsJSON: "not json")

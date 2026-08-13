@@ -88,6 +88,13 @@ enum AskMishTools {
 
     /// One short user-facing line for the confirm card. Falls back to the tool
     /// name when the arguments are unusable, so a card is never blank.
+    ///
+    /// This is the pure fallback: it only sees the model's arguments. For
+    /// `send_draft` those arguments are a bare draft id, which tells the user
+    /// nothing about the mail that leaves. The controller MUST prefer
+    /// `MailStore.askMishSendConfirmSummary(draftId:)` for `send_draft` — it
+    /// resolves the stored draft and names the recipients and the subject —
+    /// and use this line only when the store returns `nil`.
     static func confirmSummary(toolName: String, argumentsJSON: String) -> String {
         let args = (try? decodeArguments(argumentsJSON)) ?? [:]
         return specificSummary(toolName: toolName, args: args)
@@ -146,6 +153,21 @@ enum AskMishTools {
         default:
             return nil
         }
+    }
+
+    /// Confirm line for `send_draft`, built from the **resolved** draft instead
+    /// of the model's arguments. The confirm card is the last barrier before
+    /// mail leaves, so it must name the recipients and the subject, not an
+    /// opaque draft id. `MailStore.askMishSendConfirmSummary(draftId:)` reads
+    /// the draft and calls this; keep the formatting here so it stays testable.
+    static func sendDraftSummary(recipients: [String], subject: String) -> String {
+        let people = joined(recipients
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty })
+        var line = people.isEmpty ? "Send the draft" : "Send the draft to \(people)"
+        let title = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty { line += " — \(quoted(title))" }
+        return line + "."
     }
 
     // MARK: - Argument readers
