@@ -904,10 +904,13 @@ private extension ContentView {
                 return nil
             }
             // ⌘A selects every thread currently loaded in the list (Gmail-
-            // style select-all), mirroring the checkbox multi-select. Any
-            // editable text field (search, compose, address chips,
-            // Settings…) keeps the OS's native Select All instead — this
-            // never fires while one is focused.
+            // style select-all), mirroring the checkbox multi-select. It
+            // yields to anything that already owns ⌘A: editable fields
+            // (search, compose, address chips, Settings…), the selectable
+            // conversation text, and the HTML body's web view all keep the
+            // OS's native Select All. Note this uses `ownsSelectAll`, not
+            // the bare-key `isEditing` — reading a message must not turn
+            // "select the message" into "check every thread".
             if mods == .command,
                !event.modifierFlags.contains(.shift),
                event.charactersIgnoringModifiers?.lowercased() == "a",
@@ -920,7 +923,7 @@ private extension ContentView {
                    hasRequest: store.composeRequest != nil,
                    minimized: store.composeMinimized,
                    finishing: store.composeFinishing),
-               !TextFocus.isEditing(event.window?.firstResponder) {
+               !TextFocus.ownsSelectAll(event.window?.firstResponder) {
                 store.checkAllVisibleThreads()
                 return nil
             }
