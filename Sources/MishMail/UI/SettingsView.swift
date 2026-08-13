@@ -1555,6 +1555,9 @@ struct AISettings: View {
     @State private var model: String = Ollama.model
     @State private var allowRemote: Bool = Ollama.allowRemoteEndpoint
     @AppStorage(MailStore.autoClassifyKey) private var autoClassify = true
+    @State private var providers: [LLMProviderConfig] = LLMProviderStore.load()
+    @State private var editingProvider: LLMProviderConfig?
+    @State private var addingProvider = false
 
     private var endpointIsRemote: Bool {
         guard let host = URL(string: url)?.host?.lowercased() else { return false }
@@ -1583,6 +1586,48 @@ struct AISettings: View {
                 }
 
                 Section {
+                    ForEach(providers) { provider in
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(provider.label)
+                                Text("\(provider.kind.rawValue) · \(provider.defaultModel)")
+                                    .font(.caption).foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            if provider.id != LLMProviderStore.builtInOllamaID {
+                                Button("Edit") { editingProvider = provider }
+                                    .buttonStyle(.borderless)
+                                Button(role: .destructive) { remove(provider) } label: {
+                                    Image(systemName: "xmark.circle.fill")
+                                        .foregroundStyle(.secondary)
+                                }
+                                .buttonStyle(.plain)
+                            }
+                        }
+                    }
+                    Button { addingProvider = true } label: {
+                        Label("Add provider", systemImage: "plus")
+                    }
+                    .buttonStyle(.borderless)
+                } header: {
+                    Text("Model providers")
+                } footer: {
+                    Text("Add your own API keys, or sign in with a Claude or ChatGPT subscription. Keys stay in your Keychain.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    ForEach(LLMTask.allCases, id: \.self) { task in
+                        TaskModelPicker(task: task, providers: providers)
+                    }
+                } header: {
+                    Text("Model per task")
+                } footer: {
+                    Text("Pick which model each feature uses. Keep triage on a small local model. Use a bigger model for drafts.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
                     Toggle("Auto-sort new mail", isOn: $autoClassify)
                 } footer: {
                     Text("After each sync, quietly tag new inbox threads (Reply needed, FYI, Newsletter, Receipt) with the local model. Skips silently when Ollama isn't running. A small fast model like llama3.2:3b is ideal here.")
@@ -1592,6 +1637,238 @@ struct AISettings: View {
                 MCPSettingsSection()
             }
             .formStyle(.grouped)
+            .sheet(isPresented: $addingProvider) {
+                ProviderEditSheet(provider: nil) { _ in
+                    providers = LLMProviderStore.load()
+                }
+            }
+            .sheet(item: $editingProvider) { provider in
+                ProviderEditSheet(provider: provider) { _ in
+                    providers = LLMProviderStore.load()
+                }
+            }
+        }
+    }
+
+    /// Drops the provider, its secrets, and any task still pointing at it, so
+    /// no task is left assigned to a provider that no longer exists.
+    private func remove(_ provider: LLMProviderConfig) {
+        if OAuthConfig.usesKeychain(environment: ProcessInfo.processInfo.environment) {
+            Keychain.delete(LLMProviderStore.keychainKey(for: provider.id))
+            Keychain.delete(LLMProviderStore.oauthKeychainKey(for: provider.id))
+        }
+        var list = providers
+        list.removeAll { $0.id == provider.id }
+        LLMProviderStore.save(list)
+        providers = LLMProviderStore.load()
+        let fallback = LLMProviderStore.builtInOllama()
+        for task in LLMTask.allCases
+        where LLMProviderStore.assignment(for: task).providerID == provider.id {
+            LLMProviderStore.setAssignment(
+                LLMTaskAssignment(providerID: fallback.id, model: fallback.defaultModel),
+                for: task)
+        }
+    }
+}
+
+/// One row of "Model per task": pick the provider a feature uses. The model
+/// follows the provider's default model.
+private struct TaskModelPicker: View {
+    let task: LLMTask
+    let providers: [LLMProviderConfig]
+    @State private var assignment: LLMTaskAssignment
+
+    init(task: LLMTask, providers: [LLMProviderConfig]) {
+        self.task = task
+        self.providers = providers
+        _assignment = State(initialValue: LLMProviderStore.assignment(for: task))
+    }
+
+    private var title: String {
+        switch task {
+        case .drafts: return "Drafts"
+        case .summaries: return "Summaries"
+        case .triage: return "Triage"
+        case .askMish: return "Ask Mish"
+        }
+    }
+
+    /// A stored assignment can name a provider that is gone. Show the
+    /// built-in row instead of an empty picker.
+    private var selectedID: UUID {
+        providers.contains { $0.id == assignment.providerID }
+            ? assignment.providerID
+            : LLMProviderStore.builtInOllamaID
+    }
+
+    var body: some View {
+        Picker(title, selection: Binding(
+            get: { selectedID },
+            set: { newID in
+                let model = providers.first { $0.id == newID }?.defaultModel ?? ""
+                assignment = LLMTaskAssignment(providerID: newID, model: model)
+                LLMProviderStore.setAssignment(assignment, for: task)
+            })) {
+            ForEach(providers) { provider in
+                Text("\(provider.label) · \(provider.defaultModel)").tag(provider.id)
+            }
+        }
+        // The provider list changes under us (add/edit/remove rewrites
+        // assignments), so re-read the stored choice instead of trusting
+        // the value this row started with.
+        .onChange(of: providers) { assignment = LLMProviderStore.assignment(for: task) }
+    }
+}
+
+/// Add or edit one provider. The key goes straight to the Keychain on save;
+/// the sheet never re-displays a stored key.
+private struct ProviderEditSheet: View {
+    let provider: LLMProviderConfig?
+    let onSave: (LLMProviderConfig) -> Void
+    @Environment(\.dismiss) private var dismiss
+
+    private struct Preset {
+        let name: String
+        let kind: LLMProviderKind
+        let baseURL: String
+    }
+    private static let presets: [Preset] = [
+        Preset(name: "Anthropic", kind: .anthropic, baseURL: "https://api.anthropic.com"),
+        Preset(name: "OpenAI", kind: .openAICompatible, baseURL: "https://api.openai.com/v1"),
+        Preset(name: "OpenRouter", kind: .openAICompatible, baseURL: "https://openrouter.ai/api/v1"),
+        Preset(name: "Grok (xAI)", kind: .openAICompatible, baseURL: "https://api.x.ai/v1"),
+        Preset(name: "Groq", kind: .openAICompatible, baseURL: "https://api.groq.com/openai/v1"),
+    ]
+
+    @State private var presetIndex = 0
+    @State private var label = ""
+    @State private var baseURL = ProviderEditSheet.presets[0].baseURL
+    @State private var modelID = ""
+    @State private var apiKey = ""
+    @State private var useOAuth = false
+    @State private var models: [String] = []
+    @State private var status = ""
+
+    private var kind: LLMProviderKind { Self.presets[presetIndex].kind }
+    private var oauthVendor: LLMOAuthVendor? {
+        switch Self.presets[presetIndex].name {
+        case "Anthropic": return .claude
+        case "OpenAI": return .chatGPT
+        default: return nil
+        }
+    }
+
+    /// Demo and UI-test processes never touch the Keychain, so a pasted key
+    /// would be dropped without a word. Block saving there instead.
+    private var canStoreSecrets: Bool {
+        OAuthConfig.usesKeychain(environment: ProcessInfo.processInfo.environment)
+    }
+
+    private var saveDisabled: Bool {
+        !canStoreSecrets || label.isEmpty || modelID.isEmpty
+            || (!useOAuth && apiKey.isEmpty && provider == nil)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            Text(provider == nil ? "Add provider" : "Edit provider").font(.headline)
+            Picker("Preset", selection: $presetIndex) {
+                ForEach(Self.presets.indices, id: \.self) { i in
+                    Text(Self.presets[i].name).tag(i)
+                }
+            }
+            .onChange(of: presetIndex) {
+                baseURL = Self.presets[presetIndex].baseURL
+                if label.isEmpty { label = Self.presets[presetIndex].name }
+                if oauthVendor == nil { useOAuth = false }
+            }
+            TextField("Label", text: $label)
+            TextField("Base URL", text: $baseURL)
+            if let vendor = oauthVendor {
+                Toggle("Sign in with \(vendor == .claude ? "Claude" : "ChatGPT") instead of a key",
+                       isOn: $useOAuth)
+            }
+            if !useOAuth {
+                SecureField("API key", text: $apiKey)
+            }
+            HStack {
+                TextField("Model", text: $modelID)
+                Button("Fetch models") { Task { await fetchModels() } }
+                    .disabled(!canStoreSecrets)
+            }
+            if !models.isEmpty {
+                Picker("Available", selection: $modelID) {
+                    ForEach(models, id: \.self) { Text($0).tag($0) }
+                }
+            }
+            if !canStoreSecrets {
+                Text("This build cannot store keys. Quit and run make run DEMO=0 to add a provider.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            if !status.isEmpty {
+                Text(status).font(.caption).foregroundStyle(.secondary)
+            }
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                Button("Save") { Task { await save() } }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(saveDisabled)
+            }
+        }
+        .padding(20)
+        .frame(width: 420)
+        .onAppear {
+            guard let existing = provider else { return }
+            label = existing.label
+            baseURL = existing.baseURL
+            modelID = existing.defaultModel
+            presetIndex = Self.presets.firstIndex { $0.baseURL == existing.baseURL }
+                ?? Self.presets.firstIndex { $0.kind == existing.kind }
+                ?? 0
+            if case .oauth = existing.authMode { useOAuth = true }
+        }
+    }
+
+    private func currentConfig(id: UUID) -> LLMProviderConfig {
+        LLMProviderConfig(
+            id: id, kind: kind, label: label, baseURL: baseURL, defaultModel: modelID,
+            authMode: useOAuth ? .oauth(oauthVendor ?? .claude) : .apiKey)
+    }
+
+    private func fetchModels() async {
+        guard canStoreSecrets else { return }
+        status = "Fetching…"
+        let id = provider?.id ?? UUID()
+        if !useOAuth, !apiKey.isEmpty {
+            try? Keychain.set(apiKey, forKey: LLMProviderStore.keychainKey(for: id))
+        }
+        do {
+            models = try await LLMClient.shared.listModels(config: currentConfig(id: id))
+            status = models.isEmpty ? "No models returned." : "Found \(models.count) models."
+        } catch {
+            status = error.localizedDescription
+        }
+    }
+
+    private func save() async {
+        guard canStoreSecrets else { return }
+        let id = provider?.id ?? UUID()
+        let config = currentConfig(id: id)
+        do {
+            if useOAuth, let vendor = oauthVendor {
+                status = "Waiting for browser sign-in…"
+                try await LLMOAuthFlow.signIn(vendor: vendor, providerID: id)
+            } else if !apiKey.isEmpty {
+                try Keychain.set(apiKey, forKey: LLMProviderStore.keychainKey(for: id))
+            }
+            var list = LLMProviderStore.load().filter { $0.id != id }
+            list.append(config)
+            LLMProviderStore.save(list)
+            onSave(config)
+            dismiss()
+        } catch {
+            status = error.localizedDescription
         }
     }
 }
