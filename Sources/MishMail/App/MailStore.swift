@@ -318,6 +318,9 @@ final class MailStore {
     var checkedThreadIds: Set<String> = []
     /// Anchor for shift-click range select on checkboxes.
     private var lastCheckedThreadId: String?
+    /// Sticky anchor for shift+↑/↓ range select. Set on the first shifted
+    /// arrow press; cleared by any other selection change (see selectThread).
+    private var shiftSelectAnchorId: String?
     /// Cancels in-flight neighbor header/body warm when selection moves.
     @ObservationIgnored
     private var neighborPrefetchTask: Task<Void, Never>?
@@ -1472,6 +1475,7 @@ struct ComposeRequest: Identifiable {
     func clearCheckedThreads() {
         checkedThreadIds.removeAll()
         lastCheckedThreadId = nil
+        shiftSelectAnchorId = nil
         // Uncheck all: drop thread-long pins that were only retained by check.
         applyThreadLongStarPinDrops(selectionIntent: nil)
     }
@@ -2691,6 +2695,9 @@ struct ComposeRequest: Identifiable {
                     self.checkedThreadIds = self.checkedThreadIds.intersection(visible)
                     if let last = self.lastCheckedThreadId, !visible.contains(last) {
                         self.lastCheckedThreadId = nil
+                    }
+                    if let anchor = self.shiftSelectAnchorId, !visible.contains(anchor) {
+                        self.shiftSelectAnchorId = nil
                     }
                 }
                 // Keep expanded window across sync/star reloads; search never pages.
@@ -4372,7 +4379,26 @@ struct ComposeRequest: Identifiable {
             scheduleNeighborPrefetch(openedId: id)
         }
         setSelectionFocus(id, intent: intent)
+        // Any non-shift-arrow selection change ends the shift+arrow gesture;
+        // extendSelection re-arms the anchor right after this call.
+        shiftSelectAnchorId = nil
         interval.end(extraMeta: id == nil ? "cleared" : "selected")
+    }
+
+    /// Shift+↑/↓: extend the multi-select checked range from the sticky
+    /// gesture anchor (Gmail/Finder-style), moving list focus with it.
+    func extendSelection(_ delta: Int) {
+        guard let result = ShiftArrowSelection.extend(
+            order: selectionOrder, checked: checkedThreadIds,
+            anchor: shiftSelectAnchorId, focus: selectedThreadId,
+            delta: delta) else { return }
+        checkedThreadIds = result.checked
+        // Keep shift-click continuity: the next shift-click ranges from the
+        // row this gesture ended on.
+        lastCheckedThreadId = result.focusId
+        selectThread(result.focusId, intent: .browse)
+        shiftSelectAnchorId = result.anchorId
+        applyThreadLongStarPinDrops(selectionIntent: nil)
     }
 
     private func setSelectionFocus(_ id: String?, intent: ThreadSelectionIntent) {

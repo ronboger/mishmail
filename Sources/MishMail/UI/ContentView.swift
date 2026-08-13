@@ -1137,13 +1137,21 @@ private extension ContentView {
             case 124:  // right — reveal the sidebar
                 withAnimation { sidebarHidden = false }
                 return nil
-            case 125:  // down
+            case 125:  // down (⇧↓ extends the multi-select range)
                 browseKeyIsRepeat = event.isARepeat
-                store.moveSelection(1, intent: .browse)
+                if event.modifierFlags.contains(.shift) {
+                    store.extendSelection(1)
+                } else {
+                    store.moveSelection(1, intent: .browse)
+                }
                 return nil
-            case 126:  // up
+            case 126:  // up (⇧↑ extends the multi-select range)
                 browseKeyIsRepeat = event.isARepeat
-                store.moveSelection(-1, intent: .browse)
+                if event.modifierFlags.contains(.shift) {
+                    store.extendSelection(-1)
+                } else {
+                    store.moveSelection(-1, intent: .browse)
+                }
                 return nil
             case 36:   // return
                 if let thread = store.selectedThread {

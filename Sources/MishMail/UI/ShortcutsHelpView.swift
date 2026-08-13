@@ -15,6 +15,7 @@ struct ShortcutsHelpView: View {
         ]),
         ("Other", [
             ("↑ / ↓", "Browse conversations"),
+            ("⇧↑ / ⇧↓", "Select a range of conversations"),
             ("← / →", "Hide / show sidebar"),
             ("Return", "Open conversation"),
             ("⇧I", "Mark as read (unread if already read)"),
