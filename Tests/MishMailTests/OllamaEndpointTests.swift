@@ -43,6 +43,15 @@ final class OllamaEndpointTests: XCTestCase {
         Ollama.allowRemoteEndpoint = true
         XCTAssertNoThrow(try Ollama.validateEndpoint(url))
     }
+
+    func testEnabledModelsFiltersDisabled() {
+        let saved = Ollama.disabledModels
+        defer { Ollama.disabledModels = saved }
+        Ollama.disabledModels = ["llama3.2"]
+        XCTAssertEqual(Ollama.enabledModels(installed: ["llama3.2", "qwen3"]), ["qwen3"])
+        Ollama.disabledModels = []
+        XCTAssertEqual(Ollama.enabledModels(installed: ["llama3.2"]), ["llama3.2"])
+    }
 }
 
 extension Ollama.OllamaError: Equatable {

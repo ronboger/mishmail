@@ -1561,6 +1561,14 @@ struct AISettings: View {
     @State private var addingProvider = false
     @State private var usage: [LLMUsageLog.TaskSpend] = []
     @State private var showingClearUsageAlert = false
+    /// Models installed in the local Ollama, from /api/tags. Empty when
+    /// Ollama is not running.
+    @State private var ollamaModels: [String] = []
+    @State private var ollamaListError = ""
+    @State private var disabledOllama = Ollama.disabledModels
+    /// Per-vendor sign-in progress line ("Waiting for browser…", errors).
+    @State private var vendorStatus: [LLMOAuthVendor: String] = [:]
+    @State private var connectingVendor: LLMOAuthVendor?
 
     private var endpointIsRemote: Bool {
         guard let host = URL(string: url)?.host?.lowercased() else { return false }
@@ -1579,12 +1587,38 @@ struct AISettings: View {
                         Toggle("Allow remote Ollama (sends mail content over HTTPS)", isOn: $allowRemote)
                             .onChange(of: allowRemote) { Ollama.allowRemoteEndpoint = allowRemote }
                     }
+                    if !ollamaModels.isEmpty {
+                        ForEach(ollamaModels, id: \.self) { name in
+                            Toggle(name, isOn: Binding(
+                                get: { !disabledOllama.contains(name) },
+                                set: { enabled in
+                                    if enabled { disabledOllama.remove(name) }
+                                    else { disabledOllama.insert(name) }
+                                    Ollama.disabledModels = disabledOllama
+                                }))
+                        }
+                    } else if !ollamaListError.isEmpty {
+                        Text(ollamaListError).font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("Refresh installed models") { Task { await loadOllamaModels() } }
+                        .buttonStyle(.borderless)
                 } header: {
                     Text("Local AI drafting (Ollama)")
                 } footer: {
                     Text(endpointIsRemote
                          ? "This URL is not on this Mac. MishMail will only send message content there if you enable the toggle above, and only over HTTPS."
                          : "AI drafting runs entirely on this Mac via Ollama. Install from ollama.com, then run: ollama pull \(model). The Draft with AI button appears when replying.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    ForEach([LLMOAuthVendor.claude, .chatGPT, .grok], id: \.self) { vendor in
+                        subscriptionRow(vendor)
+                    }
+                } header: {
+                    Text("Subscriptions")
+                } footer: {
+                    Text("One click signs you in with your existing subscription and pulls the model list. No API key is needed.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -1615,13 +1649,14 @@ struct AISettings: View {
                 } header: {
                     Text("Model providers")
                 } footer: {
-                    Text("Add your own API keys, or sign in with a Claude or ChatGPT subscription. Keys stay in your Keychain.")
+                    Text("Add your own API keys here (OpenRouter, Groq, custom endpoints). Keys stay in your Keychain. Subscriptions connect in the section above.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
                 Section {
                     ForEach(LLMTask.allCases, id: \.self) { task in
-                        TaskModelPicker(task: task, providers: providers)
+                        TaskModelPicker(task: task, providers: providers,
+                                        ollamaModels: Ollama.enabledModels(installed: ollamaModels))
                     }
                 } header: {
                     Text("Model per task")
@@ -1681,6 +1716,7 @@ struct AISettings: View {
             }
             .onAppear {
                 loadUsage()
+                Task { await loadOllamaModels() }
             }
             .alert("Clear usage data?", isPresented: $showingClearUsageAlert) {
                 Button("Clear", role: .destructive) { clearUsage() }
@@ -1688,6 +1724,112 @@ struct AISettings: View {
             } message: {
                 Text("This removes all saved model usage data.")
             }
+        }
+    }
+
+    @ViewBuilder
+    private func subscriptionRow(_ vendor: LLMOAuthVendor) -> some View {
+        let preset = LLMProviderStore.subscriptionPreset(for: vendor)
+        let connected = LLMProviderStore.subscriptionProvider(for: vendor, in: providers)
+        HStack {
+            VStack(alignment: .leading, spacing: 2) {
+                Text(preset.label)
+                if let status = vendorStatus[vendor], !status.isEmpty {
+                    Text(status).font(.caption).foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                } else if let connected {
+                    Text("Connected · \(connected.models?.count ?? 1) models")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+            }
+            Spacer()
+            if connectingVendor == vendor {
+                ProgressView().controlSize(.small)
+            } else if let connected {
+                Button("Refresh models") { Task { await refreshModels(for: connected) } }
+                    .buttonStyle(.borderless)
+                Button("Sign out") { disconnect(connected) }
+                    .buttonStyle(.borderless)
+            } else {
+                Button("Sign in with \(preset.label)") { Task { await connect(vendor) } }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.small)
+                    .disabled(connectingVendor != nil)
+            }
+        }
+    }
+
+    /// One-click subscription connect: OAuth sign-in, then pull the model
+    /// list. A failed listing falls back to known model names — the sign-in
+    /// itself must still land.
+    private func connect(_ vendor: LLMOAuthVendor) async {
+        let preset = LLMProviderStore.subscriptionPreset(for: vendor)
+        connectingVendor = vendor
+        vendorStatus[vendor] = vendor == .grok
+            ? "Requesting device code…" : "Waiting for browser sign-in…"
+        defer { connectingVendor = nil }
+        let id = UUID()
+        var config = LLMProviderConfig(
+            id: id, kind: preset.kind, label: preset.label, baseURL: preset.baseURL,
+            defaultModel: preset.fallbackModels[0], authMode: .oauth(vendor))
+        do {
+            try await LLMOAuthFlow.signIn(vendor: vendor, providerID: id) { code, uri in
+                vendorStatus[vendor] = "Enter code \(code) at \(uri)"
+            }
+        } catch {
+            vendorStatus[vendor] = error.localizedDescription
+            return
+        }
+        vendorStatus[vendor] = "Fetching models…"
+        let fetched = (try? await LLMClient.shared.listModels(config: config)) ?? []
+        config.models = fetched.isEmpty ? preset.fallbackModels : fetched.sorted()
+        if let models = config.models, !models.contains(config.defaultModel) {
+            config.defaultModel = models[0]
+        }
+        var list = LLMProviderStore.load().filter { $0.id != id }
+        list.append(config)
+        LLMProviderStore.save(list)
+        providers = LLMProviderStore.load()
+        vendorStatus[vendor] = fetched.isEmpty
+            ? "Connected. Model listing not offered here; using known models." : ""
+    }
+
+    private func refreshModels(for provider: LLMProviderConfig) async {
+        guard case .oauth(let vendor) = provider.authMode else { return }
+        vendorStatus[vendor] = "Fetching models…"
+        do {
+            let fetched = try await LLMClient.shared.listModels(config: provider)
+            guard !fetched.isEmpty else {
+                vendorStatus[vendor] = "The provider returned no models."
+                return
+            }
+            var updated = provider
+            updated.models = fetched.sorted()
+            if !fetched.contains(updated.defaultModel) { updated.defaultModel = fetched[0] }
+            var list = LLMProviderStore.load().filter { $0.id != provider.id }
+            list.append(updated)
+            LLMProviderStore.save(list)
+            providers = LLMProviderStore.load()
+            vendorStatus[vendor] = ""
+        } catch {
+            vendorStatus[vendor] = error.localizedDescription
+        }
+    }
+
+    private func disconnect(_ provider: LLMProviderConfig) {
+        if case .oauth(let vendor) = provider.authMode { vendorStatus[vendor] = "" }
+        remove(provider)
+    }
+
+    private func loadOllamaModels() async {
+        do {
+            let installed = try await Ollama.installedModels()
+            ollamaModels = installed
+            ollamaListError = installed.isEmpty
+                ? "Ollama has no models installed. Run: ollama pull llama3.2" : ""
+        } catch {
+            ollamaModels = []
+            ollamaListError = "Couldn't reach Ollama at \(Ollama.baseURL)."
         }
     }
 
@@ -1752,17 +1894,41 @@ struct AISettings: View {
     }
 }
 
-/// One row of "Model per task": pick the provider a feature uses. The model
-/// follows the provider's default model.
+/// One row of "Model per task": pick the exact provider + model a feature
+/// uses. Subscription providers list their fetched models; Ollama lists the
+/// locally installed (and not disabled) ones.
 private struct TaskModelPicker: View {
+    struct Entry: Hashable {
+        let providerID: UUID
+        let model: String
+        let label: String
+    }
+
     let task: LLMTask
     let providers: [LLMProviderConfig]
+    let ollamaModels: [String]
     @State private var assignment: LLMTaskAssignment
 
-    init(task: LLMTask, providers: [LLMProviderConfig]) {
+    init(task: LLMTask, providers: [LLMProviderConfig], ollamaModels: [String]) {
         self.task = task
         self.providers = providers
+        self.ollamaModels = ollamaModels
         _assignment = State(initialValue: LLMProviderStore.assignment(for: task))
+    }
+
+    private var entries: [Entry] {
+        providers.flatMap { provider -> [Entry] in
+            let models: [String]
+            if provider.kind == .ollama {
+                // Keep the stored default visible even if Ollama is down.
+                models = ollamaModels.isEmpty ? [provider.defaultModel] : ollamaModels
+            } else {
+                models = provider.models ?? [provider.defaultModel]
+            }
+            return models.map {
+                Entry(providerID: provider.id, model: $0, label: "\(provider.label) · \($0)")
+            }
+        }
     }
 
     private var title: String {
@@ -1774,24 +1940,30 @@ private struct TaskModelPicker: View {
         }
     }
 
-    /// A stored assignment can name a provider that is gone. Show the
-    /// built-in row instead of an empty picker.
-    private var selectedID: UUID {
-        providers.contains { $0.id == assignment.providerID }
-            ? assignment.providerID
-            : LLMProviderStore.builtInOllamaID
+    /// A stored assignment can name a provider or model that is gone. Fall
+    /// back to that provider's first entry, then to the built-in Ollama row.
+    private var selected: Entry {
+        let all = entries
+        if let exact = all.first(where: {
+            $0.providerID == assignment.providerID && $0.model == assignment.model
+        }) { return exact }
+        if let sameProvider = all.first(where: { $0.providerID == assignment.providerID }) {
+            return sameProvider
+        }
+        return all.first(where: { $0.providerID == LLMProviderStore.builtInOllamaID })
+            ?? Entry(providerID: LLMProviderStore.builtInOllamaID,
+                     model: Ollama.model, label: "Ollama (local) · \(Ollama.model)")
     }
 
     var body: some View {
         Picker(title, selection: Binding(
-            get: { selectedID },
-            set: { newID in
-                let model = providers.first { $0.id == newID }?.defaultModel ?? ""
-                assignment = LLMTaskAssignment(providerID: newID, model: model)
+            get: { selected },
+            set: { entry in
+                assignment = LLMTaskAssignment(providerID: entry.providerID, model: entry.model)
                 LLMProviderStore.setAssignment(assignment, for: task)
             })) {
-            ForEach(providers) { provider in
-                Text("\(provider.label) · \(provider.defaultModel)").tag(provider.id)
+            ForEach(entries, id: \.self) { entry in
+                Text(entry.label).tag(entry)
             }
         }
         // The provider list changes under us (add/edit/remove rewrites
