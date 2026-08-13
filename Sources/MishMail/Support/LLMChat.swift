@@ -101,4 +101,70 @@ enum LLMEndpoint {
             throw ValidationError.insecure(url.absoluteString)
         }
     }
+
+    /// Drops trailing slashes so path joining never produces "//".
+    static func trimmedBase(_ raw: String) -> String {
+        var base = raw
+        while base.hasSuffix("/") { base.removeLast() }
+        return base
+    }
+
+    /// Chat/completions URL string for one provider kind. A base that already
+    /// ends in "/v1" is not given a second "/v1".
+    static func chatPath(kind: LLMProviderKind, base rawBase: String) -> String {
+        let base = trimmedBase(rawBase)
+        switch kind {
+        case .openAICompatible:
+            return base.hasSuffix("/v1") ? "\(base)/chat/completions" : "\(base)/v1/chat/completions"
+        case .anthropic:
+            return base.hasSuffix("/v1") ? "\(base)/messages" : "\(base)/v1/messages"
+        case .ollama:
+            return "\(base)/api/chat"
+        }
+    }
+
+    /// Model-listing URL string for one provider kind.
+    static func modelsPath(kind: LLMProviderKind, base rawBase: String) -> String {
+        let base = trimmedBase(rawBase)
+        switch kind {
+        case .ollama:
+            return "\(base)/api/tags"
+        case .anthropic, .openAICompatible:
+            return base.hasSuffix("/v1") ? "\(base)/models" : "\(base)/v1/models"
+        }
+    }
+
+    /// Model names out of a decoded listing payload: Ollama `/api/tags` uses
+    /// `models[].name`; OpenAI and Anthropic use `data[].id`. Anything else
+    /// gives an empty list, so a malformed body is not an error.
+    static func modelNames(fromJSONObject object: Any?) -> [String] {
+        guard let root = object as? [String: Any] else { return [] }
+        if let models = root["models"] as? [[String: Any]] {
+            return models.compactMap { $0["name"] as? String }.sorted()
+        }
+        if let rows = root["data"] as? [[String: Any]] {
+            return rows.compactMap { $0["id"] as? String }.sorted()
+        }
+        return []
+    }
+}
+
+/// Keeps a stream to exactly one `.done`: every batch of parsed events goes
+/// through `accept`, which drops any `.done` after the first and records that
+/// one was seen. Callers use `sawDone` to decide whether an end-of-body flush
+/// is still needed.
+struct LLMDoneDeduper {
+    private(set) var sawDone = false
+
+    mutating func accept(_ events: [LLMEvent]) -> [LLMEvent] {
+        var out: [LLMEvent] = []
+        for event in events {
+            if case .done = event {
+                if sawDone { continue }
+                sawDone = true
+            }
+            out.append(event)
+        }
+        return out
+    }
 }

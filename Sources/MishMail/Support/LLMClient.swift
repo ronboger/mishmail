@@ -24,6 +24,12 @@ enum LLMClientError: LocalizedError {
 actor LLMClient {
     static let shared = LLMClient()
 
+    /// One in-flight refresh per provider. The actor is reentrant across
+    /// awaits, so two concurrent streams would otherwise both POST the same
+    /// refresh token. OpenAI rotates the refresh token on use, which makes the
+    /// second POST fail and destroys the sign-in. Callers join instead.
+    private var refreshTasks: [UUID: Task<Void, Error>] = [:]
+
     func stream(messages: [LLMMessage], tools: [LLMToolSpec],
                 config: LLMProviderConfig, model: String) -> AsyncThrowingStream<LLMEvent, Error> {
         AsyncThrowingStream { continuation in
@@ -95,38 +101,28 @@ actor LLMClient {
                       consume: (String) -> [LLMEvent],
                       finalFlush: () -> [LLMEvent],
                       yield: @Sendable (LLMEvent) -> Void) async throws {
-        var sawDone = false
+        var deduper = LLMDoneDeduper()
         func emit(_ events: [LLMEvent]) {
-            for event in events {
-                if case .done = event {
-                    if sawDone { continue }
-                    sawDone = true
-                }
-                yield(event)
-            }
+            for event in deduper.accept(events) { yield(event) }
         }
         for try await line in bytes.lines {
             emit(consume(line))
         }
-        if !sawDone { emit(finalFlush()) }
-        if !sawDone { emit([.done(stopReason: "stop", usage: nil)]) }
+        if !deduper.sawDone { emit(finalFlush()) }
+        if !deduper.sawDone { emit([.done(stopReason: "stop", usage: nil)]) }
     }
 
     private func buildRequest(messages: [LLMMessage], tools: [LLMToolSpec],
                               config: LLMProviderConfig, model: String) async throws -> URLRequest {
-        let base = Self.trimmedBase(config.baseURL)
-        let path: String
+        let path = LLMEndpoint.chatPath(kind: config.kind, base: config.baseURL)
         let body: Data
         switch config.kind {
         case .openAICompatible:
-            path = base.hasSuffix("/v1") ? "\(base)/chat/completions" : "\(base)/v1/chat/completions"
             body = try OpenAIWire.requestBody(model: model, messages: messages, tools: tools)
         case .anthropic:
-            path = "\(base)/v1/messages"
             body = try AnthropicWire.requestBody(model: model, messages: messages,
                                                  tools: tools, maxTokens: 8192)
         case .ollama:
-            path = "\(base)/api/chat"
             body = try OllamaChatWire.requestBody(model: model, messages: messages, tools: tools)
         }
         guard let url = URL(string: path) else { throw LLMClientError.http(0) }
@@ -140,10 +136,6 @@ actor LLMClient {
         return request
     }
 
-    private static func trimmedBase(_ raw: String) -> String {
-        raw.hasSuffix("/") ? String(raw.dropLast()) : raw
-    }
-
     private func applyAuth(to request: inout URLRequest, config: LLMProviderConfig) throws {
         if config.kind == .ollama { return } // local, keyless
         guard OAuthConfig.usesKeychain(environment: ProcessInfo.processInfo.environment) else {
@@ -151,8 +143,7 @@ actor LLMClient {
         }
         switch config.authMode {
         case .apiKey:
-            guard case .value(let key) = Keychain.read(LLMProviderStore.keychainKey(for: config.id))
-            else { throw LLMClientError.missingCredential }
+            let key = try Self.requiredSecret(LLMProviderStore.keychainKey(for: config.id))
             switch config.kind {
             case .anthropic:
                 request.setValue(key, forHTTPHeaderField: "x-api-key")
@@ -161,9 +152,7 @@ actor LLMClient {
                 request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
             }
         case .oauth:
-            guard let tokens = storedTokens(providerID: config.id) else {
-                throw LLMClientError.missingCredential
-            }
+            let tokens = try requiredTokens(providerID: config.id)
             request.setValue("Bearer \(tokens.accessToken)", forHTTPHeaderField: "Authorization")
             if config.kind == .anthropic {
                 request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
@@ -172,23 +161,48 @@ actor LLMClient {
         }
     }
 
-    private func storedTokens(providerID: UUID) -> LLMOAuthTokens? {
-        guard case .value(let json) = Keychain.read(LLMProviderStore.oauthKeychainKey(for: providerID))
-        else { return nil }
-        return try? JSONDecoder().decode(LLMOAuthTokens.self, from: Data(json.utf8))
+    /// A locked or otherwise unreadable Keychain is not a missing credential:
+    /// reporting it as one would tell the user to sign in again and throw away
+    /// a sign-in that is still there.
+    private static func requiredSecret(_ key: String) throws -> String {
+        switch Keychain.read(key) {
+        case .value(let value): return value
+        case .notFound: throw LLMClientError.missingCredential
+        case .unavailable: throw LLMClientError.keychainUnavailable
+        }
+    }
+
+    private func requiredTokens(providerID: UUID) throws -> LLMOAuthTokens {
+        let json = try Self.requiredSecret(LLMProviderStore.oauthKeychainKey(for: providerID))
+        guard let tokens = try? JSONDecoder().decode(LLMOAuthTokens.self, from: Data(json.utf8))
+        else { throw LLMClientError.missingCredential }
+        return tokens
     }
 
     private func storedTokensAreExpired(providerID: UUID) -> Bool {
         guard OAuthConfig.usesKeychain(environment: ProcessInfo.processInfo.environment),
-              let tokens = storedTokens(providerID: providerID) else { return false }
+              let tokens = try? requiredTokens(providerID: providerID) else { return false }
         return tokens.isExpired()
     }
 
+    /// Joins the in-flight refresh for this provider, or starts one. The stored
+    /// task outlives any single caller's cancellation, so a cancelled stream
+    /// cannot leave a half-done rotation behind.
     private func refreshTokens(vendor: LLMOAuthVendor, providerID: UUID) async throws {
+        if let inFlight = refreshTasks[providerID] {
+            return try await inFlight.value
+        }
+        let task = Task { try await self.performRefresh(vendor: vendor, providerID: providerID) }
+        refreshTasks[providerID] = task
+        defer { refreshTasks[providerID] = nil }
+        try await task.value
+    }
+
+    private func performRefresh(vendor: LLMOAuthVendor, providerID: UUID) async throws {
         let key = LLMProviderStore.oauthKeychainKey(for: providerID)
         // No refresh token means refresh is impossible; the user must sign in again.
-        guard let tokens = storedTokens(providerID: providerID),
-              let refreshToken = tokens.refreshToken, !refreshToken.isEmpty
+        let tokens = try requiredTokens(providerID: providerID)
+        guard let refreshToken = tokens.refreshToken, !refreshToken.isEmpty
         else { throw LLMClientError.missingCredential }
         let form = LLMOAuth.refreshRequestForm(vendor: vendor, refreshToken: refreshToken)
         let data = try await Self.postForm(LLMOAuth.constants(for: vendor).tokenURL, form)
@@ -200,29 +214,30 @@ actor LLMClient {
 
     /// Model listing for the Settings "Fetch models" button.
     func listModels(config: LLMProviderConfig) async throws -> [String] {
-        let base = Self.trimmedBase(config.baseURL)
-        let path: String
-        switch config.kind {
-        case .ollama: path = "\(base)/api/tags"
-        case .anthropic: path = "\(base)/v1/models"
-        case .openAICompatible:
-            path = base.hasSuffix("/v1") ? "\(base)/models" : "\(base)/v1/models"
+        // Same OAuth handling as `stream`: refresh an already-expired token up
+        // front, and refresh once more on a 401 before one retry.
+        if case .oauth(let vendor) = config.authMode,
+           storedTokensAreExpired(providerID: config.id) {
+            try? await refreshTokens(vendor: vendor, providerID: config.id)
         }
+        return try await runListModels(config: config, allowRefresh: true)
+    }
+
+    private func runListModels(config: LLMProviderConfig,
+                               allowRefresh: Bool) async throws -> [String] {
+        let path = LLMEndpoint.modelsPath(kind: config.kind, base: config.baseURL)
         guard let url = URL(string: path) else { throw LLMClientError.http(0) }
         try LLMEndpoint.validate(url)
         var request = URLRequest(url: url)
         try applyAuth(to: &request, config: config)
         let (data, response) = try await URLSession.shared.data(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+        if status == 401, allowRefresh, case .oauth(let vendor) = config.authMode {
+            try await refreshTokens(vendor: vendor, providerID: config.id)
+            return try await runListModels(config: config, allowRefresh: false)
+        }
         guard (200..<300).contains(status) else { throw LLMClientError.http(status) }
-        let object = try JSONSerialization.jsonObject(with: data) as? [String: Any] ?? [:]
-        if let models = object["models"] as? [[String: Any]] { // Ollama /api/tags
-            return models.compactMap { $0["name"] as? String }.sorted()
-        }
-        if let rows = object["data"] as? [[String: Any]] { // OpenAI + Anthropic
-            return rows.compactMap { $0["id"] as? String }.sorted()
-        }
-        return []
+        return LLMEndpoint.modelNames(fromJSONObject: try? JSONSerialization.jsonObject(with: data))
     }
 
     static func postForm(_ urlString: String, _ form: [String: String]) async throws -> Data {

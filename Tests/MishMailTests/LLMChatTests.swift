@@ -23,4 +23,107 @@ final class LLMChatTests: XCTestCase {
     func testEndpointValidationAllowsRemoteHTTPS() throws {
         try LLMEndpoint.validate(URL(string: "https://api.x.ai/v1")!)
     }
+
+    // MARK: - Path derivation
+
+    func testChatPathForBareBaseURLs() {
+        XCTAssertEqual(LLMEndpoint.chatPath(kind: .openAICompatible, base: "https://api.x.ai"),
+                       "https://api.x.ai/v1/chat/completions")
+        XCTAssertEqual(LLMEndpoint.chatPath(kind: .anthropic, base: "https://api.anthropic.com"),
+                       "https://api.anthropic.com/v1/messages")
+        XCTAssertEqual(LLMEndpoint.chatPath(kind: .ollama, base: "http://127.0.0.1:11434"),
+                       "http://127.0.0.1:11434/api/chat")
+    }
+
+    func testChatPathDoesNotDoubleTheV1Segment() {
+        XCTAssertEqual(LLMEndpoint.chatPath(kind: .openAICompatible, base: "https://api.x.ai/v1"),
+                       "https://api.x.ai/v1/chat/completions")
+        XCTAssertEqual(LLMEndpoint.chatPath(kind: .anthropic, base: "https://api.anthropic.com/v1"),
+                       "https://api.anthropic.com/v1/messages")
+        XCTAssertEqual(LLMEndpoint.chatPath(kind: .ollama, base: "http://127.0.0.1:11434/v1"),
+                       "http://127.0.0.1:11434/v1/api/chat")
+    }
+
+    func testModelsPathForBareAndV1SuffixedBaseURLs() {
+        XCTAssertEqual(LLMEndpoint.modelsPath(kind: .openAICompatible, base: "https://api.x.ai"),
+                       "https://api.x.ai/v1/models")
+        XCTAssertEqual(LLMEndpoint.modelsPath(kind: .openAICompatible, base: "https://api.x.ai/v1"),
+                       "https://api.x.ai/v1/models")
+        XCTAssertEqual(LLMEndpoint.modelsPath(kind: .anthropic, base: "https://api.anthropic.com"),
+                       "https://api.anthropic.com/v1/models")
+        XCTAssertEqual(LLMEndpoint.modelsPath(kind: .anthropic, base: "https://api.anthropic.com/v1"),
+                       "https://api.anthropic.com/v1/models")
+        XCTAssertEqual(LLMEndpoint.modelsPath(kind: .ollama, base: "http://127.0.0.1:11434"),
+                       "http://127.0.0.1:11434/api/tags")
+        XCTAssertEqual(LLMEndpoint.modelsPath(kind: .ollama, base: "http://127.0.0.1:11434/v1"),
+                       "http://127.0.0.1:11434/v1/api/tags")
+    }
+
+    func testPathsTrimTrailingSlashesFromTheBaseURL() {
+        XCTAssertEqual(LLMEndpoint.chatPath(kind: .openAICompatible, base: "https://api.x.ai/v1/"),
+                       "https://api.x.ai/v1/chat/completions")
+        XCTAssertEqual(LLMEndpoint.chatPath(kind: .ollama, base: "http://127.0.0.1:11434//"),
+                       "http://127.0.0.1:11434/api/chat")
+        XCTAssertEqual(LLMEndpoint.modelsPath(kind: .anthropic, base: "https://api.anthropic.com/"),
+                       "https://api.anthropic.com/v1/models")
+        XCTAssertEqual(LLMEndpoint.modelsPath(kind: .ollama, base: "http://127.0.0.1:11434/"),
+                       "http://127.0.0.1:11434/api/tags")
+    }
+
+    // MARK: - Model-name extraction
+
+    func testModelNamesReadsOllamaTagsPayload() {
+        let object: Any = ["models": [["name": "qwen3:8b"], ["name": "llama3.2:3b"]]]
+        XCTAssertEqual(LLMEndpoint.modelNames(fromJSONObject: object), ["llama3.2:3b", "qwen3:8b"])
+    }
+
+    func testModelNamesReadsOpenAIDataPayload() {
+        let object: Any = ["data": [["id": "gpt-5.2"], ["id": "gpt-5.1-mini"]]]
+        XCTAssertEqual(LLMEndpoint.modelNames(fromJSONObject: object), ["gpt-5.1-mini", "gpt-5.2"])
+    }
+
+    func testModelNamesPrefersModelsOverDataAndSkipsRowsWithoutNames() {
+        let object: Any = ["models": [["name": "b"], ["size": 12], ["name": "a"]],
+                           "data": [["id": "ignored"]]]
+        XCTAssertEqual(LLMEndpoint.modelNames(fromJSONObject: object), ["a", "b"])
+    }
+
+    func testModelNamesReturnsEmptyForEmptyOrMalformedPayloads() {
+        XCTAssertEqual(LLMEndpoint.modelNames(fromJSONObject: nil), [])
+        XCTAssertEqual(LLMEndpoint.modelNames(fromJSONObject: [String: Any]()), [])
+        XCTAssertEqual(LLMEndpoint.modelNames(fromJSONObject: ["models": "not-an-array"]), [])
+        XCTAssertEqual(LLMEndpoint.modelNames(fromJSONObject: ["error": ["message": "nope"]]), [])
+        XCTAssertEqual(LLMEndpoint.modelNames(fromJSONObject: [1, 2, 3]), [])
+    }
+
+    // MARK: - Done dedupe
+
+    func testDoneDeduperPassesTokensThroughAndReportsNoDoneYet() {
+        var deduper = LLMDoneDeduper()
+        XCTAssertEqual(deduper.accept([.token("a"), .token("b")]), [.token("a"), .token("b")])
+        XCTAssertFalse(deduper.sawDone)
+    }
+
+    func testDoneDeduperKeepsTheFirstDoneAndDropsLaterOnes() {
+        var deduper = LLMDoneDeduper()
+        let first = deduper.accept([.token("a"), .done(stopReason: "stop", usage: nil)])
+        XCTAssertEqual(first, [.token("a"), .done(stopReason: "stop", usage: nil)])
+        XCTAssertTrue(deduper.sawDone)
+        XCTAssertEqual(deduper.accept([.done(stopReason: "tool_use", usage: nil)]), [])
+        XCTAssertTrue(deduper.sawDone)
+    }
+
+    func testDoneDeduperDropsTheSecondDoneInsideOneBatch() {
+        var deduper = LLMDoneDeduper()
+        let events: [LLMEvent] = [.done(stopReason: "stop", usage: nil),
+                                  .done(stopReason: "stop", usage: nil)]
+        XCTAssertEqual(deduper.accept(events), [.done(stopReason: "stop", usage: nil)])
+    }
+
+    func testDoneDeduperStillForwardsToolCallsAfterDone() {
+        var deduper = LLMDoneDeduper()
+        _ = deduper.accept([.done(stopReason: "stop", usage: nil)])
+        let call = LLMToolCall(id: "1", name: "search", argumentsJSON: "{}")
+        XCTAssertEqual(deduper.accept([.toolCall(call)]), [.toolCall(call)])
+    }
 }
