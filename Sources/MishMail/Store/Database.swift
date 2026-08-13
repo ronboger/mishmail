@@ -1455,6 +1455,11 @@ final class AppDatabase: @unchecked Sendable {
                 CREATE INDEX chatMessage_on_conversationId_createdAt
                 ON chatMessage (conversationId, createdAt)
                 """)
+            // The conversation picker lists newest first.
+            try db.execute(sql: """
+                CREATE INDEX chatConversation_on_updatedAt
+                ON chatConversation (updatedAt)
+                """)
         }
         return m
     }

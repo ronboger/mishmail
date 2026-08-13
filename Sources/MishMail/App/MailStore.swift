@@ -542,6 +542,21 @@ final class MailStore {
     }
     var showCommandPalette = false
     var showFilterMenu = false   // "+ Filter" popover (Ctrl-F)
+
+    /// Ask Mish side panel visibility.
+    var showAskMish = false
+    /// The Ask Mish agent loop. Created on first use, so a launch that never
+    /// opens the panel builds no chat state and starts no MCP bridge.
+    @ObservationIgnored
+    private(set) var askMishController: AskMishController?
+
+    func askMishControllerCreatingIfNeeded() -> AskMishController {
+        if let existing = askMishController { return existing }
+        let controller = AskMishController(store: self)
+        askMishController = controller
+        return controller
+    }
+
     var unreadCounts: [String: Int] = [:]   // sidebar badges
     var notice: String?                      // transient confirmation toast
     @ObservationIgnored
@@ -2117,6 +2132,10 @@ struct ComposeRequest: Identifiable {
         // Stop the MCP loopback listener before any DB shutdown so in-flight
         // tool handlers cannot race a closed SQLCipher pool.
         stopMCPServer()
+
+        // Cancel and await the Ask Mish turn for the same reason: its tool
+        // calls read and write the database.
+        await askMishController?.shutdown()
 
         // Refuse new maintenance (VACUUM / idle checkpoint) immediately so a
         // deferred startup tail cannot open a long write after we begin
