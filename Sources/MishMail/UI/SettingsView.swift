@@ -1748,6 +1748,13 @@ private struct ProviderEditSheet: View {
     @State private var useOAuth = false
     @State private var models: [String] = []
     @State private var status = ""
+    /// One id per sheet lifetime for a brand-new provider. Both fetchModels()
+    /// and save() must use it, or the key written before a fetch becomes
+    /// unreachable under a second, different UUID.
+    @State private var draftID = UUID()
+    /// onAppear sets presetIndex programmatically, which fires onChange. Suppress
+    /// the preset-applied reset once so a stored custom Base URL survives editing.
+    @State private var suppressPresetApply = false
 
     private var kind: LLMProviderKind { Self.presets[presetIndex].kind }
     private var oauthVendor: LLMOAuthVendor? {
@@ -1778,6 +1785,12 @@ private struct ProviderEditSheet: View {
                 }
             }
             .onChange(of: presetIndex) {
+                // A programmatic change from onAppear must not overwrite the
+                // stored Base URL of an existing provider.
+                if suppressPresetApply {
+                    suppressPresetApply = false
+                    return
+                }
                 baseURL = Self.presets[presetIndex].baseURL
                 if label.isEmpty { label = Self.presets[presetIndex].name }
                 if oauthVendor == nil { useOAuth = false }
@@ -1823,9 +1836,13 @@ private struct ProviderEditSheet: View {
             label = existing.label
             baseURL = existing.baseURL
             modelID = existing.defaultModel
-            presetIndex = Self.presets.firstIndex { $0.baseURL == existing.baseURL }
+            let matched = Self.presets.firstIndex { $0.baseURL == existing.baseURL }
                 ?? Self.presets.firstIndex { $0.kind == existing.kind }
                 ?? 0
+            if matched != presetIndex {
+                suppressPresetApply = true
+                presetIndex = matched
+            }
             if case .oauth = existing.authMode { useOAuth = true }
         }
     }
@@ -1839,7 +1856,7 @@ private struct ProviderEditSheet: View {
     private func fetchModels() async {
         guard canStoreSecrets else { return }
         status = "Fetching…"
-        let id = provider?.id ?? UUID()
+        let id = provider?.id ?? draftID
         if !useOAuth, !apiKey.isEmpty {
             try? Keychain.set(apiKey, forKey: LLMProviderStore.keychainKey(for: id))
         }
@@ -1853,7 +1870,7 @@ private struct ProviderEditSheet: View {
 
     private func save() async {
         guard canStoreSecrets else { return }
-        let id = provider?.id ?? UUID()
+        let id = provider?.id ?? draftID
         let config = currentConfig(id: id)
         do {
             if useOAuth, let vendor = oauthVendor {
