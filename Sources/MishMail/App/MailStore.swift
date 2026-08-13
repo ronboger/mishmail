@@ -4385,6 +4385,14 @@ struct ComposeRequest: Identifiable {
         interval.end(extraMeta: id == nil ? "cleared" : "selected")
     }
 
+    /// Home/End and ⌘↑/⌘↓: jump list focus to the first or last loaded
+    /// conversation. Only ids already in the list — never pages more in.
+    func jumpSelection(toEnd: Bool) {
+        let order = selectionOrder
+        guard let target = toEnd ? order.last : order.first else { return }
+        selectThread(target, intent: .browse)
+    }
+
     /// Shift+↑/↓: extend the multi-select checked range from the sticky
     /// gesture anchor (Gmail/Finder-style), moving list focus with it.
     func extendSelection(_ delta: Int) {

@@ -15,7 +15,9 @@ struct ShortcutsHelpView: View {
         ]),
         ("Other", [
             ("↑ / ↓", "Browse conversations"),
-            ("⇧↑ / ⇧↓", "Select a range of conversations"),
+            ("⇧↑ / ⇧↓", "Select a range of conversations (also ⇧J / ⇧K)"),
+            ("⌘↑ / ⌘↓", "First / last conversation (also Home / End)"),
+            ("Space / ⇧Space", "Page the conversation down / up (Space opens it when closed)"),
             ("← / →", "Hide / show sidebar"),
             ("Return", "Open conversation"),
             ("⇧I", "Mark as read (unread if already read)"),

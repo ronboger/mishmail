@@ -212,6 +212,47 @@ final class ContactMinerTests: XCTestCase {
         XCTAssertTrue(weights.isEmpty)
     }
 
+    func testSpamAndTrashMessagesAreNotMinedAsContacts() {
+        var weights: ContactMiner.WeightMap = [:]
+        let max = ContactMiner.merge(
+            messages: [
+                msg(rowid: 1,
+                    from: "Hot Sex <junk@random.example>",
+                    to: "Victim <victim@example.com>",
+                    labels: "SPAM CATEGORY_PROMOTIONS"),
+                msg(rowid: 2,
+                    from: "Deleted Sender <deleted@example.com>",
+                    cc: "Deleted CC <deleted-cc@example.com>",
+                    labels: "TRASH"),
+                msg(rowid: 3,
+                    from: "Real Person <real@example.com>",
+                    labels: "INBOX"),
+            ],
+            into: &weights,
+            excluding: ["victim@example.com"])
+
+        // The high-water mark must still advance past excluded rows or each
+        // incremental rebuild would fetch the same spam again.
+        XCTAssertEqual(max, 3)
+        XCTAssertNil(weights["junk@random.example"])
+        XCTAssertNil(weights["deleted@example.com"])
+        XCTAssertNil(weights["deleted-cc@example.com"])
+        XCTAssertEqual(weights["real@example.com"]?.name, "Real Person")
+    }
+
+    func testSpamAndTrashLabelsAreMatchedAsWholeTokens() {
+        let similarlyNamedUserLabels = msg(
+            rowid: 1,
+            from: "Legit <legit@example.com>",
+            labels: "INBOX Label_NOTSPAM Label_TRASHED")
+        XCTAssertTrue(ContactMiner.isEligibleForContacts(similarlyNamedUserLabels))
+
+        let spam = msg(rowid: 2, labels: "INBOX SPAM")
+        let trash = msg(rowid: 3, labels: "TRASH IMPORTANT")
+        XCTAssertFalse(ContactMiner.isEligibleForContacts(spam))
+        XCTAssertFalse(ContactMiner.isEligibleForContacts(trash))
+    }
+
     // MARK: - Display name selection (From > To/Cc, reject glued typos)
 
     /// Vas-style To typo "jJoshua Yang" must not beat Josh's own From name.

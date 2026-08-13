@@ -23,6 +23,15 @@ enum ContactMiner {
         var labelIds: String
     }
 
+    /// Spam and deleted mail are not evidence that the user knows a sender.
+    /// Gmail can cache both kinds of messages locally, and mining their headers
+    /// turns unsolicited senders into compose suggestions. Match whole label
+    /// tokens so a user label containing one of these words is not excluded.
+    static func isEligibleForContacts(_ message: MessageHeaders) -> Bool {
+        let labels = Set(message.labelIds.split(whereSeparator: \.isWhitespace))
+        return !labels.contains("SPAM") && !labels.contains("TRASH")
+    }
+
     /// True when `name` is a real human display name for `email` — not empty,
     /// not the address itself (any casing), and not email-shaped (`@` present).
     /// Bare From headers like `John@ormoni.bio` parse as displayName == email;
@@ -99,6 +108,7 @@ enum ContactMiner {
         var maxRowId: Int64 = 0
         for msg in messages {
             if msg.rowid > maxRowId { maxRowId = msg.rowid }
+            guard isEligibleForContacts(msg) else { continue }
             let isSent = msg.labelIds.contains("SENT")
             let headers: [(String, Bool)] = [
                 (msg.fromHeader, true),
