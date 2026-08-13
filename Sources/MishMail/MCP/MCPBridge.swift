@@ -668,4 +668,37 @@ extension MailStore {
         }
         return receipt
     }
+
+    /// Confirm-card line for `send_draft`, built from the **stored** draft.
+    ///
+    /// The model only passes an opaque draft id, so the pure
+    /// `AskMishTools.confirmSummary(toolName:argumentsJSON:)` fallback cannot
+    /// say who the mail goes to. The controller must call this first and use
+    /// the fallback only when it returns `nil`.
+    ///
+    /// - Returns: one short line naming the visible recipients (To + Cc), the
+    ///   Bcc count, and the subject. `nil` when the id is empty or the draft
+    ///   does not resolve to an unsent draft — the caller then falls back.
+    func askMishSendConfirmSummary(draftId: String) async -> String? {
+        let id = draftId.trimmingCharacters(in: .whitespaces)
+        guard !id.isEmpty else { return nil }
+        // Same resolution askMishSendDraft uses, so the card describes exactly
+        // the mail a confirmed send would queue.
+        guard let draft = messageBody(id: id),
+              ForwardComposer.isLiveDraft(draft.labelIds) else { return nil }
+
+        let visible = Self.askMishAddresses(draft.toHeader)
+            + Self.askMishAddresses(draft.ccHeader)
+        let hidden = Self.askMishAddresses(draft.bccHeader).count
+        return AskMishTools.sendDraftSummary(
+            recipients: visible, subject: draft.subject, hiddenCount: hidden)
+    }
+
+    /// Bare addresses from an address-list header, using the same parsing the
+    /// send path uses (`splitAddresses` then `emailAddress`).
+    private static func askMishAddresses(_ header: String) -> [String] {
+        MessageParser.splitAddresses(header)
+            .map { MessageParser.emailAddress($0).trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty }
+    }
 }

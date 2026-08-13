@@ -160,11 +160,33 @@ enum AskMishTools {
     /// mail leaves, so it must name the recipients and the subject, not an
     /// opaque draft id. `MailStore.askMishSendConfirmSummary(draftId:)` reads
     /// the draft and calls this; keep the formatting here so it stays testable.
-    static func sendDraftSummary(recipients: [String], subject: String) -> String {
+    ///
+    /// - Parameters:
+    ///   - recipients: visible recipients (To + Cc), already resolved.
+    ///   - subject: draft subject; blank subjects are omitted.
+    ///   - hiddenCount: number of Bcc recipients. Counted, never named — the
+    ///     card must warn that blind copies leave without exposing them.
+    static func sendDraftSummary(
+        recipients: [String],
+        subject: String,
+        hiddenCount: Int = 0
+    ) -> String {
         let people = joined(recipients
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .filter { !$0.isEmpty })
-        var line = people.isEmpty ? "Send the draft" : "Send the draft to \(people)"
+        let hidden = max(0, hiddenCount)
+        let hiddenPhrase = hidden == 0
+            ? ""
+            : "\(hidden) hidden recipient\(hidden == 1 ? "" : "s")"
+
+        var line: String
+        switch (people.isEmpty, hiddenPhrase.isEmpty) {
+        case (false, false): line = "Send the draft to \(people) and \(hiddenPhrase)"
+        case (false, true): line = "Send the draft to \(people)"
+        case (true, false): line = "Send the draft to \(hiddenPhrase)"
+        case (true, true): line = "Send the draft"
+        }
+
         let title = subject.trimmingCharacters(in: .whitespacesAndNewlines)
         if !title.isEmpty { line += " — \(quoted(title))" }
         return line + "."

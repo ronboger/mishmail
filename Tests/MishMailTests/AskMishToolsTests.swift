@@ -133,6 +133,28 @@ final class AskMishToolsTests: XCTestCase {
             AskMishTools.sendDraftSummary(recipients: [], subject: "").isEmpty)
     }
 
+    /// Bcc recipients are counted on the card, never named.
+    func testSendDraftSummaryCountsHiddenRecipients() {
+        let none = AskMishTools.sendDraftSummary(
+            recipients: ["a@b.com"], subject: "Hi", hiddenCount: 0)
+        XCTAssertEqual(none, "Send the draft to a@b.com — “Hi”.")
+
+        let one = AskMishTools.sendDraftSummary(
+            recipients: ["a@b.com"], subject: "Hi", hiddenCount: 1)
+        XCTAssertEqual(one, "Send the draft to a@b.com and 1 hidden recipient — “Hi”.")
+
+        let two = AskMishTools.sendDraftSummary(
+            recipients: ["a@b.com"], subject: "Hi", hiddenCount: 2)
+        XCTAssertEqual(two, "Send the draft to a@b.com and 2 hidden recipients — “Hi”.")
+    }
+
+    /// A Bcc-only draft still names a destination count, not a bare "the draft".
+    func testSendDraftSummaryBccOnlyDraft() {
+        let line = AskMishTools.sendDraftSummary(
+            recipients: [], subject: "Subj", hiddenCount: 1)
+        XCTAssertEqual(line, "Send the draft to 1 hidden recipient — “Subj”.")
+    }
+
     /// Long recipient lists and long subjects stay card-sized.
     func testSendDraftSummaryTrimsLongValues() {
         let many = (1...9).map { "user\($0)@example.com" }
