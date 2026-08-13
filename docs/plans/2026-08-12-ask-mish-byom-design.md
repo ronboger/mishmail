@@ -31,6 +31,7 @@ cloud backend. MishMail stays local-first.
   (Claude and ChatGPT accounts).
 - Chat surface: right-hand panel in the main split view.
 - Agent loop: native Swift, tools routed in-process to `MCPBridge`.
+- Phase 1 landed: commits 93d162d..9bde382 (provider layer, OAuth, Settings).
 
 ## Phase 1 — LLM provider layer
 
