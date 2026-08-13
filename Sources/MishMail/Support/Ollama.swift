@@ -39,6 +39,9 @@ enum Ollama {
 
     /// Shared endpoint guard: loopback OK; remote must be HTTPS *and*
     /// explicitly opted in.
+    /// `isLoopback` reads the global `Ollama.baseURL`, so this assumes the
+    /// built-in row is the only Ollama provider; a second Ollama-kind row
+    /// would need a URL-argument-based check.
     static func validateEndpoint(_ url: URL) throws {
         if isLoopback { return }
         if url.scheme?.lowercased() != "https" { throw OllamaError.insecureEndpoint }

@@ -31,6 +31,11 @@ enum LLMTaskRunner {
             }
             return "No model configured for \(taskName). Check Settings → AI."
         }
+        if let urlError = error as? URLError,
+           [.cannotConnectToHost, .networkConnectionLost, .timedOut].contains(urlError.code),
+           let resolved = resolve(task), resolved.config.kind == .ollama {
+            return "Couldn't reach Ollama at \(Ollama.baseURL). Install it from ollama.com and run: ollama pull \(resolved.model)."
+        }
         return error.localizedDescription
     }
 

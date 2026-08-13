@@ -1742,7 +1742,9 @@ struct AISettings: View {
             }) ?? []
             let summary = LLMUsageLog.summarize(
                 rows: rows, since: cutoff, overrides: LLMPricing.loadOverrides())
-            usage = summary
+            await MainActor.run {
+                usage = summary
+            }
         }
     }
 
@@ -1752,7 +1754,9 @@ struct AISettings: View {
                 try await AppDatabase.shared.dbPool.write { db in
                     try LLMUsageRow.deleteAll(db)
                 }
-                usage = []
+                await MainActor.run {
+                    usage = []
+                }
             } catch {
                 // The button is intentionally quiet if the database is closing.
             }
