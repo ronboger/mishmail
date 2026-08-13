@@ -213,7 +213,12 @@ struct ComposeView: View {
         ComposeBodyLayout.editorHeights(
             body: body_,
             hasCollapsedQuote: !quotedTail.isEmpty,
-            slashActive: slashActive).max
+            slashActive: slashActive,
+            // Compact cards cap long replies so their footer stays visible.
+            // Split compose already fills the window: use that available
+            // height before introducing an internal editor scrollbar.
+            collapsedQuoteCap: isSplit ? .infinity
+                                       : ComposeBodyLayout.collapsedCap).max
     }
 
     /// Body editor minimum — mirrors `bodyEditorMaxHeight` so short replies
@@ -223,7 +228,9 @@ struct ComposeView: View {
         ComposeBodyLayout.editorHeights(
             body: body_,
             hasCollapsedQuote: !quotedTail.isEmpty,
-            slashActive: slashActive).min
+            slashActive: slashActive,
+            collapsedQuoteCap: isSplit ? .infinity
+                                       : ComposeBodyLayout.collapsedCap).min
     }
 
     /// Focuses the body editor. Setting the FocusState synchronously in

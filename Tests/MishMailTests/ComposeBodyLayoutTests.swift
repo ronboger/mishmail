@@ -194,6 +194,24 @@ final class ComposeBodyLayoutTests: XCTestCase {
         XCTAssertLessThan(h.min, h.max)
     }
 
+    /// A full-height split composer should spend its available whitespace on
+    /// the authored reply before falling back to the editor's internal scroll.
+    func testSplitBodyUsesFullContentHeightBeyondCompactCap() {
+        let many = (0..<24).map { "line \($0)" }.joined(separator: "\n")
+        let contentHeight = ComposeBodyLayout.contentHeight(body: many)
+            + ComposeBodyLayout.contentSlack
+        XCTAssertGreaterThan(contentHeight, ComposeBodyLayout.collapsedCap)
+
+        let h = ComposeBodyLayout.editorHeights(
+            body: many,
+            hasCollapsedQuote: true,
+            slashActive: false,
+            collapsedQuoteCap: .infinity)
+
+        XCTAssertEqual(h.min, ComposeBodyLayout.emptyFloor)
+        XCTAssertEqual(h.max, contentHeight)
+    }
+
     /// Medium body (raw between emptyFloor and collapsedCap): max == raw,
     /// min stays at emptyFloor for compression headroom.
     func testMediumBodyCompressibleMinHugsMax() {
