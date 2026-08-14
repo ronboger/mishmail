@@ -5360,12 +5360,14 @@ struct ComposeRequest: Identifiable {
     /// `selectedThread`, so multi-select `h`/`b` silently snoozed only the
     /// last-focused row.
     func snoozeChecked(until date: Date) {
+        // Tear the picker down *before* the optimistic mutation — same
+        // reason as the single-thread path above. Also before the empty
+        // guard: checked ids can outlive their rows (filtered out of the
+        // current list), and a picker left open on a no-op pick looks stuck.
+        dismissSnoozePicker()
         let targets = checkedThreadsInOrder
         guard !targets.isEmpty else { return }
         let focus = selectedThreadId
-        // Tear the picker down *before* the optimistic mutation — same
-        // reason as the single-thread path above.
-        dismissSnoozePicker()
         mutateThreads(targets, autoAdvanceAction: "snooze", local: {
             $0.snoozeUntil = date
             $0.inInbox = false
