@@ -18,6 +18,12 @@ enum GoToMailbox {
         /// Always true — go-to is a navigation home, never stay inside a
         /// full-window conversation. Kept on the plan so tests document it.
         var exitThreadFocus: Bool
+        /// Always true — go-to lands on the LIST, so any open conversation
+        /// must close. Exiting thread focus alone is not enough: in
+        /// compactDetail (narrow window, or Ask Mish taking width) the open
+        /// conversation covers the list without thread focus being on, and a
+        /// same-view `g i` would otherwise change nothing visible.
+        var closeConversation: Bool
     }
 
     static func plan(destinationIsCurrent: Bool,
@@ -28,7 +34,8 @@ enum GoToMailbox {
             clearSearch: clearSearch,
             changeView: !destinationIsCurrent,
             reloadImmediately: destinationIsCurrent && clearSearch,
-            exitThreadFocus: true
+            exitThreadFocus: true,
+            closeConversation: true
         )
     }
 }

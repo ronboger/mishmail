@@ -8,7 +8,7 @@ final class GoToMailboxTests: XCTestCase {
             committedSearch: "from:alice")
         XCTAssertEqual(plan, GoToMailbox.Plan(
             clearSearch: true, changeView: false, reloadImmediately: true,
-            exitThreadFocus: true))
+            exitThreadFocus: true, closeConversation: true))
     }
 
     func testGiFromStarredWithSearchChangesViewAndClears() {
@@ -18,7 +18,7 @@ final class GoToMailboxTests: XCTestCase {
             committedSearch: "invoice")
         XCTAssertEqual(plan, GoToMailbox.Plan(
             clearSearch: true, changeView: true, reloadImmediately: false,
-            exitThreadFocus: true))
+            exitThreadFocus: true, closeConversation: true))
     }
 
     func testGiOnInboxWithoutSearchStillExitsThreadFocus() {
@@ -30,7 +30,20 @@ final class GoToMailboxTests: XCTestCase {
             committedSearch: "")
         XCTAssertEqual(plan, GoToMailbox.Plan(
             clearSearch: false, changeView: false, reloadImmediately: false,
-            exitThreadFocus: true))
+            exitThreadFocus: true, closeConversation: true))
+    }
+
+    func testGiOnCurrentMailboxClosesOpenConversation() {
+        // g i on the mailbox you are already in must still land on the LIST.
+        // With Ask Mish open the window narrows into compactDetail, where the
+        // open conversation covers the list — exiting thread focus alone
+        // changes nothing visible, so the plan must also close the
+        // conversation (Gmail: g i always returns to the list).
+        let plan = GoToMailbox.plan(
+            destinationIsCurrent: true,
+            searchText: "",
+            committedSearch: "")
+        XCTAssertTrue(plan.closeConversation)
     }
 
     func testLiveSearchTextOnlyStillClears() {
@@ -51,6 +64,6 @@ final class GoToMailboxTests: XCTestCase {
             committedSearch: "")
         XCTAssertEqual(plan, GoToMailbox.Plan(
             clearSearch: false, changeView: true, reloadImmediately: false,
-            exitThreadFocus: true))
+            exitThreadFocus: true, closeConversation: true))
     }
 }

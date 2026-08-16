@@ -411,6 +411,13 @@ final class MailStore {
         // sees; cross-view onChange also clears selection (which drops focus),
         // but same-view paths never hit that.
         threadFocusMode = false
+        // Land on the list: close any open conversation. Cross-view goTo also
+        // clears via the selectedView onChange, but same-view (`g i` while
+        // already in Inbox) never fires it — and in compactDetail the open
+        // conversation covers the list, so without this nothing changes.
+        if plan.closeConversation {
+            clearSelection()
+        }
         if plan.changeView {
             selectedView = view
         } else if plan.reloadImmediately {
