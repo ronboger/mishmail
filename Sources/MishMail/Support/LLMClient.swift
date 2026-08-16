@@ -67,7 +67,12 @@ actor LLMClient {
             return try await run(messages: messages, tools: tools, config: config,
                                  model: model, allowRefresh: false, yield: yield)
         }
-        guard (200..<300).contains(status) else { throw LLMClientError.http(status) }
+        guard (200..<300).contains(status) else {
+            if config.kind == .ollama, let failure = Ollama.chatFailure(status: status, model: model) {
+                throw failure
+            }
+            throw LLMClientError.http(status)
+        }
 
         switch config.kind {
         case .openAICompatible:

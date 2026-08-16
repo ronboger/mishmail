@@ -52,6 +52,18 @@ final class OllamaEndpointTests: XCTestCase {
         Ollama.disabledModels = []
         XCTAssertEqual(Ollama.enabledModels(installed: ["llama3.2"]), ["llama3.2"])
     }
+
+    func testChat404BecomesModelMissingError() {
+        let error = Ollama.chatFailure(status: 404, model: "llama3.2")
+        XCTAssertEqual(error, .modelNotInstalled("llama3.2"))
+        XCTAssertTrue(error?.errorDescription?.contains("llama3.2") == true)
+        XCTAssertTrue(error?.errorDescription?.contains("ollama pull") == true)
+    }
+
+    func testNon404StatusesAreNotTranslated() {
+        XCTAssertNil(Ollama.chatFailure(status: 500, model: "llama3.2"))
+        XCTAssertNil(Ollama.chatFailure(status: 400, model: "llama3.2"))
+    }
 }
 
 extension Ollama.OllamaError: Equatable {
@@ -60,6 +72,8 @@ extension Ollama.OllamaError: Equatable {
         case (.insecureEndpoint, .insecureEndpoint),
              (.remoteNotAllowed, .remoteNotAllowed):
             return true
+        case (.modelNotInstalled(let lhsModel), .modelNotInstalled(let rhsModel)):
+            return lhsModel == rhsModel
         default:
             return false
         }

@@ -21,8 +21,11 @@ enum Ollama {
     enum OllamaError: LocalizedError {
         case insecureEndpoint
         case remoteNotAllowed
+        case modelNotInstalled(String)
         var errorDescription: String? {
             switch self {
+            case .modelNotInstalled(let model):
+                return "Ollama does not have the model “\(model)”. Run “ollama pull \(model)”, or set the Model in Settings → AI to a name that “ollama list” shows."
             case .insecureEndpoint:
                 return "Ollama endpoint \(Ollama.baseURL) is neither local nor HTTPS. Your email content won't be sent over an unencrypted connection to a remote host — use http://127.0.0.1:11434 or an https:// URL."
             case .remoteNotAllowed:
@@ -53,6 +56,13 @@ enum Ollama {
     static func enabledModels(installed: [String]) -> [String] {
         let disabled = disabledModels
         return installed.filter { !disabled.contains($0) }
+    }
+
+    /// Ollama answers a chat request for an uninstalled model with 404, which
+    /// as a bare HTTP code reads like a wrong URL. Name the model instead.
+    /// Returns nil for statuses this helper does not translate.
+    static func chatFailure(status: Int, model: String) -> OllamaError? {
+        status == 404 ? .modelNotInstalled(model) : nil
     }
 
     /// True when the configured endpoint is this machine.
