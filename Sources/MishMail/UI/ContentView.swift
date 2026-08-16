@@ -24,6 +24,14 @@ struct ContentView: View {
     /// `@Environment` has no projected value, so sheets and controls that need
     /// two-way access to the store go through this instead of `$store`.
     private var bound: Bindable<MailStore> { Bindable(store) }
+    /// Extracted from the draft-delete `.alert`: an inline get/set Binding
+    /// there pushes the modifier chain past the type checker's time limit.
+    private var confirmingDraftDeleteShown: Binding<Bool> {
+        Binding(
+            get: { store.confirmingDraftDelete != nil },
+            set: { if !$0 { store.confirmingDraftDelete = nil } }
+        )
+    }
     /// List highlight — separate ObservableObject so ↓ / j does not publish
     /// through MailStore (and re-render detail / sidebar). ContentView must
     /// observe it: the open-policy onChange and toolbar state depend on it.
@@ -50,9 +58,18 @@ struct ContentView: View {
     /// Width the Ask Mish panel currently claims (0 when hidden). The compose
     /// overlay is window-trailing, so it shifts left by this much.
     @State private var askMishPanelWidth: CGFloat = 0
+    @State private var showDefaultMailPrompt = false
+    @State private var settingDefaultMail = false
 
     private var fullWindowThreads: Bool {
+        // Center peek shares the whole open/close flow with full-window
+        // (threadFocusMode, Esc ladder, compose placement) — only the
+        // rendering differs (overlay card instead of a takeover).
         ThreadOpenStyle(rawValue: threadOpenStyleRaw) != .readingPane
+    }
+
+    private var centerPeekThreads: Bool {
+        ThreadOpenStyle(rawValue: threadOpenStyleRaw) == .centerPeek
     }
 
     /// What "the reading pane is hidden" means for compose placement and
@@ -73,7 +90,10 @@ struct ContentView: View {
         )
     }
 
-    var body: some View {
+    // `body` is split into stages (baseLayout → interactionLayer → body):
+    // as one modifier chain the type checker times out on the expression
+    // ("unable to type-check this expression in reasonable time").
+    private var baseLayout: some View {
         GeometryReader { proxy in
             // Compact mode swaps list ↔ detail on whether a conversation is
             // actually OPEN — the quiet auto-highlight of the top row is a
@@ -92,12 +112,19 @@ struct ContentView: View {
                 hasSelection: store.openedThreadId != nil,
                 threadFocus: store.threadFocusMode,
                 fullWindowThreads: fullWindowThreads)
+            // Center peek keeps the list layout mounted underneath (stable
+            // view identity — no list teardown on open/close) and floats the
+            // conversation card in an overlay instead of switching layouts.
+            let peekOpen = centerPeekThreads && mode == .threadFocus
             HStack(spacing: 0) {
                 Group {
                     if splitComposeActive {
                         splitComposeLayout(hostWidth: proxy.size.width - panelWidth)
                     } else {
-                        mailboxLayout(mode)
+                        mailboxLayout(peekOpen ? .list : mode)
+                            .overlay {
+                                if peekOpen { centerPeekOverlay }
+                            }
                     }
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -126,6 +153,10 @@ struct ContentView: View {
             .onChange(of: mode) { layoutMode = mode }
             .onChange(of: panelWidth) { askMishPanelWidth = panelWidth }
         }
+    }
+
+    private var interactionLayer: some View {
+        baseLayout
         .onPreferenceChange(ReadingPaneFrameKey.self) { frame in
             readingPaneFrame = frame
             // Pathological short panes: float compose instead of a 0-height dock.
@@ -240,6 +271,10 @@ struct ContentView: View {
             // Don't let the sidebar search field start with keyboard focus —
             // it would swallow Esc/j/k until clicked away.
             DispatchQueue.main.async { NSApp.keyWindow?.makeFirstResponder(nil) }
+            considerDefaultMailPrompt()
+        }
+        .onChange(of: store.accounts.count) { _, _ in
+            considerDefaultMailPrompt()
         }
         .onDisappear {
             if let keyMonitor { NSEvent.removeMonitor(keyMonitor) }
@@ -293,6 +328,10 @@ struct ContentView: View {
                 .help("Ask Mish (⌥⌘M)")
             }
         }
+    }
+
+    var body: some View {
+        interactionLayer
         // Single ComposeView host for both floating and inline so presentation
         // flips keep editor state. Floating = bottom-trailing card; inline =
         // bottom of the reading-pane column (leading inset skips sidebar/list).
@@ -366,16 +405,32 @@ struct ContentView: View {
         }
         .alert(
             "Delete this draft?",
-            isPresented: Binding(
-                get: { store.confirmingDraftDelete != nil },
-                set: { if !$0 { store.confirmingDraftDelete = nil } }
-            ),
+            isPresented: confirmingDraftDeleteShown,
             presenting: store.confirmingDraftDelete
         ) { draft in
             Button("Delete", role: .destructive) { store.deleteDraft(draft) }
             Button("Cancel", role: .cancel) {}
         } message: { _ in
             Text("This can't be undone.")
+        }
+        .alert("Open mailto: links in MishMail?", isPresented: $showDefaultMailPrompt) {
+            Button("Set as Default") {
+                settingDefaultMail = true
+                DefaultMailClient.makeDefault { _ in
+                    Task { @MainActor in
+                        settingDefaultMail = false
+                        if DefaultMailClient.isDefault {
+                            showDefaultMailPrompt = false
+                        }
+                    }
+                }
+            }
+            .disabled(settingDefaultMail)
+            Button("Not Now", role: .cancel) {
+                DefaultMailClient.dismissDefaultOffer()
+            }
+        } message: {
+            Text("When MishMail is your default email app, browsers and other apps open compose here for mailto: links.")
         }
         .sheet(isPresented: bound.showShortcutsHelp) {
             ShortcutsHelpView(bindings: store.keyBindings)
@@ -516,6 +571,30 @@ struct ContentView: View {
             // Full-app conversation: no sidebar / list chrome.
             detailPane(compact: false)
         }
+    }
+
+    /// Notion Mail-style center peek: the conversation floats in a card over
+    /// the (still-mounted) list. Reuses detailPane, so the WebView pool,
+    /// warm payloads, and inline-compose pinning all behave as in focus mode.
+    private var centerPeekOverlay: some View {
+        GeometryReader { host in
+            let card = CenterPeekLayout.cardSize(host: host.size)
+            ZStack {
+                Color.black.opacity(0.30)
+                    .contentShape(Rectangle())
+                    .onTapGesture { store.threadFocusMode = false }
+                detailPane(compact: false)
+                    .frame(width: card.width, height: card.height)
+                    .clipShape(RoundedRectangle(cornerRadius: 12, style: .continuous))
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                            .strokeBorder(.separator, lineWidth: 1)
+                    )
+                    .shadow(color: .black.opacity(0.28), radius: 28, y: 10)
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .transition(.opacity)
     }
 
     /// Side-by-side compose is active: the layout swaps to the split canvas
@@ -795,6 +874,16 @@ private struct DetailPaneHost: View, Equatable {
 // MARK: - ContentView keyboard helpers (extension keeps main struct smaller)
 
 private extension ContentView {
+
+    /// Offer to claim `mailto:` once, after onboarding (account connected).
+    /// macOS still shows its own confirmation when the user accepts.
+    func considerDefaultMailPrompt() {
+        guard !store.demoMode,
+              !store.accounts.isEmpty,
+              DefaultMailClient.shouldOfferDefault,
+              !showDefaultMailPrompt else { return }
+        showDefaultMailPrompt = true
+    }
 
     /// Gmail-style single-key shortcuts plus Cmd-K. Ignores events when a
     /// text field, the search bar, or a sheet has focus.

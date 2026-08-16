@@ -1012,9 +1012,10 @@ struct AppearanceSettings: View {
                     Picker("Opening a conversation", selection: $threadOpenStyleRaw) {
                         Text("Fills the window").tag(ThreadOpenStyle.fullWindow.rawValue)
                         Text("Shows in a reading pane").tag(ThreadOpenStyle.readingPane.rawValue)
+                        Text("Opens in a centered card").tag(ThreadOpenStyle.centerPeek.rawValue)
                     }
                 } footer: {
-                    Text("Fills the window is Superhuman-style: click a conversation (or press ↩) and it takes over the window; Esc or g i (any go-to) returns to the list. The reading pane shows conversations beside the message list instead.")
+                    Text("Fills the window is Superhuman-style: click a conversation (or press ↩) and it takes over the window; Esc or g i (any go-to) returns to the list. The reading pane shows conversations beside the message list instead. The centered card (Notion Mail-style center peek) floats the conversation over the list; Esc or clicking outside it returns to the list.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

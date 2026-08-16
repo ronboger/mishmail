@@ -43,6 +43,26 @@ enum DefaultMailClient {
         return handler.caseInsensitiveCompare(mine) == .orderedSame
     }
 
+    private static let promptDismissedKey = "defaultMailClient.promptDismissed"
+
+    /// One-time launch prompt: skip Debug builds (stale LaunchServices paths)
+    /// and when the user already dismissed the offer or we're already default.
+    static var shouldOfferDefault: Bool {
+        guard !isDefault else { return false }
+        guard Bundle.main.bundleIdentifier?.hasSuffix(".debug") != true else {
+            return false
+        }
+        return !UserDefaults.standard.bool(forKey: promptDismissedKey)
+    }
+
+    static func dismissDefaultOffer() {
+        UserDefaults.standard.set(true, forKey: promptDismissedKey)
+    }
+
+    static func markDefaultOfferHandled() {
+        UserDefaults.standard.set(true, forKey: promptDismissedKey)
+    }
+
     /// Ask LaunchServices to route `mailto:` to this app. macOS may still show
     /// a system confirmation. Verify the resulting handler because a successful
     /// request callback does not guarantee LaunchServices has published the
@@ -68,6 +88,7 @@ enum DefaultMailClient {
         completion: @escaping (Error?) -> Void
     ) {
         if isDefault {
+            markDefaultOfferHandled()
             completion(nil)
         } else if attemptsRemaining > 1 {
             DispatchQueue.main.asyncAfter(deadline: .now() + 0.2) {

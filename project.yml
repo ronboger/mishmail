@@ -205,6 +205,7 @@ targets:
       - Sources/MishMail/Support/ThreadExporter.swift
       - Sources/MishMail/Support/Markdown.swift
       - Sources/MishMail/Support/MailLayout.swift
+      - Sources/MishMail/Support/CenterPeek.swift
       - Sources/MishMail/Support/ComposePlacement.swift
       - Sources/MishMail/Support/ComposeDraftStatusLayout.swift
       - Sources/MishMail/Support/ComposeBodyLayout.swift
