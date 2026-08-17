@@ -139,6 +139,7 @@ targets:
       - Sources/MishMail/Store/ThreadLabels.swift
       - Sources/MishMail/Support/AskMishContext.swift
       - Sources/MishMail/Support/AskMishLayout.swift
+      - Sources/MishMail/Support/AskMishModelMenu.swift
       - Sources/MishMail/Support/AskMishTools.swift
       - Sources/MishMail/Support/ContactMiner.swift
       - Sources/MishMail/Support/ComposeLinks.swift

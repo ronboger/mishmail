@@ -121,17 +121,7 @@ struct AskMishPanelView: View {
     private var modelMenu: some View {
         Menu {
             ForEach(LLMProviderStore.load()) { provider in
-                Button {
-                    controller.providerID = provider.id
-                    controller.modelID = provider.defaultModel
-                } label: {
-                    let title = "\(provider.label) · \(provider.defaultModel)"
-                    if provider.id == controller.providerID {
-                        Label(title, systemImage: "checkmark")
-                    } else {
-                        Text(title)
-                    }
-                }
+                providerSubmenu(provider)
             }
         } label: {
             Text(controller.modelID.isEmpty ? "Pick a model" : controller.modelID)
@@ -142,6 +132,39 @@ struct AskMishPanelView: View {
         .fixedSize()
         .disabled(controller.isRunning)
         .help("Model for this chat")
+    }
+
+    /// One provider's submenu: its (curated) models, checkmarked on the
+    /// active provider+model pair. Oversized lists are cut to known families
+    /// by `AskMishModelMenu`; the trailing line says how many are hidden.
+    private func providerSubmenu(_ provider: LLMProviderConfig) -> some View {
+        let isCurrent = provider.id == controller.providerID
+        let entry = AskMishModelMenu.models(
+            for: provider, selected: isCurrent ? controller.modelID : nil)
+        return Menu {
+            ForEach(entry.models, id: \.self) { model in
+                Button {
+                    controller.providerID = provider.id
+                    controller.modelID = model
+                } label: {
+                    if isCurrent, model == controller.modelID {
+                        Label(model, systemImage: "checkmark")
+                    } else {
+                        Text(model)
+                    }
+                }
+            }
+            if entry.hiddenCount > 0 {
+                Divider()
+                Text("\(entry.hiddenCount) more in Settings → AI")
+            }
+        } label: {
+            if isCurrent {
+                Label(provider.label, systemImage: "checkmark")
+            } else {
+                Text(provider.label)
+            }
+        }
     }
 
     private func declinePendingConfirmation() {
