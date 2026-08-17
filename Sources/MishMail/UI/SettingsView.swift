@@ -1802,22 +1802,33 @@ struct AISettings: View {
         let preset = LLMProviderStore.subscriptionPreset(for: vendor)
         vendorStatus[vendor] = "Fetching models…"
         var allModels = Set(preset.fallbackModels)
+        var fetchError: String?
         do {
             let fetched = try await LLMClient.shared.listModels(config: provider)
             allModels.formUnion(fetched)
         } catch {
-            // Keep fallback models even if live listing failed
+            // Keep the fallback models plus whatever was fetched before, but
+            // say the live listing failed.
+            allModels.formUnion(provider.models ?? [])
+            fetchError = error.localizedDescription
         }
         var updated = provider
+        // A failed fetch must not reassign the default: the stored model may
+        // simply be missing from the fallback list, and silently switching it
+        // would change what later chats run on.
+        if fetchError == nil, !updated.defaultModel.isEmpty {
+            allModels.insert(updated.defaultModel)
+        }
         updated.models = Array(allModels).sorted()
-        if let models = updated.models, !models.contains(updated.defaultModel), let first = models.first {
+        if fetchError == nil, let models = updated.models,
+           !models.contains(updated.defaultModel), let first = models.first {
             updated.defaultModel = first
         }
         var list = LLMProviderStore.load().filter { $0.id != provider.id }
         list.append(updated)
         LLMProviderStore.save(list)
         providers = LLMProviderStore.load()
-        vendorStatus[vendor] = ""
+        vendorStatus[vendor] = fetchError.map { "Live model list failed (\($0)). Showing known models." } ?? ""
     }
 
     private func disconnect(_ provider: LLMProviderConfig) {
