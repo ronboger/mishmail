@@ -173,6 +173,16 @@ struct AskMishPanelView: View {
                 Divider()
                 Text("\(entry.hiddenCount) more in Settings → AI")
             }
+            // Persist the chat's current model as this provider's default —
+            // what a click on the provider row (and a new chat on this
+            // provider) then selects.
+            if isCurrent, !controller.modelID.isEmpty,
+               controller.modelID != provider.defaultModel {
+                Divider()
+                Button("Set “\(controller.modelID)” as default") {
+                    setDefaultModel(controller.modelID, for: provider)
+                }
+            }
         } label: {
             if isCurrent {
                 Label(provider.label, systemImage: "checkmark")
@@ -183,6 +193,18 @@ struct AskMishPanelView: View {
             controller.providerID = provider.id
             controller.modelID = provider.defaultModel
         }
+    }
+
+    /// Saves `model` as the provider's default and points the Ask Mish task
+    /// assignment at it, so the provider row's one-click pick and every new
+    /// chat use it. The current chat keeps its own selection untouched.
+    private func setDefaultModel(_ model: String, for provider: LLMProviderConfig) {
+        var list = LLMProviderStore.load()
+        guard let index = list.firstIndex(where: { $0.id == provider.id }) else { return }
+        list[index].defaultModel = model
+        LLMProviderStore.save(list)
+        LLMProviderStore.setAssignment(
+            LLMTaskAssignment(providerID: provider.id, model: model), for: .askMish)
     }
 
     private func declinePendingConfirmation() {
