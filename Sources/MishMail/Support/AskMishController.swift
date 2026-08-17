@@ -55,6 +55,16 @@ final class AskMishController {
     /// "summarize this" is the common ask.
     var includeSelectedThread = true
 
+    /// A thread the user pinned to the conversation from the attach popover.
+    struct AttachedThread: Identifiable, Equatable {
+        let id: String
+        let subject: String
+    }
+
+    /// Threads pinned beyond the open one. Each goes into the history once,
+    /// on the next user turn.
+    private(set) var attachedThreads: [AttachedThread] = []
+
     /// Model choice for this conversation. Defaults from the per-task
     /// assignment; persisted on the conversation row.
     var providerID: UUID
@@ -74,9 +84,9 @@ final class AskMishController {
     /// Wire history for this conversation, including the injected thread
     /// context. Rebuilt from the database on `loadConversation`.
     @ObservationIgnored private var history: [LLMMessage] = []
-    /// Thread whose markdown is already in `history`, so the context goes in
+    /// Threads whose markdown is already in `history`, so each context goes in
     /// once per conversation instead of on every turn.
-    @ObservationIgnored private var injectedThreadID: String?
+    @ObservationIgnored private var injectedThreadIDs: Set<String> = []
     @ObservationIgnored private var totalPromptTokens = 0
     @ObservationIgnored private var totalCompletionTokens = 0
 
@@ -162,7 +172,8 @@ final class AskMishController {
         conversationID = nil
         bubbles = []
         history = []
-        injectedThreadID = nil
+        injectedThreadIDs = []
+        attachedThreads = []
         totalPromptTokens = 0
         totalCompletionTokens = 0
         conversationCostLabel = nil
@@ -189,7 +200,8 @@ final class AskMishController {
         // whatever was open, and it would show up as a wall of quoted mail in
         // the transcript. It goes in again on the next turn.
         history = AskMishContext.llmMessages(history: rows)
-        injectedThreadID = nil
+        injectedThreadIDs = []
+        attachedThreads = []
         totalPromptTokens = rows.reduce(0) { $0 + ($1.promptTokens ?? 0) }
         totalCompletionTokens = rows.reduce(0) { $0 + ($1.completionTokens ?? 0) }
         bubbles = reloadedBubbles(from: rows)
@@ -412,19 +424,55 @@ final class AskMishController {
             date: Date(), accountEmails: store?.accounts.map(\.id) ?? []))
     }
 
-    /// The open thread as markdown, injected once per conversation and again
-    /// when the user opens a different thread.
-    private func threadContextMessage() -> LLMMessage? {
-        guard includeSelectedThread, let store, let thread = store.selectedThread,
-              thread.id != injectedThreadID else { return nil }
-        let headers = store.messages(inThread: thread.id)
-        let hydrated = store.messagesWithBodies(ids: headers.map(\.id))
-        let bodies = hydrated.isEmpty ? headers : hydrated
-        guard !bodies.isEmpty else { return nil }
-        injectedThreadID = thread.id
-        return AskMishContext.contextMessage(
-            threadId: thread.id,
-            threadMarkdown: ThreadExporter.markdown(subject: thread.subject, messages: bodies))
+    // MARK: - Thread attachments
+
+    /// Pins a thread to the conversation. Its markdown goes into the history
+    /// on the next user turn (once — `injectedThreadIDs` dedupes).
+    func attachThread(id: String, subject: String) {
+        guard !attachedThreads.contains(where: { $0.id == id }) else { return }
+        attachedThreads.append(AttachedThread(id: id, subject: subject))
+    }
+
+    /// Unpins a thread. Context that already went into the history stays —
+    /// a sent message cannot be unsent — but nothing new is added for it.
+    func detachThread(id: String) {
+        attachedThreads.removeAll { $0.id == id }
+    }
+
+    /// FTS-backed thread search for the attach popover.
+    func searchThreadsToAttach(query: String) async -> [AttachedThread] {
+        let rows = try? await AppDatabase.shared.dbPool.read { db in
+            try ThreadTypeahead.fetch(db: db, query: query, limit: 8)
+        }
+        return (rows ?? []).map { AttachedThread(id: $0.id, subject: $0.subject) }
+    }
+
+    /// The open thread plus every pinned thread as markdown, each injected
+    /// once per conversation. Ordering and dedup live in
+    /// `AskMishContext.threadsToInject` (pure, tested).
+    private func contextMessages() -> [LLMMessage] {
+        guard let store else { return [] }
+        let current = includeSelectedThread ? store.selectedThread : nil
+        let ids = AskMishContext.threadsToInject(
+            currentThreadID: current?.id,
+            attachedThreadIDs: attachedThreads.map(\.id),
+            alreadyInjected: injectedThreadIDs)
+        var subjects: [String: String] = [:]
+        if let current { subjects[current.id] = current.subject }
+        for attached in attachedThreads { subjects[attached.id] = attached.subject }
+        var messages: [LLMMessage] = []
+        for id in ids {
+            let headers = store.messages(inThread: id)
+            let hydrated = store.messagesWithBodies(ids: headers.map(\.id))
+            let bodies = hydrated.isEmpty ? headers : hydrated
+            guard !bodies.isEmpty else { continue }
+            injectedThreadIDs.insert(id)
+            messages.append(AskMishContext.contextMessage(
+                threadId: id,
+                threadMarkdown: ThreadExporter.markdown(
+                    subject: subjects[id] ?? "", messages: bodies)))
+        }
+        return messages
     }
 
     /// Appends one assistant turn to the wire history.
@@ -543,7 +591,7 @@ final class AskMishController {
     /// Adds the user turn (plus the thread context, when it is due) to the
     /// history, the transcript, and the database.
     private func appendUser(_ text: String) async {
-        if let context = threadContextMessage() { history.append(context) }
+        history.append(contentsOf: contextMessages())
         let bubble = Bubble(id: UUID(), role: .user, text: text)
         bubbles.append(bubble)
         history.append(LLMMessage(role: .user, text: text))

@@ -32,6 +32,23 @@ enum AskMishContext {
         return "\(head)\n\n[… truncated …]\n\n\(tail)"
     }
 
+    /// Which threads the next user turn should carry as context, in order:
+    /// the open thread first, then pinned threads in pin order. Skips threads
+    /// already in the history and duplicates (a pinned thread that is also
+    /// the open one goes in once).
+    static func threadsToInject(currentThreadID: String?,
+                                attachedThreadIDs: [String],
+                                alreadyInjected: Set<String>) -> [String] {
+        var seen = alreadyInjected
+        var result: [String] = []
+        for id in [currentThreadID].compactMap({ $0 }) + attachedThreadIDs
+        where !seen.contains(id) {
+            seen.insert(id)
+            result.append(id)
+        }
+        return result
+    }
+
     static func contextMessage(threadId: String, threadMarkdown: String) -> LLMMessage {
         LLMMessage(role: .user, text: """
         Context — the thread currently open in the app (local thread id \(threadId)). \

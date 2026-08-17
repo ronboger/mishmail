@@ -17,6 +17,9 @@ struct AskMishPanelView: View {
     @State private var input = ""
     @State private var conversations: [ChatConversationRow] = []
     @FocusState private var inputFocused: Bool
+    @State private var showAttachPopover = false
+    @State private var attachQuery = ""
+    @State private var attachResults: [AskMishController.AttachedThread] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -311,7 +314,7 @@ struct AskMishPanelView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
-            if store.selectedThread != nil { contextChip }
+            attachmentRow
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("Ask Mish…", text: $input, axis: .vertical)
                     .textFieldStyle(.plain)
@@ -350,6 +353,99 @@ struct AskMishPanelView: View {
             }
         }
         .padding(12)
+    }
+
+    // MARK: - Attachments
+
+    /// Context chips: the open thread, pinned threads, and the attach button.
+    private var attachmentRow: some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                if store.selectedThread != nil { contextChip }
+                ForEach(controller.attachedThreads) { attached in
+                    attachedChip(attached)
+                }
+                attachButton
+            }
+        }
+    }
+
+    private func attachedChip(_ attached: AskMishController.AttachedThread) -> some View {
+        Button {
+            controller.detachThread(id: attached.id)
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "xmark")
+                Text(attached.subject.isEmpty ? "(no subject)" : attached.subject)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 160)
+            }
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.notionAccent.opacity(0.16), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Stop sending this conversation")
+    }
+
+    private var attachButton: some View {
+        Button {
+            showAttachPopover = true
+        } label: {
+            HStack(spacing: 5) {
+                Image(systemName: "plus")
+                Text("Attach")
+            }
+            .font(.caption)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 4)
+            .background(Color.primary.opacity(0.06), in: Capsule())
+        }
+        .buttonStyle(.plain)
+        .help("Search for a conversation to attach")
+        .popover(isPresented: $showAttachPopover, arrowEdge: .top) {
+            attachSearch
+        }
+    }
+
+    private var attachSearch: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            TextField("Search conversations…", text: $attachQuery)
+                .textFieldStyle(.roundedBorder)
+            if attachResults.isEmpty {
+                Text(attachQuery.count >= ThreadTypeahead.minimumQueryLength
+                     ? "No matches." : "Type to search your mail.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(attachResults) { row in
+                Button {
+                    controller.attachThread(id: row.id, subject: row.subject)
+                    showAttachPopover = false
+                    attachQuery = ""
+                    attachResults = []
+                } label: {
+                    HStack(spacing: 6) {
+                        Image(systemName: "text.bubble")
+                            .foregroundStyle(.secondary)
+                        Text(row.subject.isEmpty ? "(no subject)" : row.subject)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .disabled(controller.attachedThreads.contains { $0.id == row.id })
+            }
+        }
+        .padding(12)
+        .frame(width: 280)
+        .task(id: attachQuery) {
+            attachResults = await controller.searchThreadsToAttach(query: attachQuery)
+        }
     }
 
     private var contextChip: some View {

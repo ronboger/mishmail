@@ -201,6 +201,37 @@ final class AskMishContextTests: XCTestCase {
         XCTAssertTrue(message.text.contains("hello"))
     }
 
+    func testThreadsToInjectOrdersCurrentFirstAndDedupes() {
+        XCTAssertEqual(
+            AskMishContext.threadsToInject(
+                currentThreadID: "a",
+                attachedThreadIDs: ["b", "a", "c", "b"],
+                alreadyInjected: []),
+            ["a", "b", "c"])
+    }
+
+    func testThreadsToInjectSkipsAlreadyInjected() {
+        XCTAssertEqual(
+            AskMishContext.threadsToInject(
+                currentThreadID: "a",
+                attachedThreadIDs: ["b", "c"],
+                alreadyInjected: ["a", "c"]),
+            ["b"])
+    }
+
+    func testThreadsToInjectNoCurrentThread() {
+        XCTAssertEqual(
+            AskMishContext.threadsToInject(
+                currentThreadID: nil,
+                attachedThreadIDs: ["b"],
+                alreadyInjected: []),
+            ["b"])
+        XCTAssertEqual(
+            AskMishContext.threadsToInject(
+                currentThreadID: nil, attachedThreadIDs: [], alreadyInjected: []),
+            [])
+    }
+
     func testTitleTrimsAndCaps() {
         XCTAssertEqual(AskMishContext.title(fromFirstUserText: "  find the acme thread  \nplease"),
                        "find the acme thread")
