@@ -69,6 +69,22 @@ struct ComposeView: View {
     @State private var linkIsEditing = false
     @State private var drafting = false
     @State private var error: String?
+    /// Suggested replies for an empty reply body (chips above the quote pill).
+    @State private var suggestedReplies: [String] = []
+    @State private var suggestionsLoading = false
+    @State private var suggestionsError: String?
+    @State private var suggestionsTask: Task<Void, Never>?
+    /// User closed the strip for this compose (also set by picking a chip).
+    @State private var suggestionsDismissed = false
+    /// Set once per compose so the auto-trigger never re-fires; the strip's
+    /// refresh button calls suggestReplies() directly instead.
+    @State private var suggestionsRequested = false
+    /// Guards late MainActor writes from a cancelled stream (regenerate).
+    @State private var suggestionsGeneration = 0
+    /// Captured when a generation starts — resolving per render would re-read
+    /// and re-decode the provider list from UserDefaults on every keystroke.
+    @State private var suggestionsModelName: String?
+    @AppStorage(MailStore.suggestRepliesKey) private var suggestRepliesEnabled = true
     /// Body focus is a plain Bool (not FocusState) because the body is an
     /// AppKit NSTextView — FocusState doesn't attach to NSViewRepresentable.
     @State private var bodyFocused = false
@@ -587,6 +603,7 @@ struct ComposeView: View {
             }
             installSlashKeyMonitor()
             store.slashPickerVisible = slashActive
+            suggestRepliesIfEligible()
         }
         .onDisappear {
             // Unmounted without an explicit exit: a new compose/reply request
@@ -599,6 +616,7 @@ struct ComposeView: View {
             store.composeMinimized = false
             store.slashPickerVisible = false
             autosaveTask?.cancel()
+            suggestionsTask?.cancel()
             if let monitor = slashKeyMonitor {
                 NSEvent.removeMonitor(monitor)
                 slashKeyMonitor = nil
@@ -607,6 +625,15 @@ struct ComposeView: View {
         // Publish `/` picker visibility for ContentView's Esc ladder (explicit
         // gate — local monitors fire FIFO and must not rely on order).
         .onChange(of: slashActive) { store.slashPickerVisible = slashActive }
+        // Minimize keeps the card mounted (no onDisappear) — stop a live
+        // suggestion stream instead of paying for chips nobody can see.
+        .onChange(of: isMinimized) { _, minimized in
+            guard minimized, suggestionsLoading else { return }
+            suggestionsGeneration &+= 1
+            suggestionsTask?.cancel()
+            suggestionsLoading = false
+            suggestedReplies = []
+        }
         .onChange(of: store.slashPickerDismissToken) {
             slashDismissed = true
             store.slashPickerVisible = false
@@ -1014,6 +1041,15 @@ struct ComposeView: View {
                 .onChange(of: body_) {
                     syncSlashSelection()
                     if slashToken == nil { slashDismissed = false }
+                    // Typing makes the suggestions stale — stop paying for
+                    // them, and drop any half-streamed chips so deleting back
+                    // to empty never presents a truncated set as finished.
+                    if suggestionsLoading, !authoredHeadIsEmpty {
+                        suggestionsGeneration &+= 1
+                        suggestionsTask?.cancel()
+                        suggestionsLoading = false
+                        suggestedReplies = []
+                    }
                 }
                 .onChange(of: bodyCaretUTF16) {
                     syncSlashSelection()
@@ -1039,6 +1075,29 @@ struct ComposeView: View {
                     .padding(.top, 4)
                     .layoutPriority(1)
                     .transition(.opacity)
+            }
+
+            // Suggested replies live here — in the compose card, right under
+            // where the reply is written — so the chips clearly target this
+            // draft. Hidden the moment the user types (they'd be stale).
+            if suggestionsStripVisible {
+                SuggestedRepliesStrip(
+                    suggestions: suggestedReplies,
+                    loading: suggestionsLoading,
+                    modelName: suggestionsModelName,
+                    error: suggestionsError,
+                    pick: { insertSuggestedReply($0) },
+                    regenerate: { suggestReplies() },
+                    dismiss: {
+                        suggestionsGeneration &+= 1
+                        suggestionsTask?.cancel()
+                        suggestionsLoading = false
+                        withAnimation(.spring(duration: 0.25, bounce: 0)) {
+                            suggestionsDismissed = true
+                        }
+                    })
+                .padding(.bottom, 8)
+                .transition(.opacity)
             }
 
             // The quoted original stays collapsed behind this pill (Gmail's
@@ -1674,6 +1733,129 @@ struct ComposeView: View {
 
     private func prefillAttachments(of message: Message) {
         prefillAttachments(of: [message])
+    }
+
+    // MARK: - Suggested replies
+
+    /// Replies only (no forwards, reopened drafts, or undo-send restores),
+    /// gated on the same Settings visibility as the other AI compose tools.
+    private var suggestionsEligible: Bool {
+        replyTo != nil && !request.forward && editingDraft == nil
+            && request.restore == nil
+            && suggestRepliesEnabled
+            && composeToolVisible(.ai)
+    }
+
+    private var authoredHeadIsEmpty: Bool {
+        String(body_[..<authoredHeadEnd])
+            .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var suggestionsStripVisible: Bool {
+        suggestionsEligible && !suggestionsDismissed && !slashActive
+            && authoredHeadIsEmpty
+            && (suggestionsLoading || !suggestedReplies.isEmpty
+                || suggestionsError != nil)
+    }
+
+    /// Auto-start on open for a fresh reply — the chips appear where the reply
+    /// is written, so there's no separate button to find (or wait on).
+    private func suggestRepliesIfEligible() {
+        guard suggestionsEligible, !suggestionsRequested,
+              request.prefillBody == nil, authoredHeadIsEmpty else { return }
+        suggestReplies()
+    }
+
+    /// The message the chips answer: the newest inbound in the thread. Reply
+    /// parents on the newest message, which can be the user's own outbound —
+    /// suggesting answers to your own email is the old flow's invariant
+    /// (latestInboundMessage) and it must hold here too.
+    private var suggestionSourceMessage: Message? {
+        guard let original else { return nil }
+        let thread = store.messages(inThread: original.threadId)
+        return thread.last(where: {
+            !SyncEngine.isOwnOutbound($0, accountEmail: fromAccountId)
+        }) ?? original
+    }
+
+    private func suggestReplies() {
+        guard suggestionsEligible, let source = suggestionSourceMessage
+        else { return }
+        suggestionsRequested = true
+        suggestionsDismissed = false
+        suggestionsGeneration &+= 1
+        let generation = suggestionsGeneration
+        suggestionsTask?.cancel()
+        suggestedReplies = []
+        suggestionsError = nil
+        suggestionsLoading = true
+        suggestionsModelName = LLMTaskRunner.resolve(.triage)?.model
+
+        // Thread payloads load headers + snippets only; hydrate the body the
+        // way the old flow did or the prompt can be an empty context.
+        let hydrated = store.messagesWithBodies(ids: [source.id]).first ?? source
+        let prompt = LLMPrompts.quickReplies(
+            subject: subject,
+            latestFrom: source.fromHeader,
+            latestBody: String(MessageParser.replyQuotableText(
+                text: hydrated.bodyText, html: hydrated.bodyHTML).prefix(2_000)),
+            userEmail: fromEmail)
+
+        suggestionsTask = Task {
+            var raw = ""
+            var shown = 0
+            do {
+                for try await piece in LLMTaskRunner.stream(task: .triage,
+                                                            prompt: prompt) {
+                    guard !Task.isCancelled else { return }
+                    raw += piece
+                    // Stream chips in per completed line — the strip fills as
+                    // the model writes instead of blocking on the full answer.
+                    // Only a newline can complete a line; skip the parse of
+                    // the whole accumulated text on every other token.
+                    guard piece.contains(where: \.isNewline) else { continue }
+                    let partial = LLMPrompts.parseStreamingQuickReplies(raw)
+                    if partial.count > shown {
+                        shown = partial.count
+                        let snapshot = partial
+                        await MainActor.run {
+                            guard suggestionsGeneration == generation else { return }
+                            suggestedReplies = snapshot
+                        }
+                    }
+                }
+                let parsed = LLMPrompts.parseQuickReplies(raw)
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard suggestionsGeneration == generation else { return }
+                    suggestedReplies = parsed
+                    suggestionsError = parsed.isEmpty
+                        ? "No replies were suggested." : nil
+                    suggestionsLoading = false
+                }
+            } catch is CancellationError {
+                return
+            } catch {
+                guard !Task.isCancelled else { return }
+                await MainActor.run {
+                    guard suggestionsGeneration == generation else { return }
+                    suggestionsError = LLMTaskRunner.errorMessage(
+                        error, task: .triage)
+                    suggestionsLoading = false
+                }
+            }
+        }
+    }
+
+    /// The strip only shows over an empty authored head, so inserting replaces
+    /// that head (any whitespace) and keeps the quote/tail untouched.
+    private func insertSuggestedReply(_ text: String) {
+        let tail = String(body_[authoredHeadEnd...])
+        setBody(text + tail, caretUTF16: (text as NSString).length)
+        withAnimation(.spring(duration: 0.25, bounce: 0)) {
+            suggestionsDismissed = true
+        }
+        focusBody()
     }
 
     private func draftWithAI() {

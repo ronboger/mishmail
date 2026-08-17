@@ -630,6 +630,8 @@ final class MailStore {
     /// or unreachable — and backs off ten minutes after a failure so a down
     /// server isn't retried on every 60-second sync tick.
     static let autoClassifyKey = "autoClassifyEnabled"
+    /// Compose shows auto-generated reply chips for fresh replies (default on).
+    static let suggestRepliesKey = "composeSuggestReplies"
     @ObservationIgnored
     private var autoClassifyPausedUntil: Date?
 

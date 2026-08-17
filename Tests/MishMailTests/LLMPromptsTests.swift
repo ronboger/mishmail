@@ -113,4 +113,17 @@ final class LLMPromptsTests: XCTestCase {
     func testParseQuickRepliesEmptyInputIsEmpty() {
         XCTAssertEqual(LLMPrompts.parseQuickReplies(""), [])
     }
+
+    func testParseStreamingQuickRepliesIgnoresTrailingPartialLine() {
+        XCTAssertEqual(LLMPrompts.parseStreamingQuickReplies("- a\n- b\n- partial"),
+                       ["a", "b"])
+    }
+
+    func testParseStreamingQuickRepliesNoNewlineYieldsNothing() {
+        XCTAssertEqual(LLMPrompts.parseStreamingQuickReplies("still typing"), [])
+    }
+
+    func testParseStreamingQuickRepliesCompleteLinesOnly() {
+        XCTAssertEqual(LLMPrompts.parseStreamingQuickReplies("1. x\n"), ["x"])
+    }
 }

@@ -1559,6 +1559,7 @@ struct AISettings: View {
     @State private var keepAlive: Int = Ollama.keepAliveSeconds
     @State private var contextTokens: Int = Ollama.contextTokens
     @AppStorage(MailStore.autoClassifyKey) private var autoClassify = true
+    @AppStorage(MailStore.suggestRepliesKey) private var suggestReplies = true
     @State private var providers: [LLMProviderConfig] = LLMProviderStore.load()
     @State private var editingProvider: LLMProviderConfig?
     @State private var addingProvider = false
@@ -1740,6 +1741,13 @@ struct AISettings: View {
                     Toggle("Auto-sort new mail", isOn: $autoClassify)
                 } footer: {
                     Text("After each sync, quietly tag new inbox threads (Reply needed, FYI, Newsletter, Receipt) with the local model. Skips silently when Ollama isn't running. A small fast model like llama3.2:3b is ideal here.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Toggle("Suggest replies when you reply", isOn: $suggestReplies)
+                } footer: {
+                    Text("Opening a reply shows up to three suggested responses inside the compose card. Uses the Triage model above; the strip names the model it used.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 

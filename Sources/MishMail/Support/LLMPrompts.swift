@@ -101,6 +101,13 @@ enum LLMPrompts {
         """
     }
 
+    /// Incremental parse while the suggestion stream is still running: only
+    /// newline-terminated lines count — the last line may still be growing.
+    static func parseStreamingQuickReplies(_ raw: String) -> [String] {
+        guard let lastNewline = raw.lastIndex(where: { $0.isNewline }) else { return [] }
+        return parseQuickReplies(String(raw[...lastNewline]))
+    }
+
     static func parseQuickReplies(_ raw: String) -> [String] {
         let suggestions = raw.split(whereSeparator: { $0.isNewline }).compactMap { rawLine -> String? in
             var line = rawLine.trimmingCharacters(in: .whitespacesAndNewlines)

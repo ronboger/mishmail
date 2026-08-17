@@ -81,11 +81,6 @@ struct ThreadDetailView: View {
     @State private var aiSummary: String?
     @State private var summarizing = false
     @State private var summaryError: String?
-    @State private var quickReplies: [String] = []
-    @State private var suggestingReplies = false
-    @State private var quickRepliesError: String?
-    @State private var quickRepliesTask: Task<Void, Never>?
-    @State private var quickRepliesGeneration = 0
     /// Persisted MCP / agent summary (`threadSummary` row). Shown only when no
     /// ephemeral model summary is present.
     @State private var persistedSummary: ThreadSummaryRow?
@@ -258,8 +253,6 @@ struct ThreadDetailView: View {
                         }
                     }
 
-                    quickReplySection
-                        .id(Self.quickReplyScrollID)
                 }
                 .scrollTargetLayout()
                 .padding(.vertical)
@@ -381,14 +374,6 @@ struct ThreadDetailView: View {
                         Label("Reply", systemImage: "arrowshape.turn.up.left")
                     }
                     .help("Reply (\(store.keyBindings.key(for: .reply)))")
-                    Button {
-                        suggestQuickReplies()
-                    } label: {
-                        Label(suggestingReplies ? "Suggesting…" : "Suggest replies",
-                              systemImage: suggestingReplies ? "hourglass" : "sparkles")
-                    }
-                    .disabled(suggestingReplies)
-                    .help("Suggest short replies to the latest inbound message")
                     if ReplyComposer.hasAdditionalReplyAllRecipients(
                         last, ownAddresses: store.ownEmailAddresses) {
                         Button {
@@ -509,12 +494,6 @@ struct ThreadDetailView: View {
                 cidResolveAttempted = []
                 loadRemoteImagesForThread = false
                 expandedMessageIds = []
-                quickRepliesGeneration &+= 1
-                quickRepliesTask?.cancel()
-                quickRepliesTask = nil
-                quickReplies = []
-                quickRepliesError = nil
-                suggestingReplies = false
                 neighborPrerenderArmed = false
                 // Cancel any in-flight neighbor paints from the previous open.
                 HTMLBodyNeighborPrerender.cancel()
@@ -589,14 +568,6 @@ struct ThreadDetailView: View {
             .onChange(of: store.suppressedDraftMessageIds) {
                 refreshMessages(proxy: proxy)
             }
-            .onChange(of: quickReplies) { _, replies in
-                guard !replies.isEmpty else { return }
-                scrollQuickReplySection(proxy: proxy)
-            }
-            .onChange(of: quickRepliesError) { _, error in
-                guard error != nil else { return }
-                scrollQuickReplySection(proxy: proxy)
-            }
             .onChange(of: inlineComposeActive) { _, active in
                 if active {
                     beginInlineComposeScroll(proxy: proxy)
@@ -621,9 +592,6 @@ struct ThreadDetailView: View {
                 detailLoadGeneration &+= 1
                 refreshTask?.cancel()
                 refreshTask = nil
-                quickRepliesGeneration &+= 1
-                quickRepliesTask?.cancel()
-                quickRepliesTask = nil
                 neighborPrerenderArmed = false
                 HTMLBodyNeighborPrerender.cancel()
             }
@@ -652,7 +620,7 @@ struct ThreadDetailView: View {
             set: { newValue in
                 let changed = newValue != scrollAnchor.id
                 scrollAnchor.id = newValue
-                guard changed, newValue != Self.quickReplyScrollID else { return }
+                guard changed else { return }
                 DispatchQueue.main.async {
                     guard inlineComposeActive, autoPinInlineScroll,
                           !writingScrollOffset else { return }
@@ -739,7 +707,7 @@ struct ThreadDetailView: View {
             return
         }
         if inlineScrollRestore == .unset {
-            if let id = scrollAnchor.id, id != Self.quickReplyScrollID {
+            if let id = scrollAnchor.id {
                 inlineScrollRestore = .message(id)
             } else {
                 inlineScrollRestore = .threadTop
@@ -1308,122 +1276,6 @@ struct ThreadDetailView: View {
                 }
             }
             await MainActor.run { summarizing = false }
-        }
-    }
-
-    private static let quickReplyScrollID = "threadQuickReplies"
-
-    private func scrollQuickReplySection(proxy: ScrollViewProxy) {
-        guard !inlineComposeActive else { return }
-        DispatchQueue.main.async {
-            guard !inlineComposeActive,
-                  !quickReplies.isEmpty || quickRepliesError != nil else { return }
-            writingScrollOffset = true
-            withAnimation(.easeOut(duration: 0.2)) {
-                proxy.scrollTo(Self.quickReplyScrollID, anchor: .bottom)
-            }
-            DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                writingScrollOffset = false
-            }
-        }
-    }
-
-    @ViewBuilder
-    private var quickReplySection: some View {
-        if !quickReplies.isEmpty || quickRepliesError != nil {
-            VStack(alignment: .leading, spacing: 6) {
-                if !quickReplies.isEmpty {
-                    ScrollView(.horizontal, showsIndicators: false) {
-                        HStack(spacing: 8) {
-                            ForEach(quickReplies.prefix(3), id: \.self) { reply in
-                                Button {
-                                    openQuickReply(reply)
-                                } label: {
-                                    Text(reply)
-                                        .font(.system(size: 11.5 * fontScale))
-                                        .foregroundStyle(.primary)
-                                        .lineLimit(2)
-                                        .padding(.horizontal, 10)
-                                        .padding(.vertical, 6)
-                                        .background(
-                                            Color.secondary.opacity(0.12),
-                                            in: Capsule())
-                                }
-                                .buttonStyle(.plain)
-                            }
-                        }
-                        .padding(.vertical, 1)
-                    }
-                }
-                if let quickRepliesError {
-                    Text(quickRepliesError)
-                        .font(.system(size: 11 * fontScale))
-                        .foregroundStyle(.secondary)
-                }
-            }
-            .padding(.horizontal)
-        }
-    }
-
-    private var latestInboundMessage: Message? {
-        messages.last(where: {
-            !SyncEngine.isOwnOutbound($0, accountEmail: thread.accountId)
-        }) ?? messages.last
-    }
-
-    private func suggestQuickReplies() {
-        guard !suggestingReplies, let latest = latestInboundMessage else { return }
-
-        quickRepliesGeneration &+= 1
-        let generation = quickRepliesGeneration
-        quickRepliesTask?.cancel()
-        quickReplies = []
-        quickRepliesError = nil
-        suggestingReplies = true
-
-        let fullBody = store.messagesWithBodies(ids: [latest.id])
-            .first?.bodyText ?? latest.bodyText
-        let prompt = LLMPrompts.quickReplies(
-            subject: thread.subject,
-            latestFrom: latest.fromHeader,
-            latestBody: String(fullBody.prefix(2_000)),
-            userEmail: thread.accountId)
-
-        quickRepliesTask = Task {
-            do {
-                let raw = try await LLMTaskRunner.generate(
-                    task: .triage, prompt: prompt)
-                let parsed = Array(LLMPrompts.parseQuickReplies(raw).prefix(3))
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard quickRepliesGeneration == generation else { return }
-                    quickReplies = parsed
-                    quickRepliesError = parsed.isEmpty
-                        ? "No replies were suggested."
-                        : nil
-                    suggestingReplies = false
-                    quickRepliesTask = nil
-                }
-            } catch is CancellationError {
-                return
-            } catch {
-                guard !Task.isCancelled else { return }
-                await MainActor.run {
-                    guard quickRepliesGeneration == generation else { return }
-                    quickReplies = []
-                    quickRepliesError = LLMTaskRunner.errorMessage(
-                        error, task: .triage)
-                    suggestingReplies = false
-                    quickRepliesTask = nil
-                }
-            }
-        }
-    }
-
-    private func openQuickReply(_ text: String) {
-        // Keep the palette's reply-parent resolution: never parent on a draft.
-        if let last = store.newestSentMessage(inThread: thread.id) {
-            store.openCompose(.init(replyTo: last, prefillBody: text))
         }
     }
 
