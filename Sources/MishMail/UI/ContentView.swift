@@ -1,3 +1,4 @@
+import Quartz
 import SwiftUI
 import UniformTypeIdentifiers
 
@@ -908,6 +909,10 @@ private extension ContentView {
             guard let store else { return event }
             // Settings is capturing a key for rebinding — don't run shortcuts.
             if store.keyBindings.capturing { return event }
+            // Quick Look panel is key: every key (Esc, space, arrows) belongs
+            // to the panel — the Esc ladder below must not close the reading
+            // pane underneath it.
+            if event.window is QLPreviewPanel { return event }
             // The snooze overlay runs its own monitor (↑/↓/Return/Esc while
             // typing a date) — everything must pass through untouched. Same
             // for the bulk variant opened over a multi-select.
