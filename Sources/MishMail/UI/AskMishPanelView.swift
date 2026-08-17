@@ -625,8 +625,9 @@ private struct ModelPickerPopover: View {
     let onTogglePin: (LLMProviderConfig, String) -> Void
 
     /// Snapshot of the store, re-read after every default/pin mutation so the
-    /// open popover reflects it immediately.
-    @State private var providers: [LLMProviderConfig] = []
+    /// open popover reflects it immediately. Seeded at init — an empty first
+    /// layout pass would let the popover size itself to nothing.
+    @State private var providers: [LLMProviderConfig] = LLMProviderStore.load()
     @State private var query = ""
     @State private var expandedProviderID: UUID?
     @FocusState private var searchFocused: Bool
@@ -670,7 +671,7 @@ private struct ModelPickerPopover: View {
                     }
                     .padding(6)
                 }
-                .frame(width: 220)
+                .frame(width: isSearching ? 280 : 220)
                 // The flyout: the expanded provider's models, to the side.
                 if let provider = expandedProvider {
                     Divider()
@@ -681,9 +682,10 @@ private struct ModelPickerPopover: View {
             }
             .frame(maxHeight: 320)
         }
-        .fixedSize(horizontal: true, vertical: false)
+        // Explicit width: sizing to ideal content lets the text field
+        // stretch the popover across the window.
+        .frame(width: isSearching ? 280 : (expandedProvider == nil ? 220 : 431))
         .onAppear {
-            providers = LLMProviderStore.load()
             expandedProviderID = currentProviderID
             searchFocused = true
         }
