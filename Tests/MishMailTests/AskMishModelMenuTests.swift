@@ -49,6 +49,19 @@ final class AskMishModelMenuTests: XCTestCase {
         XCTAssertEqual(result.models.first, "gpt-5")
     }
 
+    func testPinnedModelsReplaceBrowseListAndKeepDefaultFirst() {
+        var p = provider(models: (0..<50).map { "m-\($0)" } + ["gpt-5"], defaultModel: "gpt-5")
+        p.pinnedModels = ["m-30", "m-7"]
+        let result = AskMishModelMenu.models(for: p, selected: "m-2")
+        XCTAssertEqual(result.models, ["gpt-5", "m-2", "m-30", "m-7"])
+        XCTAssertEqual(result.hiddenCount, 51 - 4)
+    }
+
+    func testDisplayNameStripsVendorPrefix() {
+        XCTAssertEqual(AskMishModelMenu.displayName("nvidia/nemotron-3-super"), "nemotron-3-super")
+        XCTAssertEqual(AskMishModelMenu.displayName("gpt-5.6-luna"), "gpt-5.6-luna")
+    }
+
     func testSearchFindsModelsCurationHid() {
         let noise = (0..<300).map { "vendor/odd-model-\($0)" }
         let p = provider(models: noise, defaultModel: "vendor/odd-model-0")

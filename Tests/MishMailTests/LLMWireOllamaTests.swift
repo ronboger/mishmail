@@ -87,6 +87,38 @@ final class LLMWireOllamaTests: XCTestCase {
         XCTAssertNil(body["options"])
     }
 
+    func testRequestBodySendsThinkingAndOutputCap() throws {
+        func body(_ thinking: LLMThinking, cap: Int?) throws -> [String: Any] {
+            try JSONSerialization.jsonObject(with: try OllamaChatWire.requestBody(
+                model: "qwen3", messages: [LLMMessage(role: .user, text: "hi")],
+                tools: [], thinking: thinking, maxOutputTokens: cap)) as! [String: Any]
+        }
+        XCTAssertEqual(try body(.off, cap: nil)["think"] as? Bool, false)
+        XCTAssertEqual(try body(.level("low"), cap: nil)["think"] as? String, "low")
+        XCTAssertNil(try body(.modelDefault, cap: nil)["think"])
+        XCTAssertEqual((try body(.off, cap: 32)["options"] as! [String: Any])["num_predict"] as? Int, 32)
+        // 0 means "no cap"; it must not become num_predict 0, which would stop
+        // the model before it writes a single token.
+        XCTAssertNil(try body(.off, cap: 0)["options"])
+    }
+
+    /// A model with multi-token-prediction layers decodes fastest at its own
+    /// draft setting, so the codec must never send one.
+    func testRequestBodyNeverOverridesDraftTokens() throws {
+        let body = try JSONSerialization.jsonObject(with: try OllamaChatWire.requestBody(
+            model: "qwen3", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], contextTokens: 4_096)) as! [String: Any]
+        XCTAssertNil((body["options"] as! [String: Any])["draft_num_predict"])
+    }
+
+    func testThinkingRoundTripsThroughItsStoredForm() {
+        for mode in [LLMThinking.modelDefault, .off, .level("low"), .level("high")] {
+            XCTAssertEqual(LLMThinking(rawValue: mode.rawValue), mode)
+        }
+        // Anything unknown falls back to the model's own behavior.
+        XCTAssertEqual(LLMThinking(rawValue: "xhigh"), .modelDefault)
+    }
+
     func testUnloadBodyIsEmptyChatWithZeroKeepAlive() throws {
         let body = try JSONSerialization.jsonObject(
             with: try OllamaChatWire.unloadBody(model: "llama3.2")) as! [String: Any]

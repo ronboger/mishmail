@@ -82,7 +82,11 @@ enum LLMProviderStore {
             return SubscriptionPreset(
                 label: "ChatGPT", kind: .openAICompatible,
                 baseURL: "https://api.openai.com/v1",
-                fallbackModels: ["gpt-5", "gpt-5-mini"])
+                fallbackModels: [
+                    "gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna",
+                    "gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex-spark",
+                    "gpt-5", "gpt-5-mini",
+                ])
         case .grok:
             return SubscriptionPreset(
                 label: "Grok", kind: .openAICompatible,

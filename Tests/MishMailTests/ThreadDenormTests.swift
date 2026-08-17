@@ -64,7 +64,7 @@ final class ThreadDenormTests: XCTestCase {
         XCTAssertEqual(counts["promotions"], 0, "snoozed promo leaves promo badge")
         XCTAssertEqual(counts["snoozed"], 2)
 
-        var sleeping = MailThread(
+        let sleeping = MailThread(
             id: "a:sleep", accountId: "a", gmailThreadId: "sleep",
             subject: "s", snippet: "sn", fromDisplay: "F",
             lastDate: now, isUnread: true, isStarred: false,

@@ -280,7 +280,8 @@ final class AskMishController {
             let request = [systemMessage()] + history
             do {
                 for try await event in await LLMClient.shared.stream(
-                    messages: request, tools: tools, config: config, model: modelID) {
+                    messages: request, tools: tools, config: config, model: modelID,
+                    task: .askMish) {
                     switch event {
                     case .token(let token):
                         streamedText += token

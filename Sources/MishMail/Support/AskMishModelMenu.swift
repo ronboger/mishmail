@@ -36,6 +36,23 @@ enum AskMishModelMenu {
             list = [provider.defaultModel]
         }
         let total = list.count
+        // Pins beat curation: when the user chose models, browse shows only
+        // those (plus the default/selection pins below).
+        let pinned = (provider.pinnedModels ?? []).filter { !$0.isEmpty }
+        if !pinned.isEmpty {
+            var pinSeen = Set<String>()
+            var pinList = pinned.filter { pinSeen.insert($0).inserted }
+            for pin in [selected ?? "", provider.defaultModel].filter({ !$0.isEmpty })
+            where !pinList.contains(pin) {
+                pinList.insert(pin, at: 0)
+            }
+            if let index = pinList.firstIndex(of: provider.defaultModel), index > 0 {
+                pinList.remove(at: index)
+                pinList.insert(provider.defaultModel, at: 0)
+            }
+            return ProviderModels(models: pinList,
+                                  hiddenCount: max(0, total - pinList.count))
+        }
         if list.count > maxModelsPerProvider {
             let curated = list.filter { id in
                 let lowered = id.lowercased()
@@ -110,4 +127,11 @@ enum AskMishModelMenu {
 
     /// SF Symbol for providers without a vendored brand mark.
     static let fallbackIcon = "cpu"
+
+    /// Short display title for a routed model id: the part after the vendor
+    /// prefix ("nvidia/nemotron-3-super" → "nemotron-3-super"). Ids without a
+    /// "/" pass through.
+    static func displayName(_ model: String) -> String {
+        model.split(separator: "/").last.map(String.init) ?? model
+    }
 }

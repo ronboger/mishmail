@@ -9,7 +9,9 @@ enum OllamaChatWire {
     static func requestBody(model: String, messages: [LLMMessage],
                             tools: [LLMToolSpec],
                             keepAliveSeconds: Int? = nil,
-                            contextTokens: Int? = nil) throws -> Data {
+                            contextTokens: Int? = nil,
+                            thinking: LLMThinking = .modelDefault,
+                            maxOutputTokens: Int? = nil) throws -> Data {
         var wireMessages: [[String: Any]] = []
         for message in messages {
             switch message.role {
@@ -39,9 +41,14 @@ enum OllamaChatWire {
         // the KV cache from the model's own context length, which on a large
         // local model costs many gigabytes. Send both limits explicitly.
         if let keepAliveSeconds { body["keep_alive"] = keepAliveSeconds }
-        if let contextTokens, contextTokens > 0 {
-            body["options"] = ["num_ctx": contextTokens]
-        }
+        var options: [String: Any] = [:]
+        if let contextTokens, contextTokens > 0 { options["num_ctx"] = contextTokens }
+        if let maxOutputTokens, maxOutputTokens > 0 { options["num_predict"] = maxOutputTokens }
+        if !options.isEmpty { body["options"] = options }
+        // `draft_num_predict` is deliberately not set. A model with
+        // multi-token-prediction layers ships its own value and decodes ~25%
+        // faster with it; overriding it measured slower at every other setting.
+        if let think = thinking.wireValue { body["think"] = think }
         if !tools.isEmpty {
             body["tools"] = try tools.map { tool -> [String: Any] in
                 ["type": "function",

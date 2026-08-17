@@ -30,13 +30,16 @@ actor LLMClient {
     /// second POST fail and destroys the sign-in. Callers join instead.
     private var refreshTasks: [UUID: Task<Void, Error>] = [:]
 
+    /// `task` only affects local (Ollama) requests, where thinking effort and
+    /// the output cap are per-task. Remote providers ignore it.
     func stream(messages: [LLMMessage], tools: [LLMToolSpec],
-                config: LLMProviderConfig, model: String) -> AsyncThrowingStream<LLMEvent, Error> {
+                config: LLMProviderConfig, model: String,
+                task: LLMTask) -> AsyncThrowingStream<LLMEvent, Error> {
         AsyncThrowingStream { continuation in
-            let task = Task {
+            let streamTask = Task {
                 do {
                     try await self.run(messages: messages, tools: tools, config: config,
-                                       model: model, allowRefresh: true) { event in
+                                       model: model, task: task, allowRefresh: true) { event in
                         continuation.yield(event)
                     }
                     continuation.finish()
@@ -44,12 +47,13 @@ actor LLMClient {
                     continuation.finish(throwing: error)
                 }
             }
-            continuation.onTermination = { _ in task.cancel() }
+            continuation.onTermination = { _ in streamTask.cancel() }
         }
     }
 
     private func run(messages: [LLMMessage], tools: [LLMToolSpec],
-                     config: LLMProviderConfig, model: String, allowRefresh: Bool,
+                     config: LLMProviderConfig, model: String, task: LLMTask,
+                     allowRefresh: Bool,
                      yield: @Sendable (LLMEvent) -> Void) async throws {
         // Refresh up front when the stored token already expired, so the common
         // case costs one request instead of a 401 plus a retry. A failure here
@@ -59,13 +63,13 @@ actor LLMClient {
             try? await refreshTokens(vendor: vendor, providerID: config.id)
         }
         let request = try await buildRequest(messages: messages, tools: tools,
-                                            config: config, model: model)
+                                            config: config, model: model, task: task)
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if status == 401, allowRefresh, case .oauth(let vendor) = config.authMode {
             try await refreshTokens(vendor: vendor, providerID: config.id)
             return try await run(messages: messages, tools: tools, config: config,
-                                 model: model, allowRefresh: false, yield: yield)
+                                 model: model, task: task, allowRefresh: false, yield: yield)
         }
         guard (200..<300).contains(status) else {
             if config.kind == .ollama, let failure = Ollama.chatFailure(status: status, model: model) {
@@ -118,7 +122,8 @@ actor LLMClient {
     }
 
     private func buildRequest(messages: [LLMMessage], tools: [LLMToolSpec],
-                              config: LLMProviderConfig, model: String) async throws -> URLRequest {
+                              config: LLMProviderConfig, model: String,
+                              task: LLMTask) async throws -> URLRequest {
         let path = LLMEndpoint.chatPath(kind: config.kind, base: config.baseURL)
         let body: Data
         switch config.kind {
@@ -128,10 +133,19 @@ actor LLMClient {
             body = try AnthropicWire.requestBody(model: model, messages: messages,
                                                  tools: tools, maxTokens: 8192)
         case .ollama:
+            // A thinking *level* on a model without the capability fails the
+            // request, so fall back to the model's own default there. `off` is
+            // always safe and needs no check.
+            var thinking = Ollama.thinking(for: task)
+            if case .level = thinking, await !Ollama.supportsThinking(model: model) {
+                thinking = .modelDefault
+            }
             body = try OllamaChatWire.requestBody(
                 model: model, messages: messages, tools: tools,
                 keepAliveSeconds: Ollama.keepAliveSeconds,
-                contextTokens: Ollama.contextTokens)
+                contextTokens: Ollama.contextTokens,
+                thinking: thinking,
+                maxOutputTokens: Ollama.maxOutputTokens(for: task))
             await Ollama.LoadedModels.shared.note(model)
         }
         guard let url = URL(string: path) else { throw LLMClientError.http(0) }

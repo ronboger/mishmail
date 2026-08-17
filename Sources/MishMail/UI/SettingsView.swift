@@ -1642,6 +1642,18 @@ struct AISettings: View {
                 }
 
                 Section {
+                    thinkingPicker("Ask Mish", task: .askMish)
+                    thinkingPicker("Drafts", task: .drafts)
+                    thinkingPicker("Summaries", task: .summaries)
+                    thinkingPicker("Auto-sort", task: .triage)
+                } header: {
+                    Text("Thinking (local models)")
+                } footer: {
+                    Text("A thinking model reasons before it answers. That helps Ask Mish, and mostly wastes time on a one-word category or a short draft — one classification measured 11.4 s with thinking and 0.85 s without. Models that cannot think ignore this.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
                     ForEach([LLMOAuthVendor.claude, .chatGPT, .grok], id: \.self) { vendor in
                         subscriptionRow(vendor)
                     }
@@ -1875,6 +1887,20 @@ struct AISettings: View {
             ollamaModels = []
             ollamaListError = "Couldn't reach Ollama at \(Ollama.baseURL)."
         }
+    }
+
+    /// Thinking-effort picker for one task. Bound straight to UserDefaults
+    /// through `Ollama`, so it needs no view state of its own.
+    private func thinkingPicker(_ label: String, task: LLMTask) -> some View {
+        Picker(label, selection: Binding(
+            get: { Ollama.thinking(for: task).rawValue },
+            set: { Ollama.setThinking(LLMThinking(rawValue: $0), for: task) })) {
+                Text("Off — fastest").tag("off")
+                Text("Low").tag("low")
+                Text("Medium").tag("medium")
+                Text("High").tag("high")
+                Text("Model default").tag("default")
+            }
     }
 
     private func taskTitle(_ task: LLMTask) -> String {
@@ -2218,7 +2244,9 @@ private struct ProviderEditSheet: View {
         return LLMProviderConfig(
             id: id, kind: kind, label: label, baseURL: baseURL, defaultModel: modelID,
             authMode: useOAuth ? .oauth(oauthVendor ?? .claude) : .apiKey,
-            models: allModels.isEmpty ? nil : allModels.sorted())
+            models: allModels.isEmpty ? nil : allModels.sorted(),
+            // Editing a provider must not wipe the user's picker pins.
+            pinnedModels: provider?.pinnedModels)
     }
 
     private func fetchModels() async {

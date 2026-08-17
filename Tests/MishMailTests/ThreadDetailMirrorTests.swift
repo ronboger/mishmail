@@ -44,7 +44,7 @@ final class ThreadDetailMirrorTests: XCTestCase {
     }
 
     func testMissesForAnUnknownThread() {
-        var mirror = ThreadDetailMirror(capacity: 3)
+        let mirror = ThreadDetailMirror(capacity: 3)
 
         XCTAssertNil(mirror.payload(
             for: "nope",

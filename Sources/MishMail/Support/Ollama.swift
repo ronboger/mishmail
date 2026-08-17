@@ -36,6 +36,71 @@ enum Ollama {
     }
     static let defaultContextTokens = 16_384
 
+    /// Whether a local model reasons before answering, per task.
+    ///
+    /// Sorting, summaries, and drafts default to **off**. Their prompts ask for
+    /// a label or a piece of prose, and a thinking model spends most of its time
+    /// and context on reasoning nobody reads: one classification measured 11.4 s
+    /// with thinking and 0.85 s without. Ask Mish keeps the model's own default,
+    /// because its tool loop benefits from the reasoning.
+    static func thinking(for task: LLMTask) -> LLMThinking {
+        guard let stored = UserDefaults.standard.string(forKey: thinkingKey(task)) else {
+            return defaultThinking(for: task)
+        }
+        return LLMThinking(rawValue: stored)
+    }
+
+    static func setThinking(_ mode: LLMThinking, for task: LLMTask) {
+        UserDefaults.standard.set(mode.rawValue, forKey: thinkingKey(task))
+    }
+
+    static func defaultThinking(for task: LLMTask) -> LLMThinking {
+        task == .askMish ? .modelDefault : .off
+    }
+
+    private static func thinkingKey(_ task: LLMTask) -> String {
+        "ollama.think.\(task.rawValue)"
+    }
+
+    /// Cap on generated tokens per task, as `options.num_predict`. Only sorting
+    /// is capped: its answer is one category word, so a local model that starts
+    /// rambling would otherwise hold up a 100-thread sweep. 0 means no cap.
+    static func maxOutputTokens(for task: LLMTask) -> Int {
+        task == .triage ? 32 : 0
+    }
+
+    /// True when the model advertises the `thinking` capability. A thinking
+    /// *level* sent to a model without it fails the request outright, so this
+    /// gates that case. Cached: /api/show costs a round-trip per turn otherwise.
+    static func supportsThinking(model: String) async -> Bool {
+        if let known = await Capabilities.shared.thinking(model) { return known }
+        let base = LLMEndpoint.trimmedBase(baseURL)
+        guard let url = URL(string: "\(base)/api/show"),
+              (try? validateEndpoint(url)) != nil,
+              let body = try? JSONSerialization.data(withJSONObject: ["model": model])
+        else { return false }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 5
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        guard let (data, _) = try? await URLSession.shared.data(for: request),
+              let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
+        else { return false } // unreachable Ollama: assume no, so the chat still runs
+        let supported = (object["capabilities"] as? [String] ?? []).contains("thinking")
+        await Capabilities.shared.record(model: model, thinking: supported)
+        return supported
+    }
+
+    /// Per-model `thinking` capability, learned once per session.
+    actor Capabilities {
+        static let shared = Capabilities()
+        private var thinkingByModel: [String: Bool] = [:]
+
+        func thinking(_ model: String) -> Bool? { thinkingByModel[model] }
+        func record(model: String, thinking: Bool) { thinkingByModel[model] = thinking }
+    }
+
     /// User explicitly allowed sending mail content to a non-loopback Ollama
     /// endpoint (Settings → AI). Loopback never needs this.
     static var allowRemoteEndpoint: Bool {

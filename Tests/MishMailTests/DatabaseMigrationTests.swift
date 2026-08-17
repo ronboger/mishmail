@@ -269,7 +269,7 @@ final class DatabaseMigrationTests: XCTestCase {
                 snippet: "", bodyText: "", bodyHTML: nil, messageIdHeader: "",
                 referencesHeader: "", labelIds: "", isUnread: false,
                 hasAttachment: true).save(db)
-            var att = AttachmentRow(id: nil, messageId: "ron@x.com:m1",
+            let att = AttachmentRow(id: nil, messageId: "ron@x.com:m1",
                                     gmailAttachmentId: "a1", filename: "f.pdf",
                                     mimeType: "application/pdf", size: 1)
             try att.insert(db)

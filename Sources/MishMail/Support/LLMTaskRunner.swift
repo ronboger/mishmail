@@ -51,7 +51,8 @@ enum LLMTaskRunner {
                 do {
                     for try await event in await LLMClient.shared.stream(
                         messages: [LLMMessage(role: .user, text: prompt)],
-                        tools: [], config: resolved.config, model: resolved.model) {
+                        tools: [], config: resolved.config, model: resolved.model,
+                        task: task) {
                         switch event {
                         case .token(let text):
                             continuation.yield(text)

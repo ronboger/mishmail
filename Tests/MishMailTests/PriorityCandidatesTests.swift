@@ -209,13 +209,13 @@ final class PriorityCandidatesTests: XCTestCase {
         let db = try makeDB()
         let now = Date(timeIntervalSince1970: 1_700_000_000)
         try db.write { db in
-            var impPromo = makeThread(
+            let impPromo = makeThread(
                 id: "imp-promo", lastDate: now,
                 isStarred: false, inPromotions: true,
                 labelIds: "INBOX IMPORTANT CATEGORY_PROMOTIONS")
             try impPromo.insert(db)
 
-            var impPrimary = makeThread(
+            let impPrimary = makeThread(
                 id: "imp-primary", lastDate: now.addingTimeInterval(-10),
                 isStarred: false,
                 labelIds: "INBOX IMPORTANT")

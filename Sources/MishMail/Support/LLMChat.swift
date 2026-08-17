@@ -31,9 +31,52 @@ struct LLMProviderConfig: Codable, Equatable, Identifiable, Sendable {
     /// Model list pulled from the provider after connect (nil = never fetched).
     /// Optional so rows stored before this field existed still decode.
     var models: [String]? = nil
+    /// Models the user pinned for quick picking. When non-empty, browse UIs
+    /// show ONLY these (plus the default); the full list stays searchable.
+    /// Optional so rows stored before this field existed still decode.
+    var pinnedModels: [String]? = nil
 }
 
 enum LLMRole: String, Codable, Sendable { case system, user, assistant, tool }
+
+/// Whether a local model reasons before it answers, and how hard — Ollama's
+/// `think` field.
+///
+/// `off` is safe on every model: Ollama accepts `think: false` even for a model
+/// with no thinking capability. A *level* is not — `think: "low"` on such a
+/// model fails the whole request with "does not support thinking" — so callers
+/// must check `capabilities` before sending one.
+enum LLMThinking: Equatable, Sendable {
+    case modelDefault
+    case off
+    case level(String)
+
+    /// Stored form, for UserDefaults and pickers.
+    var rawValue: String {
+        switch self {
+        case .modelDefault: return "default"
+        case .off: return "off"
+        case .level(let level): return level
+        }
+    }
+
+    init(rawValue: String) {
+        switch rawValue {
+        case "off": self = .off
+        case "low", "medium", "high": self = .level(rawValue)
+        default: self = .modelDefault
+        }
+    }
+
+    /// The JSON value for `think`, or nil when the field should be left out.
+    var wireValue: Any? {
+        switch self {
+        case .modelDefault: return nil
+        case .off: return false
+        case .level(let level): return level
+        }
+    }
+}
 
 struct LLMToolCall: Codable, Equatable, Sendable {
     var id: String

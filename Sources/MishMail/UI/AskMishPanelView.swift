@@ -152,7 +152,6 @@ struct AskMishPanelView: View {
         // side (leftward), not downward over the transcript.
         .popover(isPresented: $modelPickerShown, arrowEdge: .leading) {
             ModelPickerPopover(
-                providers: LLMProviderStore.load(),
                 localModels: localModels,
                 currentProviderID: controller.providerID,
                 currentModelID: controller.modelID,
@@ -171,6 +170,9 @@ struct AskMishPanelView: View {
                 },
                 onSetDefault: { provider, model in
                     setDefaultModel(model, for: provider)
+                },
+                onTogglePin: { provider, model in
+                    togglePin(model, for: provider)
                 })
         }
     }
@@ -185,6 +187,21 @@ struct AskMishPanelView: View {
         LLMProviderStore.save(list)
         LLMProviderStore.setAssignment(
             LLMTaskAssignment(providerID: provider.id, model: model), for: .askMish)
+    }
+
+    /// Adds or removes a model from the provider's pin list. Pinned models
+    /// are what the picker's browse column shows.
+    private func togglePin(_ model: String, for provider: LLMProviderConfig) {
+        var list = LLMProviderStore.load()
+        guard let index = list.firstIndex(where: { $0.id == provider.id }) else { return }
+        var pins = list[index].pinnedModels ?? []
+        if let existing = pins.firstIndex(of: model) {
+            pins.remove(at: existing)
+        } else {
+            pins.append(model)
+        }
+        list[index].pinnedModels = pins.isEmpty ? nil : pins
+        LLMProviderStore.save(list)
     }
 
     private func declinePendingConfirmation() {
@@ -600,16 +617,24 @@ private struct ProviderIcon: View {
 /// filtered list over the FULL stored model lists, so curation never hides a
 /// model from search.
 private struct ModelPickerPopover: View {
-    let providers: [LLMProviderConfig]
     let localModels: [String]
     let currentProviderID: UUID
     let currentModelID: String
     let onPick: (UUID, String) -> Void
     let onSetDefault: (LLMProviderConfig, String) -> Void
+    let onTogglePin: (LLMProviderConfig, String) -> Void
 
+    /// Snapshot of the store, re-read after every default/pin mutation so the
+    /// open popover reflects it immediately.
+    @State private var providers: [LLMProviderConfig] = []
     @State private var query = ""
     @State private var expandedProviderID: UUID?
     @FocusState private var searchFocused: Bool
+
+    private func mutate(_ action: () -> Void) {
+        action()
+        providers = LLMProviderStore.load()
+    }
 
     private var isSearching: Bool {
         !query.trimmingCharacters(in: .whitespaces).isEmpty
@@ -658,6 +683,7 @@ private struct ModelPickerPopover: View {
         }
         .fixedSize(horizontal: true, vertical: false)
         .onAppear {
+            providers = LLMProviderStore.load()
             expandedProviderID = currentProviderID
             searchFocused = true
         }
@@ -719,6 +745,11 @@ private struct ModelPickerPopover: View {
                         .padding(.horizontal, 8)
                         .padding(.vertical, 3)
                 }
+                Text("Right-click a model to pin it here")
+                    .font(.caption2)
+                    .foregroundStyle(.quaternary)
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 3)
             }
             .padding(6)
         }
@@ -727,14 +758,26 @@ private struct ModelPickerPopover: View {
     private func modelRow(provider: LLMProviderConfig, model: String) -> some View {
         let isSelected = provider.id == currentProviderID && model == currentModelID
         let isDefault = model == provider.defaultModel
+        let isPinned = (provider.pinnedModels ?? []).contains(model)
+        let title = AskMishModelMenu.displayName(model)
         return Button {
             onPick(provider.id, model)
         } label: {
-            HStack(spacing: 6) {
-                Text(model)
-                    .font(.system(size: 12))
-                    .lineLimit(1)
-                    .truncationMode(.middle)
+            HStack(alignment: .firstTextBaseline, spacing: 6) {
+                VStack(alignment: .leading, spacing: 1) {
+                    Text(title)
+                        .font(.system(size: 12))
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                    // Routed ids keep the vendor prefix visible as a subtitle.
+                    if title != model {
+                        Text(model)
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                    }
+                }
                 if isDefault {
                     Text("default")
                         .font(.system(size: 9))
@@ -752,13 +795,22 @@ private struct ModelPickerPopover: View {
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
+        .help(model)
         .background(isSelected ? Color.notionAccent.opacity(0.10) : .clear,
                     in: RoundedRectangle(cornerRadius: PMRadius.sm))
-        .contextMenu {
-            if !isDefault {
-                Button("Set as default for \(provider.label)") {
-                    onSetDefault(provider, model)
-                }
+        .contextMenu { modelActions(provider: provider, model: model,
+                                    isDefault: isDefault, isPinned: isPinned) }
+    }
+
+    @ViewBuilder
+    private func modelActions(provider: LLMProviderConfig, model: String,
+                              isDefault: Bool, isPinned: Bool) -> some View {
+        Button(isPinned ? "Unpin" : "Pin to \(provider.label)") {
+            mutate { onTogglePin(provider, model) }
+        }
+        if !isDefault {
+            Button("Set as default for \(provider.label)") {
+                mutate { onSetDefault(provider, model) }
             }
         }
     }
@@ -779,12 +831,21 @@ private struct ModelPickerPopover: View {
                 Button {
                     onPick(hit.providerID, hit.model)
                 } label: {
-                    HStack(spacing: 8) {
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
                         ProviderIcon(provider: provider, size: 12)
-                        Text(hit.model)
-                            .font(.system(size: 12))
-                            .lineLimit(1)
-                            .truncationMode(.middle)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(AskMishModelMenu.displayName(hit.model))
+                                .font(.system(size: 12))
+                                .lineLimit(1)
+                                .truncationMode(.tail)
+                            if AskMishModelMenu.displayName(hit.model) != hit.model {
+                                Text(hit.model)
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
+                        }
                         Spacer(minLength: 4)
                         Text(hit.providerLabel)
                             .font(.system(size: 10))
@@ -795,12 +856,11 @@ private struct ModelPickerPopover: View {
                     .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .help(hit.model)
                 .contextMenu {
-                    if hit.model != provider.defaultModel {
-                        Button("Set as default for \(provider.label)") {
-                            onSetDefault(provider, hit.model)
-                        }
-                    }
+                    modelActions(provider: provider, model: hit.model,
+                                 isDefault: hit.model == provider.defaultModel,
+                                 isPinned: (provider.pinnedModels ?? []).contains(hit.model))
                 }
             }
         }

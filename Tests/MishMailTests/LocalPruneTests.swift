@@ -86,7 +86,7 @@ final class LocalPruneTests: XCTestCase {
             try Account(id: "ron@x.com", displayName: "P", historyId: nil,
                         lastSyncAt: nil, senderName: "").save(db)
             try self.insert(db, account: "ron@x.com", gmailId: "m1", daysAgo: 400)
-            var att = AttachmentRow(id: nil, messageId: "ron@x.com:m1",
+            let att = AttachmentRow(id: nil, messageId: "ron@x.com:m1",
                                     gmailAttachmentId: "a1", filename: "f.pdf",
                                     mimeType: "application/pdf", size: 1)
             try att.insert(db)
