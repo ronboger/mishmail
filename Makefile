@@ -45,6 +45,15 @@ DESTINATION = platform=macOS,arch=$(shell uname -m)
 DEBUG_APP = $(DD)/Build/Products/Debug/MishMail Debug.app
 RELEASE_APP = $(DD)/Build/Products/Release/MishMail.app
 RELEASE_DIR = $(DD)/Build/Products/Release
+# `make release` builds the same Release configuration as `make install`, but
+# with different build settings (universal vs arm64-only, whole-module vs
+# incremental, Distribution entitlements). xcodebuild folds settings into its
+# task signatures, so sharing one derived-data path means every
+# install→release→install alternation is a FULL rebuild of both. A separate
+# path keeps `make install` at its ~5-12s incremental cost across releases.
+SHIP_DD = build/ddship.noindex
+SHIP_APP = $(SHIP_DD)/Build/Products/Release/MishMail.app
+SHIP_DIR = $(SHIP_DD)/Build/Products/Release
 ZIP_NAME = MishMail-$(VERSION).zip
 # notarytool keychain profile used by `make release` (see release recipe).
 NOTARY_PROFILE ?= MishMail-notary
@@ -258,12 +267,12 @@ release: require-pushed test
 	fi
 	@if [ "$(VALID_DEVELOPER_IDENTITY)" = "yes" ]; then \
 		xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
-			-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet \
+			-destination '$(DESTINATION)' -derivedDataPath $(SHIP_DD) -quiet \
 			CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY="Developer ID Application" DEVELOPMENT_TEAM=$(TEAM) \
 			MISHMAIL_APP_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements; \
 	else \
 		xcodebuild build -project $(PROJECT) -scheme MishMail -configuration Release \
-			-destination '$(DESTINATION)' -derivedDataPath $(DD) -quiet \
+			-destination '$(DESTINATION)' -derivedDataPath $(SHIP_DD) -quiet \
 			MISHMAIL_APP_ENTITLEMENTS=Sources/MishMail/MishMail.Distribution.entitlements; \
 	fi
 	# Notarize and staple (Developer ID builds only): the in-app updater and
@@ -271,21 +280,21 @@ release: require-pushed test
 	#   xcrun notarytool store-credentials $(NOTARY_PROFILE) \
 	#     --apple-id <appleid> --team-id $(TEAM) --password <app-specific-pw>
 	@if [ "$(VALID_DEVELOPER_IDENTITY)" = "yes" ]; then \
-		cd $(RELEASE_DIR) && \
+		cd $(SHIP_DIR) && \
 		ditto -c -k --keepParent MishMail.app notarize-upload.zip && \
 		xcrun notarytool submit notarize-upload.zip \
 			--keychain-profile $(NOTARY_PROFILE) --wait && \
 		rm notarize-upload.zip && \
 		xcrun stapler staple MishMail.app; \
 	fi
-	$(call check_relauncher,$(RELEASE_APP))
-	cd $(RELEASE_DIR) && \
+	$(call check_relauncher,$(SHIP_APP))
+	cd $(SHIP_DIR) && \
 		ditto -c -k --keepParent MishMail.app $(ZIP_NAME) && \
 		shasum -a 256 $(ZIP_NAME) > SHA256SUMS && \
 		echo "Checksum:" && cat SHA256SUMS
 	gh release create v$(VERSION) \
-		$(RELEASE_DIR)/$(ZIP_NAME) \
-		$(RELEASE_DIR)/SHA256SUMS \
+		$(SHIP_DIR)/$(ZIP_NAME) \
+		$(SHIP_DIR)/SHA256SUMS \
 		--title "MishMail $(VERSION)" --generate-notes
 	@echo "Released v$(VERSION) with SHA256SUMS — running apps will offer the update within a day."
 
