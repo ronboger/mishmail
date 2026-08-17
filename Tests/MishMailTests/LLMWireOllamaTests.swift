@@ -61,6 +61,40 @@ final class LLMWireOllamaTests: XCTestCase {
         XCTAssertEqual(events, [.done(stopReason: "length",
                                       usage: LLMUsage(promptTokens: 9, completionTokens: 2))])
     }
+    func testRequestBodySendsKeepAliveAndContextLength() throws {
+        let body = try JSONSerialization.jsonObject(with: try OllamaChatWire.requestBody(
+            model: "llama3.2", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], keepAliveSeconds: 60, contextTokens: 16_384)) as! [String: Any]
+        XCTAssertEqual(body["keep_alive"] as? Int, 60)
+        XCTAssertEqual((body["options"] as! [String: Any])["num_ctx"] as? Int, 16_384)
+    }
+
+    /// keep_alive 0 is meaningful (unload at once), so it must survive; a
+    /// context length of 0 means "server's own value" and must be omitted.
+    func testRequestBodyKeepsZeroKeepAliveAndOmitsZeroContext() throws {
+        let body = try JSONSerialization.jsonObject(with: try OllamaChatWire.requestBody(
+            model: "llama3.2", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], keepAliveSeconds: 0, contextTokens: 0)) as! [String: Any]
+        XCTAssertEqual(body["keep_alive"] as? Int, 0)
+        XCTAssertNil(body["options"])
+    }
+
+    func testRequestBodyOmitsLimitsWhenUnset() throws {
+        let body = try JSONSerialization.jsonObject(with: try OllamaChatWire.requestBody(
+            model: "llama3.2", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [])) as! [String: Any]
+        XCTAssertNil(body["keep_alive"])
+        XCTAssertNil(body["options"])
+    }
+
+    func testUnloadBodyIsEmptyChatWithZeroKeepAlive() throws {
+        let body = try JSONSerialization.jsonObject(
+            with: try OllamaChatWire.unloadBody(model: "llama3.2")) as! [String: Any]
+        XCTAssertEqual(body["model"] as? String, "llama3.2")
+        XCTAssertEqual((body["messages"] as? [Any])?.count, 0)
+        XCTAssertEqual(body["keep_alive"] as? Int, 0)
+    }
+
     func testStreamEmitsThinkingAsReasoning() {
         var state = OllamaChatWire.StreamState()
         let events = state.consume(

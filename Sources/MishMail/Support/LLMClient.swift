@@ -128,7 +128,11 @@ actor LLMClient {
             body = try AnthropicWire.requestBody(model: model, messages: messages,
                                                  tools: tools, maxTokens: 8192)
         case .ollama:
-            body = try OllamaChatWire.requestBody(model: model, messages: messages, tools: tools)
+            body = try OllamaChatWire.requestBody(
+                model: model, messages: messages, tools: tools,
+                keepAliveSeconds: Ollama.keepAliveSeconds,
+                contextTokens: Ollama.contextTokens)
+            await Ollama.LoadedModels.shared.note(model)
         }
         guard let url = URL(string: path) else { throw LLMClientError.http(0) }
         if config.kind == .ollama {

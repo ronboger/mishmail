@@ -2160,6 +2160,12 @@ struct ComposeRequest: Identifiable {
         // calls read and write the database.
         await askMishController?.shutdown()
 
+        // Free the local model weights. Ollama would hold them for `keep_alive`
+        // after MishMail is gone, which on a large model is gigabytes of memory
+        // no one can use. Each unload carries a short request timeout, so a
+        // stopped or wedged Ollama cannot delay quit.
+        await Ollama.unloadAllLoadedByMishMail()
+
         // Refuse new maintenance (VACUUM / idle checkpoint) immediately so a
         // deferred startup tail cannot open a long write after we begin
         // cancelling tracked tasks. The quit-path checkpoint below uses

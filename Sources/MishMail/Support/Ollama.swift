@@ -11,6 +11,31 @@ enum Ollama {
         set { UserDefaults.standard.set(newValue, forKey: "ollama.model") }
     }
 
+    /// Seconds Ollama keeps the weights in memory after a reply (`keep_alive`).
+    /// 0 unloads at once; a negative value keeps the model loaded for good.
+    /// Ollama's own default is 300, which leaves several gigabytes resident long
+    /// after a one-off draft or triage run.
+    static var keepAliveSeconds: Int {
+        get {
+            UserDefaults.standard.object(forKey: "ollama.keepAlive") as? Int
+                ?? defaultKeepAliveSeconds
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "ollama.keepAlive") }
+    }
+    static let defaultKeepAliveSeconds = 60
+
+    /// Context window sent as `options.num_ctx`. This sizes the KV cache, so a
+    /// model whose own context length is 256k allocates far more memory than a
+    /// mail assistant ever fills. 0 means "use the server's value".
+    static var contextTokens: Int {
+        get {
+            UserDefaults.standard.object(forKey: "ollama.numCtx") as? Int
+                ?? defaultContextTokens
+        }
+        set { UserDefaults.standard.set(newValue, forKey: "ollama.numCtx") }
+    }
+    static let defaultContextTokens = 16_384
+
     /// User explicitly allowed sending mail content to a non-loopback Ollama
     /// endpoint (Settings → AI). Loopback never needs this.
     static var allowRemoteEndpoint: Bool {
@@ -69,6 +94,43 @@ enum Ollama {
     static var isLoopback: Bool {
         guard let host = URL(string: baseURL)?.host?.lowercased() else { return false }
         return host == "127.0.0.1" || host == "localhost" || host == "::1"
+    }
+
+    /// Drops one model from Ollama's memory now. Best effort: a stopped Ollama
+    /// or a refused endpoint is not an error the user needs to see.
+    static func unload(model: String) async {
+        let base = LLMEndpoint.trimmedBase(baseURL)
+        guard !model.isEmpty, let url = URL(string: "\(base)/api/chat"),
+              (try? validateEndpoint(url)) != nil,
+              let body = try? OllamaChatWire.unloadBody(model: model) else { return }
+        var request = URLRequest(url: url)
+        request.httpMethod = "POST"
+        request.timeoutInterval = 2 // quit calls this; never block the app on it
+        request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        request.httpBody = body
+        _ = try? await URLSession.shared.data(for: request)
+        await LoadedModels.shared.forget(model)
+    }
+
+    /// Unloads every model this session loaded, and forgets them.
+    static func unloadAllLoadedByMishMail() async {
+        for model in await LoadedModels.shared.takeAll() { await unload(model: model) }
+    }
+
+    /// Models MishMail asked Ollama to load in this session. Quit and
+    /// model-switch unload exactly these, so a model another app loaded stays
+    /// where it is.
+    actor LoadedModels {
+        static let shared = LoadedModels()
+        private var models: Set<String> = []
+
+        func note(_ model: String) { models.insert(model) }
+        func forget(_ model: String) { models.remove(model) }
+        func takeAll() -> Set<String> {
+            let snapshot = models
+            models.removeAll()
+            return snapshot
+        }
     }
 
     /// Shared endpoint guard: loopback OK; remote must be HTTPS *and*

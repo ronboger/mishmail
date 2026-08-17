@@ -2,8 +2,14 @@ import Foundation
 
 /// Pure codec for Ollama's /api/chat NDJSON streaming format.
 enum OllamaChatWire {
+    /// `keepAliveSeconds` is Ollama's `keep_alive`: how long the model stays in
+    /// memory after the reply. 0 unloads at once, a negative value keeps it
+    /// forever. `contextTokens` is `options.num_ctx`, which sizes the KV cache;
+    /// pass nil or 0 to accept the server's own value.
     static func requestBody(model: String, messages: [LLMMessage],
-                            tools: [LLMToolSpec]) throws -> Data {
+                            tools: [LLMToolSpec],
+                            keepAliveSeconds: Int? = nil,
+                            contextTokens: Int? = nil) throws -> Data {
         var wireMessages: [[String: Any]] = []
         for message in messages {
             switch message.role {
@@ -29,6 +35,13 @@ enum OllamaChatWire {
             }
         }
         var body: [String: Any] = ["model": model, "messages": wireMessages, "stream": true]
+        // Ollama defaults hold the weights in memory for five minutes and size
+        // the KV cache from the model's own context length, which on a large
+        // local model costs many gigabytes. Send both limits explicitly.
+        if let keepAliveSeconds { body["keep_alive"] = keepAliveSeconds }
+        if let contextTokens, contextTokens > 0 {
+            body["options"] = ["num_ctx": contextTokens]
+        }
         if !tools.isEmpty {
             body["tools"] = try tools.map { tool -> [String: Any] in
                 ["type": "function",
@@ -39,6 +52,14 @@ enum OllamaChatWire {
             }
         }
         return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    /// Body that drops a model from memory now: an empty chat with keep_alive 0.
+    /// Ollama answers immediately and frees the weights.
+    static func unloadBody(model: String) throws -> Data {
+        try JSONSerialization.data(withJSONObject: ["model": model,
+                                                    "messages": [],
+                                                    "keep_alive": 0])
     }
 
     struct StreamState {

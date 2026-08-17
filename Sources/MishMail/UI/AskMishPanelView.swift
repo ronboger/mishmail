@@ -157,9 +157,17 @@ struct AskMishPanelView: View {
                 currentProviderID: controller.providerID,
                 currentModelID: controller.modelID,
                 onPick: { providerID, model in
+                    let previous = controller.modelID
+                    let wasLocal = controller.providerID == LLMProviderStore.builtInOllamaID
                     controller.providerID = providerID
                     controller.modelID = model
                     modelPickerShown = false
+                    // Switching away from a local model leaves its weights in
+                    // Ollama for the whole keep_alive window. Nothing will use
+                    // them, so drop them now.
+                    if wasLocal, previous != model {
+                        Task { await Ollama.unload(model: previous) }
+                    }
                 },
                 onSetDefault: { provider, model in
                     setDefaultModel(model, for: provider)
@@ -587,9 +595,10 @@ private struct ProviderIcon: View {
 }
 
 /// Aside-style model picker: search on top, one row per provider with an
-/// icon, models collapsed under the row. One provider expands at a time (the
-/// active one initially); typing switches to a flat filtered list over the
-/// FULL stored model lists, so curation never hides a model from search.
+/// icon; hovering or clicking a provider flies its model list out in a second
+/// column to the side, like a native submenu. Typing switches to a flat
+/// filtered list over the FULL stored model lists, so curation never hides a
+/// model from search.
 private struct ModelPickerPopover: View {
     let providers: [LLMProviderConfig]
     let localModels: [String]
@@ -601,6 +610,15 @@ private struct ModelPickerPopover: View {
     @State private var query = ""
     @State private var expandedProviderID: UUID?
     @FocusState private var searchFocused: Bool
+
+    private var isSearching: Bool {
+        !query.trimmingCharacters(in: .whitespaces).isEmpty
+    }
+
+    private var expandedProvider: LLMProviderConfig? {
+        guard !isSearching, let id = expandedProviderID else { return nil }
+        return providers.first { $0.id == id }
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -616,19 +634,29 @@ private struct ModelPickerPopover: View {
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
             Divider()
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: 1) {
-                    if query.trimmingCharacters(in: .whitespaces).isEmpty {
-                        ForEach(providers) { provider in providerSection(provider) }
-                    } else {
-                        searchResults
+            HStack(alignment: .top, spacing: 0) {
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 1) {
+                        if isSearching {
+                            searchResults
+                        } else {
+                            ForEach(providers) { provider in providerRow(provider) }
+                        }
                     }
+                    .padding(6)
                 }
-                .padding(6)
+                .frame(width: 220)
+                // The flyout: the expanded provider's models, to the side.
+                if let provider = expandedProvider {
+                    Divider()
+                    modelColumn(provider)
+                        .frame(width: 210)
+                        .transition(.opacity)
+                }
             }
             .frame(maxHeight: 320)
         }
-        .frame(width: 260)
+        .fixedSize(horizontal: true, vertical: false)
         .onAppear {
             expandedProviderID = currentProviderID
             searchFocused = true
@@ -648,13 +676,10 @@ private struct ModelPickerPopover: View {
         return AskMishModelMenu.models(for: listed, selected: isCurrent ? currentModelID : nil)
     }
 
-    @ViewBuilder
-    private func providerSection(_ provider: LLMProviderConfig) -> some View {
+    private func providerRow(_ provider: LLMProviderConfig) -> some View {
         let expanded = expandedProviderID == provider.id
-        Button {
-            withAnimation(.easeOut(duration: 0.15)) {
-                expandedProviderID = expanded ? nil : provider.id
-            }
+        return Button {
+            expandedProviderID = provider.id
         } label: {
             HStack(spacing: 8) {
                 ProviderIcon(provider: provider, size: 13)
@@ -667,27 +692,35 @@ private struct ModelPickerPopover: View {
                 Image(systemName: "chevron.right")
                     .font(.system(size: 8, weight: .semibold))
                     .foregroundStyle(.tertiary)
-                    .rotationEffect(.degrees(expanded ? 90 : 0))
             }
             .padding(.horizontal, 8)
             .padding(.vertical, 7)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
-        .background(expanded ? Color.primary.opacity(0.04) : .clear,
+        .background(expanded ? Color.primary.opacity(0.06) : .clear,
                     in: RoundedRectangle(cornerRadius: PMRadius.sm))
-        if expanded {
-            let entry = listedModels(provider)
-            ForEach(entry.models, id: \.self) { model in
-                modelRow(provider: provider, model: model)
+        .onHover { hovering in
+            if hovering { expandedProviderID = provider.id }
+        }
+    }
+
+    private func modelColumn(_ provider: LLMProviderConfig) -> some View {
+        let entry = listedModels(provider)
+        return ScrollView {
+            LazyVStack(alignment: .leading, spacing: 1) {
+                ForEach(entry.models, id: \.self) { model in
+                    modelRow(provider: provider, model: model)
+                }
+                if entry.hiddenCount > 0 {
+                    Text("\(entry.hiddenCount) more — search above")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                        .padding(.horizontal, 8)
+                        .padding(.vertical, 3)
+                }
             }
-            if entry.hiddenCount > 0 {
-                Text("\(entry.hiddenCount) more — search above or Settings → AI")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .padding(.leading, 32)
-                    .padding(.vertical, 3)
-            }
+            .padding(6)
         }
     }
 
@@ -714,8 +747,7 @@ private struct ModelPickerPopover: View {
                         .foregroundStyle(Color.notionAccent)
                 }
             }
-            .padding(.leading, 32)
-            .padding(.trailing, 8)
+            .padding(.horizontal, 8)
             .padding(.vertical, 6)
             .contentShape(Rectangle())
         }

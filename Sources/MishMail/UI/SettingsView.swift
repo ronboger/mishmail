@@ -1556,6 +1556,8 @@ struct AISettings: View {
     @State private var url: String = Ollama.baseURL
     @State private var model: String = Ollama.model
     @State private var allowRemote: Bool = Ollama.allowRemoteEndpoint
+    @State private var keepAlive: Int = Ollama.keepAliveSeconds
+    @State private var contextTokens: Int = Ollama.contextTokens
     @AppStorage(MailStore.autoClassifyKey) private var autoClassify = true
     @State private var providers: [LLMProviderConfig] = LLMProviderStore.load()
     @State private var editingProvider: LLMProviderConfig?
@@ -1609,6 +1611,33 @@ struct AISettings: View {
                     Text(endpointIsRemote
                          ? "This URL is not on this Mac. MishMail will only send message content there if you enable the toggle above, and only over HTTPS."
                          : "AI drafting runs entirely on this Mac via Ollama. Install from ollama.com, then run: ollama pull \(model). The Draft with AI button appears when replying.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Picker("Keep model in memory", selection: $keepAlive) {
+                        Text("Unload right after the reply").tag(0)
+                        Text("1 minute").tag(60)
+                        Text("5 minutes").tag(300)
+                        Text("Until I quit MishMail").tag(-1)
+                    }
+                    .onChange(of: keepAlive) { Ollama.keepAliveSeconds = keepAlive }
+                    Picker("Context length", selection: $contextTokens) {
+                        Text("4K — smallest memory use").tag(4_096)
+                        Text("8K").tag(8_192)
+                        Text("16K — recommended").tag(16_384)
+                        Text("32K").tag(32_768)
+                        Text("Model default").tag(0)
+                    }
+                    .onChange(of: contextTokens) { Ollama.contextTokens = contextTokens }
+                    Button("Unload local model now") {
+                        Task { await Ollama.unloadAllLoadedByMishMail() }
+                    }
+                    .buttonStyle(.borderless)
+                } header: {
+                    Text("Local model memory")
+                } footer: {
+                    Text("A local model holds its weights in memory after it answers. A shorter time frees memory sooner but reloads the model on the next request. Context length sizes the key/value cache — “Model default” can reserve many gigabytes on a large model.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
