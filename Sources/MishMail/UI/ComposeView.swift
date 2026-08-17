@@ -821,7 +821,20 @@ struct ComposeView: View {
                               : "View side by side with the conversation (⇧⌘↩)")
             }
             if isSplit {
-                // Split owns the full window; exit is the button above.
+                // Split owns the full window; exit is the button above. The
+                // card still minimizes — it docks like floating (ContentView
+                // forces floating chrome while minimized) and restores to split.
+                Button {
+                    setMinimized(true)
+                } label: {
+                    Image(systemName: "minus")
+                        .font(.system(size: 12, weight: .semibold))
+                        .foregroundStyle(.secondary)
+                        .frame(width: 18, height: 18)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .help("Minimize")
             } else if isInline {
                 Button {
                     store.popOutCompose()
@@ -1805,8 +1818,12 @@ struct ComposeView: View {
             var raw = ""
             var shown = 0
             do {
+                // Triage's default Ollama cap (32 tokens, sized for one-word
+                // sorting) truncates suggestions mid-sentence — lift it to a
+                // bound that fits three full reply lines.
                 for try await piece in LLMTaskRunner.stream(task: .triage,
-                                                            prompt: prompt) {
+                                                            prompt: prompt,
+                                                            maxOutputTokens: 256) {
                     guard !Task.isCancelled else { return }
                     raw += piece
                     // Stream chips in per completed line — the strip fills as

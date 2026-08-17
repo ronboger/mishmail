@@ -34,12 +34,14 @@ actor LLMClient {
     /// the output cap are per-task. Remote providers ignore it.
     func stream(messages: [LLMMessage], tools: [LLMToolSpec],
                 config: LLMProviderConfig, model: String,
-                task: LLMTask) -> AsyncThrowingStream<LLMEvent, Error> {
+                task: LLMTask, maxOutputTokens: Int? = nil) -> AsyncThrowingStream<LLMEvent, Error> {
         AsyncThrowingStream { continuation in
             let streamTask = Task {
                 do {
                     try await self.run(messages: messages, tools: tools, config: config,
-                                       model: model, task: task, allowRefresh: true) { event in
+                                       model: model, task: task,
+                                       maxOutputTokens: maxOutputTokens,
+                                       allowRefresh: true) { event in
                         continuation.yield(event)
                     }
                     continuation.finish()
@@ -53,6 +55,7 @@ actor LLMClient {
 
     private func run(messages: [LLMMessage], tools: [LLMToolSpec],
                      config: LLMProviderConfig, model: String, task: LLMTask,
+                     maxOutputTokens: Int?,
                      allowRefresh: Bool,
                      yield: @Sendable (LLMEvent) -> Void) async throws {
         // Refresh up front when the stored token already expired, so the common
@@ -63,13 +66,16 @@ actor LLMClient {
             try? await refreshTokens(vendor: vendor, providerID: config.id)
         }
         let request = try await buildRequest(messages: messages, tools: tools,
-                                            config: config, model: model, task: task)
+                                            config: config, model: model, task: task,
+                                            maxOutputTokens: maxOutputTokens)
         let (bytes, response) = try await URLSession.shared.bytes(for: request)
         let status = (response as? HTTPURLResponse)?.statusCode ?? 0
         if status == 401, allowRefresh, case .oauth(let vendor) = config.authMode {
             try await refreshTokens(vendor: vendor, providerID: config.id)
             return try await run(messages: messages, tools: tools, config: config,
-                                 model: model, task: task, allowRefresh: false, yield: yield)
+                                 model: model, task: task,
+                                 maxOutputTokens: maxOutputTokens,
+                                 allowRefresh: false, yield: yield)
         }
         guard (200..<300).contains(status) else {
             if config.kind == .ollama, let failure = Ollama.chatFailure(status: status, model: model) {
@@ -123,7 +129,8 @@ actor LLMClient {
 
     private func buildRequest(messages: [LLMMessage], tools: [LLMToolSpec],
                               config: LLMProviderConfig, model: String,
-                              task: LLMTask) async throws -> URLRequest {
+                              task: LLMTask,
+                              maxOutputTokens: Int?) async throws -> URLRequest {
         let path = LLMEndpoint.chatPath(kind: config.kind, base: config.baseURL)
         let body: Data
         switch config.kind {
@@ -145,7 +152,7 @@ actor LLMClient {
                 keepAliveSeconds: Ollama.keepAliveSeconds,
                 contextTokens: Ollama.contextTokens,
                 thinking: thinking,
-                maxOutputTokens: Ollama.maxOutputTokens(for: task))
+                maxOutputTokens: maxOutputTokens ?? Ollama.maxOutputTokens(for: task))
             await Ollama.LoadedModels.shared.note(model)
         }
         guard let url = URL(string: path) else { throw LLMClientError.http(0) }

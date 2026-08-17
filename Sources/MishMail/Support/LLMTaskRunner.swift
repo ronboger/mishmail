@@ -39,7 +39,12 @@ enum LLMTaskRunner {
         return error.localizedDescription
     }
 
-    static func stream(task: LLMTask, prompt: String) -> AsyncThrowingStream<String, Error> {
+    /// `maxOutputTokens` overrides the task's default Ollama output cap for
+    /// this one request: nil keeps the per-task default, 0 lifts the cap.
+    /// Quick-reply suggestions share the triage task assignment but must not
+    /// inherit triage's one-word 32-token cap.
+    static func stream(task: LLMTask, prompt: String,
+                       maxOutputTokens: Int? = nil) -> AsyncThrowingStream<String, Error> {
         guard let resolved = resolve(task) else {
             return AsyncThrowingStream { continuation in
                 continuation.finish()
@@ -52,7 +57,7 @@ enum LLMTaskRunner {
                     for try await event in await LLMClient.shared.stream(
                         messages: [LLMMessage(role: .user, text: prompt)],
                         tools: [], config: resolved.config, model: resolved.model,
-                        task: task) {
+                        task: task, maxOutputTokens: maxOutputTokens) {
                         switch event {
                         case .token(let text):
                             continuation.yield(text)
