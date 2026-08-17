@@ -50,6 +50,12 @@ enum AskMishModelMenu {
         where !list.contains(pin) {
             list.insert(pin, at: 0)
         }
+        // The provider's default leads the list — it is what a click on the
+        // provider row itself selects.
+        if let index = list.firstIndex(of: provider.defaultModel), index > 0 {
+            list.remove(at: index)
+            list.insert(provider.defaultModel, at: 0)
+        }
         return ProviderModels(models: list, hiddenCount: max(0, total - list.count))
     }
 }

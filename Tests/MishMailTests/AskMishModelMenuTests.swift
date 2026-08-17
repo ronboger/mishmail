@@ -43,6 +43,12 @@ final class AskMishModelMenuTests: XCTestCase {
         XCTAssertTrue(result.models.contains("vendor/odd-model-42"))
     }
 
+    func testDefaultModelLeadsTheList() {
+        let result = AskMishModelMenu.models(
+            for: provider(models: ["gpt-5-nano", "gpt-5-mini", "gpt-5"], defaultModel: "gpt-5"))
+        XCTAssertEqual(result.models.first, "gpt-5")
+    }
+
     func testAllKnownFamiliesStillCapped() {
         let many = (0..<80).map { "gpt-variant-\($0)" }
         let result = AskMishModelMenu.models(for: provider(models: many, defaultModel: "gpt-variant-0"))

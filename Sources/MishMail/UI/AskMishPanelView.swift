@@ -20,6 +20,10 @@ struct AskMishPanelView: View {
     @State private var showAttachPopover = false
     @State private var attachQuery = ""
     @State private var attachResults: [AskMishController.AttachedThread] = []
+    /// Installed-and-enabled Ollama models for the model menu. The stored
+    /// provider row does not track what `ollama pull` added or the Settings
+    /// toggles turned off, so the panel asks the live endpoint once.
+    @State private var localModels: [String] = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -35,6 +39,10 @@ struct AskMishPanelView: View {
         }
         .background(Color.notionSidebar)
         .task { await refreshConversations() }
+        .task {
+            let installed = (try? await Ollama.installedModels()) ?? []
+            localModels = Ollama.enabledModels(installed: installed)
+        }
         // The list is only correct after a turn writes the title / a new row.
         .onChange(of: controller.isRunning) { _, running in
             if !running { Task { await refreshConversations() } }
@@ -135,12 +143,19 @@ struct AskMishPanelView: View {
     }
 
     /// One provider's submenu: its (curated) models, checkmarked on the
-    /// active provider+model pair. Oversized lists are cut to known families
-    /// by `AskMishModelMenu`; the trailing line says how many are hidden.
+    /// active provider+model pair. Clicking the provider row itself selects
+    /// the provider's default model (Aside-style); the arrow opens the list.
+    /// Ollama rows use the live installed-and-enabled list, not the stored
+    /// one. Oversized lists are cut to known families by `AskMishModelMenu`;
+    /// the trailing line says how many are hidden.
     private func providerSubmenu(_ provider: LLMProviderConfig) -> some View {
         let isCurrent = provider.id == controller.providerID
+        var listed = provider
+        if provider.kind == .ollama, !localModels.isEmpty {
+            listed.models = localModels
+        }
         let entry = AskMishModelMenu.models(
-            for: provider, selected: isCurrent ? controller.modelID : nil)
+            for: listed, selected: isCurrent ? controller.modelID : nil)
         return Menu {
             ForEach(entry.models, id: \.self) { model in
                 Button {
@@ -164,6 +179,9 @@ struct AskMishPanelView: View {
             } else {
                 Text(provider.label)
             }
+        } primaryAction: {
+            controller.providerID = provider.id
+            controller.modelID = provider.defaultModel
         }
     }
 
@@ -235,7 +253,10 @@ struct AskMishPanelView: View {
                 ForEach(Array(bubble.toolCalls.enumerated()), id: \.offset) { _, call in
                     toolCallRow(call)
                 }
-                if let cost = bubble.costLabel {
+                // Tool-only turns skip the per-turn label: an agent loop that
+                // searches five times would stack five bare token lines above
+                // the answer. The conversation total still counts them.
+                if let cost = bubble.costLabel, !bubble.text.isEmpty {
                     Text(cost)
                         .font(.caption2)
                         .foregroundStyle(.secondary)
