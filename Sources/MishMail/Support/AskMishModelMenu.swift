@@ -92,16 +92,20 @@ enum AskMishModelMenu {
         return hits
     }
 
-    /// SF Symbol for a provider row, keyed off the label/kind. Monochrome
-    /// stand-ins — the app ships no brand assets.
-    static func icon(for provider: LLMProviderConfig) -> String {
-        if provider.kind == .ollama { return "desktopcomputer" }
+    /// Asset-catalog name of the provider's brand mark (monochrome template
+    /// SVGs vendored from LobeHub's MIT icon set), or nil when the provider
+    /// has no mark — the UI then falls back to the `fallbackIcon` SF Symbol.
+    static func brandAsset(for provider: LLMProviderConfig) -> String? {
+        if provider.kind == .ollama { return "ProviderOllama" }
         let label = provider.label.lowercased()
-        if label.contains("claude") || label.contains("anthropic") { return "asterisk" }
-        if label.contains("chatgpt") || label.contains("openai") { return "hexagon" }
-        if label.contains("gemini") || label.contains("google") { return "diamond" }
-        if label.contains("grok") || label.contains("xai") { return "circle.slash" }
-        if label.contains("openrouter") { return "arrow.triangle.branch" }
-        return "cpu"
+        if label.contains("claude") || label.contains("anthropic") { return "ProviderClaude" }
+        if label.contains("chatgpt") || label.contains("openai") { return "ProviderOpenAI" }
+        if label.contains("gemini") || label.contains("google") { return "ProviderGemini" }
+        if label.contains("grok") || label.contains("xai") { return "ProviderGrok" }
+        if label.contains("openrouter") { return "ProviderOpenRouter" }
+        return nil
     }
+
+    /// SF Symbol for providers without a vendored brand mark.
+    static let fallbackIcon = "cpu"
 }

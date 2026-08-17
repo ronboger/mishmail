@@ -518,6 +518,31 @@ struct AskMishPanelView: View {
     }
 }
 
+/// A provider's brand mark (vendored monochrome template asset) at a fixed
+/// footprint, tinted like secondary text; SF-symbol fallback for providers
+/// without a mark.
+private struct ProviderIcon: View {
+    let provider: LLMProviderConfig
+    var size: CGFloat = 13
+
+    var body: some View {
+        Group {
+            if let asset = AskMishModelMenu.brandAsset(for: provider) {
+                Image(asset)
+                    .resizable()
+                    .renderingMode(.template)
+                    .scaledToFit()
+                    .frame(width: size, height: size)
+            } else {
+                Image(systemName: AskMishModelMenu.fallbackIcon)
+                    .font(.system(size: size - 1))
+            }
+        }
+        .foregroundStyle(.secondary)
+        .frame(width: 16)
+    }
+}
+
 /// Aside-style model picker: search on top, one row per provider with an
 /// icon, models collapsed under the row. One provider expands at a time (the
 /// active one initially); typing switches to a flat filtered list over the
@@ -589,10 +614,7 @@ private struct ModelPickerPopover: View {
             }
         } label: {
             HStack(spacing: 8) {
-                Image(systemName: AskMishModelMenu.icon(for: provider))
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .frame(width: 16)
+                ProviderIcon(provider: provider, size: 13)
                 Text(provider.label)
                     .font(.system(size: 12, weight: .medium))
                 Spacer(minLength: 4)
@@ -683,10 +705,7 @@ private struct ModelPickerPopover: View {
                     onPick(hit.providerID, hit.model)
                 } label: {
                     HStack(spacing: 8) {
-                        Image(systemName: AskMishModelMenu.icon(for: provider))
-                            .font(.system(size: 11))
-                            .foregroundStyle(.secondary)
-                            .frame(width: 16)
+                        ProviderIcon(provider: provider, size: 12)
                         Text(hit.model)
                             .font(.system(size: 12))
                             .lineLimit(1)
