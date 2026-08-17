@@ -138,14 +138,29 @@ struct ContentView: View {
                     }
                 )
                 if askMishVisible {
-                    Divider()
-                    AskMishPanelView(
-                        controller: store.askMishControllerCreatingIfNeeded())
-                        .frame(width: panelWidth)
-                        .transition(.move(edge: .trailing))
+                    // Reserve the panel's width without animation: animating
+                    // the mail column's width re-lays out every WKWebView in
+                    // the open conversation each frame, which reads as a
+                    // freeze. The content snaps once; only the panel slides.
+                    Color.clear.frame(width: panelWidth)
                 }
             }
-            .animation(.easeOut(duration: 0.18), value: askMishVisible)
+            .overlay(alignment: .trailing) {
+                ZStack(alignment: .trailing) {
+                    if askMishVisible {
+                        HStack(spacing: 0) {
+                            Divider()
+                            AskMishPanelView(
+                                controller: store.askMishControllerCreatingIfNeeded())
+                        }
+                        .frame(width: panelWidth)
+                        .transition(.move(edge: .trailing))
+                    }
+                }
+                // Scoped here, not on the outer HStack, so the slide never
+                // animates the mailbox/detail layout.
+                .animation(.easeOut(duration: 0.18), value: askMishVisible)
+            }
             .onAppear {
                 layoutMode = mode
                 askMishPanelWidth = panelWidth
