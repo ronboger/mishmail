@@ -55,7 +55,7 @@ enum LLMTaskRunner {
                         switch event {
                         case .token(let text):
                             continuation.yield(text)
-                        case .toolCall:
+                        case .toolCall, .reasoning:
                             break
                         case .done(_, let usage):
                             if let usage {

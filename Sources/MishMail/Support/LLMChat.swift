@@ -78,6 +78,9 @@ struct LLMUsage: Codable, Equatable, Sendable {
 
 enum LLMEvent: Equatable, Sendable {
     case token(String)
+    /// A fragment of the model's thinking trace (DeepSeek `reasoning_content`,
+    /// OpenRouter `reasoning`, Ollama `thinking`, Anthropic thinking deltas).
+    case reasoning(String)
     case toolCall(LLMToolCall)
     case done(stopReason: String, usage: LLMUsage?)
 }

@@ -86,6 +86,13 @@ enum OpenAIWire {
                 if let text = delta["content"] as? String, !text.isEmpty {
                     events.append(.token(text))
                 }
+                // Thinking traces: DeepSeek-style `reasoning_content`,
+                // OpenRouter-style `reasoning`.
+                if let trace = delta["reasoning_content"] as? String, !trace.isEmpty {
+                    events.append(.reasoning(trace))
+                } else if let trace = delta["reasoning"] as? String, !trace.isEmpty {
+                    events.append(.reasoning(trace))
+                }
                 for fragment in delta["tool_calls"] as? [[String: Any]] ?? [] {
                     let index = fragment["index"] as? Int ?? 0
                     var call = partial[index] ?? PartialCall()

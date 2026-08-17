@@ -25,6 +25,7 @@ struct AskMishPanelView: View {
     /// toggles turned off, so the panel asks the live endpoint once.
     @State private var localModels: [String] = []
     @State private var modelPickerShown = false
+    @State private var expandedThinking: Set<UUID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -147,7 +148,9 @@ struct AskMishPanelView: View {
         .buttonStyle(.plain)
         .disabled(controller.isRunning)
         .help("Model for this chat")
-        .popover(isPresented: $modelPickerShown, arrowEdge: .bottom) {
+        // The panel hugs the window's right edge, so the picker opens to the
+        // side (leftward), not downward over the transcript.
+        .popover(isPresented: $modelPickerShown, arrowEdge: .leading) {
             ModelPickerPopover(
                 providers: LLMProviderStore.load(),
                 localModels: localModels,
@@ -235,6 +238,9 @@ struct AskMishPanelView: View {
                                 in: RoundedRectangle(cornerRadius: PMRadius.md))
                     .frame(maxWidth: .infinity, alignment: .trailing)
             } else {
+                if !bubble.reasoningText.isEmpty {
+                    thinkingDisclosure(bubble)
+                }
                 if !bubble.text.isEmpty {
                     Text(Self.rendered(bubble.text))
                         .textSelection(.enabled)
@@ -265,6 +271,43 @@ struct AskMishPanelView: View {
             markdown: text,
             options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
             ?? AttributedString(text)
+    }
+
+    /// Collapsed thinking trace. While the model is still reasoning (no
+    /// visible text yet) the row pulses "Thinking"; expanding shows the trace.
+    private func thinkingDisclosure(_ bubble: AskMishController.Bubble) -> some View {
+        let expanded = expandedThinking.contains(bubble.id)
+        return VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(.easeOut(duration: 0.15)) {
+                    if expanded { expandedThinking.remove(bubble.id) }
+                    else { expandedThinking.insert(bubble.id) }
+                }
+            } label: {
+                HStack(spacing: 4) {
+                    Image(systemName: "brain")
+                        .font(.system(size: 9))
+                    Text(bubble.isStreaming && bubble.text.isEmpty ? "Thinking…" : "Thought process")
+                        .font(.caption2)
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 7, weight: .semibold))
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                Text(bubble.reasoningText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.04),
+                                in: RoundedRectangle(cornerRadius: PMRadius.sm))
+            }
+        }
     }
 
     private func streamingPulse(hasText: Bool) -> some View {

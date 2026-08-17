@@ -74,4 +74,11 @@ final class LLMWireAnthropicTests: XCTestCase {
                   usage: LLMUsage(promptTokens: 0, completionTokens: 0)),
         ])
     }
+    func testStreamEmitsThinkingDeltasAsReasoning() {
+        var state = AnthropicWire.StreamState()
+        let events = state.consume(
+            line: #"data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"hmm"}}"#)
+        XCTAssertEqual(events, [.reasoning("hmm")])
+    }
+
 }

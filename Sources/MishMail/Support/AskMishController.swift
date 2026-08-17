@@ -27,6 +27,9 @@ final class AskMishController {
         let id: UUID
         var role: LLMRole
         var text: String
+        /// The model's thinking trace, when it emits one. Rendered collapsed;
+        /// transient — not persisted with the conversation.
+        var reasoningText: String = ""
         var toolCalls: [LLMToolCall] = []
         var costLabel: String? = nil
         var isStreaming: Bool = false
@@ -282,6 +285,8 @@ final class AskMishController {
                     case .token(let token):
                         streamedText += token
                         updateBubble(bubbleID, text: streamedText)
+                    case .reasoning(let trace):
+                        appendReasoning(bubbleID, trace)
                     case .toolCall(let call):
                         calls.append(call)
                     case .done(_, let reported):
@@ -502,6 +507,11 @@ final class AskMishController {
     private func updateBubble(_ id: UUID, text: String) {
         guard let index = bubbles.firstIndex(where: { $0.id == id }) else { return }
         bubbles[index].text = text
+    }
+
+    private func appendReasoning(_ id: UUID, _ trace: String) {
+        guard let index = bubbles.firstIndex(where: { $0.id == id }) else { return }
+        bubbles[index].reasoningText += trace
     }
 
     private func finishBubble(_ id: UUID, costLabel: String?) {

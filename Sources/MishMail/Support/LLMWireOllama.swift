@@ -53,6 +53,9 @@ enum OllamaChatWire {
                 if let text = message["content"] as? String, !text.isEmpty {
                     events.append(.token(text))
                 }
+                if let trace = message["thinking"] as? String, !trace.isEmpty {
+                    events.append(.reasoning(trace))
+                }
                 for call in message["tool_calls"] as? [[String: Any]] ?? [] {
                     guard let function = call["function"] as? [String: Any],
                           let name = function["name"] as? String else { continue }

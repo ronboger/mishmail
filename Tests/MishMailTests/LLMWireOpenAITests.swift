@@ -87,4 +87,12 @@ final class LLMWireOpenAITests: XCTestCase {
         XCTAssertEqual(state.consume(line: ""), [])
         XCTAssertEqual(state.consume(line: ": keep-alive"), [])
     }
+    func testStreamEmitsReasoningDeltas() {
+        var state = OpenAIWire.StreamState()
+        var events = state.consume(line: #"data: {"choices":[{"delta":{"reasoning_content":"step 1"}}]}"#)
+        events += state.consume(line: #"data: {"choices":[{"delta":{"reasoning":"step 2"}}]}"#)
+        events += state.consume(line: #"data: {"choices":[{"delta":{"content":"hi"}}]}"#)
+        XCTAssertEqual(events, [.reasoning("step 1"), .reasoning("step 2"), .token("hi")])
+    }
+
 }

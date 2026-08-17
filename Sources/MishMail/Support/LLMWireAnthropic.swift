@@ -91,6 +91,9 @@ enum AnthropicWire {
                 if let text = delta["text"] as? String, !text.isEmpty {
                     return [.token(text)]
                 }
+                if let trace = delta["thinking"] as? String, !trace.isEmpty {
+                    return [.reasoning(trace)]
+                }
                 if let partial = delta["partial_json"] as? String {
                     toolArgs += partial
                 }

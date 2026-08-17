@@ -10,7 +10,9 @@ import Foundation
 enum AskMishModelMenu {
 
     /// Longest model list shown under one provider before curation kicks in.
-    static let maxModelsPerProvider = 24
+    /// Deliberately short — browsing is for the common picks; anything else
+    /// is one search away, over the full list.
+    static let maxModelsPerProvider = 10
 
     /// Family substrings kept when a list is oversized.
     static let preferredFamilies = [

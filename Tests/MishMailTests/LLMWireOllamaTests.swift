@@ -61,4 +61,11 @@ final class LLMWireOllamaTests: XCTestCase {
         XCTAssertEqual(events, [.done(stopReason: "length",
                                       usage: LLMUsage(promptTokens: 9, completionTokens: 2))])
     }
+    func testStreamEmitsThinkingAsReasoning() {
+        var state = OllamaChatWire.StreamState()
+        let events = state.consume(
+            line: #"{"message":{"role":"assistant","content":"","thinking":"hmm"},"done":false}"#)
+        XCTAssertEqual(events, [.reasoning("hmm")])
+    }
+
 }
