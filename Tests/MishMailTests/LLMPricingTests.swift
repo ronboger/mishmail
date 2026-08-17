@@ -29,6 +29,14 @@ final class LLMPricingTests: XCTestCase {
                        LLMPrice(inputPerMTok: 0.05, outputPerMTok: 0.4))
         XCTAssertEqual(LLMPricing.price(model: "grok-4-fast-reasoning", overrides: [:]),
                        LLMPrice(inputPerMTok: 0.2, outputPerMTok: 0.5))
+        XCTAssertEqual(LLMPricing.price(model: "gemini-3.7-flash", overrides: [:]),
+                       LLMPrice(inputPerMTok: 0.15, outputPerMTok: 0.60))
+        XCTAssertEqual(LLMPricing.price(model: "gemini-3.7-pro", overrides: [:]),
+                       LLMPrice(inputPerMTok: 1.25, outputPerMTok: 10))
+        XCTAssertEqual(LLMPricing.price(model: "gemini-2.5-flash", overrides: [:]),
+                       LLMPrice(inputPerMTok: 0.15, outputPerMTok: 0.60))
+        XCTAssertEqual(LLMPricing.price(model: "gemini-2.5-pro", overrides: [:]),
+                       LLMPrice(inputPerMTok: 1.25, outputPerMTok: 10))
         // The plain rows still resolve for ids that are not a cheap variant.
         XCTAssertEqual(LLMPricing.price(model: "gpt-5-2026-01-01", overrides: [:]),
                        LLMPrice(inputPerMTok: 1.25, outputPerMTok: 10))

@@ -351,8 +351,8 @@ final class OAuthService {
     /// `/oauth2/callback`, the LLM vendors' `/callback` and `/auth/callback` —
     /// plus the bare `/` Google sometimes normalizes empty paths to.
     static func isOAuthCallbackPath(_ path: String) -> Bool {
-        path == "/oauth2/callback" || path == "/callback" || path == "/auth/callback"
-            || path == "/" || path.isEmpty
+        path == "/oauth2/callback" || path == "/oauth2callback" || path == "/callback"
+            || path == "/auth/callback" || path == "/" || path.isEmpty
     }
 
     /// Reads a connection until the HTTP request line's CRLF arrives, then

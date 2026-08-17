@@ -1783,9 +1783,11 @@ struct AISettings: View {
         }
         vendorStatus[vendor] = "Fetching models…"
         let fetched = (try? await LLMClient.shared.listModels(config: config)) ?? []
-        config.models = fetched.isEmpty ? preset.fallbackModels : fetched.sorted()
-        if let models = config.models, !models.contains(config.defaultModel) {
-            config.defaultModel = models[0]
+        var allModels = Set(fetched)
+        allModels.formUnion(preset.fallbackModels)
+        config.models = Array(allModels).sorted()
+        if let models = config.models, !models.contains(config.defaultModel), let first = models.first {
+            config.defaultModel = first
         }
         var list = LLMProviderStore.load().filter { $0.id != id }
         list.append(config)
@@ -1797,24 +1799,25 @@ struct AISettings: View {
 
     private func refreshModels(for provider: LLMProviderConfig) async {
         guard case .oauth(let vendor) = provider.authMode else { return }
+        let preset = LLMProviderStore.subscriptionPreset(for: vendor)
         vendorStatus[vendor] = "Fetching models…"
+        var allModels = Set(preset.fallbackModels)
         do {
             let fetched = try await LLMClient.shared.listModels(config: provider)
-            guard !fetched.isEmpty else {
-                vendorStatus[vendor] = "The provider returned no models."
-                return
-            }
-            var updated = provider
-            updated.models = fetched.sorted()
-            if !fetched.contains(updated.defaultModel) { updated.defaultModel = fetched[0] }
-            var list = LLMProviderStore.load().filter { $0.id != provider.id }
-            list.append(updated)
-            LLMProviderStore.save(list)
-            providers = LLMProviderStore.load()
-            vendorStatus[vendor] = ""
+            allModels.formUnion(fetched)
         } catch {
-            vendorStatus[vendor] = error.localizedDescription
+            // Keep fallback models even if live listing failed
         }
+        var updated = provider
+        updated.models = Array(allModels).sorted()
+        if let models = updated.models, !models.contains(updated.defaultModel), let first = models.first {
+            updated.defaultModel = first
+        }
+        var list = LLMProviderStore.load().filter { $0.id != provider.id }
+        list.append(updated)
+        LLMProviderStore.save(list)
+        providers = LLMProviderStore.load()
+        vendorStatus[vendor] = ""
     }
 
     private func disconnect(_ provider: LLMProviderConfig) {
@@ -1924,7 +1927,17 @@ private struct TaskModelPicker: View {
                 // Keep the stored default visible even if Ollama is down.
                 models = ollamaModels.isEmpty ? [provider.defaultModel] : ollamaModels
             } else {
-                models = provider.models ?? [provider.defaultModel]
+                var list = provider.models ?? []
+                if !list.contains(provider.defaultModel) && !provider.defaultModel.isEmpty {
+                    list.append(provider.defaultModel)
+                }
+                if case .oauth(let vendor) = provider.authMode {
+                    let preset = LLMProviderStore.subscriptionPreset(for: vendor)
+                    for m in preset.fallbackModels where !list.contains(m) {
+                        list.append(m)
+                    }
+                }
+                models = list.isEmpty ? [provider.defaultModel] : list
             }
             return models.map {
                 Entry(providerID: provider.id, model: $0, label: "\(provider.label) · \($0)")
@@ -1993,6 +2006,9 @@ private struct ProviderEditSheet: View {
                defaultModel: "claude-opus-5", keyHint: "console.anthropic.com"),
         Preset(name: "OpenAI", kind: .openAICompatible, baseURL: "https://api.openai.com/v1",
                defaultModel: "gpt-5", keyHint: "platform.openai.com"),
+        Preset(name: "Google Gemini", kind: .openAICompatible,
+               baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+               defaultModel: "gemini-3.7-flash", keyHint: "aistudio.google.com"),
         Preset(name: "OpenRouter", kind: .openAICompatible, baseURL: "https://openrouter.ai/api/v1",
                defaultModel: "", keyHint: "openrouter.ai/keys"),
         Preset(name: "Grok (xAI)", kind: .openAICompatible, baseURL: "https://api.x.ai/v1",
@@ -2032,6 +2048,7 @@ private struct ProviderEditSheet: View {
         case .claude: return "Claude"
         case .chatGPT: return "ChatGPT"
         case .grok: return "Grok"
+        case .gemini: return "Google Gemini"
         }
     }
 
@@ -2066,6 +2083,9 @@ private struct ProviderEditSheet: View {
                 label = preset.name
                 modelID = preset.defaultModel
                 useOAuth = oauthVendor != nil && provider == nil
+                if preset.name == "Google Gemini" {
+                    models = LLMProviderStore.subscriptionPreset(for: .gemini).fallbackModels
+                }
             }
             if let vendor = oauthVendor {
                 Picker("Sign in with", selection: $useOAuth) {
@@ -2114,10 +2134,25 @@ private struct ProviderEditSheet: View {
         .padding(20)
         .frame(width: 420)
         .onAppear {
-            guard let existing = provider else { return }
+            guard let existing = provider else {
+                if Self.presets[presetIndex].name == "Google Gemini" {
+                    models = LLMProviderStore.subscriptionPreset(for: .gemini).fallbackModels
+                }
+                return
+            }
             label = existing.label
             baseURL = existing.baseURL
             modelID = existing.defaultModel
+            models = existing.models ?? []
+            if existing.baseURL.contains("generativelanguage.googleapis.com") {
+                let fallback = LLMProviderStore.subscriptionPreset(for: .gemini).fallbackModels
+                for m in fallback where !models.contains(m) {
+                    models.append(m)
+                }
+            }
+            if !models.contains(modelID) && !modelID.isEmpty {
+                models.append(modelID)
+            }
             let matched = Self.presets.firstIndex { $0.baseURL == existing.baseURL }
                 ?? Self.presets.firstIndex { $0.kind == existing.kind }
                 ?? 0
@@ -2130,9 +2165,20 @@ private struct ProviderEditSheet: View {
     }
 
     private func currentConfig(id: UUID) -> LLMProviderConfig {
-        LLMProviderConfig(
+        var allModels = models
+        if !modelID.isEmpty && !allModels.contains(modelID) {
+            allModels.append(modelID)
+        }
+        if let vendor = oauthVendor {
+            let preset = LLMProviderStore.subscriptionPreset(for: vendor)
+            for m in preset.fallbackModels where !allModels.contains(m) {
+                allModels.append(m)
+            }
+        }
+        return LLMProviderConfig(
             id: id, kind: kind, label: label, baseURL: baseURL, defaultModel: modelID,
-            authMode: useOAuth ? .oauth(oauthVendor ?? .claude) : .apiKey)
+            authMode: useOAuth ? .oauth(oauthVendor ?? .claude) : .apiKey,
+            models: allModels.isEmpty ? nil : allModels.sorted())
     }
 
     private func fetchModels() async {
@@ -2143,10 +2189,22 @@ private struct ProviderEditSheet: View {
             try? Keychain.set(apiKey, forKey: LLMProviderStore.keychainKey(for: id))
         }
         do {
-            models = try await LLMClient.shared.listModels(config: currentConfig(id: id))
+            let fetched = try await LLMClient.shared.listModels(config: currentConfig(id: id))
+            var combined = Set(fetched)
+            if let vendor = oauthVendor {
+                let preset = LLMProviderStore.subscriptionPreset(for: vendor)
+                combined.formUnion(preset.fallbackModels)
+            }
+            models = Array(combined).sorted()
             status = models.isEmpty ? "No models returned." : "Found \(models.count) models."
         } catch {
-            status = error.localizedDescription
+            if let vendor = oauthVendor {
+                let preset = LLMProviderStore.subscriptionPreset(for: vendor)
+                models = preset.fallbackModels
+                status = "Using known models (\(models.count))."
+            } else {
+                status = error.localizedDescription
+            }
         }
     }
 

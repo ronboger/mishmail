@@ -65,6 +65,12 @@ final class LLMProviderStoreTests: XCTestCase {
         XCTAssertEqual(preset.baseURL, "https://api.x.ai/v1")
         XCTAssertFalse(preset.fallbackModels.isEmpty)
 
+        let geminiPreset = LLMProviderStore.subscriptionPreset(for: .gemini)
+        XCTAssertEqual(geminiPreset.kind, .openAICompatible)
+        XCTAssertEqual(geminiPreset.baseURL, "https://generativelanguage.googleapis.com/v1beta/openai")
+        XCTAssertTrue(geminiPreset.fallbackModels.contains("gemini-3.7-flash"))
+        XCTAssertTrue(geminiPreset.fallbackModels.contains("gemini-2.5-pro"))
+
         let connected = LLMProviderConfig(
             id: UUID(), kind: .anthropic, label: "Claude",
             baseURL: "https://api.anthropic.com", defaultModel: "claude-opus-5",
@@ -73,6 +79,7 @@ final class LLMProviderStoreTests: XCTestCase {
             LLMProviderStore.subscriptionProvider(for: .claude, in: [connected])?.id,
             connected.id)
         XCTAssertNil(LLMProviderStore.subscriptionProvider(for: .grok, in: [connected]))
+        XCTAssertNil(LLMProviderStore.subscriptionProvider(for: .gemini, in: [connected]))
     }
 
     func testProviderRowWithoutModelsFieldStillDecodes() throws {

@@ -13,6 +13,7 @@ enum LLMOAuthVendor: String, Codable, Sendable {
     case claude
     case chatGPT
     case grok
+    case gemini
 }
 
 enum LLMAuthMode: Codable, Equatable, Sendable {
@@ -114,13 +115,18 @@ enum LLMEndpoint {
     }
 
     /// Chat/completions URL string for one provider kind. A base that already
-    /// ends in "/v1" is not given a second "/v1".
+    /// ends in "/v1" or "/openai" is not given an extra "/v1".
     static func chatPath(kind: LLMProviderKind, base rawBase: String) -> String {
         let base = trimmedBase(rawBase)
         switch kind {
         case .openAICompatible:
-            return base.hasSuffix("/v1") ? "\(base)/chat/completions" : "\(base)/v1/chat/completions"
+            if base.hasSuffix("/chat/completions") { return base }
+            if base.hasSuffix("/v1") || base.hasSuffix("/openai") {
+                return "\(base)/chat/completions"
+            }
+            return "\(base)/v1/chat/completions"
         case .anthropic:
+            if base.hasSuffix("/messages") { return base }
             return base.hasSuffix("/v1") ? "\(base)/messages" : "\(base)/v1/messages"
         case .ollama:
             return "\(base)/api/chat"
@@ -133,8 +139,15 @@ enum LLMEndpoint {
         switch kind {
         case .ollama:
             return "\(base)/api/tags"
-        case .anthropic, .openAICompatible:
+        case .anthropic:
+            if base.hasSuffix("/models") { return base }
             return base.hasSuffix("/v1") ? "\(base)/models" : "\(base)/v1/models"
+        case .openAICompatible:
+            if base.hasSuffix("/models") { return base }
+            if base.hasSuffix("/v1") || base.hasSuffix("/openai") {
+                return "\(base)/models"
+            }
+            return "\(base)/v1/models"
         }
     }
 
@@ -144,10 +157,16 @@ enum LLMEndpoint {
     static func modelNames(fromJSONObject object: Any?) -> [String] {
         guard let root = object as? [String: Any] else { return [] }
         if let models = root["models"] as? [[String: Any]] {
-            return models.compactMap { $0["name"] as? String }.sorted()
+            return models.compactMap { dict -> String? in
+                guard let name = dict["name"] as? String else { return nil }
+                return name.hasPrefix("models/") ? String(name.dropFirst("models/".count)) : name
+            }.sorted()
         }
         if let rows = root["data"] as? [[String: Any]] {
-            return rows.compactMap { $0["id"] as? String }.sorted()
+            return rows.compactMap { dict -> String? in
+                guard let id = dict["id"] as? String else { return nil }
+                return id.hasPrefix("models/") ? String(id.dropFirst("models/".count)) : id
+            }.sorted()
         }
         return []
     }

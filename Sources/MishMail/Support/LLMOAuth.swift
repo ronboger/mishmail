@@ -76,6 +76,20 @@ enum LLMOAuth {
                 fixedPort: nil,
                 extraAuthorizeParams: [],
                 tokenBodyIsJSON: false)
+        case .gemini:
+            // Gemini is API-key only. Google's public Gemini CLI desktop
+            // client id/secret trip GitHub push protection, and the
+            // OpenAI-compat endpoint does not accept those user OAuth tokens.
+            return Constants(
+                authorizeURL: "https://accounts.google.com/o/oauth2/v2/auth",
+                tokenURL: "https://oauth2.googleapis.com/token",
+                clientID: "",
+                scopes: "https://www.googleapis.com/auth/cloud-platform https://www.googleapis.com/auth/userinfo.email https://www.googleapis.com/auth/userinfo.profile openid",
+                redirectPath: "/oauth2callback",
+                redirectHost: "localhost",
+                fixedPort: 8085,
+                extraAuthorizeParams: [("access_type", "offline"), ("prompt", "consent")],
+                tokenBodyIsJSON: false)
         }
     }
 
@@ -146,9 +160,12 @@ enum LLMOAuth {
 
     static func refreshRequestForm(vendor: LLMOAuthVendor,
                                    refreshToken: String) -> [String: String] {
-        ["grant_type": "refresh_token",
-         "refresh_token": refreshToken,
-         "client_id": constants(for: vendor).clientID]
+        var form = [
+            "grant_type": "refresh_token",
+            "refresh_token": refreshToken,
+            "client_id": constants(for: vendor).clientID,
+        ]
+        return form
     }
 
     static func parseTokens(from data: Data, now: Date) throws -> LLMOAuthTokens {

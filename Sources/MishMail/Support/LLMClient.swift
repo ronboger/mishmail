@@ -328,6 +328,11 @@ enum LLMOAuthFlow {
                                               onUserCode: onUserCode)
         }
         let constants = LLMOAuth.constants(for: vendor)
+        guard !constants.clientID.isEmpty else {
+            throw LLMOAuthFlowError.signInUnavailable(
+                vendor: Self.name(of: vendor),
+                reason: "Client ID is not configured. Add your OAuth credentials or use an API key in Settings → AI.")
+        }
         let pkce = LLMOAuth.PKCE.generate()
         let state = UUID().uuidString
         let service = OAuthService()
@@ -415,6 +420,7 @@ enum LLMOAuthFlow {
         case .claude: return "Claude"
         case .chatGPT: return "ChatGPT"
         case .grok: return "Grok"
+        case .gemini: return "Google Gemini"
         }
     }
 }

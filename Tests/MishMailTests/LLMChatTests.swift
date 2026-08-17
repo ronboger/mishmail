@@ -38,6 +38,8 @@ final class LLMChatTests: XCTestCase {
     func testChatPathDoesNotDoubleTheV1Segment() {
         XCTAssertEqual(LLMEndpoint.chatPath(kind: .openAICompatible, base: "https://api.x.ai/v1"),
                        "https://api.x.ai/v1/chat/completions")
+        XCTAssertEqual(LLMEndpoint.chatPath(kind: .openAICompatible, base: "https://generativelanguage.googleapis.com/v1beta/openai"),
+                       "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions")
         XCTAssertEqual(LLMEndpoint.chatPath(kind: .anthropic, base: "https://api.anthropic.com/v1"),
                        "https://api.anthropic.com/v1/messages")
         XCTAssertEqual(LLMEndpoint.chatPath(kind: .ollama, base: "http://127.0.0.1:11434/v1"),
@@ -49,6 +51,8 @@ final class LLMChatTests: XCTestCase {
                        "https://api.x.ai/v1/models")
         XCTAssertEqual(LLMEndpoint.modelsPath(kind: .openAICompatible, base: "https://api.x.ai/v1"),
                        "https://api.x.ai/v1/models")
+        XCTAssertEqual(LLMEndpoint.modelsPath(kind: .openAICompatible, base: "https://generativelanguage.googleapis.com/v1beta/openai"),
+                       "https://generativelanguage.googleapis.com/v1beta/openai/models")
         XCTAssertEqual(LLMEndpoint.modelsPath(kind: .anthropic, base: "https://api.anthropic.com"),
                        "https://api.anthropic.com/v1/models")
         XCTAssertEqual(LLMEndpoint.modelsPath(kind: .anthropic, base: "https://api.anthropic.com/v1"),
@@ -80,6 +84,11 @@ final class LLMChatTests: XCTestCase {
     func testModelNamesReadsOpenAIDataPayload() {
         let object: Any = ["data": [["id": "gpt-5.2"], ["id": "gpt-5.1-mini"]]]
         XCTAssertEqual(LLMEndpoint.modelNames(fromJSONObject: object), ["gpt-5.1-mini", "gpt-5.2"])
+    }
+
+    func testModelNamesStripsModelsPrefix() {
+        let object: Any = ["models": [["name": "models/gemini-2.5-flash"], ["name": "models/gemini-2.5-pro"]]]
+        XCTAssertEqual(LLMEndpoint.modelNames(fromJSONObject: object), ["gemini-2.5-flash", "gemini-2.5-pro"])
     }
 
     func testModelNamesPrefersModelsOverDataAndSkipsRowsWithoutNames() {

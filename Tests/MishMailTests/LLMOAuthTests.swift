@@ -91,6 +91,39 @@ final class LLMOAuthTests: XCTestCase {
         XCTAssertNil(openAI["state"])
     }
 
+    func testGeminiOAuthConstantsAndForms() {
+        let gemini = LLMOAuth.constants(for: .gemini)
+        XCTAssertEqual(gemini.authorizeURL, "https://accounts.google.com/o/oauth2/v2/auth")
+        XCTAssertEqual(gemini.tokenURL, "https://oauth2.googleapis.com/token")
+        XCTAssertTrue(gemini.clientID.isEmpty)
+        XCTAssertEqual(gemini.fixedPort, 8085)
+        XCTAssertEqual(LLMOAuth.redirectURI(vendor: .gemini, port: 8085), "http://localhost:8085/oauth2callback")
+        XCTAssertFalse(gemini.tokenBodyIsJSON)
+
+        let url = LLMOAuth.authorizeURL(
+            vendor: .gemini, redirectURI: "http://localhost:8085/oauth2callback",
+            state: "st", challenge: "ch")
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        let query = Dictionary(uniqueKeysWithValues: components.queryItems!.map { ($0.name, $0.value ?? "") })
+        XCTAssertEqual(query["response_type"], "code")
+        XCTAssertEqual(query["access_type"], "offline")
+        XCTAssertEqual(query["prompt"], "consent")
+
+        let tokenForm = LLMOAuth.tokenRequestForm(
+            vendor: .gemini, code: "c1", state: "st", verifier: "v1",
+            redirectURI: "http://localhost:8085/oauth2callback")
+        XCTAssertEqual(tokenForm["grant_type"], "authorization_code")
+        XCTAssertEqual(tokenForm["code"], "c1")
+        XCTAssertEqual(tokenForm["code_verifier"], "v1")
+        XCTAssertEqual(tokenForm["redirect_uri"], "http://localhost:8085/oauth2callback")
+        XCTAssertNil(tokenForm["client_secret"])
+
+        let refreshForm = LLMOAuth.refreshRequestForm(vendor: .gemini, refreshToken: "rt1")
+        XCTAssertEqual(refreshForm["grant_type"], "refresh_token")
+        XCTAssertEqual(refreshForm["refresh_token"], "rt1")
+        XCTAssertNil(refreshForm["client_secret"])
+    }
+
     func testGrokDeviceCodeFlowMath() throws {
         let constants = LLMOAuth.constants(for: .grok)
         XCTAssertEqual(constants.authorizeURL, "https://auth.x.ai/oauth2/device/code")

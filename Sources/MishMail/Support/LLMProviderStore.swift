@@ -77,7 +77,7 @@ enum LLMProviderStore {
             return SubscriptionPreset(
                 label: "Claude", kind: .anthropic,
                 baseURL: "https://api.anthropic.com",
-                fallbackModels: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"])
+                fallbackModels: ["claude-opus-5", "claude-sonnet-5", "claude-3-7-sonnet", "claude-3-5-sonnet", "claude-haiku-4-5", "claude-3-5-haiku"])
         case .chatGPT:
             return SubscriptionPreset(
                 label: "ChatGPT", kind: .openAICompatible,
@@ -88,6 +88,23 @@ enum LLMProviderStore {
                 label: "Grok", kind: .openAICompatible,
                 baseURL: "https://api.x.ai/v1",
                 fallbackModels: ["grok-4", "grok-4-fast"])
+        case .gemini:
+            return SubscriptionPreset(
+                label: "Google Gemini", kind: .openAICompatible,
+                baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
+                fallbackModels: [
+                    "gemini-3.7-flash",
+                    "gemini-3.7-pro",
+                    "gemini-3.1-pro",
+                    "gemini-3.1-flash-lite",
+                    "gemini-3.6-flash",
+                    "gemini-2.5-pro",
+                    "gemini-2.5-flash",
+                    "gemini-2.0-flash",
+                    "gemini-2.0-flash-lite",
+                    "gemini-1.5-pro",
+                    "gemini-1.5-flash",
+                ])
         }
     }
 
