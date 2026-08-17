@@ -24,6 +24,7 @@ struct AskMishPanelView: View {
     /// provider row does not track what `ollama pull` added or the Settings
     /// toggles turned off, so the panel asks the live endpoint once.
     @State private var localModels: [String] = []
+    @State private var modelPickerShown = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -127,71 +128,39 @@ struct AskMishPanelView: View {
     }
 
     private var modelMenu: some View {
-        Menu {
-            ForEach(LLMProviderStore.load()) { provider in
-                providerSubmenu(provider)
-            }
+        Button {
+            modelPickerShown = true
         } label: {
-            Text(controller.modelID.isEmpty ? "Pick a model" : controller.modelID)
-                .font(.caption)
-                .lineLimit(1)
+            HStack(spacing: 4) {
+                Text(controller.modelID.isEmpty ? "Pick a model" : controller.modelID)
+                    .font(.caption)
+                    .lineLimit(1)
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .semibold))
+            }
+            .foregroundStyle(.secondary)
+            // Small label, comfortable target.
+            .padding(.horizontal, 6)
+            .padding(.vertical, 5)
+            .contentShape(Rectangle())
         }
-        .menuStyle(.borderlessButton)
-        .fixedSize()
+        .buttonStyle(.plain)
         .disabled(controller.isRunning)
         .help("Model for this chat")
-    }
-
-    /// One provider's submenu: its (curated) models, checkmarked on the
-    /// active provider+model pair. Clicking the provider row itself selects
-    /// the provider's default model (Aside-style); the arrow opens the list.
-    /// Ollama rows use the live installed-and-enabled list, not the stored
-    /// one. Oversized lists are cut to known families by `AskMishModelMenu`;
-    /// the trailing line says how many are hidden.
-    private func providerSubmenu(_ provider: LLMProviderConfig) -> some View {
-        let isCurrent = provider.id == controller.providerID
-        var listed = provider
-        if provider.kind == .ollama, !localModels.isEmpty {
-            listed.models = localModels
-        }
-        let entry = AskMishModelMenu.models(
-            for: listed, selected: isCurrent ? controller.modelID : nil)
-        return Menu {
-            ForEach(entry.models, id: \.self) { model in
-                Button {
-                    controller.providerID = provider.id
+        .popover(isPresented: $modelPickerShown, arrowEdge: .bottom) {
+            ModelPickerPopover(
+                providers: LLMProviderStore.load(),
+                localModels: localModels,
+                currentProviderID: controller.providerID,
+                currentModelID: controller.modelID,
+                onPick: { providerID, model in
+                    controller.providerID = providerID
                     controller.modelID = model
-                } label: {
-                    if isCurrent, model == controller.modelID {
-                        Label(model, systemImage: "checkmark")
-                    } else {
-                        Text(model)
-                    }
-                }
-            }
-            if entry.hiddenCount > 0 {
-                Divider()
-                Text("\(entry.hiddenCount) more in Settings → AI")
-            }
-            // Persist the chat's current model as this provider's default —
-            // what a click on the provider row (and a new chat on this
-            // provider) then selects.
-            if isCurrent, !controller.modelID.isEmpty,
-               controller.modelID != provider.defaultModel {
-                Divider()
-                Button("Set “\(controller.modelID)” as default") {
-                    setDefaultModel(controller.modelID, for: provider)
-                }
-            }
-        } label: {
-            if isCurrent {
-                Label(provider.label, systemImage: "checkmark")
-            } else {
-                Text(provider.label)
-            }
-        } primaryAction: {
-            controller.providerID = provider.id
-            controller.modelID = provider.defaultModel
+                    modelPickerShown = false
+                },
+                onSetDefault: { provider, model in
+                    setDefaultModel(model, for: provider)
+                })
         }
     }
 
@@ -546,5 +515,200 @@ struct AskMishPanelView: View {
 
     private func refreshConversations() async {
         conversations = await controller.listConversations()
+    }
+}
+
+/// Aside-style model picker: search on top, one row per provider with an
+/// icon, models collapsed under the row. One provider expands at a time (the
+/// active one initially); typing switches to a flat filtered list over the
+/// FULL stored model lists, so curation never hides a model from search.
+private struct ModelPickerPopover: View {
+    let providers: [LLMProviderConfig]
+    let localModels: [String]
+    let currentProviderID: UUID
+    let currentModelID: String
+    let onPick: (UUID, String) -> Void
+    let onSetDefault: (LLMProviderConfig, String) -> Void
+
+    @State private var query = ""
+    @State private var expandedProviderID: UUID?
+    @FocusState private var searchFocused: Bool
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .font(.system(size: 11))
+                    .foregroundStyle(.secondary)
+                TextField("Search models", text: $query)
+                    .textFieldStyle(.plain)
+                    .font(.system(size: 12))
+                    .focused($searchFocused)
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 8)
+            Divider()
+            ScrollView {
+                LazyVStack(alignment: .leading, spacing: 1) {
+                    if query.trimmingCharacters(in: .whitespaces).isEmpty {
+                        ForEach(providers) { provider in providerSection(provider) }
+                    } else {
+                        searchResults
+                    }
+                }
+                .padding(6)
+            }
+            .frame(maxHeight: 320)
+        }
+        .frame(width: 260)
+        .onAppear {
+            expandedProviderID = currentProviderID
+            searchFocused = true
+        }
+    }
+
+    // MARK: - Browse mode
+
+    /// Ollama rows list the live installed-and-enabled models; other rows the
+    /// stored (curated) list.
+    private func listedModels(_ provider: LLMProviderConfig) -> AskMishModelMenu.ProviderModels {
+        var listed = provider
+        if provider.kind == .ollama, !localModels.isEmpty {
+            listed.models = localModels
+        }
+        let isCurrent = provider.id == currentProviderID
+        return AskMishModelMenu.models(for: listed, selected: isCurrent ? currentModelID : nil)
+    }
+
+    @ViewBuilder
+    private func providerSection(_ provider: LLMProviderConfig) -> some View {
+        let expanded = expandedProviderID == provider.id
+        Button {
+            withAnimation(.easeOut(duration: 0.15)) {
+                expandedProviderID = expanded ? nil : provider.id
+            }
+        } label: {
+            HStack(spacing: 8) {
+                Image(systemName: AskMishModelMenu.icon(for: provider))
+                    .font(.system(size: 12))
+                    .foregroundStyle(.secondary)
+                    .frame(width: 16)
+                Text(provider.label)
+                    .font(.system(size: 12, weight: .medium))
+                Spacer(minLength: 4)
+                if provider.id == currentProviderID {
+                    Circle().fill(Color.notionAccent).frame(width: 5, height: 5)
+                }
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 8, weight: .semibold))
+                    .foregroundStyle(.tertiary)
+                    .rotationEffect(.degrees(expanded ? 90 : 0))
+            }
+            .padding(.horizontal, 8)
+            .padding(.vertical, 7)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(expanded ? Color.primary.opacity(0.04) : .clear,
+                    in: RoundedRectangle(cornerRadius: PMRadius.sm))
+        if expanded {
+            let entry = listedModels(provider)
+            ForEach(entry.models, id: \.self) { model in
+                modelRow(provider: provider, model: model)
+            }
+            if entry.hiddenCount > 0 {
+                Text("\(entry.hiddenCount) more — search above or Settings → AI")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .padding(.leading, 32)
+                    .padding(.vertical, 3)
+            }
+        }
+    }
+
+    private func modelRow(provider: LLMProviderConfig, model: String) -> some View {
+        let isSelected = provider.id == currentProviderID && model == currentModelID
+        let isDefault = model == provider.defaultModel
+        return Button {
+            onPick(provider.id, model)
+        } label: {
+            HStack(spacing: 6) {
+                Text(model)
+                    .font(.system(size: 12))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if isDefault {
+                    Text("default")
+                        .font(.system(size: 9))
+                        .foregroundStyle(.tertiary)
+                }
+                Spacer(minLength: 4)
+                if isSelected {
+                    Image(systemName: "checkmark")
+                        .font(.system(size: 9, weight: .semibold))
+                        .foregroundStyle(Color.notionAccent)
+                }
+            }
+            .padding(.leading, 32)
+            .padding(.trailing, 8)
+            .padding(.vertical, 6)
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .background(isSelected ? Color.notionAccent.opacity(0.10) : .clear,
+                    in: RoundedRectangle(cornerRadius: PMRadius.sm))
+        .contextMenu {
+            if !isDefault {
+                Button("Set as default for \(provider.label)") {
+                    onSetDefault(provider, model)
+                }
+            }
+        }
+    }
+
+    // MARK: - Search mode
+
+    @ViewBuilder
+    private var searchResults: some View {
+        let hits = AskMishModelMenu.search(providers: providers, query: query)
+        if hits.isEmpty {
+            Text("No models match “\(query)”.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .padding(8)
+        }
+        ForEach(hits) { hit in
+            if let provider = providers.first(where: { $0.id == hit.providerID }) {
+                Button {
+                    onPick(hit.providerID, hit.model)
+                } label: {
+                    HStack(spacing: 8) {
+                        Image(systemName: AskMishModelMenu.icon(for: provider))
+                            .font(.system(size: 11))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 16)
+                        Text(hit.model)
+                            .font(.system(size: 12))
+                            .lineLimit(1)
+                            .truncationMode(.middle)
+                        Spacer(minLength: 4)
+                        Text(hit.providerLabel)
+                            .font(.system(size: 10))
+                            .foregroundStyle(.tertiary)
+                    }
+                    .padding(.horizontal, 8)
+                    .padding(.vertical, 6)
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    if hit.model != provider.defaultModel {
+                        Button("Set as default for \(provider.label)") {
+                            onSetDefault(provider, hit.model)
+                        }
+                    }
+                }
+            }
+        }
     }
 }

@@ -49,6 +49,21 @@ final class AskMishModelMenuTests: XCTestCase {
         XCTAssertEqual(result.models.first, "gpt-5")
     }
 
+    func testSearchFindsModelsCurationHid() {
+        let noise = (0..<300).map { "vendor/odd-model-\($0)" }
+        let p = provider(models: noise, defaultModel: "vendor/odd-model-0")
+        let hits = AskMishModelMenu.search(providers: [p], query: "odd-model-250")
+        XCTAssertEqual(hits.map(\.model), ["vendor/odd-model-250"])
+    }
+
+    func testSearchMatchesProviderLabelAndIsCaseInsensitive() {
+        let p = provider(models: ["gpt-5", "gpt-5-mini"])
+        XCTAssertEqual(AskMishModelMenu.search(providers: [p], query: "TEST").count, 2)
+        XCTAssertEqual(AskMishModelMenu.search(providers: [p], query: "MINI").map(\.model),
+                       ["gpt-5-mini"])
+        XCTAssertTrue(AskMishModelMenu.search(providers: [p], query: "  ").isEmpty)
+    }
+
     func testAllKnownFamiliesStillCapped() {
         let many = (0..<80).map { "gpt-variant-\($0)" }
         let result = AskMishModelMenu.models(for: provider(models: many, defaultModel: "gpt-variant-0"))

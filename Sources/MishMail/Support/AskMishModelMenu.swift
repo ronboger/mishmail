@@ -58,4 +58,50 @@ enum AskMishModelMenu {
         }
         return ProviderModels(models: list, hiddenCount: max(0, total - list.count))
     }
+
+    // MARK: - Search
+
+    struct SearchHit: Equatable, Identifiable {
+        var providerID: UUID
+        var providerLabel: String
+        var model: String
+        var id: String { "\(providerID.uuidString)/\(model)" }
+    }
+
+    /// Case-insensitive substring search over every provider's FULL stored
+    /// model list (curation does not apply — search is how a hidden model is
+    /// reached). Providers keep their order; models keep list order.
+    static func search(providers: [LLMProviderConfig],
+                       query: String, limit: Int = 30) -> [SearchHit] {
+        let needle = query.trimmingCharacters(in: .whitespaces).lowercased()
+        guard !needle.isEmpty else { return [] }
+        var hits: [SearchHit] = []
+        for provider in providers {
+            var models = provider.models ?? []
+            if models.isEmpty, !provider.defaultModel.isEmpty {
+                models = [provider.defaultModel]
+            }
+            for model in models
+            where model.lowercased().contains(needle)
+                || provider.label.lowercased().contains(needle) {
+                hits.append(SearchHit(providerID: provider.id,
+                                      providerLabel: provider.label, model: model))
+                if hits.count >= limit { return hits }
+            }
+        }
+        return hits
+    }
+
+    /// SF Symbol for a provider row, keyed off the label/kind. Monochrome
+    /// stand-ins — the app ships no brand assets.
+    static func icon(for provider: LLMProviderConfig) -> String {
+        if provider.kind == .ollama { return "desktopcomputer" }
+        let label = provider.label.lowercased()
+        if label.contains("claude") || label.contains("anthropic") { return "asterisk" }
+        if label.contains("chatgpt") || label.contains("openai") { return "hexagon" }
+        if label.contains("gemini") || label.contains("google") { return "diamond" }
+        if label.contains("grok") || label.contains("xai") { return "circle.slash" }
+        if label.contains("openrouter") { return "arrow.triangle.branch" }
+        return "cpu"
+    }
 }
