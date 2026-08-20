@@ -332,8 +332,11 @@ struct ComposeView: View {
     }
 
     /// Fingerprint of fields that participate in draft persistence.
+    /// Includes the API mailbox: two identities can share an email
+    /// (`ron@x.com` as primary vs send-as via Gmail) and a From change
+    /// must still dirty the draft.
     private var contentFingerprint: String {
-        [fromEmail, toTokens.joined(separator: ","), ccTokens.joined(separator: ","),
+        [fromAccountId, fromEmail, toTokens.joined(separator: ","), ccTokens.joined(separator: ","),
          bccTokens.joined(separator: ","), subject, fullBody,
          attachmentURLs.map(\.lastPathComponent).joined(separator: "|"),
          restoredAttachments.map(\.filename).joined(separator: "|")]
@@ -968,12 +971,19 @@ struct ComposeView: View {
                     .foregroundStyle(.secondary)
                     .frame(width: 30, alignment: .leading)
                 Menu {
-                    ForEach(availableFromIdentities) { identity in
-                        Button(menuTitle(identity)) { selectFrom(identity) }
+                    // Picker (not Button) so the open menu shows a checkmark
+                    // on the selected identity. Titles lead with the email;
+                    // display names are dropped when they don't distinguish.
+                    Picker("From", selection: fromIdentityBinding) {
+                        ForEach(availableFromIdentities) { identity in
+                            Text(menuTitle(identity)).tag(identity.id)
+                        }
                     }
+                    .pickerStyle(.inline)
+                    .labelsHidden()
                 } label: {
                     HStack(spacing: 5) {
-                        Text(fromEmail.isEmpty ? "Select account" : fromEmail)
+                        Text(fromClosedLabel)
                             .font(.system(size: 13, weight: .medium))
                         Image(systemName: "chevron.down")
                             .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
@@ -1070,7 +1080,9 @@ struct ComposeView: View {
                 }
                 .onChange(of: fromAccountId) {
                     syncSlashSelection()
+                    scheduleAutosave()
                 }
+                .onChange(of: fromEmail) { scheduleAutosave() }
                 .onChange(of: store.allSnippets) {
                     // Delete/edit in Settings while the picker is open.
                     syncSlashSelection()
@@ -1444,12 +1456,43 @@ struct ComposeView: View {
     }
 
     private var availableFromIdentities: [SendIdentity] {
-        store.fromIdentities(forMailbox: fixedMailboxAccountId)
+        SendIdentityResolver.sortedForMenu(
+            store.fromIdentities(forMailbox: fixedMailboxAccountId))
+    }
+
+    private var fromTitleIdentities: [SendIdentity] {
+        store.sendIdentities.isEmpty ? availableFromIdentities : store.sendIdentities
+    }
+
+    private var fromClosedLabel: String {
+        if fromEmail.isEmpty { return "Select account" }
+        if let identity = availableFromIdentities.first(where: matchesCurrentFrom) {
+            return menuTitle(identity)
+        }
+        return fromEmail
+    }
+
+    private var fromIdentityBinding: Binding<String> {
+        Binding(
+            get: {
+                availableFromIdentities.first(where: matchesCurrentFrom)?.id ?? ""
+            },
+            set: { newId in
+                if let identity = availableFromIdentities.first(where: { $0.id == newId }) {
+                    selectFrom(identity)
+                }
+            }
+        )
+    }
+
+    private func matchesCurrentFrom(_ identity: SendIdentity) -> Bool {
+        identity.email.caseInsensitiveCompare(fromEmail) == .orderedSame
+            && (fromAccountId.isEmpty
+                || identity.accountId.caseInsensitiveCompare(fromAccountId) == .orderedSame)
     }
 
     private func menuTitle(_ identity: SendIdentity) -> String {
-        SendIdentityResolver.menuTitle(identity, all: store.sendIdentities.isEmpty
-            ? availableFromIdentities : store.sendIdentities)
+        SendIdentityResolver.menuTitle(identity, all: fromTitleIdentities)
     }
 
     private func selectFrom(_ identity: SendIdentity) {

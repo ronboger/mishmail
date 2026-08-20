@@ -22,7 +22,22 @@ minor versions may still change behavior.
   conversation text, and the message body itself all keep native
   select-all, so reading an email and hitting ⌘A still selects the email.
 
+### Changed
+- **From picker leads with the email.** Every linked identity used the same
+  display name, so the menu was a wall of "Ron Boger — …" and hid the
+  domain. Rows now start with the address, drop the name when it does not
+  distinguish anyone, and only add "(via mailbox)" when the same address
+  exists on another account. Duplicate addresses sort primary first. The
+  open menu shows a checkmark on the current identity.
+
 ### Fixed
+- **Changing From after the first autosave still sent through the original
+  mailbox.** New compose pins the Gmail API to the selected identity, not
+  the autosave draft's account. The old pin made a From change (e.g. to
+  berkeley after inserting `/bball`) send via the default mailbox, and
+  Gmail rewrote From to that mailbox's default send-as (`ron@ronboger.com`).
+  Replies still stay on the thread's mailbox. Changing From also dirties
+  the draft so the next save migrates it.
 - **Multi-select `h`/`b` snooze only snoozed the last-focused thread, not
   the whole selection.** Every other bulk action (archive, trash, star,
   read/unread, spam) already checked the multi-select before falling back

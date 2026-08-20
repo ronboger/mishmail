@@ -97,30 +97,72 @@ enum SendIdentityResolver {
         }
     }
 
-    /// When several identities share the same email across mailboxes, the
-    /// menu needs a disambiguating label.
+    /// Menu / closed-label for a From identity.
+    ///
+    /// Lead with the email: that's the part that differs when every identity
+    /// shares one display name (one person, many domains). A display name
+    /// is appended only when names in `all` actually differ. "via mailbox"
+    /// is only added when the same address exists on more than one mailbox
+    /// *and* the mailbox is a different address — skip
+    /// `ron@x.com (via ron@x.com)`.
     static func menuTitle(_ identity: SendIdentity, all: [SendIdentity]) -> String {
         let email = identity.email
-        let ambiguous = all.filter { $0.email.caseInsensitiveCompare(email) == .orderedSame }.count > 1
         let name = identity.displayName.trimmingCharacters(in: .whitespaces)
-        if ambiguous {
-            let via = "via \(identity.accountId)"
-            return name.isEmpty ? "\(email) (\(via))" : "\(name) — \(email) (\(via))"
+        let distinctNames = Set(all.compactMap { row -> String? in
+            let n = row.displayName.trimmingCharacters(in: .whitespaces)
+            guard !n.isEmpty else { return nil }
+            return n.lowercased()
+        })
+        let nameHelps = !name.isEmpty
+            && distinctNames.count > 1
+            && name.caseInsensitiveCompare(email) != .orderedSame
+        let sameEmailCount = all.filter {
+            $0.email.caseInsensitiveCompare(email) == .orderedSame
+        }.count
+        let mailboxDiffers = email.caseInsensitiveCompare(identity.accountId) != .orderedSame
+        let needsVia = sameEmailCount > 1 && mailboxDiffers
+
+        var title = email
+        if nameHelps { title += " — \(name)" }
+        if needsVia { title += " (via \(identity.accountId))" }
+        return title
+    }
+
+    /// Stable order for the From menu: domain, then local part, then
+    /// primary-of-that-address before a send-as of another mailbox.
+    static func sortedForMenu(_ identities: [SendIdentity]) -> [SendIdentity] {
+        identities.sorted { a, b in
+            let (aDomain, aLocal) = emailSortKey(a.email)
+            let (bDomain, bLocal) = emailSortKey(b.email)
+            if aDomain != bDomain { return aDomain < bDomain }
+            if aLocal != bLocal { return aLocal < bLocal }
+            let aVia = a.email.caseInsensitiveCompare(a.accountId) != .orderedSame
+            let bVia = b.email.caseInsensitiveCompare(b.accountId) != .orderedSame
+            if aVia != bVia { return !aVia }
+            return a.accountId.lowercased() < b.accountId.lowercased()
         }
-        if name.isEmpty || name.caseInsensitiveCompare(email) == .orderedSame {
-            return email
-        }
-        return "\(name) — \(email)"
+    }
+
+    private static func emailSortKey(_ email: String) -> (String, String) {
+        let lower = email.lowercased()
+        guard let at = lower.firstIndex(of: "@") else { return (lower, "") }
+        return (String(lower[lower.index(after: at)...]), String(lower[..<at]))
     }
 
     /// Mailbox whose Gmail API must be used for this send.
-    /// Threaded replies and draft edits always stay on the message's account
-    /// so threadIds are valid; brand-new mail uses `requested`.
+    ///
+    /// Replies stay on the thread's mailbox so Gmail threadIds stay valid.
+    /// Brand-new mail — including an autosave draft of a new compose —
+    /// honors `requested`. Pinning new mail to `draftAccountId` made a
+    /// From change after the first autosave still send through the original
+    /// mailbox; Gmail then rewrites From to that mailbox's default send-as.
+    /// `draftAccountId` is only a fallback when `requested` is empty.
     static func apiAccountId(requested: String, replyAccountId: String?,
                              draftAccountId: String?) -> String {
         if let replyAccountId { return replyAccountId }
-        if let draftAccountId { return draftAccountId }
-        return requested
+        let chosen = requested.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !chosen.isEmpty { return chosen }
+        return draftAccountId ?? requested
     }
 
     /// Which mailbox (if any) the compose From menu should lock to.

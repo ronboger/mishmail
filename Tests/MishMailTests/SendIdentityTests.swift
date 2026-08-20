@@ -91,6 +91,58 @@ final class SendIdentityTests: XCTestCase {
             identities.first { $0.email == custom && $0.accountId == gmail }!,
             all: identities)
         XCTAssertTrue(title.contains("via \(gmail)"), title)
+        XCTAssertTrue(title.hasPrefix(custom), title)
+    }
+
+    func testMenuTitleSkipsTautologicalVia() {
+        // Primary of ron@ronboger.com must not read "(via ron@ronboger.com)".
+        let title = SendIdentityResolver.menuTitle(
+            identities.first { $0.email == custom && $0.accountId == custom }!,
+            all: identities)
+        XCTAssertTrue(title.hasPrefix(custom), title)
+        XCTAssertFalse(title.contains("via"), title)
+    }
+
+    func testMenuTitleDropsSharedDisplayName() {
+        // One person, many domains: name is noise. Lead with the address.
+        let sameName: [SendIdentity] = [
+            SendIdentity(email: "ronb@berkeley.edu", displayName: "Ron Boger",
+                         accountId: "ronb@berkeley.edu", isPrimary: true, isDefault: true),
+            SendIdentity(email: custom, displayName: "Ron Boger",
+                         accountId: custom, isPrimary: true, isDefault: true),
+            SendIdentity(email: custom, displayName: "Ron Boger",
+                         accountId: gmail, isPrimary: false, isDefault: false),
+        ]
+        XCTAssertEqual(
+            SendIdentityResolver.menuTitle(sameName[0], all: sameName),
+            "ronb@berkeley.edu")
+        XCTAssertEqual(
+            SendIdentityResolver.menuTitle(sameName[1], all: sameName),
+            custom)
+        XCTAssertEqual(
+            SendIdentityResolver.menuTitle(sameName[2], all: sameName),
+            "\(custom) (via \(gmail))")
+    }
+
+    func testMenuTitleKeepsNameWhenNamesDiffer() {
+        let title = SendIdentityResolver.menuTitle(
+            identities.first { $0.email == work }!,
+            all: identities)
+        XCTAssertEqual(title, "\(work) — Ron @ Retron")
+    }
+
+    func testSortedForMenuGroupsByDomainThenPrefersPrimary() {
+        let berkeley = SendIdentity(
+            email: "ronb@berkeley.edu", displayName: "Ron Boger",
+            accountId: "ronb@berkeley.edu", isPrimary: true, isDefault: true)
+        let viaGmail = identities.first { $0.email == custom && $0.accountId == gmail }!
+        let primaryCustom = identities.first { $0.email == custom && $0.accountId == custom }!
+        let sorted = SendIdentityResolver.sortedForMenu(
+            [viaGmail, berkeley, primaryCustom])
+        XCTAssertEqual(sorted.map(\.email),
+                       ["ronb@berkeley.edu", custom, custom])
+        XCTAssertEqual(sorted[1].accountId, custom, "primary before via")
+        XCTAssertEqual(sorted[2].accountId, gmail)
     }
 
     func testApiAccountIdPinsRepliesToMessageMailbox() {
@@ -100,17 +152,29 @@ final class SendIdentityTests: XCTestCase {
             requested: custom, replyAccountId: gmail, draftAccountId: nil)
         XCTAssertEqual(api, gmail)
 
-        // Draft edit pins to the draft's mailbox.
+        // Reply draft: thread mailbox still wins over a later From pick.
+        XCTAssertEqual(
+            SendIdentityResolver.apiAccountId(
+                requested: work, replyAccountId: gmail, draftAccountId: gmail),
+            gmail)
+    }
+
+    func testApiAccountIdHonorsNewComposeFromAfterAutosave() {
+        // The /bball-style bug: first autosave lands on the default mailbox,
+        // user then picks berkeley, send must follow the pick — not the draft.
         XCTAssertEqual(
             SendIdentityResolver.apiAccountId(
                 requested: work, replyAccountId: nil, draftAccountId: gmail),
-            gmail)
-
-        // Brand-new mail: honor the requested account.
+            work)
         XCTAssertEqual(
             SendIdentityResolver.apiAccountId(
                 requested: custom, replyAccountId: nil, draftAccountId: nil),
             custom)
+        // Empty requested falls back to the draft mailbox (From not chosen yet).
+        XCTAssertEqual(
+            SendIdentityResolver.apiAccountId(
+                requested: "", replyAccountId: nil, draftAccountId: gmail),
+            gmail)
     }
 
     func testFixedMailboxLocksThreadedRestoreButNotNewMailRestore() {

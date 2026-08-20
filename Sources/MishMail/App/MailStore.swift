@@ -5699,8 +5699,11 @@ struct ComposeRequest: Identifiable {
         // For a forward, `message` is the forwarded original: it supplies the
         // HTML body below, but must not thread the send into its conversation.
         let threadParent = forward ? nil : message
-        // Replies/drafts must send through the mailbox that owns the thread.
+        // Replies must send through the mailbox that owns the thread.
         // A mismatched From account used to pass a foreign threadId → Gmail 404.
+        // Brand-new mail (even with an autosave draft on another mailbox)
+        // honors `accountId` so a From change is not rewritten to the
+        // original mailbox's default send-as.
         let apiAccountId = SendIdentityResolver.apiAccountId(
             requested: accountId,
             replyAccountId: threadParent?.accountId,
@@ -5804,6 +5807,8 @@ struct ComposeRequest: Identifiable {
         // Same rules as send(): a forward's original doesn't thread the
         // draft, but supplies the HTML body when the quote is untouched.
         let threadParent = forward ? nil : message
+        // Same mailbox rule as send(): replies stay put; new mail follows
+        // the selected From even when replacing a draft on another mailbox.
         let apiAccountId = SendIdentityResolver.apiAccountId(
             requested: accountId,
             replyAccountId: threadParent?.accountId,
