@@ -365,12 +365,15 @@ final class AskMishController {
     private func execute(_ call: LLMToolCall) async -> LLMToolResult {
         var sendFingerprint: String?
         if AskMishTools.isWriteTool(call.name) {
-            let decision = await requestConfirmation(for: call)
-            guard decision.allowed else {
+            switch await requestConfirmation(for: call) {
+            case .declined:
                 return LLMToolResult(callID: call.id,
                                      content: "The user declined this action.", isError: true)
+            case .unavailable(let message):
+                return LLMToolResult(callID: call.id, content: message, isError: true)
+            case .allowed(let fingerprint):
+                sendFingerprint = fingerprint
             }
-            sendFingerprint = decision.sendFingerprint
         }
         do {
             let args = try AskMishTools.decodeArguments(call.argumentsJSON)
@@ -407,30 +410,37 @@ final class AskMishController {
         }
     }
 
-    private struct ConfirmDecision {
-        var allowed: Bool
-        var sendFingerprint: String?
+    private enum ConfirmDecision {
+        case allowed(sendFingerprint: String?)
+        case declined
+        case unavailable(String)
     }
 
     /// Shows the confirm card and parks until the user answers.
     private func requestConfirmation(for call: LLMToolCall) async -> ConfirmDecision {
-        if Task.isCancelled { return ConfirmDecision(allowed: false, sendFingerprint: nil) }
+        if Task.isCancelled { return .declined }
         let fallback = AskMishTools.confirmContent(
             toolName: call.name, argumentsJSON: call.argumentsJSON)
         var summary = fallback.summary
         var bodyPreview = fallback.bodyPreview
         var fingerprint: String?
-        // The send card must name the recipients and the subject, which only the
-        // stored draft knows; the pure line is the fallback.
-        if call.name == AskMishTools.sendDraftToolName, let store,
-           let args = try? AskMishTools.decodeArguments(call.argumentsJSON),
-           case .string(let draftId)? = args["draft_id"],
-           let preview = await store.askMishSendConfirmPreview(draftId: draftId) {
+        // Send must resolve the stored draft. A missing draft used to fall
+        // back to a one-line card and then send with no fingerprint.
+        if call.name == AskMishTools.sendDraftToolName {
+            guard let store else {
+                return .unavailable("MishMail is closing.")
+            }
+            guard let args = try? AskMishTools.decodeArguments(call.argumentsJSON),
+                  case .string(let draftId)? = args["draft_id"],
+                  let preview = await store.askMishSendConfirmPreview(draftId: draftId)
+            else {
+                return .unavailable("Draft not found. Confirm again after the draft exists.")
+            }
             summary = preview.summary
             bodyPreview = preview.bodyPreview
             fingerprint = preview.fingerprint
         }
-        if Task.isCancelled { return ConfirmDecision(allowed: false, sendFingerprint: nil) }
+        if Task.isCancelled { return .declined }
         pendingConfirmation = PendingToolConfirmation(
             id: UUID(), toolName: call.name, summary: summary,
             argumentsJSON: call.argumentsJSON,
@@ -440,7 +450,7 @@ final class AskMishController {
         let allowed = await withCheckedContinuation { continuation in
             confirmContinuation = continuation
         }
-        return ConfirmDecision(allowed: allowed, sendFingerprint: fingerprint)
+        return allowed ? .allowed(sendFingerprint: fingerprint) : .declined
     }
 
     // MARK: - Message assembly

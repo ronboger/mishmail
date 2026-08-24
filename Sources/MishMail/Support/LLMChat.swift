@@ -176,9 +176,7 @@ enum LLMRemotePolicy {
     }
 
     static func isKnownHost(_ host: String) -> Bool {
-        let lowered = host.lowercased()
-        if knownHosts.contains(lowered) { return true }
-        return knownHosts.contains { lowered.hasSuffix(".\($0)") }
+        knownHosts.contains(host.lowercased())
     }
 
     /// True when this provider's endpoint is not loopback. Fail closed on
@@ -192,8 +190,8 @@ enum LLMRemotePolicy {
     /// Custom HTTPS hosts (not a shipped preset) need a stored consent
     /// matching this exact host before we send mail there.
     static func requiresHostConsent(_ config: LLMProviderConfig) -> Bool {
-        guard sendsMailOffDevice(config),
-              let host = host(of: config.baseURL) else { return false }
+        guard sendsMailOffDevice(config) else { return false }
+        guard let host = host(of: config.baseURL) else { return true }
         return !isKnownHost(host)
     }
 }

@@ -62,9 +62,10 @@ enum AskMishTools {
         sendDraftToolName,
     ]
 
-    /// Read tools run freely; write tools need an in-chat confirm.
+    /// Read tools run freely. Anything not in `readToolNames` needs a confirm,
+    /// including unknown names, so a new mutating tool cannot default to read.
     static func isWriteTool(_ name: String) -> Bool {
-        writeToolNames.contains(name)
+        !readToolNames.contains(name)
     }
 
     static func requiresExplicitClick(_ name: String) -> Bool {
@@ -216,7 +217,8 @@ enum AskMishTools {
     static func sendDraftSummary(
         recipients: [String],
         subject: String,
-        hiddenCount: Int = 0
+        hiddenCount: Int = 0,
+        from: String = ""
     ) -> String {
         let people = joined(recipients
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
@@ -236,14 +238,17 @@ enum AskMishTools {
 
         let title = subject.trimmingCharacters(in: .whitespacesAndNewlines)
         if !title.isEmpty { line += " — \(quoted(title))" }
+        let sender = from.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !sender.isEmpty { line += " From \(sender)" }
         return line + "."
     }
 
     /// Stable snapshot of the draft the user confirmed. Send aborts if the
     /// stored draft no longer matches.
-    static func sendFingerprint(to: String, cc: String, bcc: String,
+    static func sendFingerprint(accountId: String, from: String,
+                                to: String, cc: String, bcc: String,
                                 subject: String, body: String) -> String {
-        [to, cc, bcc, subject, body]
+        [accountId, from, to, cc, bcc, subject, body]
             .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
             .joined(separator: "\u{1e}")
     }

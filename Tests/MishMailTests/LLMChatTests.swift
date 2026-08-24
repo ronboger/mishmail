@@ -48,6 +48,12 @@ final class LLMChatTests: XCTestCase {
         XCTAssertFalse(LLMRemotePolicy.requiresHostConsent(local))
         XCTAssertFalse(LLMRemotePolicy.requiresHostConsent(grok))
         XCTAssertTrue(LLMRemotePolicy.requiresHostConsent(custom))
+        let broken = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "Bad",
+            baseURL: "not a url", defaultModel: "x", authMode: .apiKey)
+        XCTAssertTrue(LLMRemotePolicy.sendsMailOffDevice(broken))
+        XCTAssertTrue(LLMRemotePolicy.requiresHostConsent(broken))
+        XCTAssertFalse(LLMRemotePolicy.isKnownHost("evil.api.openai.com"))
     }
 
     // MARK: - Path derivation

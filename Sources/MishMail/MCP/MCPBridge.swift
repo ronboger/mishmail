@@ -636,9 +636,13 @@ extension MailStore {
         }
 
         let fingerprint = AskMishTools.sendFingerprint(
+            accountId: draft.accountId, from: draft.fromHeader,
             to: draft.toHeader, cc: draft.ccHeader, bcc: draft.bccHeader,
             subject: draft.subject, body: draft.bodyText)
-        if let expectedFingerprint, expectedFingerprint != fingerprint {
+        guard let expectedFingerprint else {
+            throw MCPToolError("The draft could not be confirmed. Confirm again.")
+        }
+        if expectedFingerprint != fingerprint {
             throw MCPToolError("The draft changed after you confirmed. Confirm again.")
         }
 
@@ -711,7 +715,8 @@ extension MailStore {
             + Self.askMishAddresses(draft.ccHeader)
         let hiddenAddrs = Self.askMishAddresses(draft.bccHeader)
         var summary = AskMishTools.sendDraftSummary(
-            recipients: visible, subject: draft.subject, hiddenCount: hiddenAddrs.count)
+            recipients: visible, subject: draft.subject, hiddenCount: hiddenAddrs.count,
+            from: draft.fromHeader)
 
         let others = messages(inThread: draft.threadId)
             .filter { !ForwardComposer.isLiveDraft($0.labelIds) }
@@ -735,6 +740,7 @@ extension MailStore {
             summary: summary,
             bodyPreview: AskMishTools.preview(draft.bodyText),
             fingerprint: AskMishTools.sendFingerprint(
+                accountId: draft.accountId, from: draft.fromHeader,
                 to: draft.toHeader, cc: draft.ccHeader, bcc: draft.bccHeader,
                 subject: draft.subject, body: draft.bodyText))
     }

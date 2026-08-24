@@ -70,6 +70,10 @@ final class LLMProviderStoreTests: XCTestCase {
             baseURL: "https://api.x.ai/v1", defaultModel: "grok-4",
             authMode: .apiKey)
         XCTAssertTrue(LLMProviderStore.hasHostConsent(for: grok, from: defaults))
+        let broken = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "Bad",
+            baseURL: "not a url", defaultModel: "x", authMode: .apiKey)
+        XCTAssertFalse(LLMProviderStore.hasHostConsent(for: broken, from: defaults))
     }
 
     func testTaskAssignmentDefaultsToBuiltInOllamaAndRoundTrips() {

@@ -49,6 +49,8 @@ final class AskMishToolsTests: XCTestCase {
         XCTAssertFalse(AskMishTools.isWriteTool("list_threads"))
         XCTAssertFalse(AskMishTools.isWriteTool("list_drafts"))
         XCTAssertFalse(AskMishTools.isWriteTool("list_vips"))
+        XCTAssertTrue(AskMishTools.isWriteTool("invented_mutating_tool"),
+                      "unknown tools must confirm, not run as reads")
     }
 
     /// Every offered tool is classified read or write on purpose — a new
@@ -78,12 +80,26 @@ final class AskMishToolsTests: XCTestCase {
 
     func testSendFingerprintChangesWhenBodyChanges() {
         let a = AskMishTools.sendFingerprint(
+            accountId: "acct", from: "me@x.com",
             to: "a@b.com", cc: "", bcc: "", subject: "Hi", body: "one")
         let b = AskMishTools.sendFingerprint(
+            accountId: "acct", from: "me@x.com",
             to: "a@b.com", cc: "", bcc: "", subject: "Hi", body: "two")
         XCTAssertNotEqual(a, b)
         XCTAssertEqual(a, AskMishTools.sendFingerprint(
+            accountId: "acct", from: "me@x.com",
             to: "a@b.com", cc: "", bcc: "", subject: "Hi", body: "one"))
+        let otherFrom = AskMishTools.sendFingerprint(
+            accountId: "acct", from: "other@x.com",
+            to: "a@b.com", cc: "", bcc: "", subject: "Hi", body: "one")
+        XCTAssertNotEqual(a, otherFrom)
+    }
+
+    func testSendDraftSummaryNamesFrom() {
+        let line = AskMishTools.sendDraftSummary(
+            recipients: ["a@b.com"], subject: "Hi", from: "me@x.com")
+        XCTAssertTrue(line.contains("me@x.com"), line)
+        XCTAssertTrue(line.contains("a@b.com"), line)
     }
 
     func testOffThreadRecipientsIgnoresPeopleAlreadyOnTheThread() {

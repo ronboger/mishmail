@@ -141,8 +141,9 @@ enum LLMProviderStore {
     /// consent exactly (changing the URL requires a new confirm).
     static func hasHostConsent(for config: LLMProviderConfig,
                                from defaults: UserDefaults = .standard) -> Bool {
-        guard LLMRemotePolicy.requiresHostConsent(config),
-              let host = LLMRemotePolicy.host(of: config.baseURL) else { return true }
+        guard LLMRemotePolicy.sendsMailOffDevice(config) else { return true }
+        guard let host = LLMRemotePolicy.host(of: config.baseURL) else { return false }
+        if LLMRemotePolicy.isKnownHost(host) { return true }
         return consentedHost(for: config.id, from: defaults) == host
     }
 
