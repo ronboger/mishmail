@@ -36,7 +36,7 @@ enum AskMishModelMenu {
         if list.isEmpty, !provider.defaultModel.isEmpty {
             list = [provider.defaultModel]
         }
-        let total = list.count
+        let storedIDs = list
         // Known vendors: offer the shipped current ids even when /models is stale.
         if provider.kind != .ollama, let vendor = subscriptionVendor(of: provider) {
             for model in LLMProviderStore.subscriptionPreset(for: vendor).fallbackModels
@@ -60,7 +60,7 @@ enum AskMishModelMenu {
                 pinList.insert(leading, at: 0)
             }
             return ProviderModels(models: pinList,
-                                  hiddenCount: max(0, total - pinList.count))
+                                  hiddenCount: hiddenCount(stored: storedIDs, shown: pinList))
         }
         if provider.kind != .ollama {
             let relevant = list.filter { isBrowseWorthy($0) }
@@ -94,7 +94,7 @@ enum AskMishModelMenu {
                 list.insert(leading, at: 0)
             }
         }
-        return ProviderModels(models: list, hiddenCount: max(0, total - list.count))
+        return ProviderModels(models: list, hiddenCount: hiddenCount(stored: storedIDs, shown: list))
     }
 
     /// True when `model` belongs in a browse list: chat, current generation,
@@ -109,7 +109,8 @@ enum AskMishModelMenu {
         ]
         if drop.contains(where: { name.contains($0) }) { return false }
         if name.contains("-beta") || name.hasSuffix("-exp") { return false }
-        if name.range(of: #"-\d{4}$"#, options: .regularExpression) != nil {
+        if name.range(of: #"-\d{4}$"#, options: .regularExpression) != nil
+            || name.range(of: #"-\d{8}$"#, options: .regularExpression) != nil {
             return false
         }
         if name.hasPrefix("grok-2") || name.hasPrefix("grok-3") { return false }
@@ -153,6 +154,11 @@ enum AskMishModelMenu {
         case "openrouter.ai": return .openRouter
         default: return nil
         }
+    }
+
+    private static func hiddenCount(stored: [String], shown: [String]) -> Int {
+        let visible = Set(shown)
+        return stored.filter { !visible.contains($0) }.count
     }
 
     private static func orderedByFallback(_ list: [String],

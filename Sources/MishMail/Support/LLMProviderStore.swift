@@ -161,11 +161,31 @@ enum LLMProviderStore {
 
     static func assignment(for task: LLMTask,
                            from defaults: UserDefaults = .standard) -> LLMTaskAssignment {
+        let stored: LLMTaskAssignment
         if let data = defaults.data(forKey: assignmentKey(for: task)),
-           let stored = try? JSONDecoder().decode(LLMTaskAssignment.self, from: data) {
-            return stored
+           let decoded = try? JSONDecoder().decode(LLMTaskAssignment.self, from: data) {
+            stored = decoded
+        } else {
+            return LLMTaskAssignment(providerID: builtInOllamaID, model: Ollama.model)
         }
-        return LLMTaskAssignment(providerID: builtInOllamaID, model: Ollama.model)
+        let resolved = resolvedAssignment(stored, from: defaults)
+        if resolved != stored {
+            setAssignment(resolved, for: task, to: defaults)
+        }
+        return resolved
+    }
+
+    /// Replaces a stored model that browse no longer offers with the
+    /// vendor's current default, so Settings and the task runner agree.
+    static func resolvedAssignment(_ stored: LLMTaskAssignment,
+                                   from defaults: UserDefaults = .standard) -> LLMTaskAssignment {
+        let providers = load(from: defaults)
+        guard let provider = providers.first(where: { $0.id == stored.providerID }),
+              provider.kind != .ollama else { return stored }
+        if AskMishModelMenu.isBrowseWorthy(stored.model) { return stored }
+        let model = AskMishModelMenu.preferredDefault(for: provider)
+        guard !model.isEmpty, model != stored.model else { return stored }
+        return LLMTaskAssignment(providerID: stored.providerID, model: model)
     }
 
     static func setAssignment(_ assignment: LLMTaskAssignment, for task: LLMTask,

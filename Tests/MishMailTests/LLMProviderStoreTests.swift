@@ -84,6 +84,22 @@ final class LLMProviderStoreTests: XCTestCase {
         XCTAssertEqual(LLMProviderStore.assignment(for: .drafts, from: defaults), custom)
     }
 
+    func testStaleAssignmentMigratesToPreferredDefault() {
+        let grok = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "Grok",
+            baseURL: "https://api.x.ai/v1", defaultModel: "grok-4.2",
+            authMode: .oauth(.grok), models: ["grok-4.2", "grok-4.1-fast", "grok-4"])
+        LLMProviderStore.save([grok], to: defaults)
+        LLMProviderStore.setAssignment(
+            LLMTaskAssignment(providerID: grok.id, model: "grok-4.2"),
+            for: .drafts, to: defaults)
+        let resolved = LLMProviderStore.assignment(for: .drafts, from: defaults)
+        XCTAssertEqual(resolved.providerID, grok.id)
+        XCTAssertEqual(resolved.model, "grok-4.6")
+        XCTAssertEqual(LLMProviderStore.assignment(for: .drafts, from: defaults).model,
+                       "grok-4.6")
+    }
+
     func testSubscriptionPresetAndLookup() {
         let preset = LLMProviderStore.subscriptionPreset(for: .grok)
         XCTAssertEqual(preset.kind, .openAICompatible)

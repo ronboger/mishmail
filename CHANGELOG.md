@@ -14,8 +14,9 @@ minor versions may still change behavior.
 ### Changed
 - **Ask Mish hides stale models in the picker.** Grok 4.2, Grok 2/3, image
   and non-reasoning ids, and Gemini 1.x/2.x no longer fill the browse list.
-  Grok defaults to Grok 4.6. Gemini defaults to 3.7 Flash. Search still
-  finds the full list.
+  Grok defaults to Grok 4.6. Gemini defaults to 3.7 Flash. A stored stale
+  assignment (drafts, summaries, triage, Ask Mish) moves to that default.
+  Search still finds the full list.
 - **Ask Mish confirms show the draft body.** Create-draft and send-draft cards
   include a body preview. Return no longer confirms those actions. Send aborts
   if the draft changed after you confirmed.

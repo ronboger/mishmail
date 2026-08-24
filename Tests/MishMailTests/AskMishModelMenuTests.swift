@@ -128,6 +128,7 @@ final class AskMishModelMenuTests: XCTestCase {
         XCTAssertFalse(AskMishModelMenu.isBrowseWorthy("grok-4.2"))
         XCTAssertTrue(AskMishModelMenu.isBrowseWorthy("grok-4.20"))
         XCTAssertTrue(AskMishModelMenu.isBrowseWorthy("grok-4.1-fast"))
+        XCTAssertFalse(AskMishModelMenu.isBrowseWorthy("claude-sonnet-4-20250514"))
     }
 
     func testGeminiBrowseHidesRetiredGenerations() {
