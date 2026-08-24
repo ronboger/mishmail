@@ -45,6 +45,12 @@ final class AskMishController {
         /// resolved draft, not from the model's arguments.
         let summary: String
         let argumentsJSON: String
+        /// Draft body shown on the card. Nil when the tool has no body.
+        var bodyPreview: String? = nil
+        /// True for create_draft / send_draft: Return must not confirm.
+        var requiresExplicitClick: Bool = false
+        /// Snapshot of the draft at confirm time. Send aborts if it drifts.
+        var sendFingerprint: String? = nil
     }
 
     // MARK: - Rendered state
@@ -277,7 +283,7 @@ final class AskMishController {
             var calls: [LLMToolCall] = []
             var usage: LLMUsage?
             let bubbleID = beginAssistantBubble()
-            let request = [systemMessage()] + history
+            let request = [systemMessage()] + AskMishContext.prepareForModel(history)
             do {
                 for try await event in await LLMClient.shared.stream(
                     messages: request, tools: tools, config: config, model: modelID,
@@ -357,12 +363,14 @@ final class AskMishController {
 
     /// Runs one tool call, gating writes behind the confirm card.
     private func execute(_ call: LLMToolCall) async -> LLMToolResult {
+        var sendFingerprint: String?
         if AskMishTools.isWriteTool(call.name) {
-            let allowed = await requestConfirmation(for: call)
-            guard allowed else {
+            let decision = await requestConfirmation(for: call)
+            guard decision.allowed else {
                 return LLMToolResult(callID: call.id,
                                      content: "The user declined this action.", isError: true)
             }
+            sendFingerprint = decision.sendFingerprint
         }
         do {
             let args = try AskMishTools.decodeArguments(call.argumentsJSON)
@@ -377,7 +385,9 @@ final class AskMishController {
                     return LLMToolResult(callID: call.id,
                                          content: "draft_id is required", isError: true)
                 }
-                let receipt = try await store.askMishSendDraft(draftId: draftId)
+                let receipt = try await store.askMishSendDraft(
+                    draftId: draftId,
+                    expectedFingerprint: sendFingerprint)
                 return LLMToolResult(callID: call.id, content: receipt, isError: false)
             }
             let text = try await MCPRouter.dispatch(name: call.name, args: args, tools: bridge)
@@ -397,32 +407,63 @@ final class AskMishController {
         }
     }
 
+    private struct ConfirmDecision {
+        var allowed: Bool
+        var sendFingerprint: String?
+    }
+
     /// Shows the confirm card and parks until the user answers.
-    private func requestConfirmation(for call: LLMToolCall) async -> Bool {
-        if Task.isCancelled { return false }
-        var summary: String?
+    private func requestConfirmation(for call: LLMToolCall) async -> ConfirmDecision {
+        if Task.isCancelled { return ConfirmDecision(allowed: false, sendFingerprint: nil) }
+        let fallback = AskMishTools.confirmContent(
+            toolName: call.name, argumentsJSON: call.argumentsJSON)
+        var summary = fallback.summary
+        var bodyPreview = fallback.bodyPreview
+        var fingerprint: String?
         // The send card must name the recipients and the subject, which only the
         // stored draft knows; the pure line is the fallback.
         if call.name == AskMishTools.sendDraftToolName, let store,
            let args = try? AskMishTools.decodeArguments(call.argumentsJSON),
-           case .string(let draftId)? = args["draft_id"] {
-            summary = await store.askMishSendConfirmSummary(draftId: draftId)
+           case .string(let draftId)? = args["draft_id"],
+           let preview = await store.askMishSendConfirmPreview(draftId: draftId) {
+            summary = preview.summary
+            bodyPreview = preview.bodyPreview
+            fingerprint = preview.fingerprint
         }
-        let line = summary ?? AskMishTools.confirmSummary(
-            toolName: call.name, argumentsJSON: call.argumentsJSON)
-        if Task.isCancelled { return false }
+        if Task.isCancelled { return ConfirmDecision(allowed: false, sendFingerprint: nil) }
         pendingConfirmation = PendingToolConfirmation(
-            id: UUID(), toolName: call.name, summary: line,
-            argumentsJSON: call.argumentsJSON)
-        return await withCheckedContinuation { continuation in
+            id: UUID(), toolName: call.name, summary: summary,
+            argumentsJSON: call.argumentsJSON,
+            bodyPreview: bodyPreview,
+            requiresExplicitClick: fallback.requiresExplicitClick,
+            sendFingerprint: fingerprint)
+        let allowed = await withCheckedContinuation { continuation in
             confirmContinuation = continuation
         }
+        return ConfirmDecision(allowed: allowed, sendFingerprint: fingerprint)
     }
 
     // MARK: - Message assembly
 
     private func currentProviderConfig() -> LLMProviderConfig? {
         LLMProviderStore.load().first { $0.id == providerID }
+    }
+
+    /// Hosted models send mail text off this Mac. The panel shows a one-time
+    /// notice per provider until the user dismisses it.
+    var showsHostedNotice: Bool {
+        guard let config = currentProviderConfig(),
+              LLMRemotePolicy.sendsMailOffDevice(config) else { return false }
+        return !UserDefaults.standard.bool(forKey: Self.hostedAckKey(config.id))
+    }
+
+    func acknowledgeHostedNotice() {
+        guard let config = currentProviderConfig() else { return }
+        UserDefaults.standard.set(true, forKey: Self.hostedAckKey(config.id))
+    }
+
+    private static func hostedAckKey(_ id: UUID) -> String {
+        "askMish.hostedAck.\(id.uuidString)"
     }
 
     private func systemMessage() -> LLMMessage {

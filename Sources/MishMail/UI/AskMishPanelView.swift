@@ -26,6 +26,7 @@ struct AskMishPanelView: View {
     @State private var localModels: [String] = []
     @State private var modelPickerShown = false
     @State private var expandedThinking: Set<UUID> = []
+    @State private var hostedNoticeDismissed = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -55,6 +56,7 @@ struct AskMishPanelView: View {
         .onChange(of: store.showAskMish) { _, shown in
             if !shown { declinePendingConfirmation() }
         }
+        .onChange(of: controller.providerID) { hostedNoticeDismissed = false }
         .onDisappear {
             declinePendingConfirmation()
         }
@@ -69,6 +71,14 @@ struct AskMishPanelView: View {
             conversationMenu
             Spacer(minLength: 4)
             modelMenu
+            if let config = currentProviderConfig {
+                Text(LLMRemotePolicy.sendsMailOffDevice(config) ? "Hosted" : "Local")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .help(LLMRemotePolicy.sendsMailOffDevice(config)
+                          ? "This model runs off this Mac. Mail text is sent to the provider."
+                          : "This model runs on this Mac.")
+            }
             Button {
                 store.showAskMish = false
             } label: {
@@ -267,7 +277,7 @@ struct AskMishPanelView: View {
                     thinkingDisclosure(bubble)
                 }
                 if !bubble.text.isEmpty {
-                    Text(Self.rendered(bubble.text))
+                    Text(AskMishContext.displayedText(bubble.text))
                         .textSelection(.enabled)
                         .foregroundStyle(bubble.isError ? Color.red : Color.primary)
                 }
@@ -289,13 +299,8 @@ struct AskMishPanelView: View {
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 
-    /// Markdown, with the plain string as the fallback so a stray `*` in a
-    /// half-streamed answer never blanks the bubble.
-    private static func rendered(_ text: String) -> AttributedString {
-        (try? AttributedString(
-            markdown: text,
-            options: .init(interpretedSyntax: .inlineOnlyPreservingWhitespace)))
-            ?? AttributedString(text)
+    private var currentProviderConfig: LLMProviderConfig? {
+        LLMProviderStore.load().first { $0.id == controller.providerID }
     }
 
     /// Collapsed thinking trace. While the model is still reasoning (no
@@ -387,6 +392,17 @@ struct AskMishPanelView: View {
             Text(pending.summary)
                 .font(.system(size: 13))
                 .fixedSize(horizontal: false, vertical: true)
+            if let body = pending.bodyPreview, !body.isEmpty {
+                Text(body)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .lineLimit(8)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.primary.opacity(0.04),
+                                in: RoundedRectangle(cornerRadius: PMRadius.sm))
+            }
             if isSend {
                 Text("MishMail queues the message. You can undo it for \(Int(MailStore.undoSendWindow)) seconds.")
                     .font(.caption)
@@ -399,10 +415,9 @@ struct AskMishPanelView: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(isSend ? .red : Color.notionAccent)
-                // A send needs a real click: the composer is disabled while
-                // the card is up, so ↩ would otherwise queue mail from a
-                // keystroke meant for the chat.
-                .keyboardShortcut(isSend ? nil : KeyboardShortcut.defaultAction)
+                // Create and send put mail on the wire. Return would confirm
+                // a keystroke meant for the chat, so those need a click.
+                .keyboardShortcut(pending.requiresExplicitClick ? nil : KeyboardShortcut.defaultAction)
                 Button("Don't allow") {
                     controller.confirmPendingTool(allow: false)
                 }
@@ -417,6 +432,9 @@ struct AskMishPanelView: View {
 
     private var composer: some View {
         VStack(alignment: .leading, spacing: 8) {
+            if controller.showsHostedNotice, !hostedNoticeDismissed {
+                hostedNotice
+            }
             attachmentRow
             HStack(alignment: .bottom, spacing: 8) {
                 TextField("Ask Mish…", text: $input, axis: .vertical)
@@ -456,6 +474,26 @@ struct AskMishPanelView: View {
             }
         }
         .padding(12)
+    }
+
+    private var hostedNotice: some View {
+        HStack(alignment: .top, spacing: 8) {
+            Image(systemName: "lock.slash")
+                .foregroundStyle(.secondary)
+            Text("This chat sends mail text to \(currentProviderConfig?.label ?? "the provider").")
+                .font(.caption)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 4)
+            Button("OK") {
+                hostedNoticeDismissed = true
+                controller.acknowledgeHostedNotice()
+            }
+            .font(.caption)
+            .buttonStyle(.plain)
+        }
+        .padding(8)
+        .background(Color.primary.opacity(0.05),
+                    in: RoundedRectangle(cornerRadius: PMRadius.sm))
     }
 
     // MARK: - Attachments

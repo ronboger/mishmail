@@ -120,6 +120,31 @@ enum LLMProviderStore {
 
     static func keychainKey(for id: UUID) -> String { "llm.key.\(id.uuidString)" }
     static func oauthKeychainKey(for id: UUID) -> String { "llm.oauth.\(id.uuidString)" }
+    static func hostConsentKey(for id: UUID) -> String { "llm.hostConsent.\(id.uuidString)" }
+
+    static func consentedHost(for id: UUID,
+                              from defaults: UserDefaults = .standard) -> String? {
+        defaults.string(forKey: hostConsentKey(for: id))
+    }
+
+    static func setConsentedHost(_ host: String?, for id: UUID,
+                                 to defaults: UserDefaults = .standard) {
+        let key = hostConsentKey(for: id)
+        if let host, !host.isEmpty {
+            defaults.set(host.lowercased(), forKey: key)
+        } else {
+            defaults.removeObject(forKey: key)
+        }
+    }
+
+    /// Preset hosts do not need consent. A custom host must match the stored
+    /// consent exactly (changing the URL requires a new confirm).
+    static func hasHostConsent(for config: LLMProviderConfig,
+                               from defaults: UserDefaults = .standard) -> Bool {
+        guard LLMRemotePolicy.requiresHostConsent(config),
+              let host = LLMRemotePolicy.host(of: config.baseURL) else { return true }
+        return consentedHost(for: config.id, from: defaults) == host
+    }
 
     static func assignmentKey(for task: LLMTask) -> String { "llm.task.\(task.rawValue)" }
 

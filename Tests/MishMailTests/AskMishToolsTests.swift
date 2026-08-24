@@ -55,7 +55,51 @@ final class AskMishToolsTests: XCTestCase {
     /// mutating tool must be added to the write set, not default to read.
     func testEveryOfferedToolIsClassified() {
         let names = Set(AskMishTools.llmToolSpecs().map(\.name))
-        XCTAssertTrue(AskMishTools.writeToolNames.isSubset(of: names))
+        XCTAssertTrue(AskMishTools.writeToolNames.isDisjoint(with: AskMishTools.readToolNames))
+        XCTAssertEqual(names, AskMishTools.writeToolNames.union(AskMishTools.readToolNames),
+                       "A new tool must be added to readToolNames or writeToolNames")
+    }
+
+    func testCreateAndSendRequireExplicitClick() {
+        XCTAssertTrue(AskMishTools.requiresExplicitClick("create_draft"))
+        XCTAssertTrue(AskMishTools.requiresExplicitClick("send_draft"))
+        XCTAssertFalse(AskMishTools.requiresExplicitClick("add_vip"))
+        XCTAssertFalse(AskMishTools.requiresExplicitClick("search_threads"))
+    }
+
+    func testCreateDraftConfirmIncludesBodyPreview() {
+        let content = AskMishTools.confirmContent(
+            toolName: "create_draft",
+            argumentsJSON: #"{"account":"a@b.com","to":["c@d.com"],"subject":"Hello","body":"Please send the files."}"#)
+        XCTAssertTrue(content.summary.contains("c@d.com"))
+        XCTAssertEqual(content.bodyPreview, "Please send the files.")
+        XCTAssertTrue(content.requiresExplicitClick)
+    }
+
+    func testSendFingerprintChangesWhenBodyChanges() {
+        let a = AskMishTools.sendFingerprint(
+            to: "a@b.com", cc: "", bcc: "", subject: "Hi", body: "one")
+        let b = AskMishTools.sendFingerprint(
+            to: "a@b.com", cc: "", bcc: "", subject: "Hi", body: "two")
+        XCTAssertNotEqual(a, b)
+        XCTAssertEqual(a, AskMishTools.sendFingerprint(
+            to: "a@b.com", cc: "", bcc: "", subject: "Hi", body: "one"))
+    }
+
+    func testOffThreadRecipientsIgnoresPeopleAlreadyOnTheThread() {
+        let off = AskMishTools.offThreadRecipients(
+            sending: ["Eve@x.com", "a@b.com", "eve@x.com"],
+            threadAddresses: ["a@b.com", "c@d.com"])
+        XCTAssertEqual(off, ["Eve@x.com"])
+    }
+
+    func testPreviewTruncatesLongBodies() {
+        XCTAssertNil(AskMishTools.preview("   "))
+        XCTAssertEqual(AskMishTools.preview("short"), "short")
+        let long = String(repeating: "x", count: 600)
+        let preview = AskMishTools.preview(long, limit: 500)
+        XCTAssertEqual(preview?.count, 501) // 500 + ellipsis
+        XCTAssertTrue(preview?.hasSuffix("…") == true)
     }
 
     func testDecodeArgumentsRejectsNonObject() {

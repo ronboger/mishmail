@@ -49,6 +49,27 @@ final class LLMProviderStoreTests: XCTestCase {
                        "llm.key.AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
         XCTAssertEqual(LLMProviderStore.oauthKeychainKey(for: id),
                        "llm.oauth.AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
+        XCTAssertEqual(LLMProviderStore.hostConsentKey(for: id),
+                       "llm.hostConsent.AAAAAAAA-BBBB-CCCC-DDDD-EEEEEEEEEEEE")
+    }
+
+    func testHostConsentMatchesExactHostAndFailsClosedOnChange() {
+        let id = UUID()
+        let custom = LLMProviderConfig(
+            id: id, kind: .openAICompatible, label: "Proxy",
+            baseURL: "https://llm.evil.example/v1", defaultModel: "x",
+            authMode: .apiKey)
+        XCTAssertFalse(LLMProviderStore.hasHostConsent(for: custom, from: defaults))
+        LLMProviderStore.setConsentedHost("llm.evil.example", for: id, to: defaults)
+        XCTAssertTrue(LLMProviderStore.hasHostConsent(for: custom, from: defaults))
+        var moved = custom
+        moved.baseURL = "https://other.evil.example/v1"
+        XCTAssertFalse(LLMProviderStore.hasHostConsent(for: moved, from: defaults))
+        let grok = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "Grok",
+            baseURL: "https://api.x.ai/v1", defaultModel: "grok-4",
+            authMode: .apiKey)
+        XCTAssertTrue(LLMProviderStore.hasHostConsent(for: grok, from: defaults))
     }
 
     func testTaskAssignmentDefaultsToBuiltInOllamaAndRoundTrips() {

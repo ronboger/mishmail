@@ -601,7 +601,7 @@ extension MailStore {
     /// - Returns: a short JSON receipt. The mail is **queued**, not delivered:
     ///   `{"status":"queued", …, "undoSeconds":N}`. It leaves after the undo
     ///   window, so the model must not claim the mail is already sent.
-    func askMishSendDraft(draftId: String) async throws -> String {
+    func askMishSendDraft(draftId: String, expectedFingerprint: String? = nil) async throws -> String {
         let id = draftId.trimmingCharacters(in: .whitespaces)
         guard !id.isEmpty else {
             throw MCPToolError("draft_id is required")
@@ -633,6 +633,13 @@ extension MailStore {
         guard !draft.hasAttachment else {
             throw MCPToolError(
                 "Draft \(id) has attachments. Open it in MishMail and send it there.")
+        }
+
+        let fingerprint = AskMishTools.sendFingerprint(
+            to: draft.toHeader, cc: draft.ccHeader, bcc: draft.bccHeader,
+            subject: draft.subject, body: draft.bodyText)
+        if let expectedFingerprint, expectedFingerprint != fingerprint {
+            throw MCPToolError("The draft changed after you confirmed. Confirm again.")
         }
 
         // Reply drafts recover their parent so In-Reply-To / References and the
@@ -680,6 +687,19 @@ extension MailStore {
     ///   Bcc count, and the subject. `nil` when the id is empty or the draft
     ///   does not resolve to an unsent draft — the caller then falls back.
     func askMishSendConfirmSummary(draftId: String) async -> String? {
+        await askMishSendConfirmPreview(draftId: draftId)?.summary
+    }
+
+    /// Recipients, subject, body preview, and a fingerprint of the draft as
+    /// it stands now. Send compares the fingerprint so a changed draft cannot
+    /// ride a stale confirm.
+    struct AskMishSendPreview {
+        var summary: String
+        var bodyPreview: String?
+        var fingerprint: String
+    }
+
+    func askMishSendConfirmPreview(draftId: String) async -> AskMishSendPreview? {
         let id = draftId.trimmingCharacters(in: .whitespaces)
         guard !id.isEmpty else { return nil }
         // Same resolution askMishSendDraft uses, so the card describes exactly
@@ -689,9 +709,34 @@ extension MailStore {
 
         let visible = Self.askMishAddresses(draft.toHeader)
             + Self.askMishAddresses(draft.ccHeader)
-        let hidden = Self.askMishAddresses(draft.bccHeader).count
-        return AskMishTools.sendDraftSummary(
-            recipients: visible, subject: draft.subject, hiddenCount: hidden)
+        let hiddenAddrs = Self.askMishAddresses(draft.bccHeader)
+        var summary = AskMishTools.sendDraftSummary(
+            recipients: visible, subject: draft.subject, hiddenCount: hiddenAddrs.count)
+
+        let others = messages(inThread: draft.threadId)
+            .filter { !ForwardComposer.isLiveDraft($0.labelIds) }
+        if !others.isEmpty {
+            let threadAddrs = others.flatMap { message -> [String] in
+                Self.askMishAddresses(message.fromHeader)
+                    + Self.askMishAddresses(message.toHeader)
+                    + Self.askMishAddresses(message.ccHeader)
+            }
+            let sending = visible + hiddenAddrs
+            let off = AskMishTools.offThreadRecipients(
+                sending: sending, threadAddresses: threadAddrs)
+            if !off.isEmpty {
+                let listed = off.prefix(3).joined(separator: ", ")
+                let extra = off.count > 3 ? " and \(off.count - 3) more" : ""
+                summary += " New recipient: \(listed)\(extra)."
+            }
+        }
+
+        return AskMishSendPreview(
+            summary: summary,
+            bodyPreview: AskMishTools.preview(draft.bodyText),
+            fingerprint: AskMishTools.sendFingerprint(
+                to: draft.toHeader, cc: draft.ccHeader, bcc: draft.bccHeader,
+                subject: draft.subject, body: draft.bodyText))
     }
 
     /// Bare addresses from an address-list header, using the same parsing the

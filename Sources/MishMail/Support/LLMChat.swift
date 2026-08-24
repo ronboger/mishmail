@@ -152,7 +152,53 @@ enum LLMEndpoint {
             throw ValidationError.insecure(url.absoluteString)
         }
     }
+}
 
+/// Whether a provider sends mail text off this Mac, and whether a custom
+/// host still needs an explicit consent (preset hosts are expected).
+enum LLMRemotePolicy {
+    /// Hosts we ship as presets. Mail to these is expected; a typed-in
+    /// host needs a confirm because it receives mail content.
+    static let knownHosts: Set<String> = [
+        "api.anthropic.com",
+        "api.openai.com",
+        "generativelanguage.googleapis.com",
+        "openrouter.ai",
+        "api.x.ai",
+        "api.groq.com",
+    ]
+
+    static func host(of baseURL: String) -> String? {
+        let trimmed = LLMEndpoint.trimmedBase(baseURL)
+        guard let url = URL(string: trimmed),
+              let host = url.host, !host.isEmpty else { return nil }
+        return host.lowercased()
+    }
+
+    static func isKnownHost(_ host: String) -> Bool {
+        let lowered = host.lowercased()
+        if knownHosts.contains(lowered) { return true }
+        return knownHosts.contains { lowered.hasSuffix(".\($0)") }
+    }
+
+    /// True when this provider's endpoint is not loopback. Fail closed on
+    /// a URL we cannot parse: better to skip auto-sort than leak mail.
+    static func sendsMailOffDevice(_ config: LLMProviderConfig) -> Bool {
+        let trimmed = LLMEndpoint.trimmedBase(config.baseURL)
+        guard let url = URL(string: trimmed) else { return true }
+        return !LLMEndpoint.isLoopback(url)
+    }
+
+    /// Custom HTTPS hosts (not a shipped preset) need a stored consent
+    /// matching this exact host before we send mail there.
+    static func requiresHostConsent(_ config: LLMProviderConfig) -> Bool {
+        guard sendsMailOffDevice(config),
+              let host = host(of: config.baseURL) else { return false }
+        return !isKnownHost(host)
+    }
+}
+
+extension LLMEndpoint {
     /// Drops trailing slashes so path joining never produces "//".
     static func trimmedBase(_ raw: String) -> String {
         var base = raw

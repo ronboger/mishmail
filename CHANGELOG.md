@@ -11,6 +11,15 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Changed
+- **Ask Mish confirms show the draft body.** Create-draft and send-draft cards
+  include a body preview. Return no longer confirms those actions. Send aborts
+  if the draft changed after you confirmed.
+- **Auto-sort stays on this Mac.** If Triage is a hosted model, auto-sort skips
+  so new-mail snippets are not uploaded. Settings says so.
+- **Custom model hosts need a confirm.** A base URL that is not a shipped
+  preset must be acknowledged in Settings before mail is sent there.
+
 ### Added
 - **⌘L copies a Gmail web link to the focused conversation**, Notion-style.
   The clipboard gets a `mail.google.com` URL that opens the conversation

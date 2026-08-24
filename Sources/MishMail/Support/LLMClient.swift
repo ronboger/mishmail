@@ -5,6 +5,7 @@ enum LLMClientError: LocalizedError {
     case missingCredential
     case http(Int)
     case keychainUnavailable
+    case untrustedEndpoint(String)
 
     var errorDescription: String? {
         switch self {
@@ -14,6 +15,8 @@ enum LLMClientError: LocalizedError {
             return "The model provider returned HTTP \(code)."
         case .keychainUnavailable:
             return "Keychain is unavailable. Unlock your Mac and try again."
+        case .untrustedEndpoint(let host):
+            return "Mail would go to \(host). Open Settings → AI, edit this provider, and confirm that host."
         }
     }
 }
@@ -160,6 +163,10 @@ actor LLMClient {
             try Ollama.validateEndpoint(url)
         } else {
             try LLMEndpoint.validate(url)
+            if !LLMProviderStore.hasHostConsent(for: config) {
+                throw LLMClientError.untrustedEndpoint(
+                    LLMRemotePolicy.host(of: config.baseURL) ?? config.baseURL)
+            }
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"

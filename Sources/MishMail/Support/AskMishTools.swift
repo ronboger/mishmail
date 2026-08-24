@@ -45,9 +45,30 @@ enum AskMishTools {
         sendDraftToolName,
     ]
 
+    /// Read tools. Every offered tool must be in this set or `writeToolNames`
+    /// — a new mutating tool must not default to read.
+    static let readToolNames: Set<String> = [
+        "list_accounts",
+        "list_threads",
+        "search_threads",
+        "get_thread",
+        "list_drafts",
+        "list_vips",
+    ]
+
+    /// Writes that can put mail on the wire. Return must not confirm these.
+    static let clickRequiredToolNames: Set<String> = [
+        "create_draft",
+        sendDraftToolName,
+    ]
+
     /// Read tools run freely; write tools need an in-chat confirm.
     static func isWriteTool(_ name: String) -> Bool {
         writeToolNames.contains(name)
+    }
+
+    static func requiresExplicitClick(_ name: String) -> Bool {
+        clickRequiredToolNames.contains(name)
     }
 
     /// MCP catalog + `send_draft`, converted for the LLM wire codecs.
@@ -86,19 +107,41 @@ enum AskMishTools {
 
     // MARK: - Confirm card
 
+    /// What the confirm card shows. `summary` is the one-line action;
+    /// `bodyPreview` is the draft body when we have one.
+    struct ConfirmContent: Equatable {
+        var summary: String
+        var bodyPreview: String?
+        var requiresExplicitClick: Bool
+    }
+
     /// One short user-facing line for the confirm card. Falls back to the tool
     /// name when the arguments are unusable, so a card is never blank.
     ///
     /// This is the pure fallback: it only sees the model's arguments. For
     /// `send_draft` those arguments are a bare draft id, which tells the user
     /// nothing about the mail that leaves. The controller MUST prefer
-    /// `MailStore.askMishSendConfirmSummary(draftId:)` for `send_draft` — it
+    /// `MailStore.askMishSendConfirmPreview(draftId:)` for `send_draft` — it
     /// resolves the stored draft and names the recipients and the subject —
     /// and use this line only when the store returns `nil`.
     static func confirmSummary(toolName: String, argumentsJSON: String) -> String {
+        confirmContent(toolName: toolName, argumentsJSON: argumentsJSON).summary
+    }
+
+    static func confirmContent(toolName: String, argumentsJSON: String) -> ConfirmContent {
         let args = (try? decodeArguments(argumentsJSON)) ?? [:]
-        return specificSummary(toolName: toolName, args: args)
+        let summary = specificSummary(toolName: toolName, args: args)
             ?? "Run the tool \(toolName)."
+        let body: String?
+        if toolName == "create_draft" {
+            body = preview(text(args, "body"))
+        } else {
+            body = nil
+        }
+        return ConfirmContent(
+            summary: summary,
+            bodyPreview: body,
+            requiresExplicitClick: requiresExplicitClick(toolName))
     }
 
     private static func specificSummary(
@@ -121,7 +164,11 @@ enum AskMishTools {
 
         case "set_thread_summary":
             guard let threadId = text(args, "thread_id") else { return nil }
-            return "Save an AI summary on thread \(threadId)."
+            var line = "Save an AI summary on thread \(threadId)."
+            if let summary = text(args, "summary") {
+                line += " \(quoted(summary))"
+            }
+            return line
 
         case "clear_thread_summary":
             guard let threadId = text(args, "thread_id") else { return nil }
@@ -190,6 +237,42 @@ enum AskMishTools {
         let title = subject.trimmingCharacters(in: .whitespacesAndNewlines)
         if !title.isEmpty { line += " — \(quoted(title))" }
         return line + "."
+    }
+
+    /// Stable snapshot of the draft the user confirmed. Send aborts if the
+    /// stored draft no longer matches.
+    static func sendFingerprint(to: String, cc: String, bcc: String,
+                                subject: String, body: String) -> String {
+        [to, cc, bcc, subject, body]
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .joined(separator: "\u{1e}")
+    }
+
+    /// Recipients on the outgoing draft that are not already on the thread.
+    /// Addresses compare case-insensitively.
+    static func offThreadRecipients(sending: [String],
+                                    threadAddresses: [String]) -> [String] {
+        let thread = Set(threadAddresses
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() }
+            .filter { !$0.isEmpty })
+        var seen = Set<String>()
+        var out: [String] = []
+        for raw in sending {
+            let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+            let key = trimmed.lowercased()
+            guard !key.isEmpty, !thread.contains(key), seen.insert(key).inserted else { continue }
+            out.append(trimmed)
+        }
+        return out
+    }
+
+    /// Truncated draft body for the confirm card. Nil when empty.
+    static func preview(_ text: String?, limit: Int = 500) -> String? {
+        guard let text else { return nil }
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        if trimmed.count <= limit { return trimmed }
+        return String(trimmed.prefix(limit)) + "…"
     }
 
     // MARK: - Argument readers

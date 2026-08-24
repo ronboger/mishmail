@@ -24,6 +24,32 @@ final class LLMChatTests: XCTestCase {
         try LLMEndpoint.validate(URL(string: "https://api.x.ai/v1")!)
     }
 
+    func testRemotePolicyKnownHostsAndOffDevice() {
+        XCTAssertTrue(LLMRemotePolicy.isKnownHost("api.x.ai"))
+        XCTAssertTrue(LLMRemotePolicy.isKnownHost("openrouter.ai"))
+        XCTAssertTrue(LLMRemotePolicy.isKnownHost("api.anthropic.com"))
+        XCTAssertFalse(LLMRemotePolicy.isKnownHost("evil.example"))
+        XCTAssertEqual(LLMRemotePolicy.host(of: "https://proxy.example/v1"), "proxy.example")
+
+        let local = LLMProviderConfig(
+            id: UUID(), kind: .ollama, label: "Ollama",
+            baseURL: "http://127.0.0.1:11434", defaultModel: "llama",
+            authMode: .apiKey)
+        let grok = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "Grok",
+            baseURL: "https://api.x.ai/v1", defaultModel: "grok-4",
+            authMode: .apiKey)
+        let custom = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "Proxy",
+            baseURL: "https://llm.evil.example/v1", defaultModel: "x",
+            authMode: .apiKey)
+        XCTAssertFalse(LLMRemotePolicy.sendsMailOffDevice(local))
+        XCTAssertTrue(LLMRemotePolicy.sendsMailOffDevice(grok))
+        XCTAssertFalse(LLMRemotePolicy.requiresHostConsent(local))
+        XCTAssertFalse(LLMRemotePolicy.requiresHostConsent(grok))
+        XCTAssertTrue(LLMRemotePolicy.requiresHostConsent(custom))
+    }
+
     // MARK: - Path derivation
 
     func testChatPathForBareBaseURLs() {

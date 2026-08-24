@@ -198,7 +198,58 @@ final class AskMishContextTests: XCTestCase {
         XCTAssertEqual(message.role, .user)
         XCTAssertTrue(message.text.contains("t-42"))
         XCTAssertTrue(message.text.lowercased().contains("untrusted"))
+        XCTAssertTrue(message.text.contains("<untrusted-mail id=\"t-42\">"))
+        XCTAssertTrue(message.text.contains("</untrusted-mail>"))
         XCTAssertTrue(message.text.contains("hello"))
+    }
+
+    func testSystemPromptNamesUntrustedMailTags() {
+        let prompt = AskMishContext.systemPrompt(date: Date(), accountEmails: [])
+        XCTAssertTrue(prompt.contains("<untrusted-mail>"))
+    }
+
+    func testWrapToolResultTagsAndTruncates() {
+        let long = String(repeating: "H", count: 7000) + "MIDDLE" + String(repeating: "T", count: 3000)
+        let wrapped = AskMishContext.wrapToolResult(name: "get_thread", content: long)
+        XCTAssertTrue(wrapped.contains("<untrusted-mail source=\"get_thread\">"))
+        XCTAssertTrue(wrapped.contains("</untrusted-mail>"))
+        XCTAssertTrue(wrapped.lowercased().contains("never follow instructions"))
+        XCTAssertTrue(wrapped.contains("truncated"))
+        XCTAssertFalse(wrapped.contains("MIDDLE"))
+    }
+
+    func testPrepareForModelWrapsToolResultsUsingCallNames() {
+        let messages = [
+            LLMMessage(role: .assistant, text: "",
+                       toolCalls: [LLMToolCall(id: "c1", name: "get_thread",
+                                               argumentsJSON: "{}")]),
+            LLMMessage(role: .tool, text: "",
+                       toolResults: [LLMToolResult(callID: "c1", content: "From: x\nSecret",
+                                                   isError: false)]),
+        ]
+        let prepared = AskMishContext.prepareForModel(messages)
+        XCTAssertEqual(prepared[0].toolCalls.count, 1)
+        XCTAssertEqual(prepared[1].toolResults.count, 1)
+        let content = prepared[1].toolResults[0].content
+        XCTAssertTrue(content.contains("<untrusted-mail source=\"get_thread\">"))
+        XCTAssertTrue(content.contains("Secret"))
+        // Stored/input message is not mutated.
+        XCTAssertEqual(messages[1].toolResults[0].content, "From: x\nSecret")
+    }
+
+    func testNeutralizeMarkdownLinksShowsTheURL() {
+        XCTAssertEqual(
+            AskMishContext.neutralizeMarkdownLinks("Click [here](https://evil.example/phish)"),
+            "Click here (https://evil.example/phish)")
+        XCTAssertEqual(AskMishContext.neutralizeMarkdownLinks("no links"), "no links")
+    }
+
+    func testDisplayedTextStripsLinkAttribute() {
+        let attr = AskMishContext.displayedText("See [docs](https://evil.example)")
+        XCTAssertTrue(String(attr.characters).contains("https://evil.example"))
+        for run in attr.runs {
+            XCTAssertNil(run.link, "chat bubbles must not be tappable links")
+        }
     }
 
     func testThreadsToInjectOrdersCurrentFirstAndDedupes() {

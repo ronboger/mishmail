@@ -1661,7 +1661,7 @@ struct AISettings: View {
                 } header: {
                     Text("Subscriptions")
                 } footer: {
-                    Text("One click signs you in with your existing subscription and pulls the model list. No API key is needed.")
+                    Text("One click signs you in with your existing subscription and pulls the model list. No API key is needed. Sign-in uses the vendor's public CLI client, so the token can do more than chat. Prefer an API key when you have one.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -1739,8 +1739,13 @@ struct AISettings: View {
 
                 Section {
                     Toggle("Auto-sort new mail", isOn: $autoClassify)
+                    if autoClassify, triageSendsOffDevice {
+                        Text("Auto-sort is on, but Triage uses a hosted model. New mail is not sent there. Pick a local model for Triage, or turn auto-sort off.")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                    }
                 } footer: {
-                    Text("After each sync, quietly tag new inbox threads (Reply needed, FYI, Newsletter, Receipt) with the local model. Skips silently when Ollama isn't running. A small fast model like llama3.2:3b is ideal here.")
+                    Text("After each sync, quietly tag new inbox threads (Reply needed, FYI, Newsletter, Receipt) with the Triage model. Auto-sort only runs when that model is local (Ollama on this Mac). A hosted triage model would send every new snippet off this Mac, so auto-sort skips it. A small fast model like llama3.2:3b is ideal here.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -1775,6 +1780,12 @@ struct AISettings: View {
                 Text("This removes all saved model usage data.")
             }
         }
+    }
+
+    private var triageSendsOffDevice: Bool {
+        let assignment = LLMProviderStore.assignment(for: .triage)
+        let config = providers.first { $0.id == assignment.providerID }
+        return config.map(LLMRemotePolicy.sendsMailOffDevice) ?? false
     }
 
     @ViewBuilder
@@ -2106,6 +2117,7 @@ private struct ProviderEditSheet: View {
     /// onAppear sets presetIndex programmatically, which fires onChange. Suppress
     /// the preset-applied reset once so a stored custom Base URL survives editing.
     @State private var suppressPresetApply = false
+    @State private var hostConsent = false
 
     private var kind: LLMProviderKind { Self.presets[presetIndex].kind }
     private var oauthVendor: LLMOAuthVendor? {
@@ -2132,9 +2144,18 @@ private struct ProviderEditSheet: View {
         OAuthConfig.usesKeychain(environment: ProcessInfo.processInfo.environment)
     }
 
+    private var customHost: String? {
+        guard let host = LLMRemotePolicy.host(of: baseURL),
+              !LLMRemotePolicy.isKnownHost(host),
+              let url = URL(string: LLMEndpoint.trimmedBase(baseURL)),
+              !LLMEndpoint.isLoopback(url) else { return nil }
+        return host
+    }
+
     private var saveDisabled: Bool {
         !canStoreSecrets || label.isEmpty || modelID.isEmpty
             || (!useOAuth && apiKey.isEmpty && provider == nil)
+            || (customHost != nil && !hostConsent)
     }
 
     var body: some View {
@@ -2180,6 +2201,19 @@ private struct ProviderEditSheet: View {
             }
             TextField("Label", text: $label)
             TextField("Base URL", text: $baseURL)
+                .onChange(of: customHost) { _, host in
+                    if let existing = provider,
+                       let host,
+                       LLMProviderStore.consentedHost(for: existing.id) == host {
+                        hostConsent = true
+                    } else if host != nil {
+                        hostConsent = false
+                    }
+                }
+            if let host = customHost {
+                Toggle("Mail from this Mac will go to \(host).", isOn: $hostConsent)
+                    .font(.caption)
+            }
             HStack {
                 TextField("Model", text: $modelID)
                 Button("Fetch models") { Task { await fetchModels() } }
@@ -2235,6 +2269,10 @@ private struct ProviderEditSheet: View {
                 presetIndex = matched
             }
             if case .oauth = existing.authMode { useOAuth = true } else { useOAuth = false }
+            if let host = LLMRemotePolicy.host(of: existing.baseURL),
+               LLMProviderStore.consentedHost(for: existing.id) == host {
+                hostConsent = true
+            }
         }
     }
 
@@ -2300,6 +2338,11 @@ private struct ProviderEditSheet: View {
             var list = LLMProviderStore.load().filter { $0.id != id }
             list.append(config)
             LLMProviderStore.save(list)
+            if let host = customHost, hostConsent {
+                LLMProviderStore.setConsentedHost(host, for: id)
+            } else if customHost == nil {
+                LLMProviderStore.setConsentedHost(nil, for: id)
+            }
             onSave(config)
             dismiss()
         } catch {
