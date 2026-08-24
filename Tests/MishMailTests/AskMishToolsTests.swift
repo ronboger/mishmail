@@ -65,6 +65,7 @@ final class AskMishToolsTests: XCTestCase {
     func testCreateAndSendRequireExplicitClick() {
         XCTAssertTrue(AskMishTools.requiresExplicitClick("create_draft"))
         XCTAssertTrue(AskMishTools.requiresExplicitClick("send_draft"))
+        XCTAssertTrue(AskMishTools.requiresExplicitClick("invented_mutating_tool"))
         XCTAssertFalse(AskMishTools.requiresExplicitClick("add_vip"))
         XCTAssertFalse(AskMishTools.requiresExplicitClick("search_threads"))
     }

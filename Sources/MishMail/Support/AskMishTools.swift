@@ -69,7 +69,9 @@ enum AskMishTools {
     }
 
     static func requiresExplicitClick(_ name: String) -> Bool {
-        clickRequiredToolNames.contains(name)
+        if clickRequiredToolNames.contains(name) { return true }
+        // Unknown names are not in either set; they must not be Return-confirmable.
+        return !readToolNames.contains(name) && !writeToolNames.contains(name)
     }
 
     /// MCP catalog + `send_draft`, converted for the LLM wire codecs.

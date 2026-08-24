@@ -163,10 +163,10 @@ actor LLMClient {
             try Ollama.validateEndpoint(url)
         } else {
             try LLMEndpoint.validate(url)
-            if !LLMProviderStore.hasHostConsent(for: config) {
-                throw LLMClientError.untrustedEndpoint(
-                    LLMRemotePolicy.host(of: config.baseURL) ?? config.baseURL)
-            }
+        }
+        if !LLMProviderStore.hasHostConsent(for: config) {
+            throw LLMClientError.untrustedEndpoint(
+                LLMRemotePolicy.host(of: config.baseURL) ?? config.baseURL)
         }
         var request = URLRequest(url: url)
         request.httpMethod = "POST"
