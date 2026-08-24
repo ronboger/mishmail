@@ -65,6 +65,15 @@ enum MishMailDeepLinks {
         return ThreadTarget(token: parts[0], accountEmail: account)
     }
 
+    /// Pasteboard string for ⌘L / Copy link. Always includes the account so a
+    /// multi-account inbox opens the right mailbox. Nil when the ids would
+    /// not round-trip through `parseThreadURL`.
+    static func copyPasteboardString(accountEmail: String,
+                                     gmailThreadId: String) -> String? {
+        threadURL(accountEmail: accountEmail, token: gmailThreadId)?
+            .absoluteString
+    }
+
     private static func isValidToken(_ token: String) -> Bool {
         guard !token.isEmpty, token.count <= 256 else { return false }
         return token.unicodeScalars.allSatisfy {

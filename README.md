@@ -240,6 +240,7 @@ Fixed shortcuts (not customizable):
 | Return | Open selected thread · Esc closes the reading pane |
 | ? | Show the keyboard-shortcut cheat sheet |
 | Cmd-K | Command palette · in compose body: insert/edit link |
+| Cmd-L | Copy link to the selected thread |
 | Ctrl-F | Filter menu |
 | Cmd-N | Compose · Cmd-Enter send |
 | / (in compose body) | Snippet picker — type `/name` to filter, Return inserts |

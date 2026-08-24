@@ -1098,6 +1098,27 @@ private extension ContentView {
                 store.checkAllVisibleThreads()
                 return nil
             }
+            // ⌘L copies a `mishmail://thread/…` link for the focused
+            // conversation (Notion-style copy page). Yield to typing in
+            // search/compose/Settings (`isEditing`), but fire while reading
+            // the conversation — unlike ⌘A, ⌘L is not a text-system chord.
+            if mods == .command,
+               !event.modifierFlags.contains(.shift),
+               event.charactersIgnoringModifiers?.lowercased() == "l",
+               event.window == NSApp.mainWindow,
+               !store.showCommandPalette,
+               !store.showLabelPicker,
+               !store.showShortcutsHelp,
+               store.editingView == nil,
+               ComposeKeyOwnership.allowsMailboxKeys(
+                   hasRequest: store.composeRequest != nil,
+                   minimized: store.composeMinimized,
+                   finishing: store.composeFinishing),
+               !TextFocus.isEditing(event.window?.firstResponder),
+               let thread = store.selectedThread {
+                store.copyThreadLink(thread)
+                return nil
+            }
             if store.showCommandPalette, event.keyCode == 53 {  // esc
                 store.showCommandPalette = false
                 return nil

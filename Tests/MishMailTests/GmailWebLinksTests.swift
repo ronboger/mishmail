@@ -69,4 +69,28 @@ final class GmailWebLinksTests: XCTestCase {
         XCTAssertNil(MishMailDeepLinks.threadURL(
             accountEmail: nil, token: "bad token"))
     }
+
+    /// ⌘L copies an app-owned `mishmail://thread/…` URL (Notion-style), not
+    /// a gmail.com page. Account is required so the deep-link opener can
+    /// pick the right mailbox.
+    func testCopyLinkStringIsAccountQualifiedDeepLink() {
+        let s = MishMailDeepLinks.copyPasteboardString(
+            accountEmail: "ron+mail@example.com", gmailThreadId: "18Abc_def-1")
+        let url = s.flatMap(URL.init(string:))
+        XCTAssertEqual(url?.scheme, "mishmail")
+        XCTAssertEqual(url?.host, "thread")
+        XCTAssertEqual(
+            url.flatMap(MishMailDeepLinks.parseThreadURL),
+            .init(token: "18Abc_def-1",
+                  accountEmail: "ron+mail@example.com"))
+    }
+
+    func testCopyLinkStringRejectsInvalidIds() {
+        XCTAssertNil(MishMailDeepLinks.copyPasteboardString(
+            accountEmail: "not-an-email", gmailThreadId: "18abc"))
+        XCTAssertNil(MishMailDeepLinks.copyPasteboardString(
+            accountEmail: "a@b.com", gmailThreadId: "bad token"))
+        XCTAssertNil(MishMailDeepLinks.copyPasteboardString(
+            accountEmail: "a@b.com", gmailThreadId: ""))
+    }
 }

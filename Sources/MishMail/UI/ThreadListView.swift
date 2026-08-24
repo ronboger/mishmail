@@ -566,6 +566,8 @@ struct ThreadListView: View {
             }
         }
         Divider()
+        Button("Copy Link") { store.copyThreadLink(thread) }
+        Divider()
         Button("Trash", role: .destructive) { store.trash(thread) }
     }
 }

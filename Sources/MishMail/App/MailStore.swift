@@ -1142,6 +1142,21 @@ final class MailStore {
         NSWorkspace.shared.open(url)
     }
 
+    /// ⌘L / Copy link: put an app-owned `mishmail://thread/…` URL on the
+    /// clipboard (Notion-style). `handleOpenURL` already opens these.
+    func copyThreadLink(_ thread: MailThread) {
+        guard let string = MishMailDeepLinks.copyPasteboardString(
+            accountEmail: thread.accountId, gmailThreadId: thread.gmailThreadId)
+        else {
+            showNotice("Couldn't copy link")
+            return
+        }
+        let pasteboard = NSPasteboard.general
+        pasteboard.clearContents()
+        pasteboard.setString(string, forType: .string)
+        showNotice("Copied link")
+    }
+
     /// Gmail-style unsubscribe for a message that already has a parsed
     /// `List-Unsubscribe` action. Caller owns the confirmation dialog.
     func unsubscribe(from message: Message) {

@@ -12,6 +12,11 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Added
+- **⌘L copies a link to the focused conversation**, Notion-style. The
+  clipboard gets a `mishmail://thread/…` URL that opens the conversation
+  in MishMail. Also on the conversation ⋯ menu, the thread-list context
+  menu, and in the command palette. Yields to typing in search, compose,
+  and Settings; works while reading the conversation.
 - **Unsubscribe from mailing lists, Gmail-style.** Messages that advertise
   RFC 2369 `List-Unsubscribe` show an Unsubscribe control next to From and in
   the ⋯ menu. After confirm, MishMail prefers RFC 8058 one-click HTTPS POST,

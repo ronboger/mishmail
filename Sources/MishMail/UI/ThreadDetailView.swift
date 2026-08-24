@@ -424,6 +424,12 @@ struct ThreadDetailView: View {
                     } label: {
                         Label("Save as Markdown…", systemImage: "square.and.arrow.down")
                     }
+                    Button {
+                        store.copyThreadLink(thread)
+                    } label: {
+                        Label("Copy link", systemImage: "link")
+                    }
+                    .help("Copy link (⌘L)")
                     Divider()
                     Button {
                         store.setRead(thread, read: thread.isUnread)

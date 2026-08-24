@@ -106,6 +106,9 @@ struct CommandPalette: View {
                     }
                 },
                 Command(id: "act.label", title: "Label Conversation…", icon: "tag") { $0.openLabelPicker() },
+                Command(id: "act.copyLink", title: "Copy Link to Conversation", icon: "link") {
+                    $0.copyThreadLink(thread)
+                },
             ])
         }
         let builtins: [MailboxView] = [.inbox, .promotions, .social, .starred, .snoozed,
