@@ -120,6 +120,10 @@ struct ThreadDetailView: View {
     @State private var seenContentRevision: ThreadContentRevision?
     /// Arm neighbor HTML pre-render once per open after the body first settles.
     @State private var neighborPrerenderArmed = false
+    /// Message whose Gmail-style Unsubscribe confirm is showing.
+    @State private var unsubscribeTarget: Message?
+    /// Message ids we already tried to backfill List-Unsubscribe for.
+    @State private var unsubscribeRefreshAttempted: Set<String> = []
 
     /// `.id(thread.id)` remounts this view for every conversation, so `@State`
     /// starts empty and `.task` cannot run until *after* the first body
@@ -246,7 +250,11 @@ struct ThreadDetailView: View {
                                         loadImagesForThread: $loadRemoteImagesForThread,
                                         onReply: { onReply(message) },
                                         onNeedBody: { loadBodyIfNeeded(id: message.id) },
-                                        onBodySettled: { armNeighborPrerenderIfNeeded() })
+                                        onBodySettled: { armNeighborPrerenderIfNeeded() },
+                                        onUnsubscribe: { unsubscribeTarget = message },
+                                        onNeedUnsubscribeHeaders: {
+                                            Task { await refreshUnsubscribeHeaders(message) }
+                                        })
                                 .padding(.horizontal)
                                 .id(message.id)
                                 .background { messageHeightReader(id: message.id) }
@@ -470,6 +478,14 @@ struct ThreadDetailView: View {
                             }
                         }
                     }
+                    if let msg = ListUnsubscribe.preferredMessage(in: messages) {
+                        Button {
+                            unsubscribeTarget = msg
+                        } label: {
+                            Label("Unsubscribe",
+                                  systemImage: "envelope.badge.minus")
+                        }
+                    }
                     Button {
                         store.openInGmail(thread)
                     } label: {
@@ -495,6 +511,8 @@ struct ThreadDetailView: View {
                 loadRemoteImagesForThread = false
                 expandedMessageIds = []
                 neighborPrerenderArmed = false
+                unsubscribeTarget = nil
+                unsubscribeRefreshAttempted = []
                 // Cancel any in-flight neighbor paints from the previous open.
                 HTMLBodyNeighborPrerender.cancel()
                 // Did `init` already seed from the mirror? When this is 1 the
@@ -604,6 +622,29 @@ struct ThreadDetailView: View {
                     scrollInlineComposeTarget(proxy, releaseTopPin: false)
                 } else if lastPinnedTargetHeight == 0 {
                     lastPinnedTargetHeight = height
+                }
+            }
+            .alert(
+                unsubscribeTarget.map {
+                    ListUnsubscribe.confirmationTitle(fromHeader: $0.fromHeader)
+                } ?? "Unsubscribe?",
+                isPresented: Binding(
+                    get: { unsubscribeTarget != nil },
+                    set: { if !$0 { unsubscribeTarget = nil } })
+            ) {
+                Button("Unsubscribe") {
+                    if let msg = unsubscribeTarget {
+                        store.unsubscribe(from: msg)
+                    }
+                    unsubscribeTarget = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    unsubscribeTarget = nil
+                }
+            } message: {
+                if let msg = unsubscribeTarget,
+                   let action = ListUnsubscribe.offer(from: msg)?.preferredAction {
+                    Text(ListUnsubscribe.confirmationDetail(for: action))
                 }
             }
         }
@@ -825,6 +866,7 @@ struct ThreadDetailView: View {
             withAnimation(PMMotion.interactive) {
                 messages = merged
             }
+            backfillUnsubscribeHeaders()
             if wasEmpty {
                 bodyLoadAttempted.formUnion(
                     ThreadRefresh.initialBodyLoadSeedIds(in: merged))
@@ -1057,6 +1099,29 @@ struct ThreadDetailView: View {
             recoverAttachmentsIfNeeded(id: id)
             resolveCIDImagesIfNeeded(id: id)
         }
+        backfillUnsubscribeHeaders()
+    }
+
+    /// Pre-v37 rows have nil List-Unsubscribe. Fill the newest few so the
+    /// Gmail-style control appears without a full resync.
+    private func backfillUnsubscribeHeaders() {
+        let stale = messages
+            .filter { $0.listUnsubscribe == nil }
+            .sorted { $0.date > $1.date }
+            .prefix(3)
+        for msg in stale {
+            Task { await refreshUnsubscribeHeaders(msg) }
+        }
+    }
+
+    private func refreshUnsubscribeHeaders(_ message: Message) async {
+        guard message.listUnsubscribe == nil else { return }
+        guard !unsubscribeRefreshAttempted.contains(message.id) else { return }
+        unsubscribeRefreshAttempted.insert(message.id)
+        guard let headers = await store.refreshUnsubscribeHeaders(message) else { return }
+        guard let idx = messages.firstIndex(where: { $0.id == message.id }) else { return }
+        messages[idx].listUnsubscribe = headers.0
+        messages[idx].listUnsubscribePost = headers.1
     }
 
     /// After the open body's first stable paint, warm prev/next newest-message
@@ -1520,6 +1585,10 @@ struct MessageCard: View {
     let onNeedBody: () -> Void
     /// Parent arms neighbor HTML pre-render after this card's body settles.
     let onBodySettled: () -> Void
+    /// Parent shows the Gmail-style unsubscribe confirm for this message.
+    let onUnsubscribe: () -> Void
+    /// Parent fills List-Unsubscribe on pre-v37 rows (nil).
+    let onNeedUnsubscribeHeaders: () -> Void
     // Full FROM/TO/CC rows (Notion Mail's "Show more"); compact by default.
     @State private var recipientsExpanded = false
     @State private var htmlHeight: CGFloat = 120
@@ -1598,7 +1667,9 @@ struct MessageCard: View {
          loadImagesForThread: Binding<Bool> = .constant(false),
          onReply: @escaping () -> Void,
          onNeedBody: @escaping () -> Void = {},
-         onBodySettled: @escaping () -> Void = {}) {
+         onBodySettled: @escaping () -> Void = {},
+         onUnsubscribe: @escaping () -> Void = {},
+         onNeedUnsubscribeHeaders: @escaping () -> Void = {}) {
         self.message = message
         self.isLast = isLast
         self.attachments = attachments
@@ -1611,6 +1682,8 @@ struct MessageCard: View {
         self.onReply = onReply
         self.onNeedBody = onNeedBody
         self.onBodySettled = onBodySettled
+        self.onUnsubscribe = onUnsubscribe
+        self.onNeedUnsubscribeHeaders = onNeedUnsubscribeHeaders
         let hasBody = !ThreadDetailView.needsBodyLoad(message)
         // CID-inlined HTML already embeds image bytes; prefer it over the
         // repository prep (which still has unresolved `cid:`).
@@ -2118,6 +2191,9 @@ struct MessageCard: View {
             } else if expanded {
                 onNeedBody()
             }
+            if message.listUnsubscribe == nil {
+                onNeedUnsubscribeHeaders()
+            }
         }
     }
 
@@ -2173,11 +2249,14 @@ struct MessageCard: View {
              verticalSpacing: 3) {
             GridRow {
                 recipientRole("FROM")
-                participantMenu(
-                    message.fromHeader,
-                    nameSize: 14,
-                    nameWeight: .semibold)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    participantMenu(
+                        message.fromHeader,
+                        nameSize: 14,
+                        nameWeight: .semibold)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    unsubscribeButton
+                }
             }
             GridRow {
                 recipientRole("TO")
@@ -2211,6 +2290,18 @@ struct MessageCard: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+    }
+
+    @ViewBuilder
+    private var unsubscribeButton: some View {
+        if ListUnsubscribe.offer(from: message) != nil {
+            Button("Unsubscribe", action: onUnsubscribe)
+                .buttonStyle(.plain)
+                .font(.system(size: 12 * fontScale))
+                .foregroundStyle(.secondary)
+                .fixedSize()
+                .help("Unsubscribe from this mailing list")
+        }
     }
 
     private func recipientRole(_ role: String) -> some View {
@@ -2251,8 +2342,11 @@ struct MessageCard: View {
                     .font(.system(size: 10 * fontScale, weight: .medium))
                     .foregroundStyle(.tertiary)
                     .gridColumnAlignment(.leading)
-                participantMenu(address)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                HStack(alignment: .firstTextBaseline, spacing: 8) {
+                    participantMenu(address)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if role == "FROM", index == 0 { unsubscribeButton }
+                }
             }
         }
     }

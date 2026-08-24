@@ -145,6 +145,13 @@ struct Message: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     /// (pre-v29 rows). Guards VIP auto-load of remote images against
     /// From-header spoofing.
     var senderAuth: Bool? = nil
+    /// RFC 2369 `List-Unsubscribe` (v37). nil = not yet recorded (pre-v37
+    /// rows); empty = parsed, no header. Drives the Gmail-style Unsubscribe
+    /// control in the reading pane.
+    var listUnsubscribe: String? = nil
+    /// RFC 8058 `List-Unsubscribe-Post` (v37). Same nil/empty rule as
+    /// `listUnsubscribe`. `"List-Unsubscribe=One-Click"` enables HTTPS POST.
+    var listUnsubscribePost: String? = nil
 }
 
 /// Off-row body storage (v24). Keeps fat HTML off the `message` row so header
@@ -1486,6 +1493,16 @@ final class AppDatabase: @unchecked Sendable {
             try db.execute(sql: """
                 CREATE INDEX llmUsage_on_createdAt ON llmUsage(createdAt)
                 """)
+        }
+
+        // v37: List-Unsubscribe headers for Gmail-style unsubscribe.
+        // NULL for pre-v37 rows (unknown — lazy metadata fetch fills them).
+        // Empty string means parsed and absent.
+        m.registerMigration("v37") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "listUnsubscribe", .text)
+                t.add(column: "listUnsubscribePost", .text)
+            }
         }
         return m
     }

@@ -780,6 +780,14 @@ actor SyncEngine {
                 // reported none (empty payload always looks attachment-free).
                 if let existing = try Message.fetchOne(db, key: msg.id) {
                     if !msg.hasAttachment { msg.hasAttachment = existing.hasAttachment }
+                    // A metadata payload that omitted headers must not wipe a
+                    // recorded List-Unsubscribe. Empty incoming + recorded
+                    // existing → keep. A real parse with no header stores "".
+                    if (msg.listUnsubscribe ?? "").isEmpty,
+                       let kept = existing.listUnsubscribe, !kept.isEmpty {
+                        msg.listUnsubscribe = existing.listUnsubscribe
+                        msg.listUnsubscribePost = existing.listUnsubscribePost
+                    }
                 }
                 msg.bodyText = ""
                 msg.bodyHTML = nil

@@ -184,6 +184,25 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertNil(MessageParser.parse(absent, accountId: "a@x.com").0.senderAuth)
     }
 
+    func testParseStoresListUnsubscribeHeaders() throws {
+        let both = try authMessage([
+            ("From", "News <news@example.com>"),
+            ("List-Unsubscribe",
+             "<mailto:unsub@news.example>, <https://news.example/u>"),
+            ("List-Unsubscribe-Post", "List-Unsubscribe=One-Click"),
+        ])
+        let parsed = MessageParser.parse(both, accountId: "a@x.com").0
+        XCTAssertEqual(
+            parsed.listUnsubscribe,
+            "<mailto:unsub@news.example>, <https://news.example/u>")
+        XCTAssertEqual(parsed.listUnsubscribePost, "List-Unsubscribe=One-Click")
+
+        let absent = try authMessage([("From", "jane@x.com")])
+        let noHeader = MessageParser.parse(absent, accountId: "a@x.com").0
+        XCTAssertEqual(noHeader.listUnsubscribe, "")
+        XCTAssertEqual(noHeader.listUnsubscribePost, "")
+    }
+
     /// Google echoes attacker-controlled bytes verbatim in the header value
     /// (envelope sender, free-text comments), so a bare substring match on
     /// "dmarc=pass" would pass on a forged local part or comment text. The

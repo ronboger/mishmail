@@ -12,6 +12,12 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Added
+- **Unsubscribe from mailing lists, Gmail-style.** Messages that advertise
+  RFC 2369 `List-Unsubscribe` show an Unsubscribe control next to From and in
+  the ⋯ menu. After confirm, MishMail prefers RFC 8058 one-click HTTPS POST,
+  then a mailto: send through Gmail, then the sender's unsubscribe page in
+  the browser. Existing mail without stored headers is filled on open via a
+  metadata fetch. Demo newsletters include sample headers.
 - **⌘A selects every thread currently loaded in the list** — Gmail-style
   select-all for the existing checkbox multi-select, so the bulk-action bar
   (archive/trash/star/etc.) can act on the whole list at once instead of

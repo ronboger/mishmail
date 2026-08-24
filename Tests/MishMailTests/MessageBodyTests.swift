@@ -85,6 +85,52 @@ final class MessageBodyTests: XCTestCase {
         }
     }
 
+    /// Metadata with empty List-Unsubscribe must not wipe a recorded header
+    /// (payload-less / header-omitted get). A real parse that includes the
+    /// header still updates.
+    func testHeadersOnlyUpsertPreservesListUnsubscribe() throws {
+        let q = try makeDB()
+        var full = Message(
+            id: "\(account):m1", accountId: account, gmailId: "m1",
+            threadId: "\(account):t1", fromHeader: "News <n@x.com>", toHeader: "me",
+            ccHeader: "", subject: "weekly", date: Date(), snippet: "hi",
+            bodyText: "keep", bodyHTML: nil,
+            messageIdHeader: "<1>", referencesHeader: "",
+            labelIds: "INBOX", isUnread: false, hasAttachment: false)
+        full.listUnsubscribe = "<https://news.example/u>"
+        full.listUnsubscribePost = "List-Unsubscribe=One-Click"
+        try q.write { db in
+            _ = try SyncEngine.upsertPending(db, items: [
+                .init(message: full, attachments: [], headersOnly: false)
+            ])
+        }
+        var omitted = full
+        omitted.listUnsubscribe = ""
+        omitted.listUnsubscribePost = ""
+        omitted.snippet = "later"
+        try q.write { db in
+            _ = try SyncEngine.upsertPending(db, items: [
+                .init(message: omitted, attachments: [], headersOnly: true)
+            ])
+        }
+        let kept = try q.read { try Message.fetchOne($0, key: "\(account):m1") }
+        XCTAssertEqual(kept?.listUnsubscribe, "<https://news.example/u>")
+        XCTAssertEqual(kept?.listUnsubscribePost, "List-Unsubscribe=One-Click")
+        XCTAssertEqual(kept?.snippet, "later")
+
+        var updated = full
+        updated.listUnsubscribe = "<mailto:unsub@news.example>"
+        updated.listUnsubscribePost = ""
+        try q.write { db in
+            _ = try SyncEngine.upsertPending(db, items: [
+                .init(message: updated, attachments: [], headersOnly: true)
+            ])
+        }
+        let after = try q.read { try Message.fetchOne($0, key: "\(account):m1") }
+        XCTAssertEqual(after?.listUnsubscribe, "<mailto:unsub@news.example>")
+        XCTAssertEqual(after?.listUnsubscribePost, "")
+    }
+
     func testDeleteMessageCascadesBody() throws {
         let q = try makeDB()
         try q.write { db in

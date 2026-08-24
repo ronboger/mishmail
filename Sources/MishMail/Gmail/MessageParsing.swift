@@ -42,7 +42,11 @@ enum MessageParser {
             labelIds: labels.joined(separator: " "),
             isUnread: labels.contains("UNREAD"),
             hasAttachment: !attachments.isEmpty,
-            senderAuth: senderAuthenticated(g)
+            senderAuth: senderAuthenticated(g),
+            // Empty string (not nil) so a parse is distinguishable from a
+            // pre-v37 row that has never recorded these headers.
+            listUnsubscribe: header("List-Unsubscribe"),
+            listUnsubscribePost: header("List-Unsubscribe-Post")
         )
         return (message, attachments)
     }

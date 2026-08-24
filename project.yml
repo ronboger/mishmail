@@ -147,6 +147,7 @@ targets:
       - Sources/MishMail/Support/HTMLEntities.swift
       - Sources/MishMail/Support/KeyBindings.swift
       - Sources/MishMail/Support/LabelSearch.swift
+      - Sources/MishMail/Support/ListUnsubscribe.swift
       - Sources/MishMail/Support/LLMChat.swift
       - Sources/MishMail/Support/LLMOAuth.swift
       - Sources/MishMail/Support/LLMPricing.swift

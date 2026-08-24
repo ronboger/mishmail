@@ -1142,6 +1142,82 @@ final class MailStore {
         NSWorkspace.shared.open(url)
     }
 
+    /// Gmail-style unsubscribe for a message that already has a parsed
+    /// `List-Unsubscribe` action. Caller owns the confirmation dialog.
+    func unsubscribe(from message: Message) {
+        Task { await performUnsubscribe(message) }
+    }
+
+    /// Fill `listUnsubscribe` on pre-v37 rows (nil) via a metadata get.
+    /// Returns the two header values so the reading pane can patch in place
+    /// without replacing the hydrated body.
+    func refreshUnsubscribeHeaders(_ message: Message) async -> (String, String)? {
+        if let header = message.listUnsubscribe {
+            return (header, message.listUnsubscribePost ?? "")
+        }
+        if let stored = try? await db.read({ try Message.fetchOne($0, key: message.id) }),
+           let header = stored.listUnsubscribe {
+            return (header, stored.listUnsubscribePost ?? "")
+        }
+        guard !demoMode else {
+            return ("", "")
+        }
+        do {
+            let g = try await client(for: message.accountId)
+                .getMessage(id: message.gmailId, format: "metadata")
+            let (parsed, _) = MessageParser.parse(g, accountId: message.accountId)
+            try await db.write { db in
+                _ = try SyncEngine.upsertPending(
+                    db,
+                    items: [.init(message: parsed, attachments: [], headersOnly: true)])
+            }
+            return (parsed.listUnsubscribe ?? "", parsed.listUnsubscribePost ?? "")
+        } catch {
+            return nil
+        }
+    }
+
+    private func performUnsubscribe(_ message: Message) async {
+        guard let action = ListUnsubscribe.offer(from: message)?.preferredAction else {
+            showNotice("This message has no unsubscribe link")
+            return
+        }
+        if demoMode {
+            showNotice("Unsubscribed (demo)")
+            return
+        }
+        switch action {
+        case .oneClick(let url):
+            do {
+                try await ListUnsubscribe.performOneClick(url)
+                showNotice("Unsubscribed from this mailing list")
+            } catch {
+                lastError = "Unsubscribe failed: \(error.localizedDescription)"
+            }
+        case .mailto(let mailto):
+            do {
+                try await sendUnsubscribeMail(mailto, accountId: message.accountId)
+                showNotice("Unsubscribe email sent")
+            } catch {
+                lastError = "Unsubscribe failed: \(error.localizedDescription)"
+            }
+        case .open(let url):
+            NSWorkspace.shared.open(url)
+            showNotice("Opened the sender's unsubscribe page")
+        }
+    }
+
+    /// One-off RFC 2369 mailto: — not threaded onto the original conversation.
+    private func sendUnsubscribeMail(_ mailto: ListUnsubscribe.Mailto,
+                                     accountId: String) async throws {
+        let raw = MIMEBuilder.build(
+            from: fromHeader(accountId: accountId, fromEmail: accountId),
+            to: mailto.address,
+            subject: mailto.subject,
+            bodyText: mailto.body)
+        try await client(for: accountId).send(raw: raw, threadId: nil)
+    }
+
     /// Block the thread's newest-from address (denorm `fromEmail`). No-op for
     /// empty / own addresses. Used by the reading-pane ⋯ menu.
     func blockThreadSender(_ thread: MailThread) {

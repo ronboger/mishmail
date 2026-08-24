@@ -19,6 +19,8 @@ final class DatabaseMigrationTests: XCTestCase {
             XCTAssertTrue(messageCols.contains("bccHeader"), "v4 must add bccHeader")
             XCTAssertTrue(messageCols.contains("hasAttachment"))
             XCTAssertTrue(messageCols.contains("senderAuth"), "v29 must add senderAuth")
+            XCTAssertTrue(messageCols.contains("listUnsubscribe"), "v37 must add listUnsubscribe")
+            XCTAssertTrue(messageCols.contains("listUnsubscribePost"), "v37 must add listUnsubscribePost")
             let accountCols = try db.columns(in: "account").map(\.name)
             XCTAssertTrue(accountCols.contains("senderName"), "v3 must add senderName")
             let threadCols = try db.columns(in: "thread").map(\.name)
@@ -125,6 +127,9 @@ final class DatabaseMigrationTests: XCTestCase {
         // (NULL = unjudged, VIP auto-load keeps prior behavior), and the new
         // column round-trips through the model.
         XCTAssertNil(message?.senderAuth)
+        // v37: pre-existing rows have not recorded List-Unsubscribe (NULL).
+        XCTAssertNil(message?.listUnsubscribe)
+        XCTAssertNil(message?.listUnsubscribePost)
         if var message {
             message.senderAuth = false
             try q.write { db in try message.save(db) }

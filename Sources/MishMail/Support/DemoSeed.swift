@@ -282,7 +282,9 @@ enum DemoSeed {
         var out: [Message] = []
         func add(_ t: String, from: String, subject: String, snippet: String,
                  body: String, hoursAgo: Double, unread: Bool, starred: Bool = false,
-                 attachment: Bool = false, extraLabels: [String] = []) {
+                 attachment: Bool = false, extraLabels: [String] = [],
+                 listUnsubscribe: String? = nil,
+                 listUnsubscribePost: String? = nil) {
             var labels = ["INBOX"] + extraLabels
             if starred { labels.append("STARRED") }
             if unread { labels.append("UNREAD") }
@@ -303,7 +305,9 @@ enum DemoSeed {
                 referencesHeader: "",
                 labelIds: labels.joined(separator: " "),
                 isUnread: unread,
-                hasAttachment: attachment))
+                hasAttachment: attachment,
+                listUnsubscribe: listUnsubscribe,
+                listUnsubscribePost: listUnsubscribePost))
         }
 
         add("t1", from: "Dana Okafor <dana@brightloop.io>",
@@ -334,7 +338,9 @@ enum DemoSeed {
             subject: "The State of Local AI",
             snippet: "Running models on-device has quietly gone from a curiosity to a genuine product strategy. This week: what changed…",
             body: "Running models on-device has quietly gone from a curiosity to a genuine product strategy.\n\nThis week we look at what changed and who benefits.",
-            hoursAgo: 11, unread: true)
+            hoursAgo: 11, unread: true,
+            listUnsubscribe: "<https://stratechery.example/unsubscribe/demo>, <mailto:unsub@stratechery.example>",
+            listUnsubscribePost: "List-Unsubscribe=One-Click")
 
         add("t6", from: "Calendar <calendar@example.com>",
             subject: "Reminder: Board sync at 2pm",
@@ -352,7 +358,8 @@ enum DemoSeed {
             subject: "Hacker Newsletter #742",
             snippet: "The best of the week from Hacker News, hand-curated. Featured: a deep dive on SQLite internals.",
             body: "The best of the week from Hacker News.\n\nFeatured this week: a deep dive on SQLite internals.",
-            hoursAgo: 30, unread: false)
+            hoursAgo: 30, unread: false,
+            listUnsubscribe: "<mailto:leave-hn@hackernewsletter.example?subject=unsubscribe>")
 
         add("t9", from: "Apple <no_reply@email.apple.com>",
             subject: "Your invoice from the App Store",
