@@ -201,4 +201,83 @@ final class AttachmentRecoveryTests: XCTestCase {
             "Case for Day 1 - 818068-PDF-ENG.pdf"
         ])
     }
+
+    func testParseImageAndPDFKeepsBothParts() throws {
+        // Surgical-plan shape: letterhead HTML + image.png + PDF. Search-open
+        // recovery used to feed these to ForEach with nil ids, so the pane
+        // drew two copies of one file and hid the other.
+        let b64 = Data("hi".utf8).base64URLEncoded()
+        let json = """
+        {
+          "id": "plan", "threadId": "t-plan",
+          "internalDate": "1752404400000",
+          "payload": {
+            "mimeType": "multipart/mixed",
+            "headers": [{"name": "Subject", "value": "Surgical Plan Images"}],
+            "parts": [
+              {"mimeType": "text/html", "body": {"data": "\(b64)"}},
+              {"mimeType": "image/png", "filename": "image.png",
+               "body": {"attachmentId": "att-img", "size": 35840}},
+              {"mimeType": "application/pdf",
+               "filename": "Ron Boger Single Piece LeFort and BSSO.pdf",
+               "body": {"attachmentId": "att-pdf", "size": 599040}}
+            ]
+          }
+        }
+        """
+        let g = try JSONDecoder().decode(GMessage.self, from: Data(json.utf8))
+        let (_, attachments) = MessageParser.parse(g, accountId: account)
+        XCTAssertEqual(attachments.map(\.filename), [
+            "image.png",
+            "Ron Boger Single Piece LeFort and BSSO.pdf"
+        ])
+        XCTAssertEqual(attachments.map(\.id), [nil, nil],
+                       "parse rows are not inserted yet")
+        let identities = attachments.map(\.displayIdentity)
+        XCTAssertEqual(Set(identities).count, 2,
+                       "ForEach must not collapse image + PDF onto one chip")
+    }
+
+    func testDisplayIdentityUsesRowIdWhenPresent() {
+        let parsed = AttachmentRow(
+            id: nil, messageId: "m", gmailAttachmentId: "a1",
+            filename: "image.png", mimeType: "image/png", size: 10)
+        let stored = AttachmentRow(
+            id: 7, messageId: "m", gmailAttachmentId: "a1",
+            filename: "image.png", mimeType: "image/png", size: 10)
+        XCTAssertTrue(parsed.displayIdentity.hasPrefix("part:"))
+        XCTAssertEqual(stored.displayIdentity, "row:7")
+        XCTAssertNotEqual(parsed.displayIdentity, stored.displayIdentity)
+    }
+
+    func testParsedIdentifiableIdsCollideButDisplayIdentitiesDoNot() {
+        let image = AttachmentRow(
+            id: nil, messageId: "m", gmailAttachmentId: "img",
+            filename: "image.png", mimeType: "image/png", size: 35_840)
+        let pdf = AttachmentRow(
+            id: nil, messageId: "m", gmailAttachmentId: "pdf",
+            filename: "plan.pdf", mimeType: "application/pdf", size: 599_040)
+        XCTAssertEqual(image.id, pdf.id)
+        XCTAssertNotEqual(image.displayIdentity, pdf.displayIdentity)
+    }
+
+    func testReadingPaneRowsPreferPersistedWhenPresent() {
+        let parsed = [
+            AttachmentRow(id: nil, messageId: "m", gmailAttachmentId: "img",
+                          filename: "image.png", mimeType: "image/png", size: 1),
+            AttachmentRow(id: nil, messageId: "m", gmailAttachmentId: "pdf",
+                          filename: "plan.pdf", mimeType: "application/pdf", size: 2)
+        ]
+        let persisted = [
+            AttachmentRow(id: 1, messageId: "m", gmailAttachmentId: "img",
+                          filename: "image.png", mimeType: "image/png", size: 1),
+            AttachmentRow(id: 2, messageId: "m", gmailAttachmentId: "pdf",
+                          filename: "plan.pdf", mimeType: "application/pdf", size: 2)
+        ]
+        let rows = AttachmentRow.readingPaneRows(parsed: parsed, persisted: persisted)
+        XCTAssertEqual(rows.map(\.id), [1, 2])
+        XCTAssertEqual(
+            AttachmentRow.readingPaneRows(parsed: parsed, persisted: []).map(\.gmailAttachmentId),
+            ["img", "pdf"])
+    }
 }

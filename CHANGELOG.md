@@ -52,6 +52,12 @@ minor versions may still change behavior.
   open menu shows a checkmark on the current identity.
 
 ### Fixed
+- **Opening a thread from search could show the same image twice and hide
+  the PDF.** A full re-fetch (CID inline / attachment recovery) fed the
+  chip list parsed rows whose SQLite `id` was still nil. SwiftUI ForEach
+  then treated every chip as one view. Chips now key off a stable part
+  identity, and the re-fetch returns the inserted rows. Clicking a file
+  chip Quick Looks it; Esc closes that preview instead of the thread.
 - **Changing From after the first autosave still sent through the original
   mailbox.** New compose pins the Gmail API to the selected identity, not
   the autosave draft's account. The old pin made a From change (e.g. to

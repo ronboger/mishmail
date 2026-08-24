@@ -6402,14 +6402,23 @@ struct ComposeRequest: Identifiable {
             let g = try await client(for: message.accountId)
                 .getMessage(id: message.gmailId, format: "full")
             let (parsed, atts) = MessageParser.parse(g, accountId: message.accountId)
-            let derivedThread: MailThread? = try await db.write { db in
-                _ = try SyncEngine.upsertPending(
-                    db,
-                    items: [.init(message: parsed, attachments: atts, headersOnly: false)])
-                try SyncEngine.deriveThreads(
-                    db, for: [parsed.threadId], accountId: message.accountId)
-                return try MailThread.fetchOne(db, key: parsed.threadId)
-            }
+            let pair: (thread: MailThread?, attachments: [AttachmentRow]) =
+                try await db.write { db in
+                    _ = try SyncEngine.upsertPending(
+                        db,
+                        items: [.init(message: parsed, attachments: atts, headersOnly: false)])
+                    try SyncEngine.deriveThreads(
+                        db, for: [parsed.threadId], accountId: message.accountId)
+                    let persisted = try AttachmentRow
+                        .filter(Column("messageId") == parsed.id)
+                        .order(Column("id"))
+                        .fetchAll(db)
+                    let thread = try MailThread.fetchOne(db, key: parsed.threadId)
+                    return (thread, AttachmentRow.readingPaneRows(
+                        parsed: atts, persisted: persisted))
+                }
+            let derivedThread = pair.thread
+            let attsWithIds = pair.attachments
             applyThreadContentChange(.threads([parsed.threadId]))
             // List paperclip reads `threads[].hasAttachment`. Content-revision
             // wakes the reading pane only — patch the flag here so recovery
@@ -6425,8 +6434,9 @@ struct ComposeRequest: Identifiable {
             }
             await threadDetailRepository.drop(threadId: parsed.threadId)
             // `parsed` still carries body fields from MessageParser (upsert only
-            // clears on-row columns in the DB copy).
-            return (parsed, atts)
+            // clears on-row columns in the DB copy). Attachment rows come from
+            // SQLite so ForEach can tell a PDF from an image (parse ids are nil).
+            return (parsed, attsWithIds)
         } catch {
             return nil
         }

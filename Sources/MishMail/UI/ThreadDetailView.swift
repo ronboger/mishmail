@@ -1161,7 +1161,7 @@ struct ThreadDetailView: View {
             HStack(spacing: 10) {
                 if !threadAttachments.isEmpty {
                     Menu {
-                        ForEach(threadAttachments, id: \.attachment.id) { pair in
+                        ForEach(threadAttachments, id: \.attachment.displayIdentity) { pair in
                             Button {
                                 store.quickLookAttachment(pair.attachment, message: pair.message)
                             } label: {
@@ -2044,7 +2044,7 @@ struct MessageCard: View {
                 }
                 if !calendarAtts.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
-                        ForEach(calendarAtts) { att in
+                        ForEach(calendarAtts, id: \.displayIdentity) { att in
                             CalendarInviteCard(message: message, attachment: att,
                                                fontScale: fontScale)
                         }
@@ -2069,10 +2069,10 @@ struct MessageCard: View {
                                 .buttonStyle(.plain)
                                 .help("Save every attachment to a folder you choose")
                             }
-                            ForEach(fileAtts) { att in
+                            ForEach(fileAtts, id: \.displayIdentity) { att in
                                 HStack(spacing: 8) {
                                     Button {
-                                        store.openAttachment(att, message: message)
+                                        store.quickLookAttachment(att, message: message)
                                     } label: {
                                         HStack(spacing: 8) {
                                             Image(systemName: iconName(for: att.mimeType))
@@ -2088,7 +2088,7 @@ struct MessageCard: View {
                                         }
                                     }
                                     .buttonStyle(.plain)
-                                    .help("Open (uses a private temporary file)")
+                                    .help("Quick Look — Esc closes the preview")
 
                                     Button {
                                         store.quickLookAttachment(att, message: message)

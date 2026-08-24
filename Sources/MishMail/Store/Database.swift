@@ -194,6 +194,25 @@ struct AttachmentRow: Codable, Identifiable, Hashable, FetchableRecord, Persista
     static func isInlineCalendarId(_ id: String) -> Bool {
         id == inlineCalendarAttachmentId
     }
+
+    /// SwiftUI ForEach identity that stays unique when `id` is still nil.
+    ///
+    /// Parsed rows are not inserted yet, so every `id` is nil. ForEach on
+    /// Identifiable then draws every chip as a copy of one file (two
+    /// `image.png` chips, no PDF). Persist ids win; the part key is the
+    /// fallback for a just-parsed list.
+    var displayIdentity: String {
+        if let id { return "row:\(id)" }
+        return "part:\(messageId)|\(gmailAttachmentId)|\(filename)|\(size)|\(contentId ?? "")"
+    }
+
+    /// After a full re-parse + upsert, prefer the SQLite rows (they have
+    /// unique `id`s). Fall back to the parse list when the write did not
+    /// land, so the reading pane still has chips.
+    static func readingPaneRows(parsed: [AttachmentRow],
+                                persisted: [AttachmentRow]) -> [AttachmentRow] {
+        persisted.isEmpty ? parsed : persisted
+    }
 }
 
 struct SavedView: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {

@@ -15,6 +15,9 @@ final class QuickLookController: NSObject, QLPreviewPanelDataSource {
         panel.makeKeyAndOrderFront(nil)
         panel.reloadData()
         panel.currentPreviewItemIndex = min(index, urls.count - 1)
+        // Local mailbox monitors see the main window as event.window unless
+        // the panel is actually key. Force it so Esc/space land on Quick Look.
+        panel.makeKey()
     }
 
     nonisolated func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
