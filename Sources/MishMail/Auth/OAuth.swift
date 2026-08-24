@@ -242,10 +242,14 @@ final class OAuthService {
     /// reject every other port. Binding fails if that port is already in use.
     /// `expectedPath`, when set, requires that exact callback path (OpenRouter
     /// uses `/callback/<uuid>` instead of OAuth `state`). An empty
-    /// `expectedState` skips the state check for vendors that do not send one.
+    /// `expectedState` skips the state check for vendors that do not send one
+    /// and must be paired with a unique `expectedPath`.
     func startLoopbackListener(expectedState: String,
                                preferredPort: UInt16? = nil,
                                expectedPath: String? = nil) throws -> (UInt16, Task<String, Error>) {
+        precondition(
+            !expectedState.isEmpty || !(expectedPath ?? "").isEmpty,
+            "empty expectedState requires a unique expectedPath")
         // Bind to 127.0.0.1 only (RFC 8252 §8.3): the redirect catcher must
         // not be reachable from other machines on the network.
         let params = NWParameters.tcp
