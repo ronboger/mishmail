@@ -1098,8 +1098,8 @@ private extension ContentView {
                 store.checkAllVisibleThreads()
                 return nil
             }
-            // ⌘L copies a `mishmail://thread/…` link for the focused
-            // conversation (Notion-style copy page). Yield to typing in
+            // ⌘L copies a gmail.com conversation URL for the focused
+            // thread (Notion-style copy page). Yield to typing in
             // search/compose/Settings (`isEditing`), but fire while reading
             // the conversation — unlike ⌘A, ⌘L is not a text-system chord.
             if mods == .command,

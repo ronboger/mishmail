@@ -427,9 +427,9 @@ struct ThreadDetailView: View {
                     Button {
                         store.copyThreadLink(thread)
                     } label: {
-                        Label("Copy link", systemImage: "link")
+                        Label("Copy Gmail link", systemImage: "link")
                     }
-                    .help("Copy link (⌘L)")
+                    .help("Copy Gmail link (⌘L)")
                     Divider()
                     Button {
                         store.setRead(thread, read: thread.isUnread)

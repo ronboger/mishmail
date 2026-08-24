@@ -27,7 +27,7 @@ struct ShortcutsHelpView: View {
             ("x", "Select / deselect (multi-select)"),
             ("Shift-click checkbox", "Select a range"),
             ("⌘A", "Select all (multi-select)"),
-            ("⌘L", "Copy link to conversation"),
+            ("⌘L", "Copy Gmail link to conversation"),
             ("/", "Search"),
             ("Esc", "Drop field focus → clear checks → exit focus → clear search → close pane"),
             ("⌘K", "Command palette (Insert link while composing)"),

@@ -70,27 +70,31 @@ final class GmailWebLinksTests: XCTestCase {
             accountEmail: nil, token: "bad token"))
     }
 
-    /// ⌘L copies an app-owned `mishmail://thread/…` URL (Notion-style), not
-    /// a gmail.com page. Account is required so the deep-link opener can
-    /// pick the right mailbox.
-    func testCopyLinkStringIsAccountQualifiedDeepLink() {
-        let s = MishMailDeepLinks.copyPasteboardString(
+    /// ⌘L copies a gmail.com conversation URL (opens in the browser), not
+    /// a `mishmail://` deep link. Plus-addresses must stay encoded so
+    /// `authuser` selects the right mailbox.
+    func testCopyLinkStringIsGmailWebURL() {
+        let s = GmailWebLinks.copyPasteboardString(
             accountEmail: "ron+mail@example.com", gmailThreadId: "18Abc_def-1")
         let url = s.flatMap(URL.init(string:))
-        XCTAssertEqual(url?.scheme, "mishmail")
-        XCTAssertEqual(url?.host, "thread")
-        XCTAssertEqual(
-            url.flatMap(MishMailDeepLinks.parseThreadURL),
-            .init(token: "18Abc_def-1",
-                  accountEmail: "ron+mail@example.com"))
+        XCTAssertEqual(url?.scheme, "https")
+        XCTAssertEqual(url?.host, "mail.google.com")
+        let text = s ?? ""
+        XCTAssertTrue(text.contains("#all/18Abc_def-1"))
+        XCTAssertTrue(text.contains("ron%2Bmail") || text.contains("ron%2bmail"))
+        XCTAssertFalse(text.contains("mishmail"))
+        XCTAssertFalse(text.contains("authuser=ron+mail"),
+                       "bare + would decode as space in query strings")
     }
 
     func testCopyLinkStringRejectsInvalidIds() {
-        XCTAssertNil(MishMailDeepLinks.copyPasteboardString(
+        XCTAssertNil(GmailWebLinks.copyPasteboardString(
             accountEmail: "not-an-email", gmailThreadId: "18abc"))
-        XCTAssertNil(MishMailDeepLinks.copyPasteboardString(
+        XCTAssertNil(GmailWebLinks.copyPasteboardString(
             accountEmail: "a@b.com", gmailThreadId: "bad token"))
-        XCTAssertNil(MishMailDeepLinks.copyPasteboardString(
+        XCTAssertNil(GmailWebLinks.copyPasteboardString(
             accountEmail: "a@b.com", gmailThreadId: ""))
+        XCTAssertNil(GmailWebLinks.copyPasteboardString(
+            accountEmail: "", gmailThreadId: "18abc"))
     }
 }

@@ -1142,10 +1142,10 @@ final class MailStore {
         NSWorkspace.shared.open(url)
     }
 
-    /// ⌘L / Copy link: put an app-owned `mishmail://thread/…` URL on the
-    /// clipboard (Notion-style). `handleOpenURL` already opens these.
+    /// ⌘L / Copy link: put a gmail.com conversation URL on the clipboard
+    /// (Notion-style). Paste it in a browser to open the thread on the web.
     func copyThreadLink(_ thread: MailThread) {
-        guard let string = MishMailDeepLinks.copyPasteboardString(
+        guard let string = GmailWebLinks.copyPasteboardString(
             accountEmail: thread.accountId, gmailThreadId: thread.gmailThreadId)
         else {
             showNotice("Couldn't copy link")

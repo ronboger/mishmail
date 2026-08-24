@@ -24,6 +24,18 @@ enum GmailWebLinks {
         let e = encodeAuthUser(accountEmail)
         return URL(string: "https://mail.google.com/mail/?authuser=\(e)#settings/filters")
     }
+
+    /// Pasteboard string for ⌘L / Copy link. A gmail.com conversation URL
+    /// that opens in the browser, with `authuser` so a multi-account inbox
+    /// lands in the right mailbox. Nil when the ids cannot form a URL.
+    static func copyPasteboardString(accountEmail: String,
+                                     gmailThreadId: String) -> String? {
+        let email = accountEmail.trimmingCharacters(in: .whitespacesAndNewlines)
+        let id = gmailThreadId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !email.isEmpty, email.contains("@"), !id.isEmpty,
+              !id.contains(where: { $0.isWhitespace }) else { return nil }
+        return threadURL(accountEmail: email, gmailThreadId: id)?.absoluteString
+    }
 }
 
 /// App-owned links used by local tools (including Codex) to open a Gmail
@@ -63,15 +75,6 @@ enum MishMailDeepLinks {
             .value
         if let account, !isValidAccount(account) { return nil }
         return ThreadTarget(token: parts[0], accountEmail: account)
-    }
-
-    /// Pasteboard string for ⌘L / Copy link. Always includes the account so a
-    /// multi-account inbox opens the right mailbox. Nil when the ids would
-    /// not round-trip through `parseThreadURL`.
-    static func copyPasteboardString(accountEmail: String,
-                                     gmailThreadId: String) -> String? {
-        threadURL(accountEmail: accountEmail, token: gmailThreadId)?
-            .absoluteString
     }
 
     private static func isValidToken(_ token: String) -> Bool {
