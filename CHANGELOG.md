@@ -21,6 +21,9 @@ minor versions may still change behavior.
   preset must be acknowledged in Settings before mail is sent there.
 
 ### Added
+- **Sign in with OpenRouter.** Settings → AI → Subscriptions can open a
+  browser login and mint an API key for this app, the same PKCE flow Pi
+  uses. You can still paste a key. The minted key stays in the Keychain.
 - **Ask Mish shows its work.** Tool calls stream as live status rows you can
   expand (query, result, and clickable threads). Empty chats offer three
   starting prompts. After an answer, follow-up chips continue the turn. The

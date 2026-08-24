@@ -9,6 +9,13 @@ final class LLMChatTests: XCTestCase {
         let data = try JSONEncoder().encode(config)
         let back = try JSONDecoder().decode(LLMProviderConfig.self, from: data)
         XCTAssertEqual(back, config)
+
+        let openRouter = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "OpenRouter",
+            baseURL: "https://openrouter.ai/api/v1", defaultModel: "openai/gpt-4o",
+            authMode: .oauth(.openRouter))
+        let orData = try JSONEncoder().encode(openRouter)
+        XCTAssertEqual(try JSONDecoder().decode(LLMProviderConfig.self, from: orData), openRouter)
     }
 
     func testEndpointValidationAllowsLoopbackHTTP() throws {

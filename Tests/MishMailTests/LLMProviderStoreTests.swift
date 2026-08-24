@@ -105,6 +105,20 @@ final class LLMProviderStoreTests: XCTestCase {
             connected.id)
         XCTAssertNil(LLMProviderStore.subscriptionProvider(for: .grok, in: [connected]))
         XCTAssertNil(LLMProviderStore.subscriptionProvider(for: .gemini, in: [connected]))
+
+        let openRouterPreset = LLMProviderStore.subscriptionPreset(for: .openRouter)
+        XCTAssertEqual(openRouterPreset.kind, .openAICompatible)
+        XCTAssertEqual(openRouterPreset.baseURL, "https://openrouter.ai/api/v1")
+        XCTAssertEqual(openRouterPreset.label, "OpenRouter")
+        XCTAssertTrue(openRouterPreset.fallbackModels.contains("openai/gpt-4o"))
+        let openRouter = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "OpenRouter",
+            baseURL: "https://openrouter.ai/api/v1", defaultModel: "openai/gpt-4o",
+            authMode: .oauth(.openRouter))
+        XCTAssertEqual(
+            LLMProviderStore.subscriptionProvider(for: .openRouter, in: [openRouter])?.id,
+            openRouter.id)
+        XCTAssertNil(LLMProviderStore.subscriptionProvider(for: .openRouter, in: [connected]))
     }
 
     func testProviderRowWithoutModelsFieldStillDecodes() throws {

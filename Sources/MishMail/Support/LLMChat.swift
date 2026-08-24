@@ -14,6 +14,7 @@ enum LLMOAuthVendor: String, Codable, Sendable {
     case chatGPT
     case grok
     case gemini
+    case openRouter
 }
 
 enum LLMAuthMode: Codable, Equatable, Sendable {

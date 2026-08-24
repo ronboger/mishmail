@@ -140,4 +140,29 @@ final class OAuthLoopbackTests: XCTestCase {
         XCTAssertEqual(code, expectedCode)
         conn.cancel()
     }
+
+    /// OpenRouter PKCE has no OAuth `state`. The unique callback path is the
+    /// CSRF stand-in; a hit on a different path must not finish the task.
+    func testAcceptsStatelessCallbackOnExpectedPath() async throws {
+        let expectedCode = "or-code-\(UUID().uuidString)"
+        let path = "/callback/\(UUID().uuidString)"
+        let service = OAuthService()
+        let (port, codeTask) = try service.startLoopbackListener(
+            expectedState: "", expectedPath: path)
+        try await Task.sleep(for: .milliseconds(50))
+
+        let wrong = URL(string:
+            "http://127.0.0.1:\(port)/callback/wrong?code=stolen")!
+        _ = try? await URLSession.shared.data(from: wrong)
+        try await Task.sleep(for: .milliseconds(30))
+        XCTAssertFalse(codeTask.isCancelled)
+
+        let url = URL(string:
+            "http://127.0.0.1:\(port)\(path)?code=\(expectedCode)")!
+        let (_, resp) = try await URLSession.shared.data(from: url)
+        XCTAssertEqual((resp as? HTTPURLResponse)?.statusCode, 200)
+
+        let code = try await codeTask.value
+        XCTAssertEqual(code, expectedCode)
+    }
 }

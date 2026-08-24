@@ -1655,13 +1655,13 @@ struct AISettings: View {
                 }
 
                 Section {
-                    ForEach([LLMOAuthVendor.claude, .chatGPT, .grok], id: \.self) { vendor in
+                    ForEach([LLMOAuthVendor.claude, .chatGPT, .grok, .openRouter], id: \.self) { vendor in
                         subscriptionRow(vendor)
                     }
                 } header: {
                     Text("Subscriptions")
                 } footer: {
-                    Text("One click signs you in with your existing subscription and pulls the model list. No API key is needed. Sign-in uses the vendor's public CLI client, so the token can do more than chat. Prefer an API key when you have one.")
+                    Text("One click signs you in with your existing account and pulls the model list. No API key paste is needed. Claude, ChatGPT, and Grok use a public CLI client, so the token can do more than chat. OpenRouter creates a key for this app. Prefer a pasted key when you have one.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -2095,7 +2095,7 @@ private struct ProviderEditSheet: View {
                baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
                defaultModel: "gemini-3.7-flash", keyHint: "aistudio.google.com"),
         Preset(name: "OpenRouter", kind: .openAICompatible, baseURL: "https://openrouter.ai/api/v1",
-               defaultModel: "", keyHint: "openrouter.ai/keys"),
+               defaultModel: "openai/gpt-4o", keyHint: "openrouter.ai/keys"),
         Preset(name: "Grok (xAI)", kind: .openAICompatible, baseURL: "https://api.x.ai/v1",
                defaultModel: "grok-4", keyHint: "console.x.ai"),
         Preset(name: "Groq", kind: .openAICompatible, baseURL: "https://api.groq.com/openai/v1",
@@ -2125,6 +2125,7 @@ private struct ProviderEditSheet: View {
         case "Anthropic": return .claude
         case "OpenAI": return .chatGPT
         case "Grok (xAI)": return .grok
+        case "OpenRouter": return .openRouter
         default: return nil
         }
     }
@@ -2135,6 +2136,7 @@ private struct ProviderEditSheet: View {
         case .chatGPT: return "ChatGPT"
         case .grok: return "Grok"
         case .gemini: return "Google Gemini"
+        case .openRouter: return "OpenRouter"
         }
     }
 
@@ -2178,8 +2180,10 @@ private struct ProviderEditSheet: View {
                 label = preset.name
                 modelID = preset.defaultModel
                 useOAuth = oauthVendor != nil && provider == nil
-                if preset.name == "Google Gemini" {
-                    models = LLMProviderStore.subscriptionPreset(for: .gemini).fallbackModels
+                if let vendor = oauthVendor {
+                    let fallback = LLMProviderStore.subscriptionPreset(for: vendor).fallbackModels
+                    models = fallback
+                    if modelID.isEmpty, let first = fallback.first { modelID = first }
                 }
             }
             if let vendor = oauthVendor {
@@ -2189,7 +2193,9 @@ private struct ProviderEditSheet: View {
                 }
                 .pickerStyle(.segmented)
                 Text(useOAuth
-                     ? "Save opens your browser to sign in. No key is needed. Usage counts against your subscription, so no dollar cost is shown."
+                     ? (vendor == .openRouter
+                        ? "Save opens your browser to sign in. OpenRouter creates an API key for this app. Usage uses your OpenRouter credits."
+                        : "Save opens your browser to sign in. No key is needed. Usage counts against your subscription, so no dollar cost is shown.")
                      : "Paste an API key from \(Self.presets[presetIndex].keyHint). The key stays in your Keychain.")
                     .font(.caption).foregroundStyle(.secondary)
             } else {
@@ -2243,8 +2249,8 @@ private struct ProviderEditSheet: View {
         .frame(width: 420)
         .onAppear {
             guard let existing = provider else {
-                if Self.presets[presetIndex].name == "Google Gemini" {
-                    models = LLMProviderStore.subscriptionPreset(for: .gemini).fallbackModels
+                if let vendor = oauthVendor {
+                    models = LLMProviderStore.subscriptionPreset(for: vendor).fallbackModels
                 }
                 return
             }

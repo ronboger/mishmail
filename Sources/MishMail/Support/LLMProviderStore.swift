@@ -109,6 +109,17 @@ enum LLMProviderStore {
                     "gemini-1.5-pro",
                     "gemini-1.5-flash",
                 ])
+        case .openRouter:
+            return SubscriptionPreset(
+                label: "OpenRouter", kind: .openAICompatible,
+                baseURL: "https://openrouter.ai/api/v1",
+                fallbackModels: [
+                    "openai/gpt-4o",
+                    "anthropic/claude-sonnet-4",
+                    "google/gemini-2.5-flash",
+                    "x-ai/grok-4",
+                    "deepseek/deepseek-chat",
+                ])
         }
     }
 

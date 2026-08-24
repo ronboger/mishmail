@@ -1,10 +1,10 @@
 import CryptoKit
 import Foundation
 
-/// Subscription OAuth for LLM providers (sign in with Claude / ChatGPT / Grok),
-/// the way the Aside browser does it. Pure: URL/form/JSON math only.
-/// The loopback listener, device-code polling, and browser hand-off live in
-/// LLMOAuthFlow.
+/// Subscription OAuth for LLM providers (sign in with Claude / ChatGPT /
+/// Grok / OpenRouter), the way the Aside browser and Pi do it. Pure:
+/// URL/form/JSON math only. The loopback listener, device-code polling,
+/// and browser hand-off live in LLMOAuthFlow.
 enum LLMOAuth {
     struct Constants {
         let authorizeURL: String
@@ -26,9 +26,10 @@ enum LLMOAuth {
         let tokenBodyIsJSON: Bool
     }
 
-    /// Publicly known Claude Code / Codex CLI / Grok CLI flow constants,
-    /// verified against the Aside daemon at implementation time. If a vendor
-    /// changes them, sign-in fails softly and the UI falls back to API-key mode.
+    /// Publicly known Claude Code / Codex CLI / Grok CLI / OpenRouter PKCE
+    /// flow constants, verified against Aside and Pi at implementation time.
+    /// If a vendor changes them, sign-in fails softly and the UI falls back
+    /// to API-key mode.
     static func constants(for vendor: LLMOAuthVendor) -> Constants {
         switch vendor {
         case .claude:
@@ -90,14 +91,42 @@ enum LLMOAuth {
                 fixedPort: 8085,
                 extraAuthorizeParams: [("access_type", "offline"), ("prompt", "consent")],
                 tokenBodyIsJSON: false)
+        case .openRouter:
+            // OpenRouter PKCE (same flow Pi uses): no client id, any
+            // localhost port, and the code exchanges for a user-owned API
+            // key rather than an expiring access/refresh pair.
+            return Constants(
+                authorizeURL: "https://openrouter.ai/auth",
+                tokenURL: "https://openrouter.ai/api/v1/auth/keys",
+                clientID: "",
+                scopes: "",
+                redirectPath: "/callback",
+                redirectHost: "localhost",
+                fixedPort: nil,
+                extraAuthorizeParams: [],
+                tokenBodyIsJSON: true)
         }
+    }
+
+    /// OpenRouter does not use OAuth `state`; CSRF is the unguessable
+    /// callback path plus PKCE. Other loopback vendors still require state.
+    static func usesOAuthState(_ vendor: LLMOAuthVendor) -> Bool {
+        vendor != .openRouter && vendor != .grok
+    }
+
+    /// OpenRouter mints a user-controlled API key that does not expire
+    /// and has no refresh token. A 401 means the key was revoked.
+    static func mintsPermanentAPIKey(_ vendor: LLMOAuthVendor) -> Bool {
+        vendor == .openRouter
     }
 
     /// Builds the redirect URI for a vendor from the port the local listener
     /// actually bound. Pure string math so the flow stays testable.
-    static func redirectURI(vendor: LLMOAuthVendor, port: UInt16) -> String {
+    /// `path` overrides the vendor default so OpenRouter can use a unique
+    /// `/callback/<uuid>` (Pi's CSRF stand-in for missing OAuth state).
+    static func redirectURI(vendor: LLMOAuthVendor, port: UInt16, path: String? = nil) -> String {
         let constants = constants(for: vendor)
-        return "http://\(constants.redirectHost):\(port)\(constants.redirectPath)"
+        return "http://\(constants.redirectHost):\(port)\(path ?? constants.redirectPath)"
     }
 
     struct PKCE {
@@ -131,6 +160,16 @@ enum LLMOAuth {
                              state: String, challenge: String) -> URL {
         let constants = constants(for: vendor)
         var components = URLComponents(string: constants.authorizeURL)!
+        if vendor == .openRouter {
+            // OpenRouter's /auth is not a standard OAuth authorize endpoint.
+            // It takes callback_url + PKCE and has no client_id or state.
+            components.queryItems = [
+                URLQueryItem(name: "callback_url", value: redirectURI),
+                URLQueryItem(name: "code_challenge", value: challenge),
+                URLQueryItem(name: "code_challenge_method", value: "S256"),
+            ]
+            return components.url!
+        }
         components.queryItems = [
             URLQueryItem(name: "response_type", value: "code"),
             URLQueryItem(name: "client_id", value: constants.clientID),
@@ -145,8 +184,16 @@ enum LLMOAuth {
 
     /// Authorization-code exchange body. Anthropic requires the state echoed
     /// back inside a JSON body; OpenAI takes a urlencoded form without state.
+    /// OpenRouter takes JSON `{code, code_verifier, code_challenge_method}`.
     static func tokenRequestForm(vendor: LLMOAuthVendor, code: String, state: String,
                                  verifier: String, redirectURI: String) -> [String: String] {
+        if vendor == .openRouter {
+            return [
+                "code": code,
+                "code_verifier": verifier,
+                "code_challenge_method": "S256",
+            ]
+        }
         var form = [
             "grant_type": "authorization_code",
             "code": code,
@@ -170,15 +217,30 @@ enum LLMOAuth {
 
     static func parseTokens(from data: Data, now: Date) throws -> LLMOAuthTokens {
         struct Response: Decodable {
-            let access_token: String
+            let access_token: String?
             let refresh_token: String?
             let expires_in: Int?
+            /// OpenRouter's PKCE exchange returns `{ "key": "sk-or-..." }`.
+            let key: String?
         }
         let response = try JSONDecoder().decode(Response.self, from: data)
+        guard let access = response.access_token ?? response.key, !access.isEmpty else {
+            throw DecodingError.dataCorrupted(.init(
+                codingPath: [], debugDescription: "token response has no access_token or key"))
+        }
+        let expiresAt: Date
+        if let expiresIn = response.expires_in {
+            expiresAt = now.addingTimeInterval(TimeInterval(expiresIn))
+        } else if response.access_token == nil {
+            // A minted API key has no expiry unless the vendor sent one.
+            expiresAt = Date.distantFuture
+        } else {
+            expiresAt = now.addingTimeInterval(3600)
+        }
         return LLMOAuthTokens(
-            accessToken: response.access_token,
+            accessToken: access,
             refreshToken: response.refresh_token,
-            expiresAt: now.addingTimeInterval(TimeInterval(response.expires_in ?? 3600)))
+            expiresAt: expiresAt)
     }
 
     // MARK: - Grok device-code flow (RFC 8628)

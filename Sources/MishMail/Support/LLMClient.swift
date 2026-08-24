@@ -240,6 +240,9 @@ actor LLMClient {
     }
 
     private func performRefresh(vendor: LLMOAuthVendor, providerID: UUID) async throws {
+        // OpenRouter mints a permanent API key. Refresh is a no-op so a 401
+        // retries once and then surfaces the HTTP error (revoked key).
+        if LLMOAuth.mintsPermanentAPIKey(vendor) { return }
         let key = LLMProviderStore.oauthKeychainKey(for: providerID)
         // No refresh token means refresh is impossible; the user must sign in again.
         let tokens = try requiredTokens(providerID: providerID)
@@ -344,8 +347,9 @@ enum LLMOAuthFlowError: LocalizedError {
     }
 }
 
-/// Sign in with Claude / ChatGPT: PKCE + loopback redirect, reusing the
-/// same listener the Google OAuth flow uses. Stores tokens in the Keychain.
+/// Sign in with Claude / ChatGPT / OpenRouter: PKCE + loopback redirect,
+/// reusing the same listener the Google OAuth flow uses. Stores tokens
+/// (or OpenRouter's minted API key) in the Keychain.
 @MainActor
 enum LLMOAuthFlow {
     /// `onUserCode` fires for device-code vendors (Grok) so the UI can show
@@ -360,25 +364,31 @@ enum LLMOAuthFlow {
                                               onUserCode: onUserCode)
         }
         let constants = LLMOAuth.constants(for: vendor)
-        guard !constants.clientID.isEmpty else {
+        // OpenRouter PKCE has no client id. Other vendors still need one.
+        if !LLMOAuth.mintsPermanentAPIKey(vendor), constants.clientID.isEmpty {
             throw LLMOAuthFlowError.signInUnavailable(
                 vendor: Self.name(of: vendor),
                 reason: "Client ID is not configured. Add your OAuth credentials or use an API key in Settings → AI.")
         }
         let pkce = LLMOAuth.PKCE.generate()
-        let state = UUID().uuidString
+        // OpenRouter does not echo OAuth state. A unique callback path is
+        // the CSRF stand-in, matching Pi's OpenRouter login.
+        let callbackPath = LLMOAuth.mintsPermanentAPIKey(vendor)
+            ? "\(constants.redirectPath)/\(UUID().uuidString)" : nil
+        let state = LLMOAuth.usesOAuthState(vendor) ? UUID().uuidString : ""
         let service = OAuthService()
         // Vendors that registered one fixed redirect URI need that exact port.
         let port: UInt16
         let codeTask: Task<String, Error>
         do {
             (port, codeTask) = try service.startLoopbackListener(
-                expectedState: state, preferredPort: constants.fixedPort)
+                expectedState: state, preferredPort: constants.fixedPort,
+                expectedPath: callbackPath)
         } catch {
             throw LLMOAuthFlowError.signInUnavailable(
                 vendor: Self.name(of: vendor), reason: error.localizedDescription)
         }
-        let redirectURI = LLMOAuth.redirectURI(vendor: vendor, port: port)
+        let redirectURI = LLMOAuth.redirectURI(vendor: vendor, port: port, path: callbackPath)
         let url = LLMOAuth.authorizeURL(vendor: vendor, redirectURI: redirectURI,
                                         state: state, challenge: pkce.challenge)
         NSWorkspace.shared.open(url)
@@ -453,6 +463,7 @@ enum LLMOAuthFlow {
         case .chatGPT: return "ChatGPT"
         case .grok: return "Grok"
         case .gemini: return "Google Gemini"
+        case .openRouter: return "OpenRouter"
         }
     }
 }

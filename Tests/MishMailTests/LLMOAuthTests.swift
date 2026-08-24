@@ -91,6 +91,68 @@ final class LLMOAuthTests: XCTestCase {
         XCTAssertNil(openAI["state"])
     }
 
+    func testOpenRouterPKCEAuthorizeAndKeyExchange() throws {
+        let constants = LLMOAuth.constants(for: .openRouter)
+        XCTAssertEqual(constants.authorizeURL, "https://openrouter.ai/auth")
+        XCTAssertEqual(constants.tokenURL, "https://openrouter.ai/api/v1/auth/keys")
+        XCTAssertTrue(constants.clientID.isEmpty)
+        XCTAssertNil(constants.fixedPort)
+        XCTAssertTrue(constants.tokenBodyIsJSON)
+        XCTAssertTrue(LLMOAuth.mintsPermanentAPIKey(.openRouter))
+        XCTAssertFalse(LLMOAuth.usesOAuthState(.openRouter))
+        XCTAssertFalse(LLMOAuth.mintsPermanentAPIKey(.claude))
+        XCTAssertTrue(LLMOAuth.usesOAuthState(.claude))
+
+        let path = "/callback/\(UUID().uuidString)"
+        let redirect = LLMOAuth.redirectURI(vendor: .openRouter, port: 51423, path: path)
+        XCTAssertEqual(redirect, "http://localhost:51423\(path)")
+
+        let url = LLMOAuth.authorizeURL(
+            vendor: .openRouter, redirectURI: redirect, state: "unused", challenge: "ch4")
+        let components = URLComponents(url: url, resolvingAgainstBaseURL: false)!
+        let query = Dictionary(uniqueKeysWithValues: components.queryItems!.map { ($0.name, $0.value ?? "") })
+        XCTAssertEqual(query["callback_url"], redirect)
+        XCTAssertEqual(query["code_challenge"], "ch4")
+        XCTAssertEqual(query["code_challenge_method"], "S256")
+        XCTAssertNil(query["client_id"])
+        XCTAssertNil(query["redirect_uri"])
+        XCTAssertNil(query["state"])
+        XCTAssertNil(query["response_type"])
+
+        let form = LLMOAuth.tokenRequestForm(
+            vendor: .openRouter, code: "c0", state: "st", verifier: "v1",
+            redirectURI: redirect)
+        XCTAssertEqual(form["code"], "c0")
+        XCTAssertEqual(form["code_verifier"], "v1")
+        XCTAssertEqual(form["code_challenge_method"], "S256")
+        XCTAssertNil(form["grant_type"])
+        XCTAssertNil(form["client_id"])
+        XCTAssertNil(form["redirect_uri"])
+        XCTAssertNil(form["state"])
+    }
+
+    func testParseTokensAcceptsOpenRouterKey() throws {
+        let json = #"{"key":"sk-or-v1-abc"}"#
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let tokens = try LLMOAuth.parseTokens(from: Data(json.utf8), now: now)
+        XCTAssertEqual(tokens.accessToken, "sk-or-v1-abc")
+        XCTAssertNil(tokens.refreshToken)
+        XCTAssertFalse(tokens.isExpired(now: now))
+        XCTAssertFalse(tokens.isExpired(now: now.addingTimeInterval(365 * 24 * 60 * 60)))
+    }
+
+    func testParseTokensPrefersAccessTokenOverKey() throws {
+        let json = #"{"access_token":"at","key":"sk-or-v1-abc","expires_in":60}"#
+        let now = Date(timeIntervalSince1970: 1_000_000)
+        let tokens = try LLMOAuth.parseTokens(from: Data(json.utf8), now: now)
+        XCTAssertEqual(tokens.accessToken, "at")
+        XCTAssertTrue(tokens.isExpired(now: now.addingTimeInterval(60)))
+    }
+
+    func testParseTokensRejectsEmptyBody() {
+        XCTAssertThrowsError(try LLMOAuth.parseTokens(from: Data(#"{}"#.utf8), now: Date()))
+    }
+
     func testGeminiOAuthConstantsAndForms() {
         let gemini = LLMOAuth.constants(for: .gemini)
         XCTAssertEqual(gemini.authorizeURL, "https://accounts.google.com/o/oauth2/v2/auth")

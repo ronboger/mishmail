@@ -240,8 +240,12 @@ final class OAuthService {
     /// `preferredPort` binds one exact port instead of an ephemeral one. Some
     /// vendors (the Codex CLI client) register a single fixed redirect URI and
     /// reject every other port. Binding fails if that port is already in use.
+    /// `expectedPath`, when set, requires that exact callback path (OpenRouter
+    /// uses `/callback/<uuid>` instead of OAuth `state`). An empty
+    /// `expectedState` skips the state check for vendors that do not send one.
     func startLoopbackListener(expectedState: String,
-                               preferredPort: UInt16? = nil) throws -> (UInt16, Task<String, Error>) {
+                               preferredPort: UInt16? = nil,
+                               expectedPath: String? = nil) throws -> (UInt16, Task<String, Error>) {
         // Bind to 127.0.0.1 only (RFC 8252 §8.3): the redirect catcher must
         // not be reachable from other machines on the network.
         let params = NWParameters.tcp
@@ -279,7 +283,7 @@ final class OAuthService {
                           let firstLine = request.split(separator: "\r\n").first,
                           let pathPart = firstLine.split(separator: " ").dropFirst().first,
                           let comps = URLComponents(string: String(pathPart)),
-                          Self.isOAuthCallbackPath(comps.path),
+                          Self.callbackPathMatches(comps.path, expectedPath: expectedPath),
                           let items = comps.queryItems,
                           items.contains(where: { $0.name == "code" || $0.name == "error" }) else {
                         conn.cancel()
@@ -288,7 +292,7 @@ final class OAuthService {
                     let code = items.first { $0.name == "code" }?.value
                     let state = items.first { $0.name == "state" }?.value
                     let errorParam = items.first { $0.name == "error" }?.value
-                    let stateOK = state == expectedState
+                    let stateOK = expectedState.isEmpty || state == expectedState
                     // Reply with a page either way so the browser (or a probe)
                     // gets a clean HTTP close. Only a matching state can finish
                     // the stream — forged error=access_denied must not abort
@@ -353,6 +357,13 @@ final class OAuthService {
     static func isOAuthCallbackPath(_ path: String) -> Bool {
         path == "/oauth2/callback" || path == "/oauth2callback" || path == "/callback"
             || path == "/auth/callback" || path == "/" || path.isEmpty
+    }
+
+    /// Exact `expectedPath` when the vendor uses a unique callback (OpenRouter).
+    /// Otherwise the known Gmail / LLM redirect paths.
+    static func callbackPathMatches(_ path: String, expectedPath: String?) -> Bool {
+        if let expectedPath { return path == expectedPath }
+        return isOAuthCallbackPath(path)
     }
 
     /// Reads a connection until the HTTP request line's CRLF arrives, then

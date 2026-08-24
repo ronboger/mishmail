@@ -62,6 +62,11 @@ final class OAuthConfigTests: XCTestCase {
         XCTAssertTrue(OAuthService.isOAuthCallbackPath("/auth/callback"))
         XCTAssertEqual(LLMOAuth.constants(for: .claude).redirectPath, "/callback")
         XCTAssertEqual(LLMOAuth.constants(for: .chatGPT).redirectPath, "/auth/callback")
+        let unique = "/callback/\(UUID().uuidString)"
+        XCTAssertTrue(OAuthService.callbackPathMatches(unique, expectedPath: unique))
+        XCTAssertFalse(OAuthService.callbackPathMatches("/callback/other", expectedPath: unique))
+        XCTAssertFalse(OAuthService.callbackPathMatches(unique, expectedPath: nil))
+        XCTAssertTrue(OAuthService.callbackPathMatches("/callback", expectedPath: nil))
     }
 
     func testCallbackPathRejectsUnrelatedProbes() {
