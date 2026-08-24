@@ -214,10 +214,13 @@ struct ContentView: View {
             // only — never opens the conversation.
             if intent == .quiet { return }
             if intent == .browse {
-                // Hidden-pane browsing is highlight-only. Any visible preview,
-                // including the first keyboard selection in compact mode,
-                // coalesces repeats and opens the final row.
-                if !effectivePaneHidden {
+                // Hidden-pane browsing is highlight-only. Ask Mish is too:
+                // opening in compact width replaces the thread list, so ↓
+                // would jump to the next email instead of letting the user
+                // keep scrolling. Enter / click still open.
+                if DetailOpenPolicy.browseOpensDetail(
+                    paneHidden: effectivePaneHidden,
+                    askMishVisible: askMishPanelWidth > 0) {
                     if DetailOpenPolicy.opensImmediately(
                         openedThreadId: store.openedThreadId,
                         listedIds: store.threads.lazy.map(\.id)) {
@@ -1331,7 +1334,8 @@ private extension ContentView {
             }
             // Arrow keys: ↑/↓ browse the list without opening the pane
             // (Enter or a click opens the selected thread); ←/→ hide/show
-            // the sidebar.
+            // the sidebar. Ask Mish owns ↑/↓ for scrolling while it is on
+            // screen — the mailbox key would otherwise open the next email.
             switch event.keyCode {
             case 123:  // left — collapse the sidebar
                 withAnimation { sidebarHidden = true }
@@ -1343,6 +1347,9 @@ private extension ContentView {
                 browseKeyIsRepeat = event.isARepeat
                 if event.modifierFlags.contains(.shift) {
                     store.extendSelection(1)
+                } else if askMishVisible(in: event.window),
+                          scrollPane(in: event.window, up: false, page: false) {
+                    return nil
                 } else {
                     store.moveSelection(1, intent: .browse)
                 }
@@ -1351,6 +1358,9 @@ private extension ContentView {
                 browseKeyIsRepeat = event.isARepeat
                 if event.modifierFlags.contains(.shift) {
                     store.extendSelection(-1)
+                } else if askMishVisible(in: event.window),
+                          scrollPane(in: event.window, up: true, page: false) {
+                    return nil
                 } else {
                     store.moveSelection(-1, intent: .browse)
                 }
@@ -1452,17 +1462,40 @@ private extension ContentView {
     /// Space / Shift+Space. Returns false when there is nothing to scroll
     /// (short conversation, or already at the edge).
     private func pageReadingPane(in window: NSWindow?, up: Bool) -> Bool {
+        scrollPane(in: window, up: up, page: true)
+    }
+
+    /// Ask Mish is actually on screen (wide enough host + toggled on).
+    /// Live from the event window so the key monitor does not stale-capture
+    /// the last GeometryReader width.
+    private func askMishVisible(in window: NSWindow?) -> Bool {
+        AskMishLayout.showsPanel(
+            hostWidth: window?.contentView?.bounds.width ?? 0,
+            enabled: store.showAskMish)
+    }
+
+    /// Scroll the rightmost non-list pane (Ask Mish when it is up, else the
+    /// conversation). `page` is Space; otherwise one arrow-key line.
+    private func scrollPane(in window: NSWindow?, up: Bool, page: Bool) -> Bool {
         guard let scrollView = Self.readingPaneScrollView(in: window) else {
             return false
         }
         let clip = scrollView.contentView
-        guard let target = ReadingPaneSpaceScroll.pageTarget(
-            current: clip.bounds.origin.y,
-            viewportHeight: clip.bounds.height,
-            contentHeight: Double(scrollView.documentView?.frame.height ?? 0),
-            up: up) else { return false }
+        let contentHeight = Double(scrollView.documentView?.frame.height ?? 0)
+        let target = page
+            ? ReadingPaneSpaceScroll.pageTarget(
+                current: clip.bounds.origin.y,
+                viewportHeight: clip.bounds.height,
+                contentHeight: contentHeight,
+                up: up)
+            : ReadingPaneSpaceScroll.lineTarget(
+                current: clip.bounds.origin.y,
+                viewportHeight: clip.bounds.height,
+                contentHeight: contentHeight,
+                up: up)
+        guard let target else { return false }
         NSAnimationContext.runAnimationGroup { context in
-            context.duration = 0.18
+            context.duration = page ? 0.18 : 0.08
             context.allowsImplicitAnimation = true
             clip.animator().setBoundsOrigin(
                 NSPoint(x: clip.bounds.origin.x, y: target))

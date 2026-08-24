@@ -217,6 +217,16 @@ enum DetailOpenPolicy {
         guard let openedThreadId else { return false }
         return !listedIds.contains(openedThreadId)
     }
+
+    /// Keyboard browse hydrates the conversation only when a preview is
+    /// actually on screen. Hidden-pane browsing is highlight-only. Ask Mish
+    /// is the same: ↓/↑ (and j/k) must not open the next email, because a
+    /// compact window then replaces the thread list — and the user is
+    /// picking a thread to ask about, or scrolling the chat, not reading.
+    /// Enter and click still open.
+    static func browseOpensDetail(paneHidden: Bool, askMishVisible: Bool) -> Bool {
+        !paneHidden && !askMishVisible
+    }
 }
 
 /// In-memory list effect of an optimistic thread mutation.

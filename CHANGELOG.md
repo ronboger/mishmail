@@ -60,6 +60,9 @@ minor versions may still change behavior.
   open menu shows a checkmark on the current identity.
 
 ### Fixed
+- **↓ in Ask Mish no longer opens the next email.** Arrow keys first scroll
+  the chat (or the conversation beside it). If there is nothing to scroll,
+  they only move the list highlight. Enter still opens the thread.
 - **Opening a thread from search could show the same image twice and hide
   the PDF.** A full re-fetch (CID inline / attachment recovery) fed the
   chip list parsed rows whose SQLite `id` was still nil. SwiftUI ForEach

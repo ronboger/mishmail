@@ -184,6 +184,26 @@ final class SelectionAdvanceTests: XCTestCase {
         XCTAssertLessThanOrEqual(settle, 100_000_000)
     }
 
+    func testBrowseOpensWhenPaneIsVisibleAndAskMishIsClosed() {
+        XCTAssertTrue(DetailOpenPolicy.browseOpensDetail(
+            paneHidden: false, askMishVisible: false))
+    }
+
+    func testBrowseStaysHighlightOnlyWhenPaneIsHidden() {
+        XCTAssertFalse(DetailOpenPolicy.browseOpensDetail(
+            paneHidden: true, askMishVisible: false))
+    }
+
+    /// Regression: Ask Mish open + ↓ used to hydrate the next email (and in
+    /// compact width replace the thread list), so the user could not keep
+    /// scrolling / picking a thread to ask about.
+    func testBrowseDoesNotOpenWhileAskMishIsVisible() {
+        XCTAssertFalse(DetailOpenPolicy.browseOpensDetail(
+            paneHidden: false, askMishVisible: true))
+        XCTAssertFalse(DetailOpenPolicy.browseOpensDetail(
+            paneHidden: true, askMishVisible: true))
+    }
+
     // MARK: - Thread list navigation (focus only)
 
     func testMoveDownFromNilSelectsFirst() {
