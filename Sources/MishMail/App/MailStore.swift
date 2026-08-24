@@ -1155,8 +1155,12 @@ final class MailStore {
         if let header = message.listUnsubscribe {
             return (header, message.listUnsubscribePost ?? "")
         }
-        if let stored = try? await db.read({ try Message.fetchOne($0, key: message.id) }),
-           let header = stored.listUnsubscribe {
+        guard let stored = try? await db.read({
+            try Message.fetchOne($0, key: message.id)
+        }) else {
+            return nil
+        }
+        if let header = stored.listUnsubscribe {
             return (header, stored.listUnsubscribePost ?? "")
         }
         guard !demoMode else {
@@ -1167,9 +1171,13 @@ final class MailStore {
                 .getMessage(id: message.gmailId, format: "metadata")
             let (parsed, _) = MessageParser.parse(g, accountId: message.accountId)
             try await db.write { db in
+                // Do not resurrect a row deleted while we were fetching.
+                guard try Message.fetchOne(db, key: message.id) != nil else { return }
                 _ = try SyncEngine.upsertPending(
                     db,
                     items: [.init(message: parsed, attachments: [], headersOnly: true)])
+                try SyncEngine.deriveThreads(
+                    db, for: [parsed.threadId], accountId: message.accountId)
             }
             return (parsed.listUnsubscribe ?? "", parsed.listUnsubscribePost ?? "")
         } catch {
@@ -1196,7 +1204,7 @@ final class MailStore {
             }
         case .mailto(let mailto):
             do {
-                try await sendUnsubscribeMail(mailto, accountId: message.accountId)
+                try await sendUnsubscribeMail(mailto, message: message)
                 showNotice("Unsubscribe email sent")
             } catch {
                 lastError = "Unsubscribe failed: \(error.localizedDescription)"
@@ -1208,14 +1216,22 @@ final class MailStore {
     }
 
     /// One-off RFC 2369 mailto: — not threaded onto the original conversation.
+    /// From is the delivered-to identity when we can see it (send-as alias
+    /// that subscribed), else the mailbox primary.
     private func sendUnsubscribeMail(_ mailto: ListUnsubscribe.Mailto,
-                                     accountId: String) async throws {
+                                     message: Message) async throws {
+        let fromEmail = ListUnsubscribe.fromEmail(
+            toHeader: message.toHeader,
+            ccHeader: message.ccHeader,
+            bccHeader: message.bccHeader,
+            ownEmails: ownEmailAddresses,
+            accountId: message.accountId)
         let raw = MIMEBuilder.build(
-            from: fromHeader(accountId: accountId, fromEmail: accountId),
+            from: fromHeader(accountId: message.accountId, fromEmail: fromEmail),
             to: mailto.address,
             subject: mailto.subject,
             bodyText: mailto.body)
-        try await client(for: accountId).send(raw: raw, threadId: nil)
+        try await client(for: message.accountId).send(raw: raw, threadId: nil)
     }
 
     /// Block the thread's newest-from address (denorm `fromEmail`). No-op for

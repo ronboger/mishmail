@@ -131,6 +131,14 @@ final class ListUnsubscribeTests: XCTestCase {
         XCTAssertFalse(ListUnsubscribe.isSafeOneClickURL(
             URL(string: "https://127.0.0.1/u")!))
         XCTAssertFalse(ListUnsubscribe.isSafeOneClickURL(
+            URL(string: "https://10.0.0.5/u")!))
+        XCTAssertFalse(ListUnsubscribe.isSafeOneClickURL(
+            URL(string: "https://192.168.1.1/u")!))
+        XCTAssertFalse(ListUnsubscribe.isSafeOneClickURL(
+            URL(string: "https://172.16.0.1/u")!))
+        XCTAssertFalse(ListUnsubscribe.isSafeOneClickURL(
+            URL(string: "https://[::1]/u")!))
+        XCTAssertFalse(ListUnsubscribe.isSafeOneClickURL(
             URL(string: "https://user:pass@news.example/u")!))
         XCTAssertFalse(ListUnsubscribe.isSafeOneClickURL(
             URL(string: "javascript:alert(1)")!))
@@ -138,6 +146,39 @@ final class ListUnsubscribeTests: XCTestCase {
             URL(string: "https://news.example/u/abc")!))
         XCTAssertTrue(ListUnsubscribe.isSafeBrowserURL(
             URL(string: "http://news.example/u")!))
+        XCTAssertTrue(ListUnsubscribe.isSafeOneClickURL(
+            URL(string: "https://172.32.0.1/u")!))  // not RFC 1918
+    }
+
+    func testUnbracketedMailtoSubjectCommaDoesNotSplit() {
+        let uris = ListUnsubscribe.extractURIs(
+            "mailto:unsub@news.example?subject=foo,%20bar, https://news.example/leave")
+        XCTAssertEqual(uris.count, 2)
+        XCTAssertEqual(uris[0].scheme, "mailto")
+        XCTAssertTrue(uris[0].absoluteString.contains("foo"))
+        XCTAssertEqual(uris[1].host, "news.example")
+    }
+
+    func testMailtoDefaultsSubjectToUnsubscribe() {
+        let parsed = ListUnsubscribe.parseMailto("mailto:unsub@host.com")
+        XCTAssertEqual(parsed?.subject, "unsubscribe")
+    }
+
+    func testFromEmailPrefersDeliveredToAlias() {
+        let from = ListUnsubscribe.fromEmail(
+            toHeader: "Alias <alias@x.com>, Other <other@y.com>",
+            ccHeader: "Primary <primary@x.com>",
+            bccHeader: "",
+            ownEmails: ["primary@x.com", "alias@x.com"],
+            accountId: "primary@x.com")
+        XCTAssertEqual(from, "alias@x.com")
+        let fallback = ListUnsubscribe.fromEmail(
+            toHeader: "News <list@news.example>",
+            ccHeader: "",
+            bccHeader: "",
+            ownEmails: ["primary@x.com"],
+            accountId: "primary@x.com")
+        XCTAssertEqual(fallback, "primary@x.com")
     }
 
     // MARK: - One-click request

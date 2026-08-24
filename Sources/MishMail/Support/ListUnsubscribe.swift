@@ -196,10 +196,29 @@ enum ListUnsubscribe {
         return out
     }
 
+    /// Split only at commas that start a new URI, so a mailto subject that
+    /// contains a comma is not torn apart.
     private static func splitUnbracketed(_ header: String) -> [String] {
-        header.split(separator: ",", omittingEmptySubsequences: true)
-            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
-            .filter { !$0.isEmpty }
+        let pattern = #",\s*(?=mailto:|https?:)"#
+        guard let regex = try? NSRegularExpression(
+            pattern: pattern, options: [.caseInsensitive]) else {
+            return header.split(separator: ",", omittingEmptySubsequences: true)
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+        }
+        let ns = header as NSString
+        let full = NSRange(location: 0, length: ns.length)
+        let matches = regex.matches(in: header, range: full)
+        var starts = [0]
+        starts.append(contentsOf: matches.map { $0.range.location + $0.range.length })
+        var ends = matches.map(\.range.location)
+        ends.append(ns.length)
+        return zip(starts, ends).compactMap { start, end in
+            guard end > start else { return nil }
+            let s = ns.substring(with: NSRange(location: start, length: end - start))
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return s.isEmpty ? nil : s
+        }
     }
 
     static func parseMailto(_ raw: String) -> Mailto? {
@@ -240,9 +259,25 @@ enum ListUnsubscribe {
         subject = subject
             .replacingOccurrences(of: "\r", with: " ")
             .replacingOccurrences(of: "\n", with: " ")
+        if subject.isEmpty { subject = "unsubscribe" }
         body = body.replacingOccurrences(of: "\r\n", with: "\n")
             .replacingOccurrences(of: "\r", with: "\n")
         return Mailto(address: address, subject: subject, body: body)
+    }
+
+    /// From identity for the RFC 2369 mailto: send. Prefer a To/Cc/Bcc
+    /// address that is one of ours (the address that subscribed), else the
+    /// mailbox primary.
+    static func fromEmail(toHeader: String, ccHeader: String, bccHeader: String,
+                          ownEmails: Set<String>, accountId: String) -> String {
+        let own = Set(ownEmails.map { $0.lowercased() })
+        for header in [toHeader, ccHeader, bccHeader] {
+            for raw in MessageParser.splitAddresses(header) {
+                let email = MessageParser.emailAddress(raw).lowercased()
+                if own.contains(email) { return email }
+            }
+        }
+        return accountId
     }
 
     /// One-click POST (and HTTPS open) must not target loopback, link-local,
@@ -257,13 +292,44 @@ enum ListUnsubscribe {
         }
         guard url.user == nil, url.password == nil else { return false }
         guard let host = url.host, !host.isEmpty else { return false }
+        return !isDisallowedHost(host)
+    }
+
+    /// Loopback, link-local, and RFC 1918 / IPv6 ULA. URL.host is unbracketed.
+    static func isDisallowedHost(_ host: String) -> Bool {
         let h = host.lowercased()
-        if h == "localhost" || h == "127.0.0.1" || h == "::1" || h == "0.0.0.0" {
-            return false
+        if h == "localhost" || h.hasSuffix(".localhost") { return true }
+        if h == "0.0.0.0" || h == "::" || h == "::1" { return true }
+        if isDottedIPv4(h) { return isDisallowedIPv4(h) }
+        if h.contains(":") {
+            if h.hasPrefix("fe80:") || h.hasPrefix("fc") || h.hasPrefix("fd") {
+                return true
+            }
+            if let v4 = h.split(separator: ":").last.map(String.init),
+               isDottedIPv4(v4), isDisallowedIPv4(v4) {
+                return true
+            }
         }
-        if h.hasPrefix("127.") || h.hasPrefix("169.254.") { return false }
-        if h.hasPrefix("[") { return false }  // IPv6 literal
-        return true
+        return false
+    }
+
+    private static func isDottedIPv4(_ host: String) -> Bool {
+        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
+        guard parts.count == 4 else { return false }
+        return parts.allSatisfy { part in
+            guard let n = Int(part), (0...255).contains(n) else { return false }
+            return true
+        }
+    }
+
+    private static func isDisallowedIPv4(_ host: String) -> Bool {
+        let parts = host.split(separator: ".").compactMap { Int($0) }
+        guard parts.count == 4 else { return false }
+        if parts[0] == 0 || parts[0] == 10 || parts[0] == 127 { return true }
+        if parts[0] == 169 && parts[1] == 254 { return true }
+        if parts[0] == 192 && parts[1] == 168 { return true }
+        if parts[0] == 172 && (16...31).contains(parts[1]) { return true }
+        return false
     }
 }
 
