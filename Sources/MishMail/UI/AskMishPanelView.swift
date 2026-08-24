@@ -964,7 +964,7 @@ private struct ModelPickerPopover: View {
 
     private func modelRow(provider: LLMProviderConfig, model: String) -> some View {
         let isSelected = provider.id == currentProviderID && model == currentModelID
-        let isDefault = model == provider.defaultModel
+        let isDefault = model == AskMishModelMenu.preferredDefault(for: provider)
         let isPinned = (provider.pinnedModels ?? []).contains(model)
         let title = AskMishModelMenu.displayName(model)
         return Button {
@@ -1006,7 +1006,8 @@ private struct ModelPickerPopover: View {
         .background(isSelected ? Color.notionAccent.opacity(0.10) : .clear,
                     in: RoundedRectangle(cornerRadius: PMRadius.sm))
         .contextMenu { modelActions(provider: provider, model: model,
-                                    isDefault: isDefault, isPinned: isPinned) }
+                                    isDefault: model == provider.defaultModel,
+                                    isPinned: isPinned) }
     }
 
     @ViewBuilder

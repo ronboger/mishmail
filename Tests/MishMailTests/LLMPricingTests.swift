@@ -29,6 +29,10 @@ final class LLMPricingTests: XCTestCase {
                        LLMPrice(inputPerMTok: 0.05, outputPerMTok: 0.4))
         XCTAssertEqual(LLMPricing.price(model: "grok-4-fast-reasoning", overrides: [:]),
                        LLMPrice(inputPerMTok: 0.2, outputPerMTok: 0.5))
+        XCTAssertEqual(LLMPricing.price(model: "grok-4.6", overrides: [:]),
+                       LLMPrice(inputPerMTok: 2, outputPerMTok: 6))
+        XCTAssertEqual(LLMPricing.price(model: "grok-4.1-fast", overrides: [:]),
+                       LLMPrice(inputPerMTok: 0.2, outputPerMTok: 0.5))
         XCTAssertEqual(LLMPricing.price(model: "gemini-3.7-flash", overrides: [:]),
                        LLMPrice(inputPerMTok: 0.15, outputPerMTok: 0.60))
         XCTAssertEqual(LLMPricing.price(model: "gemini-3.7-pro", overrides: [:]),

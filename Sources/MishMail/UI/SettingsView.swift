@@ -1846,9 +1846,7 @@ struct AISettings: View {
         var allModels = Set(fetched)
         allModels.formUnion(preset.fallbackModels)
         config.models = Array(allModels).sorted()
-        if let models = config.models, !models.contains(config.defaultModel), let first = models.first {
-            config.defaultModel = first
-        }
+        config.defaultModel = AskMishModelMenu.preferredDefault(for: config)
         var list = LLMProviderStore.load().filter { $0.id != id }
         list.append(config)
         LLMProviderStore.save(list)
@@ -1880,9 +1878,8 @@ struct AISettings: View {
             allModels.insert(updated.defaultModel)
         }
         updated.models = Array(allModels).sorted()
-        if fetchError == nil, let models = updated.models,
-           !models.contains(updated.defaultModel), let first = models.first {
-            updated.defaultModel = first
+        if fetchError == nil {
+            updated.defaultModel = AskMishModelMenu.preferredDefault(for: updated)
         }
         var list = LLMProviderStore.load().filter { $0.id != provider.id }
         list.append(updated)
@@ -2012,17 +2009,20 @@ private struct TaskModelPicker: View {
                 // Keep the stored default visible even if Ollama is down.
                 models = ollamaModels.isEmpty ? [provider.defaultModel] : ollamaModels
             } else {
+                var listed = provider
                 var list = provider.models ?? []
                 if !list.contains(provider.defaultModel) && !provider.defaultModel.isEmpty {
                     list.append(provider.defaultModel)
                 }
-                if case .oauth(let vendor) = provider.authMode {
+                if let vendor = AskMishModelMenu.subscriptionVendor(of: provider) {
                     let preset = LLMProviderStore.subscriptionPreset(for: vendor)
                     for m in preset.fallbackModels where !list.contains(m) {
                         list.append(m)
                     }
                 }
-                models = list.isEmpty ? [provider.defaultModel] : list
+                listed.models = list
+                let curated = AskMishModelMenu.models(for: listed).models
+                models = curated.isEmpty ? [provider.defaultModel] : curated
             }
             return models.map {
                 Entry(providerID: provider.id, model: $0, label: "\(provider.label) · \($0)")
@@ -2097,7 +2097,7 @@ private struct ProviderEditSheet: View {
         Preset(name: "OpenRouter", kind: .openAICompatible, baseURL: "https://openrouter.ai/api/v1",
                defaultModel: "openai/gpt-4o", keyHint: "openrouter.ai/keys"),
         Preset(name: "Grok (xAI)", kind: .openAICompatible, baseURL: "https://api.x.ai/v1",
-               defaultModel: "grok-4", keyHint: "console.x.ai"),
+               defaultModel: "grok-4.6", keyHint: "console.x.ai"),
         Preset(name: "Groq", kind: .openAICompatible, baseURL: "https://api.groq.com/openai/v1",
                defaultModel: "", keyHint: "console.groq.com"),
     ]

@@ -108,7 +108,12 @@ final class AskMishController {
         self.bridge = MCPBridge(store: store)
         let assignment = LLMProviderStore.assignment(for: .askMish)
         self.providerID = assignment.providerID
-        self.modelID = assignment.model
+        if let provider = LLMProviderStore.load().first(where: { $0.id == assignment.providerID }),
+           !AskMishModelMenu.isBrowseWorthy(assignment.model) {
+            self.modelID = AskMishModelMenu.preferredDefault(for: provider)
+        } else {
+            self.modelID = assignment.model
+        }
     }
 
     // MARK: - Turn lifecycle

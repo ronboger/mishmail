@@ -4,9 +4,10 @@ import Foundation
 ///
 /// A provider's stored model list can be enormous (OpenRouter serves several
 /// hundred ids), and a menu that long is unusable. Oversized lists are cut to
-/// the well-known model families and capped; the provider's default model and
-/// the current selection always stay visible. The full list remains available
-/// in Settings → AI.
+/// current chat models; image, audio, dated snapshots, and retired
+/// generations stay out of browse. The provider's preferred default and the
+/// current selection always stay visible. The full list remains available
+/// through search and in Settings → AI.
 enum AskMishModelMenu {
 
     /// Longest model list shown under one provider before curation kicks in.
@@ -36,22 +37,37 @@ enum AskMishModelMenu {
             list = [provider.defaultModel]
         }
         let total = list.count
+        // Known vendors: offer the shipped current ids even when /models is stale.
+        if provider.kind != .ollama, let vendor = subscriptionVendor(of: provider) {
+            for model in LLMProviderStore.subscriptionPreset(for: vendor).fallbackModels
+            where seen.insert(model).inserted {
+                list.append(model)
+            }
+        }
+        let leading = preferredDefault(for: provider)
         // Pins beat curation: when the user chose models, browse shows only
         // those (plus the default/selection pins below).
         let pinned = (provider.pinnedModels ?? []).filter { !$0.isEmpty }
         if !pinned.isEmpty {
             var pinSeen = Set<String>()
             var pinList = pinned.filter { pinSeen.insert($0).inserted }
-            for pin in [selected ?? "", provider.defaultModel].filter({ !$0.isEmpty })
+            for pin in [selected ?? "", leading].filter({ !$0.isEmpty })
             where !pinList.contains(pin) {
                 pinList.insert(pin, at: 0)
             }
-            if let index = pinList.firstIndex(of: provider.defaultModel), index > 0 {
+            if let index = pinList.firstIndex(of: leading), index > 0 {
                 pinList.remove(at: index)
-                pinList.insert(provider.defaultModel, at: 0)
+                pinList.insert(leading, at: 0)
             }
             return ProviderModels(models: pinList,
                                   hiddenCount: max(0, total - pinList.count))
+        }
+        if provider.kind != .ollama {
+            let relevant = list.filter { isBrowseWorthy($0) }
+            if !relevant.isEmpty { list = relevant }
+        }
+        if let vendor = subscriptionVendor(of: provider) {
+            list = orderedByFallback(list, vendor: vendor)
         }
         if list.count > maxModelsPerProvider {
             let curated = list.filter { id in
@@ -63,19 +79,94 @@ enum AskMishModelMenu {
                 list = Array(list.prefix(maxModelsPerProvider))
             }
         }
-        // The default and the active selection must stay reachable even when
-        // curation would drop them.
-        for pin in [selected ?? "", provider.defaultModel].filter({ !$0.isEmpty })
-        where !list.contains(pin) {
-            list.insert(pin, at: 0)
+        // The active selection must stay reachable even when curation would
+        // drop it. A stale stored default does not — preferredDefault leads.
+        if let selected, !selected.isEmpty, !list.contains(selected) {
+            list.insert(selected, at: 0)
         }
-        // The provider's default leads the list — it is what a click on the
-        // provider row itself selects.
-        if let index = list.firstIndex(of: provider.defaultModel), index > 0 {
-            list.remove(at: index)
-            list.insert(provider.defaultModel, at: 0)
+        if !leading.isEmpty {
+            if let index = list.firstIndex(of: leading) {
+                if index > 0 {
+                    list.remove(at: index)
+                    list.insert(leading, at: 0)
+                }
+            } else {
+                list.insert(leading, at: 0)
+            }
         }
         return ProviderModels(models: list, hiddenCount: max(0, total - list.count))
+    }
+
+    /// True when `model` belongs in a browse list: chat, current generation,
+    /// not a modality-specific or dated snapshot id.
+    static func isBrowseWorthy(_ model: String) -> Bool {
+        let id = model.lowercased()
+        let name = displayName(id)
+        let drop = [
+            "image", "vision", "video", "audio", "tts", "whisper",
+            "embedding", "moderation", "imagine", "realtime", "voice",
+            "non-reasoning", "non_reasoning",
+        ]
+        if drop.contains(where: { name.contains($0) }) { return false }
+        if name.contains("-beta") || name.hasSuffix("-exp") { return false }
+        if name.range(of: #"-\d{4}$"#, options: .regularExpression) != nil {
+            return false
+        }
+        if name.hasPrefix("grok-2") || name.hasPrefix("grok-3") { return false }
+        // grok-4.2 is a stale listing; grok-4.20 is a different, current id.
+        if name.hasPrefix("grok-4.2") && !name.hasPrefix("grok-4.20") { return false }
+        if name.contains("code-fast") { return false }
+        if name.hasPrefix("gemini-1.") || name.hasPrefix("gemini-2.") { return false }
+        if name.hasPrefix("gemini-1-") || name.hasPrefix("gemini-2-") { return false }
+        return true
+    }
+
+    /// Model a new chat should use: a user-chosen current default if it is
+    /// still browse-worthy, otherwise the first shipped id for this vendor.
+    static func preferredDefault(for provider: LLMProviderConfig) -> String {
+        if provider.kind == .ollama { return provider.defaultModel }
+        let available = Set((provider.models ?? []).filter { !$0.isEmpty })
+        if !provider.defaultModel.isEmpty,
+           isBrowseWorthy(provider.defaultModel),
+           available.isEmpty || available.contains(provider.defaultModel) {
+            return provider.defaultModel
+        }
+        if let vendor = subscriptionVendor(of: provider),
+           let first = LLMProviderStore.subscriptionPreset(for: vendor).fallbackModels.first {
+            return first
+        }
+        if let first = (provider.models ?? []).first(where: { isBrowseWorthy($0) }) {
+            return first
+        }
+        return provider.defaultModel
+    }
+
+    /// Subscription vendor inferred from OAuth mode or a shipped host.
+    static func subscriptionVendor(of provider: LLMProviderConfig) -> LLMOAuthVendor? {
+        if case .oauth(let vendor) = provider.authMode { return vendor }
+        guard let host = LLMRemotePolicy.host(of: provider.baseURL) else { return nil }
+        switch host {
+        case "api.anthropic.com": return .claude
+        case "api.openai.com": return .chatGPT
+        case "generativelanguage.googleapis.com": return .gemini
+        case "api.x.ai": return .grok
+        case "openrouter.ai": return .openRouter
+        default: return nil
+        }
+    }
+
+    private static func orderedByFallback(_ list: [String],
+                                          vendor: LLMOAuthVendor) -> [String] {
+        let fallback = LLMProviderStore.subscriptionPreset(for: vendor).fallbackModels
+        var seen = Set<String>()
+        var ordered: [String] = []
+        for model in fallback where list.contains(model) && seen.insert(model).inserted {
+            ordered.append(model)
+        }
+        for model in list where seen.insert(model).inserted {
+            ordered.append(model)
+        }
+        return ordered
     }
 
     // MARK: - Search
@@ -116,6 +207,9 @@ enum AskMishModelMenu {
     /// has no mark — the UI then falls back to the `fallbackIcon` SF Symbol.
     static func brandAsset(for provider: LLMProviderConfig) -> String? {
         if provider.kind == .ollama { return "ProviderOllama" }
+        if let vendor = subscriptionVendor(of: provider) {
+            return brandAsset(forVendor: vendor)
+        }
         let label = provider.label.lowercased()
         if label.contains("claude") || label.contains("anthropic") { return "ProviderClaude" }
         if label.contains("chatgpt") || label.contains("openai") { return "ProviderOpenAI" }
@@ -123,6 +217,16 @@ enum AskMishModelMenu {
         if label.contains("grok") || label.contains("xai") { return "ProviderGrok" }
         if label.contains("openrouter") { return "ProviderOpenRouter" }
         return nil
+    }
+
+    static func brandAsset(forVendor vendor: LLMOAuthVendor) -> String {
+        switch vendor {
+        case .claude: return "ProviderClaude"
+        case .chatGPT: return "ProviderOpenAI"
+        case .gemini: return "ProviderGemini"
+        case .grok: return "ProviderGrok"
+        case .openRouter: return "ProviderOpenRouter"
+        }
     }
 
     /// SF Symbol for providers without a vendored brand mark.

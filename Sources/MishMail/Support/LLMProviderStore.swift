@@ -91,23 +91,22 @@ enum LLMProviderStore {
             return SubscriptionPreset(
                 label: "Grok", kind: .openAICompatible,
                 baseURL: "https://api.x.ai/v1",
-                fallbackModels: ["grok-4", "grok-4-fast"])
+                fallbackModels: [
+                    "grok-4.6",
+                    "grok-4.1-fast",
+                ])
         case .gemini:
             return SubscriptionPreset(
                 label: "Google Gemini", kind: .openAICompatible,
                 baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
                 fallbackModels: [
                     "gemini-3.7-flash",
-                    "gemini-3.7-pro",
-                    "gemini-3.1-pro",
-                    "gemini-3.1-flash-lite",
                     "gemini-3.6-flash",
-                    "gemini-2.5-pro",
-                    "gemini-2.5-flash",
-                    "gemini-2.0-flash",
-                    "gemini-2.0-flash-lite",
-                    "gemini-1.5-pro",
-                    "gemini-1.5-flash",
+                    "gemini-3.5-flash",
+                    "gemini-3.5-flash-lite",
+                    "gemini-3.1-pro",
+                    "gemini-3.1-pro-preview",
+                    "gemini-3.1-flash-lite",
                 ])
         case .openRouter:
             return SubscriptionPreset(
@@ -116,8 +115,8 @@ enum LLMProviderStore {
                 fallbackModels: [
                     "openai/gpt-4o",
                     "anthropic/claude-sonnet-4",
-                    "google/gemini-2.5-flash",
-                    "x-ai/grok-4",
+                    "google/gemini-3.5-flash",
+                    "x-ai/grok-4.6",
                     "deepseek/deepseek-chat",
                 ])
         }

@@ -67,7 +67,7 @@ final class LLMProviderStoreTests: XCTestCase {
         XCTAssertFalse(LLMProviderStore.hasHostConsent(for: moved, from: defaults))
         let grok = LLMProviderConfig(
             id: UUID(), kind: .openAICompatible, label: "Grok",
-            baseURL: "https://api.x.ai/v1", defaultModel: "grok-4",
+            baseURL: "https://api.x.ai/v1", defaultModel: "grok-4.6",
             authMode: .apiKey)
         XCTAssertTrue(LLMProviderStore.hasHostConsent(for: grok, from: defaults))
         let broken = LLMProviderConfig(
@@ -88,13 +88,16 @@ final class LLMProviderStoreTests: XCTestCase {
         let preset = LLMProviderStore.subscriptionPreset(for: .grok)
         XCTAssertEqual(preset.kind, .openAICompatible)
         XCTAssertEqual(preset.baseURL, "https://api.x.ai/v1")
-        XCTAssertFalse(preset.fallbackModels.isEmpty)
+        XCTAssertEqual(preset.fallbackModels.first, "grok-4.6")
+        XCTAssertTrue(preset.fallbackModels.contains("grok-4.1-fast"))
+        XCTAssertFalse(preset.fallbackModels.contains("grok-4.2"))
 
         let geminiPreset = LLMProviderStore.subscriptionPreset(for: .gemini)
         XCTAssertEqual(geminiPreset.kind, .openAICompatible)
         XCTAssertEqual(geminiPreset.baseURL, "https://generativelanguage.googleapis.com/v1beta/openai")
-        XCTAssertTrue(geminiPreset.fallbackModels.contains("gemini-3.7-flash"))
-        XCTAssertTrue(geminiPreset.fallbackModels.contains("gemini-2.5-pro"))
+        XCTAssertEqual(geminiPreset.fallbackModels.first, "gemini-3.7-flash")
+        XCTAssertTrue(geminiPreset.fallbackModels.contains("gemini-3.5-flash"))
+        XCTAssertFalse(geminiPreset.fallbackModels.contains { $0.hasPrefix("gemini-1.") || $0.hasPrefix("gemini-2.") })
 
         let connected = LLMProviderConfig(
             id: UUID(), kind: .anthropic, label: "Claude",
