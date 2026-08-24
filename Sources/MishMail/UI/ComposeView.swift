@@ -68,6 +68,7 @@ struct ComposeView: View {
     @State private var linkInitialURL = ""
     @State private var linkIsEditing = false
     @State private var drafting = false
+    @State private var inlineEditUndo: (body: String, caret: Int)?
     @State private var error: String?
     /// Suggested replies for an empty reply body (chips above the quote pill).
     @State private var suggestedReplies: [String] = []
@@ -1321,6 +1322,19 @@ struct ComposeView: View {
                         .accessibilityLabel("AI edit")
                         .accessibilityIdentifier("compose.aiEdit")
                         .disabled(drafting || bodySelection.length == 0)
+
+                        if inlineEditUndo != nil {
+                            Button("Undo edit") {
+                                if let undo = inlineEditUndo {
+                                    setBody(undo.body, caretUTF16: undo.caret)
+                                    inlineEditUndo = nil
+                                    focusBody()
+                                }
+                            }
+                            .font(.caption)
+                            .buttonStyle(PressScaleButtonStyle())
+                            .help("Restore the text from before the last AI edit")
+                        }
                     }
 
                     // Markdown format strip (bold/italic/headers/math…). Link is
@@ -1921,6 +1935,7 @@ struct ComposeView: View {
     private func draftWithAI() {
         drafting = true
         error = nil
+        inlineEditUndo = nil
         // Split off any quoted original: everything above it is the "intent",
         // the quote is preserved below the streamed draft.
         let quoteStart = body_.range(of: "\n" + ForwardComposer.marker)
@@ -1998,6 +2013,7 @@ struct ComposeView: View {
         bodyFocused = true
         drafting = true
         error = nil
+        inlineEditUndo = nil
 
         Task {
             var accumulated = ""
@@ -2016,6 +2032,10 @@ struct ComposeView: View {
                         // leave the user's selection deleted without undo.
                         setBody(originalBody, caretUTF16: originalCaret)
                         self.error = "The model returned no replacement."
+                    }
+                } else {
+                    await MainActor.run {
+                        inlineEditUndo = (originalBody, originalCaret)
                     }
                 }
             } catch {

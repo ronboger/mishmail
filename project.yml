@@ -141,6 +141,7 @@ targets:
       - Sources/MishMail/Support/AskMishLayout.swift
       - Sources/MishMail/Support/AskMishModelMenu.swift
       - Sources/MishMail/Support/AskMishTools.swift
+      - Sources/MishMail/Support/AskMishTrace.swift
       - Sources/MishMail/Support/ContactMiner.swift
       - Sources/MishMail/Support/ComposeLinks.swift
       - Sources/MishMail/Support/TextDirection.swift

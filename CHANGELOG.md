@@ -21,6 +21,11 @@ minor versions may still change behavior.
   preset must be acknowledged in Settings before mail is sent there.
 
 ### Added
+- **Ask Mish shows its work.** Tool calls stream as live status rows you can
+  expand (query, result, and clickable threads). Empty chats offer three
+  starting prompts. After an answer, follow-up chips continue the turn. The
+  open-thread chip names the subject. Local models get a Think control on the
+  panel. Compose AI edits leave an Undo edit control.
 - **⌘L copies a Gmail web link to the focused conversation**, Notion-style.
   The clipboard gets a `mail.google.com` URL that opens the conversation
   in the browser (with `authuser` so the right mailbox is selected). Also

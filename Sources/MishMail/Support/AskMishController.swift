@@ -31,6 +31,10 @@ final class AskMishController {
         /// transient — not persisted with the conversation.
         var reasoningText: String = ""
         var toolCalls: [LLMToolCall] = []
+        /// Live (and reloaded) tool rows shown under the bubble.
+        var toolTraces: [AskMishTrace.Tool] = []
+        var auditLine: String? = nil
+        var followUps: [AskMishTrace.PromptChip] = []
         var costLabel: String? = nil
         var isStreaming: Bool = false
         var isError: Bool = false
@@ -247,23 +251,44 @@ final class AskMishController {
     private func reloadedBubbles(from rows: [ChatMessageRow]) -> [Bubble] {
         let config = currentProviderConfig()
         let overrides = LLMPricing.loadOverrides()
-        return rows.compactMap { row in
+        var bubbles: [Bubble] = []
+        var index = 0
+        while index < rows.count {
+            let row = rows[index]
             guard let role = LLMRole(rawValue: row.role), role == .user || role == .assistant
-            else { return nil }
+            else {
+                index += 1
+                continue
+            }
             let calls = (try? JSONDecoder().decode(
                 [LLMToolCall].self, from: Data(row.toolCallsJSON.utf8))) ?? []
-            if row.text.isEmpty, calls.isEmpty { return nil }
-            // Stored tokens rebuild the per-turn label, so a reloaded
-            // transcript still shows what each turn cost.
+            if row.text.isEmpty, calls.isEmpty {
+                index += 1
+                continue
+            }
+            var results: [LLMToolResult] = []
+            if role == .assistant, !calls.isEmpty,
+               index + 1 < rows.count, rows[index + 1].role == LLMRole.tool.rawValue {
+                results = (try? JSONDecoder().decode(
+                    [LLMToolResult].self,
+                    from: Data(rows[index + 1].toolResultsJSON.utf8))) ?? []
+            }
             var label: String?
             if let config, let prompt = row.promptTokens, let completion = row.completionTokens {
                 label = LLMPricing.costLabel(
                     usage: LLMUsage(promptTokens: prompt, completionTokens: completion),
                     config: config, model: modelID, overrides: overrides)
             }
-            return Bubble(id: UUID(uuidString: row.id) ?? UUID(),
-                          role: role, text: row.text, toolCalls: calls, costLabel: label)
+            let traces = AskMishTrace.traces(calls: calls, results: results)
+            bubbles.append(Bubble(
+                id: UUID(uuidString: row.id) ?? UUID(),
+                role: role, text: row.text, toolCalls: calls,
+                toolTraces: traces,
+                auditLine: role == .assistant ? AskMishTrace.auditLine(tools: traces) : nil,
+                costLabel: label))
+            index += 1
         }
+        return bubbles
     }
 
     // MARK: - The loop
@@ -296,6 +321,7 @@ final class AskMishController {
                         appendReasoning(bubbleID, trace)
                     case .toolCall(let call):
                         calls.append(call)
+                        appendTrace(bubbleID, AskMishTrace.running(call))
                     case .done(_, let reported):
                         usage = reported
                     }
@@ -335,6 +361,7 @@ final class AskMishController {
                 await persistTurn(assistantText: streamedText, calls: [],
                                   results: nil, usage: usage)
                 appendToHistory(assistantText: streamedText, calls: [])
+                finishTurnChrome(bubbleID)
                 return
             }
 
@@ -344,11 +371,15 @@ final class AskMishController {
             var results: [LLMToolResult] = []
             for call in calls {
                 if Task.isCancelled {
-                    results.append(LLMToolResult(
-                        callID: call.id, content: "Stopped before this ran.", isError: true))
+                    let stopped = LLMToolResult(
+                        callID: call.id, content: "Stopped before this ran.", isError: true)
+                    results.append(stopped)
+                    updateTrace(bubbleID, callID: call.id, result: stopped)
                     continue
                 }
-                results.append(await execute(call))
+                let result = await execute(call)
+                results.append(result)
+                updateTrace(bubbleID, callID: call.id, result: result)
             }
             await persistTurn(assistantText: streamedText, calls: calls,
                               results: results, usage: usage)
@@ -357,6 +388,7 @@ final class AskMishController {
                 markInterrupted(bubbleID)
                 return
             }
+            finishTurnChrome(bubbleID, moreComing: true)
         }
         appendError("Stopped after \(AskMishContext.maxToolTurnsPerUserTurn) tool calls. Ask again to continue.")
     }
@@ -570,6 +602,61 @@ final class AskMishController {
         guard let index = bubbles.firstIndex(where: { $0.id == id }) else { return }
         bubbles[index].isStreaming = false
         bubbles[index].costLabel = costLabel
+    }
+
+    private func appendTrace(_ id: UUID, _ tool: AskMishTrace.Tool) {
+        guard let index = bubbles.firstIndex(where: { $0.id == id }) else { return }
+        if let existing = bubbles[index].toolTraces.firstIndex(where: { $0.id == tool.id }) {
+            bubbles[index].toolTraces[existing] = tool
+        } else {
+            bubbles[index].toolTraces.append(tool)
+        }
+    }
+
+    private func updateTrace(_ id: UUID, callID: String, result: LLMToolResult) {
+        guard let index = bubbles.firstIndex(where: { $0.id == id }),
+              let existing = bubbles[index].toolTraces.firstIndex(where: { $0.id == callID })
+        else { return }
+        bubbles[index].toolTraces[existing] = AskMishTrace.finished(
+            from: bubbles[index].toolTraces[existing], result: result)
+        bubbles[index].auditLine = AskMishTrace.auditLine(tools: bubbles[index].toolTraces)
+    }
+
+    /// Audit + follow-up chips once a turn is answering, not mid-tool-loop.
+    private func finishTurnChrome(_ id: UUID, moreComing: Bool = false) {
+        guard let index = bubbles.firstIndex(where: { $0.id == id }) else { return }
+        let traces = bubbles[index].toolTraces
+        bubbles[index].auditLine = AskMishTrace.auditLine(tools: traces)
+        if moreComing { return }
+        let names = bubbles.reversed()
+            .prefix(while: { $0.role == .assistant })
+            .flatMap { $0.toolTraces.map(\.name) }
+        bubbles[index].followUps = AskMishTrace.followUps(
+            toolNames: names,
+            hasSelectedThread: store?.selectedThread != nil)
+    }
+
+    func openTracedThread(id: String) {
+        guard let store else { return }
+        if let thread = store.threads.first(where: { $0.id == id }) {
+            store.openThread(thread)
+            return
+        }
+        Task { @MainActor in
+            let row = try? await AppDatabase.shared.dbPool.read { db in
+                try MailThread.fetchOne(db, key: id)
+            }
+            if let row { store.openThread(row) }
+        }
+    }
+
+    func undoQueuedSend() {
+        store?.cancelPendingSend()
+        for i in bubbles.indices {
+            for j in bubbles[i].toolTraces.indices where bubbles[i].toolTraces[j].canUndoSend {
+                bubbles[i].toolTraces[j].canUndoSend = false
+            }
+        }
     }
 
     private func markInterrupted(_ id: UUID) {

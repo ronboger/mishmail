@@ -27,6 +27,8 @@ struct AskMishPanelView: View {
     @State private var modelPickerShown = false
     @State private var expandedThinking: Set<UUID> = []
     @State private var hostedNoticeDismissed = false
+    @State private var expandedTraces: Set<String> = []
+    @State private var thinking = Ollama.thinking(for: .askMish).rawValue
 
     var body: some View {
         VStack(spacing: 0) {
@@ -78,15 +80,22 @@ struct AskMishPanelView: View {
                     .help(LLMRemotePolicy.sendsMailOffDevice(config)
                           ? "This model runs off this Mac. Mail text is sent to the provider."
                           : "This model runs on this Mac.")
+                if !LLMRemotePolicy.sendsMailOffDevice(config) {
+                    thinkingMenu
+                }
             }
             Button {
                 store.showAskMish = false
             } label: {
                 Image(systemName: "xmark")
+                    .font(.system(size: 11, weight: .semibold))
+                    .frame(width: 24, height: 24)
+                    .contentShape(Rectangle())
             }
-            .buttonStyle(.plain)
+            .buttonStyle(PressScaleButtonStyle())
             .foregroundStyle(.secondary)
             .help("Close Ask Mish (⌥⌘M)")
+            .pmHitTarget()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -251,12 +260,29 @@ struct AskMishPanelView: View {
     }
 
     private var emptyState: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: 10) {
             Text("Ask about your mail.")
                 .font(.system(size: 13, weight: .medium))
-            Text("Try “summarize this thread” or “draft a reply saying yes”.")
+                .fixedSize(horizontal: false, vertical: true)
+            Text("Pick a starting point, or type below.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
+            VStack(alignment: .leading, spacing: 6) {
+                ForEach(AskMishTrace.emptyPrompts(
+                    hasSelectedThread: store.selectedThread != nil)) { chip in
+                    Button {
+                        controller.send(chip.prompt)
+                    } label: {
+                        Text(chip.title)
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 6)
+                            .background(Color.primary.opacity(0.06), in: Capsule())
+                    }
+                    .buttonStyle(PressScaleButtonStyle())
+                    .disabled(controller.isRunning)
+                }
+            }
         }
         .padding(.vertical, 8)
     }
@@ -282,15 +308,23 @@ struct AskMishPanelView: View {
                         .foregroundStyle(bubble.isError ? Color.red : Color.primary)
                 }
                 if bubble.isStreaming { streamingPulse(hasText: !bubble.text.isEmpty) }
-                ForEach(Array(bubble.toolCalls.enumerated()), id: \.offset) { _, call in
-                    toolCallRow(call)
+                ForEach(bubble.toolTraces) { tool in
+                    toolTraceRow(tool)
+                }
+                if let audit = bubble.auditLine {
+                    Text(audit)
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                }
+                if !bubble.followUps.isEmpty, !controller.isRunning {
+                    followUpRow(bubble.followUps)
                 }
                 // Tool-only turns skip the per-turn label: an agent loop that
                 // searches five times would stack five bare token lines above
                 // the answer. The conversation total still counts them.
                 if let cost = bubble.costLabel, !bubble.text.isEmpty {
                     Text(cost)
-                        .font(.caption2)
+                        .font(.caption2.monospacedDigit())
                         .foregroundStyle(.secondary)
                 }
                 if bubble.isError { retryButton }
@@ -349,17 +383,119 @@ struct AskMishPanelView: View {
         }
     }
 
-    private func toolCallRow(_ call: LLMToolCall) -> some View {
-        HStack(spacing: 5) {
-            Image(systemName: "wrench.and.screwdriver")
-            Text(call.name)
+    private func toolTraceRow(_ tool: AskMishTrace.Tool) -> some View {
+        let expanded = expandedTraces.contains(tool.id)
+        return VStack(alignment: .leading, spacing: 4) {
+            Button {
+                withAnimation(PMMotion.feedback) {
+                    if expanded { expandedTraces.remove(tool.id) }
+                    else { expandedTraces.insert(tool.id) }
+                }
+            } label: {
+                HStack(spacing: 5) {
+                    if tool.status == .running {
+                        ProgressView().controlSize(.mini)
+                    } else {
+                        Image(systemName: tool.status == .failed
+                              ? "exclamationmark.triangle"
+                              : "checkmark")
+                    }
+                    Text(AskMishTrace.statusLabel(tool))
+                    if let cue = AskMishTrace.argumentSummary(
+                        name: tool.name, argumentsJSON: tool.argumentsJSON) {
+                        Text(cue)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    }
+                    Image(systemName: "chevron.right")
+                        .font(.system(size: 7, weight: .semibold))
+                        .rotationEffect(.degrees(expanded ? 90 : 0))
+                }
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            if expanded {
+                VStack(alignment: .leading, spacing: 4) {
+                    if let preview = tool.resultPreview, !preview.isEmpty {
+                        Text(preview)
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .textSelection(.enabled)
+                    }
+                    ForEach(tool.threads) { thread in
+                        Button {
+                            controller.openTracedThread(id: thread.id)
+                        } label: {
+                            HStack(spacing: 4) {
+                                Image(systemName: "envelope")
+                                Text(thread.subject.isEmpty ? thread.id : thread.subject)
+                                    .lineLimit(1)
+                                    .truncationMode(.tail)
+                            }
+                            .font(.caption2)
+                        }
+                        .buttonStyle(.plain)
+                    }
+                    if tool.canUndoSend, store.pendingSend != nil {
+                        Button("Undo send") {
+                            controller.undoQueuedSend()
+                        }
+                        .font(.caption2)
+                        .buttonStyle(.plain)
+                    }
+                }
+                .padding(8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(Color.primary.opacity(0.04),
+                            in: RoundedRectangle(cornerRadius: PMRadius.sm))
+            }
         }
-        .font(.caption2)
-        .foregroundStyle(.secondary)
-        .padding(.horizontal, 7)
-        .padding(.vertical, 3)
-        .background(Color.primary.opacity(0.06),
-                    in: Capsule())
+    }
+
+    private func followUpRow(_ chips: [AskMishTrace.PromptChip]) -> some View {
+        ScrollView(.horizontal, showsIndicators: false) {
+            HStack(spacing: 6) {
+                ForEach(chips) { chip in
+                    Button {
+                        controller.send(chip.prompt)
+                    } label: {
+                        Text(chip.title)
+                            .font(.caption)
+                            .padding(.horizontal, 10)
+                            .padding(.vertical, 5)
+                            .background(Color.primary.opacity(0.06), in: Capsule())
+                    }
+                    .buttonStyle(PressScaleButtonStyle())
+                }
+            }
+        }
+    }
+
+    private var thinkingMenu: some View {
+        Menu {
+            Button("Off — fastest") { setThinking("off") }
+            Button("Low") { setThinking("low") }
+            Button("Medium") { setThinking("medium") }
+            Button("High") { setThinking("high") }
+            Button("Model default") { setThinking("default") }
+        } label: {
+            Text(thinking == "default" ? "Think" : "Think: \(thinking)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(controller.isRunning)
+        .help("Thinking effort for local models")
+    }
+
+    private func setThinking(_ raw: String) {
+        thinking = raw
+        Ollama.setThinking(LLMThinking(rawValue: raw), for: .askMish)
     }
 
     /// Re-sends the last user turn. The failed assistant bubble stays, so the
@@ -425,7 +561,9 @@ struct AskMishPanelView: View {
             }
         }
         .padding(12)
-        .background(Color.notionContent)
+        .background(Color.notionContent,
+                    in: RoundedRectangle(cornerRadius: PMRadius.outer(
+                        inner: PMRadius.sm, padding: 12)))
     }
 
     // MARK: - Composer
@@ -454,21 +592,30 @@ struct AskMishPanelView: View {
                         controller.stop()
                     } label: {
                         Image(systemName: "stop.fill")
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(PressScaleButtonStyle())
                     .help("Stop")
+                    .pmHitTarget()
                 } else {
                     Button {
                         submit()
                     } label: {
                         Image(systemName: "arrow.up")
+                            .frame(width: 24, height: 24)
+                            .contentShape(Rectangle())
                     }
+                    .buttonStyle(PressScaleButtonStyle(
+                        enabled: !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                     .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .help("Send (↩)")
+                    .pmHitTarget()
                 }
             }
             if let cost = controller.conversationCostLabel {
                 Text(cost)
-                    .font(.caption2)
+                    .font(.caption2.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, alignment: .trailing)
             }
@@ -500,13 +647,21 @@ struct AskMishPanelView: View {
 
     /// Context chips: the open thread, pinned threads, and the attach button.
     private var attachmentRow: some View {
-        ScrollView(.horizontal, showsIndicators: false) {
-            HStack(spacing: 6) {
-                if store.selectedThread != nil { contextChip }
-                ForEach(controller.attachedThreads) { attached in
-                    attachedChip(attached)
+        VStack(alignment: .leading, spacing: 4) {
+            ScrollView(.horizontal, showsIndicators: false) {
+                HStack(spacing: 6) {
+                    if store.selectedThread != nil { contextChip }
+                    ForEach(controller.attachedThreads) { attached in
+                        attachedChip(attached)
+                    }
+                    attachButton
                 }
-                attachButton
+            }
+            if !controller.attachedThreads.isEmpty ||
+                (store.selectedThread != nil && controller.includeSelectedThread) {
+                Text("Goes with your next question.")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
             }
         }
     }
@@ -589,13 +744,25 @@ struct AskMishPanelView: View {
         }
     }
 
+    private var contextChipTitle: String {
+        let subject = store.selectedThread?.subject.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        let label = subject.isEmpty ? "This thread" : subject
+        if controller.includeSelectedThread {
+            return label
+        }
+        return "Add \(label)"
+    }
+
     private var contextChip: some View {
         Button {
             controller.includeSelectedThread.toggle()
         } label: {
             HStack(spacing: 5) {
                 Image(systemName: controller.includeSelectedThread ? "xmark" : "plus")
-                Text(controller.includeSelectedThread ? "Current thread" : "Add current thread")
+                Text(contextChipTitle)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .frame(maxWidth: 160)
             }
             .font(.caption)
             .padding(.horizontal, 8)
