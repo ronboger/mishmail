@@ -60,6 +60,10 @@ minor versions may still change behavior.
   open menu shows a checkmark on the current identity.
 
 ### Fixed
+- **Attachment chips open from a click anywhere on the chip, not only the
+  filename.** Padding and the gray fill sat outside the Quick Look button,
+  so clicks on the icon, size, or empty chrome did nothing. The whole chip
+  is now the hit target. Eye and Save keep their own buttons.
 - **↓ in Ask Mish no longer opens the next email.** Arrow keys first scroll
   the chat (or the conversation beside it). If there is nothing to scroll,
   they only move the list highlight. Enter still opens the thread.
