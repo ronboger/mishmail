@@ -67,6 +67,13 @@ minor versions may still change behavior.
 ### Fixed
 - **Google Gemini shows its mark in the model picker.** Matching uses the
   API host and OAuth vendor, not only the provider label.
+- **Attachment chips open from a click anywhere on the chip, not only the
+  filename.** Padding and the gray fill sat outside the Quick Look button,
+  so clicks on the icon, size, or empty chrome did nothing. The whole chip
+  is now the hit target. Eye and Save keep their own buttons.
+- **↓ in Ask Mish no longer opens the next email.** Arrow keys first scroll
+  the chat (or the conversation beside it). If there is nothing to scroll,
+  they only move the list highlight. Enter still opens the thread.
 - **Opening a thread from search could show the same image twice and hide
   the PDF.** A full re-fetch (CID inline / attachment recovery) fed the
   chip list parsed rows whose SQLite `id` was still nil. SwiftUI ForEach
