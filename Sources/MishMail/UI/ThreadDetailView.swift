@@ -2065,61 +2065,26 @@ struct MessageCard: View {
                                     .padding(.horizontal, 10).padding(.vertical, 8)
                                     .background(Color.notionAccent.opacity(0.15),
                                                 in: RoundedRectangle(cornerRadius: 8))
+                                    .contentShape(RoundedRectangle(cornerRadius: 8))
                                 }
                                 .buttonStyle(.plain)
                                 .help("Save every attachment to a folder you choose")
                             }
                             ForEach(fileAtts, id: \.displayIdentity) { att in
-                                HStack(spacing: 8) {
-                                    Button {
+                                MessageAttachmentChip(
+                                    filename: att.filename,
+                                    sizeBytes: att.size,
+                                    iconName: iconName(for: att.mimeType),
+                                    onQuickLook: {
                                         store.quickLookAttachment(att, message: message)
-                                    } label: {
-                                        HStack(spacing: 8) {
-                                            Image(systemName: iconName(for: att.mimeType))
-                                                .font(.system(size: 20))
-                                                .foregroundStyle(Color.stable(for: att.filename))
-                                            VStack(alignment: .leading, spacing: 1) {
-                                                Text(att.filename)
-                                                    .font(.system(size: 12.5, weight: .medium))
-                                                    .lineLimit(1)
-                                                Text(byteSize(att.size))
-                                                    .font(.system(size: 11)).foregroundStyle(.secondary)
-                                            }
-                                        }
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help("Quick Look — Esc closes the preview")
-
-                                    Button {
-                                        store.quickLookAttachment(att, message: message)
-                                    } label: {
-                                        Image(systemName: "eye")
-                                            .font(.system(size: 15))
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    .buttonStyle(.plain)
-                                    .help("Quick Look")
-
-                                    Button {
+                                    },
+                                    onSave: {
                                         store.saveAttachment(att, message: message)
-                                    } label: {
-                                        Image(systemName: "arrow.down.circle")
-                                            .font(.system(size: 16))
-                                            .foregroundStyle(.secondary)
+                                    },
+                                    onOpen: {
+                                        store.openAttachment(att, message: message)
                                     }
-                                    .buttonStyle(.plain)
-                                    .help("Save As… (you choose where)")
-                                }
-                                .padding(.horizontal, 12).padding(.vertical, 8)
-                                // Nested chips: flat fill only. Elevation lives on the
-                                // parent MessageCard so we don't stack soft shadows.
-                                .background(Color.secondary.opacity(0.1),
-                                            in: RoundedRectangle(cornerRadius: PMRadius.md))
-                                .contextMenu {
-                                    Button("Quick Look") { store.quickLookAttachment(att, message: message) }
-                                    Button("Open") { store.openAttachment(att, message: message) }
-                                    Button("Save As…") { store.saveAttachment(att, message: message) }
-                                }
+                                )
                             }
                         }
                         .padding(.vertical, 2)
@@ -2509,6 +2474,80 @@ struct MessageCard: View {
             return "calendar"
         }
         return "doc"
+    }
+}
+
+/// File chip under a message. The whole chrome Quick Looks, not just the
+/// filename. Eye and Save keep their own trailing hit targets.
+private struct MessageAttachmentChip: View {
+    let filename: String
+    let sizeBytes: Int
+    let iconName: String
+    let onQuickLook: () -> Void
+    let onSave: () -> Void
+    let onOpen: () -> Void
+
+    var body: some View {
+        HStack(spacing: MessageAttachmentChipLayout.regionSpacing) {
+            Button(action: onQuickLook) {
+                let insets = MessageAttachmentChipLayout.previewHitInsets()
+                HStack(spacing: MessageAttachmentChipLayout.iconTextSpacing) {
+                    Image(systemName: iconName)
+                        .font(.system(size: 20))
+                        .foregroundStyle(Color.stable(for: filename))
+                    VStack(alignment: .leading, spacing: 1) {
+                        Text(filename)
+                            .font(.system(size: 12.5, weight: .medium))
+                            .lineLimit(1)
+                        Text(ByteCountFormatter.string(fromByteCount: Int64(sizeBytes),
+                                                       countStyle: .file))
+                            .font(.system(size: 11)).foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.leading, insets.leading)
+                .padding(.trailing, insets.trailing)
+                .padding(.vertical, insets.vertical)
+                .frame(minHeight: MessageAttachmentChipLayout.chipMinHeight)
+                .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Quick Look — Esc closes the preview")
+
+            Button(action: onQuickLook) {
+                Image(systemName: "eye")
+                    .font(.system(size: 15))
+                    .foregroundStyle(.secondary)
+                    .padding(.vertical, MessageAttachmentChipLayout.verticalPadding)
+                    .padding(.horizontal, MessageAttachmentChipLayout.actionInnerPadding)
+                    .frame(minHeight: MessageAttachmentChipLayout.chipMinHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Quick Look")
+
+            Button(action: onSave) {
+                let insets = MessageAttachmentChipLayout.saveHitInsets()
+                Image(systemName: "arrow.down.circle")
+                    .font(.system(size: 16))
+                    .foregroundStyle(.secondary)
+                    .padding(.leading, insets.leading)
+                    .padding(.trailing, insets.trailing)
+                    .padding(.vertical, insets.vertical)
+                    .frame(minHeight: MessageAttachmentChipLayout.chipMinHeight)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help("Save As… (you choose where)")
+        }
+        // Nested chips: flat fill only. Elevation lives on the
+        // parent MessageCard so we don't stack soft shadows.
+        .background(Color.secondary.opacity(0.1),
+                    in: RoundedRectangle(cornerRadius: MessageAttachmentChipLayout.cornerRadius))
+        .contextMenu {
+            Button("Quick Look", action: onQuickLook)
+            Button("Open", action: onOpen)
+            Button("Save As…", action: onSave)
+        }
     }
 }
 

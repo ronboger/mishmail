@@ -60,6 +60,10 @@ minor versions may still change behavior.
   open menu shows a checkmark on the current identity.
 
 ### Fixed
+- **Attachment chips open from a click anywhere on the chip, not only the
+  filename.** Padding and the gray fill sat outside the Quick Look button,
+  so clicks on the icon, size, or empty chrome did nothing. The whole chip
+  is now the hit target. Eye and Save keep their own buttons.
 - **Opening a thread from search could show the same image twice and hide
   the PDF.** A full re-fetch (CID inline / attachment recovery) fed the
   chip list parsed rows whose SQLite `id` was still nil. SwiftUI ForEach
