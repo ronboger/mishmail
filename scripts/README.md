@@ -2,7 +2,10 @@
 ## MCP helper scripts
 
 These drive the in-app MCP server (Settings → AI → MCP must be on, MishMail
-running). They read port + token from `mcp.json` in the app container.
+running). They read the port from `mcp.json` in the app container. The bearer
+token stays in the Keychain; set `MISHMAIL_MCP_TOKEN` or put it in
+`~/.config/mishmail/mcp-token`. Older `mcp.json` files that still include
+`token` continue to work.
 
 - `mcp-summarize.py` — backfill thread summaries. Local Ollama by default
   (`--backend ollama --model llama3.2:3b`, nothing leaves the machine) or any

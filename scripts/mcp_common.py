@@ -42,17 +42,23 @@ class MCP:
         port = os.environ.get("MISHMAIL_MCP_PORT", DEFAULT_PORT)
         if not token and TOKEN_FILE.exists():
             token = TOKEN_FILE.read_text().strip() or None
-        if not token:
-            if not Path(discovery).exists():
-                sys.exit(f"MCP discovery file not readable ({discovery}) and "
-                         "MISHMAIL_MCP_TOKEN is unset. Is MishMail running "
-                         "with the MCP server enabled?")
+        cfg = None
+        if Path(discovery).exists():
             try:
                 cfg = json.loads(Path(discovery).read_text())
             except PermissionError:
-                sys.exit(f"No permission to read {discovery}. Set "
-                         "MISHMAIL_MCP_TOKEN (and MISHMAIL_MCP_PORT) instead.")
-            token, port = cfg["token"], cfg["port"]
+                cfg = None
+            except json.JSONDecodeError:
+                cfg = None
+        if cfg and cfg.get("port") is not None and "MISHMAIL_MCP_PORT" not in os.environ:
+            port = cfg["port"]
+        if not token and cfg and cfg.get("token"):
+            # Legacy mcp.json that still stored the bearer token.
+            token = cfg["token"]
+        if not token:
+            sys.exit("MISHMAIL_MCP_TOKEN is unset, ~/.config/mishmail/mcp-token "
+                     "is missing, and mcp.json has no token. Copy the token "
+                     "from Settings → AI → MCP.")
         self.url = f"http://127.0.0.1:{port}/mcp"
         self.headers = {"Authorization": f"Bearer {token}"}
         self._id = 0

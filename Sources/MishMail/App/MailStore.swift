@@ -1931,7 +1931,7 @@ struct ComposeRequest: Identifiable {
             mcpServer = server
             mcpPort = port
             mcpRunning = true
-            writeMCPDiscovery(port: port, token: token)
+            writeMCPDiscovery(port: port)
         } catch {
             mcpServer = nil
             mcpPort = nil
@@ -1948,11 +1948,12 @@ struct ComposeRequest: Identifiable {
         removeMCPDiscovery()
     }
 
-    private func writeMCPDiscovery(port: UInt16, token: String) {
+    /// Port and pid only. The bearer token stays in the Keychain; a file
+    /// next to the database must not duplicate it.
+    private func writeMCPDiscovery(port: UInt16) {
         let url = mcpDiscoveryURL
         let payload: [String: Any] = [
             "port": Int(port),
-            "token": token,
             "pid": Int(ProcessInfo.processInfo.processIdentifier),
         ]
         guard let data = try? JSONSerialization.data(withJSONObject: payload, options: [.prettyPrinted]) else {

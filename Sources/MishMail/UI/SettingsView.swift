@@ -2418,7 +2418,7 @@ private struct MCPSettingsSection: View {
         } header: {
             Text("MCP")
         } footer: {
-            Text("Lets local AI agents (Claude Code, Codex, etc.) read mail, manage drafts, set thread summaries, and edit VIPs over 127.0.0.1. Off by default; the bearer token lives in your Keychain. A fixed port keeps agent configs valid across relaunches — set 0 for a random port each launch.")
+            Text("Lets local AI agents (Claude Code, Codex, etc.) read mail, manage drafts, set thread summaries, and edit VIPs over 127.0.0.1. Off by default; the bearer token lives in your Keychain and is not written to mcp.json. A fixed port keeps agent configs valid across relaunches — set 0 for a random port each launch.")
                 .font(.caption).foregroundStyle(.secondary)
         }
     }
