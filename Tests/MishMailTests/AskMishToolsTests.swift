@@ -79,6 +79,19 @@ final class AskMishToolsTests: XCTestCase {
         XCTAssertTrue(content.requiresExplicitClick)
     }
 
+    func testComposePrefillReadsCreateDraftArguments() {
+        let prefill = AskMishTools.composePrefill(argumentsJSON: """
+            {"account":"a@b.com","to":["c@d.com","e@f.com"],"cc":["g@h.com"],\
+            "subject":"Hello","body":"Please send the files."}
+            """)
+        XCTAssertEqual(prefill?.to, "c@d.com, e@f.com")
+        XCTAssertEqual(prefill?.cc, "g@h.com")
+        XCTAssertEqual(prefill?.bcc, "")
+        XCTAssertEqual(prefill?.subject, "Hello")
+        XCTAssertEqual(prefill?.body, "Please send the files.")
+        XCTAssertNil(AskMishTools.composePrefill(argumentsJSON: #"{"subject":"x"}"#))
+    }
+
     func testSendFingerprintChangesWhenBodyChanges() {
         let a = AskMishTools.sendFingerprint(
             accountId: "acct", from: "me@x.com",

@@ -68,7 +68,7 @@ struct ComposeView: View {
     @State private var linkInitialURL = ""
     @State private var linkIsEditing = false
     @State private var drafting = false
-    @State private var inlineEditUndo: (body: String, caret: Int)?
+    @State private var inlineEditUndo: InlineAIEdit?
     @State private var error: String?
     /// Suggested replies for an empty reply body (chips above the quote pill).
     @State private var suggestedReplies: [String] = []
@@ -1217,6 +1217,11 @@ struct ComposeView: View {
                     .padding(.bottom, 4)
             }
 
+            if let edit = inlineEditUndo {
+                composeAIDiffBar(edit)
+                    .padding(.bottom, 6)
+            }
+
             // Snippets live in an inline panel, not a popover — always
             // visible where you write, reliable inside the docked card.
             if showSnippets {
@@ -1322,19 +1327,6 @@ struct ComposeView: View {
                         .accessibilityLabel("AI edit")
                         .accessibilityIdentifier("compose.aiEdit")
                         .disabled(drafting || bodySelection.length == 0)
-
-                        if inlineEditUndo != nil {
-                            Button("Undo edit") {
-                                if let undo = inlineEditUndo {
-                                    setBody(undo.body, caretUTF16: undo.caret)
-                                    inlineEditUndo = nil
-                                    focusBody()
-                                }
-                            }
-                            .font(.caption)
-                            .buttonStyle(PressScaleButtonStyle())
-                            .help("Restore the text from before the last AI edit")
-                        }
                     }
 
                     // Markdown format strip (bold/italic/headers/math…). Link is
@@ -2035,7 +2027,11 @@ struct ComposeView: View {
                     }
                 } else {
                     await MainActor.run {
-                        inlineEditUndo = (originalBody, originalCaret)
+                        inlineEditUndo = InlineAIEdit(
+                            originalBody: originalBody,
+                            originalCaret: originalCaret,
+                            beforeText: selectedText,
+                            afterText: accumulated)
                     }
                 }
             } catch {
@@ -2050,6 +2046,61 @@ struct ComposeView: View {
             }
             await MainActor.run { drafting = false }
         }
+    }
+
+    private struct InlineAIEdit {
+        var originalBody: String
+        var originalCaret: Int
+        var beforeText: String
+        var afterText: String
+    }
+
+    private func composeAIDiffBar(_ edit: InlineAIEdit) -> some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 8) {
+                Text("Before")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 44, alignment: .leading)
+                Text(edit.beforeText)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .strikethrough()
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            }
+            HStack(alignment: .top, spacing: 8) {
+                Text("After")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                    .frame(width: 44, alignment: .leading)
+                Text(edit.afterText)
+                    .font(.caption)
+                    .lineLimit(3)
+                    .textSelection(.enabled)
+            }
+            HStack(spacing: 8) {
+                Button("Keep") {
+                    inlineEditUndo = nil
+                    focusBody()
+                }
+                .buttonStyle(PressScaleButtonStyle())
+                .help("Keep the AI edit")
+                Button("Undo") {
+                    setBody(edit.originalBody, caretUTF16: edit.originalCaret)
+                    inlineEditUndo = nil
+                    focusBody()
+                }
+                .buttonStyle(PressScaleButtonStyle())
+                .help("Restore the text from before the last AI edit")
+            }
+            .font(.caption)
+        }
+        .padding(8)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04),
+                    in: RoundedRectangle(cornerRadius: PMRadius.sm))
+        .accessibilityIdentifier("compose.aiDiff")
     }
 
     private var aiEditSystemImage: String {

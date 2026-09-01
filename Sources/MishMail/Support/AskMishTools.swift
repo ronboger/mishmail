@@ -118,6 +118,28 @@ enum AskMishTools {
         var requiresExplicitClick: Bool
     }
 
+    /// Prefill for "Open in compose" on a `create_draft` confirm. Nil when
+    /// the arguments have no To recipients.
+    struct ComposePrefill: Equatable {
+        var to: String
+        var cc: String
+        var bcc: String
+        var subject: String
+        var body: String
+    }
+
+    static func composePrefill(argumentsJSON: String) -> ComposePrefill? {
+        guard let args = try? decodeArguments(argumentsJSON) else { return nil }
+        let to = strings(args, "to")
+        guard !to.isEmpty else { return nil }
+        return ComposePrefill(
+            to: to.joined(separator: ", "),
+            cc: strings(args, "cc").joined(separator: ", "),
+            bcc: strings(args, "bcc").joined(separator: ", "),
+            subject: text(args, "subject") ?? "",
+            body: text(args, "body") ?? "")
+    }
+
     /// One short user-facing line for the confirm card. Falls back to the tool
     /// name when the arguments are unusable, so a card is never blank.
     ///
@@ -208,7 +230,7 @@ enum AskMishTools {
     /// Confirm line for `send_draft`, built from the **resolved** draft instead
     /// of the model's arguments. The confirm card is the last barrier before
     /// mail leaves, so it must name the recipients and the subject, not an
-    /// opaque draft id. `MailStore.askMishSendConfirmSummary(draftId:)` reads
+    /// opaque draft id. `MailStore.askMishSendConfirmPreview(draftId:)` reads
     /// the draft and calls this; keep the formatting here so it stays testable.
     ///
     /// - Parameters:

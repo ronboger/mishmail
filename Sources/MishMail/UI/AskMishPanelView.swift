@@ -29,6 +29,7 @@ struct AskMishPanelView: View {
     @State private var hostedNoticeDismissed = false
     @State private var expandedTraces: Set<String> = []
     @State private var thinking = Ollama.thinking(for: .askMish).rawValue
+    @State private var revealedBubbleIDs: Set<UUID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -74,14 +75,18 @@ struct AskMishPanelView: View {
             Spacer(minLength: 4)
             modelMenu
             if let config = currentProviderConfig {
-                Text(LLMRemotePolicy.sendsMailOffDevice(config) ? "Hosted" : "Local")
+                let local = !LLMRemotePolicy.sendsMailOffDevice(config)
+                    || LLMRemotePolicy.isPrivateLAN(config)
+                Text(local ? "Local" : "Hosted")
                     .font(.caption2)
                     .foregroundStyle(.tertiary)
-                    .help(LLMRemotePolicy.sendsMailOffDevice(config)
-                          ? "This model runs off this Mac. Mail text is sent to the provider."
-                          : "This model runs on this Mac.")
-                if !LLMRemotePolicy.sendsMailOffDevice(config) {
+                    .help(local
+                          ? "This model runs on this Mac or on your LAN."
+                          : "This model runs off this Mac. Mail text is sent to the provider.")
+                if config.kind == .ollama {
                     thinkingMenu
+                } else if LLMRemotePolicy.sendsMailOffDevice(config) {
+                    hostedSpeedMenu
                 }
             }
             Button {
@@ -236,8 +241,9 @@ struct AskMishPanelView: View {
             ScrollView {
                 LazyVStack(alignment: .leading, spacing: 14) {
                     if controller.bubbles.isEmpty { emptyState }
-                    ForEach(controller.bubbles) { bubble in
-                        bubbleView(bubble).id(bubble.id)
+                    ForEach(Array(controller.bubbles.enumerated()),
+                            id: \.element.id) { index, bubble in
+                        bubbleView(bubble, index: index).id(bubble.id)
                     }
                     // Scroll anchor: a zero-height tail row keeps the newest
                     // bubble fully visible while it grows.
@@ -249,6 +255,14 @@ struct AskMishPanelView: View {
             .onChange(of: controller.bubbles.count) { scrollToTail(scroller) }
             // Streaming appends to the last bubble without changing the count.
             .onChange(of: controller.bubbles.last?.text) { scrollToTail(scroller) }
+            .onAppear {
+                if revealedBubbleIDs.isEmpty {
+                    revealedBubbleIDs = Set(controller.bubbles.map(\.id))
+                }
+            }
+            .onChange(of: controller.conversationID) {
+                revealedBubbleIDs = Set(controller.bubbles.map(\.id))
+            }
         }
         .frame(maxHeight: .infinity)
     }
@@ -288,7 +302,8 @@ struct AskMishPanelView: View {
     }
 
     @ViewBuilder
-    private func bubbleView(_ bubble: AskMishController.Bubble) -> some View {
+    private func bubbleView(_ bubble: AskMishController.Bubble, index: Int) -> some View {
+        let shown = revealedBubbleIDs.contains(bubble.id)
         VStack(alignment: .leading, spacing: 5) {
             if bubble.role == .user {
                 Text(bubble.text)
@@ -303,11 +318,16 @@ struct AskMishPanelView: View {
                     thinkingDisclosure(bubble)
                 }
                 if !bubble.text.isEmpty {
-                    Text(AskMishContext.displayedText(bubble.text))
-                        .textSelection(.enabled)
-                        .foregroundStyle(bubble.isError ? Color.red : Color.primary)
+                    HStack(alignment: .bottom, spacing: 1) {
+                        Text(AskMishContext.displayedText(bubble.text))
+                            .textSelection(.enabled)
+                            .foregroundStyle(bubble.isError ? Color.red : Color.primary)
+                        if bubble.isStreaming { streamingCaret }
+                    }
                 }
-                if bubble.isStreaming { streamingPulse(hasText: !bubble.text.isEmpty) }
+                if bubble.isStreaming, bubble.text.isEmpty {
+                    streamingPulse(hasText: false)
+                }
                 ForEach(bubble.toolTraces) { tool in
                     toolTraceRow(tool)
                 }
@@ -331,6 +351,16 @@ struct AskMishPanelView: View {
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
+        .opacity(shown ? 1 : 0)
+        .offset(y: shown ? 0 : 8)
+        .onAppear {
+            guard !revealedBubbleIDs.contains(bubble.id) else { return }
+            let delay = 0.06 * Double(min(index, 6))
+            withAnimation(PMMotion.feedback.delay(delay)) {
+                revealedBubbleIDs.insert(bubble.id)
+                return
+            }
+        }
     }
 
     private var currentProviderConfig: LLMProviderConfig? {
@@ -381,6 +411,16 @@ struct AskMishPanelView: View {
                 Text("Thinking…").font(.caption).foregroundStyle(.secondary)
             }
         }
+    }
+
+    private var streamingCaret: some View {
+        TimelineView(.animation(minimumInterval: 0.53, paused: false)) { timeline in
+            let on = Int(timeline.date.timeIntervalSinceReferenceDate / 0.53) % 2 == 0
+            Text("▍")
+                .font(.system(size: 13))
+                .foregroundStyle(Color.primary.opacity(on ? 0.85 : 0.12))
+        }
+        .accessibilityHidden(true)
     }
 
     private func toolTraceRow(_ tool: AskMishTrace.Tool) -> some View {
@@ -493,6 +533,34 @@ struct AskMishPanelView: View {
         .help("Thinking effort for local models")
     }
 
+    private var hostedSpeedMenu: some View {
+        Menu {
+            Button("Default") { controller.setHostedSpeedFast(false) }
+            Button("Fast") { controller.setHostedSpeedFast(true) }
+        } label: {
+            Text(controller.hostedSpeedFast ? "Fast" : "Default")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 6)
+                .contentShape(Rectangle())
+        }
+        .menuStyle(.borderlessButton)
+        .disabled(controller.isRunning)
+        .help(hostedSpeedHelp)
+    }
+
+    private var hostedSpeedHelp: String {
+        guard let config = currentProviderConfig else {
+            return "Use a cheaper hosted model when one exists in this family."
+        }
+        let resolved = controller.resolvedModelID(for: config)
+        if controller.hostedSpeedFast, resolved != controller.modelID {
+            return "Fast uses \(resolved) instead of \(controller.modelID)."
+        }
+        return "Fast picks a cheaper model in this family when the provider lists one."
+    }
+
     private func setThinking(_ raw: String) {
         thinking = raw
         Ollama.setThinking(LLMThinking(rawValue: raw), for: .askMish)
@@ -558,6 +626,12 @@ struct AskMishPanelView: View {
                     controller.confirmPendingTool(allow: false)
                 }
                 .keyboardShortcut(.cancelAction)
+                if controller.canOpenPendingInCompose {
+                    Button("Open in compose") {
+                        controller.openPendingInCompose()
+                    }
+                    .buttonStyle(.borderless)
+                }
             }
         }
         .padding(12)

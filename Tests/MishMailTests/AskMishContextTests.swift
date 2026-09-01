@@ -254,6 +254,42 @@ final class AskMishContextTests: XCTestCase {
         XCTAssertEqual(messages[1].toolResults[0].content, "From: x\nSecret")
     }
 
+    func testWrapToolResultTruncatesJSONListTools() throws {
+        let rows = (0..<20).map { ["id": "t\($0)", "subject": "S\($0)"] }
+        let data = try JSONSerialization.data(withJSONObject: rows)
+        let json = String(data: data, encoding: .utf8)!
+        let wrapped = AskMishContext.wrapToolResult(name: "search_threads", content: json)
+        XCTAssertTrue(wrapped.contains("omitted"))
+        XCTAssertTrue(wrapped.contains("t0"))
+        XCTAssertFalse(wrapped.contains("t19"))
+        let intact = AskMishContext.wrapToolResult(
+            name: "search_threads",
+            content: #"[{"id":"a"}]"#)
+        XCTAssertTrue(intact.contains(#""id":"a""#) || intact.contains("\"id\" : \"a\""))
+        XCTAssertFalse(intact.contains("omitted"))
+    }
+
+    func testPrepareForModelCompactsOlderToolResults() {
+        func turn(id: String, name: String, payload: String) -> [LLMMessage] {
+            [
+                LLMMessage(role: .assistant, text: "",
+                           toolCalls: [LLMToolCall(id: id, name: name, argumentsJSON: "{}")]),
+                LLMMessage(role: .tool, text: "",
+                           toolResults: [LLMToolResult(callID: id, content: payload, isError: false)]),
+            ]
+        }
+        let messages =
+            turn(id: "c1", name: "search_threads", payload: String(repeating: "A", count: 80))
+            + turn(id: "c2", name: "list_threads", payload: "second")
+            + turn(id: "c3", name: "get_thread", payload: "latest body")
+        let prepared = AskMishContext.prepareForModel(messages)
+        XCTAssertTrue(prepared[1].toolResults[0].content.contains("omitted"))
+        XCTAssertTrue(prepared[1].toolResults[0].content.contains("80"))
+        XCTAssertFalse(prepared[1].toolResults[0].content.contains(String(repeating: "A", count: 80)))
+        XCTAssertTrue(prepared[3].toolResults[0].content.contains("second"))
+        XCTAssertTrue(prepared[5].toolResults[0].content.contains("latest body"))
+    }
+
     func testNeutralizeMarkdownLinksShowsTheURL() {
         XCTAssertEqual(
             AskMishContext.neutralizeMarkdownLinks("Click [here](https://evil.example/phish)"),

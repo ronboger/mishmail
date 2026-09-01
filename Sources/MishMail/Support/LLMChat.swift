@@ -261,6 +261,68 @@ enum LLMRemotePolicy {
     }
 }
 
+/// Cheap sibling of a hosted model for the Fast shortcut. Returns nil when
+/// the assigned model is already fast, or when the provider list has no
+/// cheaper row in the same family.
+enum LLMFastModel {
+    static func isAlreadyFast(_ model: String) -> Bool {
+        let lower = model.lowercased()
+        return lower.contains("-fast")
+            || lower.contains("-mini")
+            || lower.contains("haiku")
+            || lower.contains("flash")
+            || lower.contains("-lite")
+            || lower.contains("nano")
+    }
+
+    static func fastVariant(of model: String, available: [String]) -> String? {
+        let lower = model.lowercased()
+        if isAlreadyFast(lower) { return nil }
+        var byLower: [String: String] = [:]
+        for name in available { byLower[name.lowercased()] = name }
+        for suffix in ["-fast", "-mini", "-flash"] {
+            if let hit = byLower[lower + suffix] { return hit }
+        }
+        if lower.contains("-pro") {
+            let flash = lower.replacingOccurrences(of: "-pro", with: "-flash")
+            if let hit = byLower[flash] { return hit }
+        }
+        if lower.hasPrefix("claude"),
+           let haiku = available.first(where: { $0.lowercased().contains("haiku") }) {
+            return haiku
+        }
+        if lower.hasPrefix("gpt"),
+           let mini = longestPrefixMatch(model, in: available.filter {
+               $0.lowercased().contains("mini")
+           }) {
+            return mini
+        }
+        if lower.contains("gemini"),
+           let flash = longestPrefixMatch(model, in: available.filter {
+               $0.lowercased().contains("flash")
+           }) {
+            return flash
+        }
+        return longestPrefixMatch(model, in: available.filter {
+            $0.lowercased().contains("fast")
+        })
+    }
+
+    private static func longestPrefixMatch(_ model: String, in candidates: [String]) -> String? {
+        guard !candidates.isEmpty else { return nil }
+        let needle = model.lowercased()
+        var best: (score: Int, name: String)?
+        for candidate in candidates {
+            let other = candidate.lowercased()
+            let score = zip(needle, other).prefix(while: { $0 == $1 }).count
+            if score >= 4, best == nil || score > best!.score {
+                best = (score, candidate)
+            }
+        }
+        return best?.name ?? candidates.first
+    }
+}
+
 extension LLMEndpoint {
     /// Drops trailing slashes so path joining never produces "//".
     static func trimmedBase(_ raw: String) -> String {

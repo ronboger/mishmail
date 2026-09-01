@@ -63,6 +63,60 @@ final class LLMChatTests: XCTestCase {
         XCTAssertFalse(LLMRemotePolicy.isKnownHost("evil.api.openai.com"))
     }
 
+    func testOriginIncludesSchemeAndDefaultPort() {
+        XCTAssertEqual(LLMRemotePolicy.origin(of: "https://proxy.example/v1"),
+                       "https://proxy.example:443")
+        XCTAssertEqual(LLMRemotePolicy.origin(of: "https://proxy.example:8443/v1"),
+                       "https://proxy.example:8443")
+        XCTAssertEqual(LLMRemotePolicy.origin(of: "http://127.0.0.1:11434"),
+                       "http://127.0.0.1:11434")
+        XCTAssertNil(LLMRemotePolicy.origin(of: "not a url"))
+    }
+
+    func testPrivateLANHostsAndAutoSort() {
+        XCTAssertTrue(LLMEndpoint.isPrivateLANHost("192.168.1.5"))
+        XCTAssertTrue(LLMEndpoint.isPrivateLANHost("10.0.0.8"))
+        XCTAssertTrue(LLMEndpoint.isPrivateLANHost("172.16.4.1"))
+        XCTAssertTrue(LLMEndpoint.isPrivateLANHost("169.254.1.1"))
+        XCTAssertTrue(LLMEndpoint.isPrivateLANHost("fd12::1"))
+        XCTAssertFalse(LLMEndpoint.isPrivateLANHost("8.8.8.8"))
+        XCTAssertFalse(LLMEndpoint.isPrivateLANHost("api.x.ai"))
+        XCTAssertFalse(LLMEndpoint.isPrivateLANHost("fc.example.com"))
+
+        let lan = LLMProviderConfig(
+            id: UUID(), kind: .ollama, label: "LAN",
+            baseURL: "https://192.168.1.5:11434", defaultModel: "llama",
+            authMode: .apiKey)
+        let grok = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "Grok",
+            baseURL: "https://api.x.ai/v1", defaultModel: "grok-4",
+            authMode: .apiKey)
+        XCTAssertTrue(LLMRemotePolicy.sendsMailOffDevice(lan))
+        XCTAssertFalse(LLMRemotePolicy.blocksSilentAutoSort(lan))
+        XCTAssertTrue(LLMRemotePolicy.blocksSilentAutoSort(grok))
+    }
+
+    func testFastVariantPicksFamilySibling() {
+        XCTAssertEqual(
+            LLMFastModel.fastVariant(of: "grok-4", available: ["grok-4", "grok-4-fast"]),
+            "grok-4-fast")
+        XCTAssertEqual(
+            LLMFastModel.fastVariant(
+                of: "claude-sonnet-5",
+                available: ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]),
+            "claude-haiku-4-5")
+        XCTAssertEqual(
+            LLMFastModel.fastVariant(
+                of: "gpt-5.4", available: ["gpt-5.4", "gpt-5.4-mini"]),
+            "gpt-5.4-mini")
+        XCTAssertEqual(
+            LLMFastModel.fastVariant(
+                of: "gemini-2.5-pro", available: ["gemini-2.5-pro", "gemini-2.5-flash"]),
+            "gemini-2.5-flash")
+        XCTAssertNil(LLMFastModel.fastVariant(of: "grok-4-fast", available: ["grok-4-fast"]))
+        XCTAssertNil(LLMFastModel.fastVariant(of: "grok-4", available: ["grok-4"]))
+    }
+
     // MARK: - Path derivation
 
     func testChatPathForBareBaseURLs() {

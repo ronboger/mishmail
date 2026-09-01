@@ -680,20 +680,6 @@ extension MailStore {
         return receipt
     }
 
-    /// Confirm-card line for `send_draft`, built from the **stored** draft.
-    ///
-    /// The model only passes an opaque draft id, so the pure
-    /// `AskMishTools.confirmSummary(toolName:argumentsJSON:)` fallback cannot
-    /// say who the mail goes to. The controller must call this first and use
-    /// the fallback only when it returns `nil`.
-    ///
-    /// - Returns: one short line naming the visible recipients (To + Cc), the
-    ///   Bcc count, and the subject. `nil` when the id is empty or the draft
-    ///   does not resolve to an unsent draft — the caller then falls back.
-    func askMishSendConfirmSummary(draftId: String) async -> String? {
-        await askMishSendConfirmPreview(draftId: draftId)?.summary
-    }
-
     /// Recipients, subject, body preview, and a fingerprint of the draft as
     /// it stands now. Send compares the fingerprint so a changed draft cannot
     /// ride a stale confirm.

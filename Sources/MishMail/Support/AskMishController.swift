@@ -55,6 +55,8 @@ final class AskMishController {
         var requiresExplicitClick: Bool = false
         /// Snapshot of the draft at confirm time. Send aborts if it drifts.
         var sendFingerprint: String? = nil
+        /// Existing draft id for `send_draft` "Open in compose".
+        var composeDraftID: String? = nil
     }
 
     // MARK: - Rendered state
@@ -82,6 +84,8 @@ final class AskMishController {
     /// assignment; persisted on the conversation row.
     var providerID: UUID
     var modelID: String
+    /// Hosted chats: Fast picks a cheaper sibling of the assigned model.
+    var hostedSpeedFast: Bool
 
     /// Running token/cost total for the whole conversation. Nil until a turn
     /// reports usage (local models often report none).
@@ -109,6 +113,27 @@ final class AskMishController {
         let assignment = LLMProviderStore.assignment(for: .askMish)
         self.providerID = assignment.providerID
         self.modelID = assignment.model
+        self.hostedSpeedFast =
+            UserDefaults.standard.string(forKey: Self.hostedSpeedKey) == "fast"
+    }
+
+    private static let hostedSpeedKey = "askMish.hostedSpeed"
+
+    func setHostedSpeedFast(_ fast: Bool) {
+        hostedSpeedFast = fast
+        UserDefaults.standard.set(fast ? "fast" : "default", forKey: Self.hostedSpeedKey)
+    }
+
+    /// Model sent on the wire. Fast remaps a hosted pick to a cheaper sibling
+    /// when the provider list has one.
+    func resolvedModelID(for config: LLMProviderConfig) -> String {
+        guard hostedSpeedFast, LLMRemotePolicy.sendsMailOffDevice(config) else {
+            return modelID
+        }
+        var available = config.models ?? []
+        if !available.contains(config.defaultModel) { available.append(config.defaultModel) }
+        if !available.contains(modelID) { available.append(modelID) }
+        return LLMFastModel.fastVariant(of: modelID, available: available) ?? modelID
     }
 
     // MARK: - Turn lifecycle
@@ -299,6 +324,7 @@ final class AskMishController {
             return
         }
         let overrides = LLMPricing.loadOverrides()
+        let wireModel = resolvedModelID(for: config)
         await ensureConversation(firstUserText: userText)
         await appendUser(userText)
         let tools = AskMishTools.llmToolSpecs()
@@ -311,7 +337,8 @@ final class AskMishController {
             let request = [systemMessage()] + AskMishContext.prepareForModel(history)
             do {
                 for try await event in await LLMClient.shared.stream(
-                    messages: request, tools: tools, config: config, model: modelID,
+                    messages: request, tools: tools, config: config,
+                    model: wireModel,
                     task: .askMish) {
                     switch event {
                     case .token(let token):
@@ -347,7 +374,7 @@ final class AskMishController {
             }
             addUsage(usage)
             let turnCost = LLMPricing.costLabel(usage: usage, config: config,
-                                                model: modelID, overrides: overrides)
+                                                model: wireModel, overrides: overrides)
             finishBubble(bubbleID, costLabel: turnCost)
             conversationCostLabel = totalCostLabel()
 
@@ -456,6 +483,7 @@ final class AskMishController {
         var summary = fallback.summary
         var bodyPreview = fallback.bodyPreview
         var fingerprint: String?
+        var composeDraftID: String?
         // Send must resolve the stored draft. A missing draft used to fall
         // back to a one-line card and then send with no fingerprint.
         if call.name == AskMishTools.sendDraftToolName {
@@ -471,6 +499,7 @@ final class AskMishController {
             summary = preview.summary
             bodyPreview = preview.bodyPreview
             fingerprint = preview.fingerprint
+            composeDraftID = draftId
         }
         if Task.isCancelled { return .declined }
         pendingConfirmation = PendingToolConfirmation(
@@ -478,7 +507,8 @@ final class AskMishController {
             argumentsJSON: call.argumentsJSON,
             bodyPreview: bodyPreview,
             requiresExplicitClick: fallback.requiresExplicitClick,
-            sendFingerprint: fingerprint)
+            sendFingerprint: fingerprint,
+            composeDraftID: composeDraftID)
         let allowed = await withCheckedContinuation { continuation in
             confirmContinuation = continuation
         }
@@ -647,6 +677,38 @@ final class AskMishController {
                 try MailThread.fetchOne(db, key: id)
             }
             if let row { store.openThread(row) }
+        }
+    }
+
+    var canOpenPendingInCompose: Bool {
+        guard let pending = pendingConfirmation else { return false }
+        if pending.composeDraftID != nil { return true }
+        if pending.toolName == "create_draft" {
+            return AskMishTools.composePrefill(argumentsJSON: pending.argumentsJSON) != nil
+        }
+        return false
+    }
+
+    /// Opens the draft in the real editor. `send_draft` keeps the confirm
+    /// card so the user can still Send. `create_draft` declines the tool
+    /// so compose does not duplicate the draft.
+    func openPendingInCompose() {
+        guard let pending = pendingConfirmation, let store else { return }
+        if let id = pending.composeDraftID,
+           let draft = store.messageBody(id: id) {
+            store.editDraft(draft)
+            return
+        }
+        if pending.toolName == "create_draft",
+           let prefill = AskMishTools.composePrefill(argumentsJSON: pending.argumentsJSON) {
+            store.openCompose(.init(
+                replyTo: nil,
+                prefillTo: prefill.to,
+                prefillCc: prefill.cc.isEmpty ? nil : prefill.cc,
+                prefillBcc: prefill.bcc.isEmpty ? nil : prefill.bcc,
+                prefillSubject: prefill.subject.isEmpty ? nil : prefill.subject,
+                prefillBody: prefill.body.isEmpty ? nil : prefill.body))
+            confirmPendingTool(allow: false)
         }
     }
 
