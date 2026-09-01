@@ -1745,7 +1745,7 @@ struct AISettings: View {
                             .foregroundStyle(.secondary)
                     }
                 } footer: {
-                    Text("After each sync, quietly tag new inbox threads (Reply needed, FYI, Newsletter, Receipt) with the Triage model. Auto-sort only runs when that model is local (Ollama on this Mac). A hosted triage model would send every new snippet off this Mac, so auto-sort skips it. A small fast model like llama3.2:3b is ideal here.")
+                    Text("After each sync, quietly tag new inbox threads (Reply needed, FYI, Newsletter, Receipt) with the Triage model. Auto-sort only runs when that model is local (Ollama on this Mac or on your LAN). A cloud triage model would send every new snippet off this Mac, so auto-sort skips it. A small fast model like llama3.2:3b is ideal here.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -1785,7 +1785,7 @@ struct AISettings: View {
     private var triageSendsOffDevice: Bool {
         let assignment = LLMProviderStore.assignment(for: .triage)
         let config = providers.first { $0.id == assignment.providerID }
-        return config.map(LLMRemotePolicy.sendsMailOffDevice) ?? false
+        return config.map(LLMRemotePolicy.blocksSilentAutoSort) ?? false
     }
 
     @ViewBuilder
@@ -2146,18 +2146,19 @@ private struct ProviderEditSheet: View {
         OAuthConfig.usesKeychain(environment: ProcessInfo.processInfo.environment)
     }
 
-    private var customHost: String? {
-        guard let host = LLMRemotePolicy.host(of: baseURL),
+    private var customOrigin: String? {
+        guard let origin = LLMRemotePolicy.origin(of: baseURL),
+              let host = LLMRemotePolicy.host(of: baseURL),
               !LLMRemotePolicy.isKnownHost(host),
               let url = URL(string: LLMEndpoint.trimmedBase(baseURL)),
               !LLMEndpoint.isLoopback(url) else { return nil }
-        return host
+        return origin
     }
 
     private var saveDisabled: Bool {
         !canStoreSecrets || label.isEmpty || modelID.isEmpty
             || (!useOAuth && apiKey.isEmpty && provider == nil)
-            || (customHost != nil && !hostConsent)
+            || (customOrigin != nil && !hostConsent)
     }
 
     var body: some View {
@@ -2207,17 +2208,19 @@ private struct ProviderEditSheet: View {
             }
             TextField("Label", text: $label)
             TextField("Base URL", text: $baseURL)
-                .onChange(of: customHost) { _, host in
+                .onChange(of: customOrigin) { _, origin in
                     if let existing = provider,
-                       let host,
-                       LLMProviderStore.consentedHost(for: existing.id) == host {
+                       let origin,
+                       let stored = LLMProviderStore.consentedHost(for: existing.id),
+                       stored == origin
+                        || stored == LLMRemotePolicy.host(of: existing.baseURL) {
                         hostConsent = true
-                    } else if host != nil {
+                    } else if origin != nil {
                         hostConsent = false
                     }
                 }
-            if let host = customHost {
-                Toggle("Mail from this Mac will go to \(host).", isOn: $hostConsent)
+            if let origin = customOrigin {
+                Toggle("Mail from this Mac will go to \(origin).", isOn: $hostConsent)
                     .font(.caption)
             }
             HStack {
@@ -2275,8 +2278,9 @@ private struct ProviderEditSheet: View {
                 presetIndex = matched
             }
             if case .oauth = existing.authMode { useOAuth = true } else { useOAuth = false }
-            if let host = LLMRemotePolicy.host(of: existing.baseURL),
-               LLMProviderStore.consentedHost(for: existing.id) == host {
+            if let origin = LLMRemotePolicy.origin(of: existing.baseURL),
+               let stored = LLMProviderStore.consentedHost(for: existing.id),
+               stored == origin || stored == LLMRemotePolicy.host(of: existing.baseURL) {
                 hostConsent = true
             }
         }
@@ -2344,9 +2348,9 @@ private struct ProviderEditSheet: View {
             var list = LLMProviderStore.load().filter { $0.id != id }
             list.append(config)
             LLMProviderStore.save(list)
-            if let host = customHost, hostConsent {
-                LLMProviderStore.setConsentedHost(host, for: id)
-            } else if customHost == nil {
+            if let origin = customOrigin, hostConsent {
+                LLMProviderStore.setConsentedHost(origin, for: id)
+            } else if customOrigin == nil {
                 LLMProviderStore.setConsentedHost(nil, for: id)
             }
             onSave(config)

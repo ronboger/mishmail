@@ -639,10 +639,11 @@ final class MailStore {
         let defaults = UserDefaults.standard
         guard defaults.object(forKey: Self.autoClassifyKey) == nil
                 || defaults.bool(forKey: Self.autoClassifyKey) else { return }
-        // Auto-sort is silent. A hosted triage model would upload every new
-        // snippet; skip unless the assigned provider stays on this Mac.
+        // Auto-sort is silent. A cloud triage model would upload every new
+        // snippet; skip unless the assigned provider stays on this Mac or
+        // on the LAN (RFC1918 / link-local Ollama).
         if let resolved = LLMTaskRunner.resolve(.triage),
-           LLMRemotePolicy.sendsMailOffDevice(resolved.config) {
+           LLMRemotePolicy.blocksSilentAutoSort(resolved.config) {
             return
         }
         if let pause = autoClassifyPausedUntil, pause > Date() { return }

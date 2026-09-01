@@ -148,13 +148,17 @@ enum LLMProviderStore {
     }
 
     /// Preset hosts do not need consent. A custom host must match the stored
-    /// consent exactly (changing the URL requires a new confirm).
+    /// origin exactly (changing scheme, host, or port requires a new confirm).
     static func hasHostConsent(for config: LLMProviderConfig,
                                from defaults: UserDefaults = .standard) -> Bool {
         guard LLMRemotePolicy.sendsMailOffDevice(config) else { return true }
-        guard let host = LLMRemotePolicy.host(of: config.baseURL) else { return false }
+        guard let origin = LLMRemotePolicy.origin(of: config.baseURL),
+              let host = LLMRemotePolicy.host(of: config.baseURL) else { return false }
         if LLMRemotePolicy.isKnownHost(host) { return true }
-        return consentedHost(for: config.id, from: defaults) == host
+        let stored = consentedHost(for: config.id, from: defaults)
+        if stored == origin { return true }
+        // Older rows stored the host only. Accept that until the user saves.
+        return stored == host
     }
 
     static func assignmentKey(for task: LLMTask) -> String { "llm.task.\(task.rawValue)" }

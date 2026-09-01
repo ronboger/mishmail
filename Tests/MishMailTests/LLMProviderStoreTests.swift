@@ -76,6 +76,22 @@ final class LLMProviderStoreTests: XCTestCase {
         XCTAssertFalse(LLMProviderStore.hasHostConsent(for: broken, from: defaults))
     }
 
+    func testHostConsentMatchesOriginIncludingPort() {
+        let id = UUID()
+        let custom = LLMProviderConfig(
+            id: id, kind: .openAICompatible, label: "Proxy",
+            baseURL: "https://llm.evil.example/v1", defaultModel: "x",
+            authMode: .apiKey)
+        LLMProviderStore.setConsentedHost(
+            LLMRemotePolicy.origin(of: custom.baseURL), for: id, to: defaults)
+        XCTAssertTrue(LLMProviderStore.hasHostConsent(for: custom, from: defaults))
+        var moved = custom
+        moved.baseURL = "https://llm.evil.example:8443/v1"
+        XCTAssertFalse(LLMProviderStore.hasHostConsent(for: moved, from: defaults))
+        moved.baseURL = "http://llm.evil.example/v1"
+        XCTAssertFalse(LLMProviderStore.hasHostConsent(for: moved, from: defaults))
+    }
+
     func testTaskAssignmentDefaultsToBuiltInOllamaAndRoundTrips() {
         let unset = LLMProviderStore.assignment(for: .drafts, from: defaults)
         XCTAssertEqual(unset.providerID, LLMProviderStore.builtInOllamaID)

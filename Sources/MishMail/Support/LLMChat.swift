@@ -144,7 +144,36 @@ enum LLMEndpoint {
 
     static func isLoopback(_ url: URL) -> Bool {
         guard let host = url.host?.lowercased() else { return false }
-        return host == "127.0.0.1" || host == "localhost" || host == "::1"
+        return isLoopbackHost(host)
+    }
+
+    static func isLoopbackHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        return h == "127.0.0.1" || h == "localhost" || h == "::1"
+    }
+
+    /// RFC1918, IPv4 link-local, IPv6 ULA, and IPv6 link-local. A hostname
+    /// that is not an address is not private — `.local` can point anywhere.
+    static func isPrivateLANHost(_ host: String) -> Bool {
+        let h = host.lowercased()
+        if isLoopbackHost(h) { return true }
+        if h.contains(":") {
+            if h.hasPrefix("fe80:") { return true }
+            if h.hasPrefix("fc") || h.hasPrefix("fd") { return true }
+            return false
+        }
+        let parts = h.split(separator: ".").compactMap { UInt8($0) }
+        guard parts.count == 4 else { return false }
+        if parts[0] == 10 { return true }
+        if parts[0] == 192 && parts[1] == 168 { return true }
+        if parts[0] == 172 && (16...31).contains(parts[1]) { return true }
+        if parts[0] == 169 && parts[1] == 254 { return true }
+        return false
+    }
+
+    static func isPrivateLAN(_ url: URL) -> Bool {
+        guard let host = url.host else { return false }
+        return isPrivateLANHost(host)
     }
 
     static func validate(_ url: URL) throws {
@@ -176,8 +205,36 @@ enum LLMRemotePolicy {
         return host.lowercased()
     }
 
+    /// `scheme://host:port` with default ports filled in. Consent compares
+    /// this, so a port or scheme change needs a new confirm.
+    static func origin(of baseURL: String) -> String? {
+        let trimmed = LLMEndpoint.trimmedBase(baseURL)
+        guard let url = URL(string: trimmed),
+              let host = url.host, !host.isEmpty,
+              let scheme = url.scheme, !scheme.isEmpty else { return nil }
+        let schemeL = scheme.lowercased()
+        let hostL = host.lowercased()
+        let port: Int
+        if let explicit = url.port {
+            port = explicit
+        } else if schemeL == "https" {
+            port = 443
+        } else if schemeL == "http" {
+            port = 80
+        } else {
+            return "\(schemeL)://\(hostL)"
+        }
+        return "\(schemeL)://\(hostL):\(port)"
+    }
+
     static func isKnownHost(_ host: String) -> Bool {
         knownHosts.contains(host.lowercased())
+    }
+
+    static func isPrivateLAN(_ config: LLMProviderConfig) -> Bool {
+        let trimmed = LLMEndpoint.trimmedBase(config.baseURL)
+        guard let url = URL(string: trimmed) else { return false }
+        return LLMEndpoint.isPrivateLAN(url)
     }
 
     /// True when this provider's endpoint is not loopback. Fail closed on
@@ -188,8 +245,15 @@ enum LLMRemotePolicy {
         return !LLMEndpoint.isLoopback(url)
     }
 
+    /// Silent auto-sort must not upload inbox snippets to a cloud host.
+    /// Loopback is local. RFC1918 / link-local Ollama stays on the LAN.
+    static func blocksSilentAutoSort(_ config: LLMProviderConfig) -> Bool {
+        guard sendsMailOffDevice(config) else { return false }
+        return !isPrivateLAN(config)
+    }
+
     /// Custom HTTPS hosts (not a shipped preset) need a stored consent
-    /// matching this exact host before we send mail there.
+    /// matching this exact origin before we send mail there.
     static func requiresHostConsent(_ config: LLMProviderConfig) -> Bool {
         guard sendsMailOffDevice(config) else { return false }
         guard let host = host(of: config.baseURL) else { return true }
