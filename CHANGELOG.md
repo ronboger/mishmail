@@ -17,13 +17,24 @@ minor versions may still change behavior.
   Grok defaults to Grok 4.6. Gemini defaults to 3.7 Flash. A stored stale
   assignment (drafts, summaries, triage, Ask Mish) moves to that default.
   Search still finds the full list.
+- **Compose From is a keyboard control.** ⇧Tab from To lands on the sending
+  address. ↑↓ change it in place, Space or ↩ open the list, type a letter to
+  jump, Esc closes the list without closing the draft. Rows show the display
+  name, the mailbox it sends through, and a Default badge.
 - **Ask Mish confirms show the draft body.** Create-draft and send-draft cards
   include a body preview. Return no longer confirms those actions. Send aborts
   if the draft changed after you confirmed.
-- **Auto-sort stays on this Mac.** If Triage is a hosted model, auto-sort skips
-  so new-mail snippets are not uploaded. Settings says so.
+- **Auto-sort stays on this Mac or the LAN.** If Triage is a cloud model,
+  auto-sort skips so new-mail snippets are not uploaded. Ollama on a private
+  LAN still runs. Settings says so.
 - **Custom model hosts need a confirm.** A base URL that is not a shipped
-  preset must be acknowledged in Settings before mail is sent there.
+  preset must be acknowledged in Settings before mail is sent there. Consent
+  matches scheme, host, and port.
+- **Long Ask Mish chats compact old tool results.** Later turns no longer
+  resend every search and list payload. List tools keep a leading page.
+- **mcp.json no longer stores the MCP bearer token.** The token stays in the
+  Keychain. Helper scripts read it from `MISHMAIL_MCP_TOKEN` or
+  `~/.config/mishmail/mcp-token`.
 
 ### Added
 - **Sign in with OpenRouter.** Settings → AI → Subscriptions can open a
@@ -33,7 +44,8 @@ minor versions may still change behavior.
   expand (query, result, and clickable threads). Empty chats offer three
   starting prompts. After an answer, follow-up chips continue the turn. The
   open-thread chip names the subject. Local models get a Think control on the
-  panel. Compose AI edits leave an Undo edit control.
+  panel. Hosted chats get Fast vs Default. Confirm cards can open the draft
+  in compose. Compose AI edits show a before/after strip with Keep and Undo.
 - **⌘L copies a Gmail web link to the focused conversation**, Notion-style.
   The clipboard gets a `mail.google.com` URL that opens the conversation
   in the browser (with `authuser` so the right mailbox is selected). Also

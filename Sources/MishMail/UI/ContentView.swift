@@ -951,6 +951,7 @@ private extension ContentView {
                     && !store.composeFinishing
                 switch ComposeEsc.intent(
                     isSettingsWindow: isSettings,
+                    fromPickerOpen: store.fromPickerOpen,
                     slashPickerVisible: store.slashPickerVisible,
                     commandPaletteOpen: store.showCommandPalette,
                     searchActive: store.searchActive,
@@ -961,6 +962,9 @@ private extension ContentView {
                     // ladder below owns blur-then-close; with expanded compose
                     // that gate is skipped and AppKit gets the event (pre-existing).
                     break
+                case .dismissFromPicker:
+                    store.dismissFromPicker()
+                    return nil
                 case .dismissSlashPicker:
                     store.dismissSlashPicker()
                     return nil

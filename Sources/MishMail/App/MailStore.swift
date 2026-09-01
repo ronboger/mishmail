@@ -508,6 +508,15 @@ final class MailStore {
     /// ContentView Esc ladder can dismiss it without relying on local-monitor
     /// install order (monitors fire FIFO; an early `return nil` starves later ones).
     var slashPickerVisible = false
+    /// ComposeView publishes whether the From identity list is open so the
+    /// Esc ladder closes the list instead of saving-and-closing the draft.
+    var fromPickerOpen = false
+    /// Bumped to close the From list (FromIdentityPicker observes it).
+    private(set) var fromPickerDismissToken = 0
+    func dismissFromPicker() {
+        guard fromPickerOpen else { return }
+        fromPickerDismissToken &+= 1
+    }
     /// Bumped to dismiss the `/` picker (ComposeView sets `slashDismissed`).
     private(set) var slashPickerDismissToken = 0
     func dismissSlashPicker() {
@@ -1529,6 +1538,7 @@ struct ComposeRequest: Identifiable {
         composeMinimized = false
         composeFinishing = false
         slashPickerVisible = false
+        fromPickerOpen = false
         guard let mail = pendingMailto else { return }
         pendingMailto = nil
         openMailtoCompose(mail)

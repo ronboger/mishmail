@@ -6,6 +6,8 @@ enum ComposeEscIntent: Equatable {
     /// Leave the event alone (e.g. Settings owns Esc — handled later when
     /// compose is nil/minimized; with expanded compose, AppKit gets the event).
     case passThrough
+    /// Close the open From identity list; keep compose, placement and focus.
+    case dismissFromPicker
     /// Dismiss the `/` snippet picker; keep compose and placement.
     case dismissSlashPicker
     /// Close the command palette; keep compose and placement.
@@ -21,7 +23,7 @@ enum ComposeEscIntent: Equatable {
 }
 
 enum ComposeEsc {
-    /// Priority: Settings → slash picker → command palette → search focus →
+    /// Priority: Settings → From list → slash picker → command palette → search focus →
     /// exit split → close expanded draft → mailbox ladder. Explicit gates
     /// only; never rely on `NSEvent` local-monitor registration order.
     ///
@@ -29,6 +31,7 @@ enum ComposeEsc {
     /// not vanish while the user is typing `/` in the sidebar (three-pane).
     static func intent(
         isSettingsWindow: Bool,
+        fromPickerOpen: Bool = false,
         slashPickerVisible: Bool,
         commandPaletteOpen: Bool,
         searchActive: Bool,
@@ -36,6 +39,9 @@ enum ComposeEsc {
         isSplit: Bool
     ) -> ComposeEscIntent {
         if isSettingsWindow { return .passThrough }
+        // The From list only opens from the focused From control, so Esc
+        // must close the list — not save-and-close the whole draft.
+        if fromPickerOpen { return .dismissFromPicker }
         if slashPickerVisible { return .dismissSlashPicker }
         if commandPaletteOpen { return .closeCommandPalette }
         if searchActive { return .dismissSearchFocus }

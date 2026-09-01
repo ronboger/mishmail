@@ -962,46 +962,26 @@ struct ComposeView: View {
             }
 
             // From row — laid out like the address rows (30pt label gutter)
-            // so the identity text lines up with the To/Cc/Bcc fields.
+            // so the identity text lines up with the To/Cc/Bcc fields. The
+            // control's own 7pt inset is pulled back so its text aligns too.
             // Reply/forward/draft: only identities for the message's mailbox
             // (primary + Gmail send-as). Never other OAuth accounts — their
             // threadIds are not valid on this mailbox.
-            HStack(alignment: .center, spacing: 6) {
+            HStack(alignment: .center, spacing: -1) {
                 Text("From")
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .frame(width: 30, alignment: .leading)
-                Menu {
-                    // Picker (not Button) so the open menu shows a checkmark
-                    // on the selected identity. Titles lead with the email;
-                    // display names are dropped when they don't distinguish.
-                    Picker("From", selection: fromIdentityBinding) {
-                        ForEach(availableFromIdentities) { identity in
-                            Text(menuTitle(identity)).tag(identity.id)
-                        }
-                    }
-                    .pickerStyle(.inline)
-                    .labelsHidden()
-                } label: {
-                    HStack(spacing: 5) {
-                        Text(fromClosedLabel)
-                            .font(.system(size: 13, weight: .medium))
-                        Image(systemName: "chevron.down")
-                            .font(.system(size: 9, weight: .semibold)).foregroundStyle(.secondary)
-                    }
-                    .contentShape(Rectangle())
-                }
-                // .button + .plain renders custom labels reliably on macOS
-                // (borderlessButton can drop the label text entirely).
-                .menuStyle(.button)
-                .buttonStyle(.plain)
-                .menuIndicator(.hidden)
-                .fixedSize()
-                // Hide the chevron when there's only one choice (common on reply).
-                .disabled(availableFromIdentities.count <= 1)
+                // Focusable, keyboard-first control: ⇧Tab from To lands here;
+                // ↑↓ change the sender, Space/↩ open the list, Esc closes it.
+                FromIdentityPicker(identities: availableFromIdentities,
+                                   selectedId: fromIdentityBinding,
+                                   closedLabel: fromClosedLabel,
+                                   rowTitle: { menuTitle($0) })
                 Spacer()
             }
-            .padding(.vertical, 7)
+            .padding(.vertical, 4)
+            .zIndex(4)
             Divider()
 
             TokenAddressField(label: "To", tokens: $toTokens, draft: $toDraft,

@@ -3,6 +3,7 @@ import XCTest
 final class ComposeEscTests: XCTestCase {
     private func intent(
         isSettingsWindow: Bool = false,
+        fromPickerOpen: Bool = false,
         slashPickerVisible: Bool = false,
         commandPaletteOpen: Bool = false,
         searchActive: Bool = false,
@@ -11,6 +12,7 @@ final class ComposeEscTests: XCTestCase {
     ) -> ComposeEscIntent {
         ComposeEsc.intent(
             isSettingsWindow: isSettingsWindow,
+            fromPickerOpen: fromPickerOpen,
             slashPickerVisible: slashPickerVisible,
             commandPaletteOpen: commandPaletteOpen,
             searchActive: searchActive,
@@ -28,6 +30,26 @@ final class ComposeEscTests: XCTestCase {
                 composeExpanded: true,
                 isSplit: true),
             .passThrough)
+    }
+
+    func testFromPickerBeatsEverythingButSettings() {
+        XCTAssertEqual(
+            intent(
+                fromPickerOpen: true,
+                slashPickerVisible: true,
+                commandPaletteOpen: true,
+                searchActive: true,
+                composeExpanded: true,
+                isSplit: true),
+            .dismissFromPicker)
+        XCTAssertEqual(
+            intent(isSettingsWindow: true, fromPickerOpen: true),
+            .passThrough)
+    }
+
+    func testClosedFromPickerDoesNotChangeLadder() {
+        XCTAssertEqual(intent(fromPickerOpen: false, composeExpanded: true),
+                       .saveAndCloseCompose)
     }
 
     func testSlashPickerBeatsSplitPaletteAndSearch() {

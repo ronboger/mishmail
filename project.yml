@@ -218,6 +218,7 @@ targets:
       - Sources/MishMail/Support/ComposeToolbarVisibility.swift
       - Sources/MishMail/Support/ComposeKeyOwnership.swift
       - Sources/MishMail/Support/ComposeEsc.swift
+      - Sources/MishMail/Support/FromPickerModel.swift
       - Sources/MishMail/Support/QuickLookKeyOwnership.swift
       - Sources/MishMail/Support/DemoSeed.swift
       - Sources/MishMail/Support/ErrorRecovery.swift
