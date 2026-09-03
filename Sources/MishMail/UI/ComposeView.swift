@@ -111,6 +111,9 @@ struct ComposeView: View {
     @State private var replacingDraft: Message?
     /// Notion-style footer status after typing.
     @State private var draftStatus: DraftSaveStatus = .idle
+    /// Outbox row this compose owns (saved while offline). Autosave updates
+    /// it in place; the first save that reaches Gmail deletes it.
+    @State private var localDraft: LocalDraft?
     /// Cached warmness of the reply target (Hey vs Hi vs Hello). Computed once
     /// in `prefill` — not on every body keystroke (stripping HTML is not free).
     @State private var greetingTone: GreetingAutocomplete.Tone = .neutral
@@ -128,6 +131,8 @@ struct ComposeView: View {
         case saving
         case saved
         case failed
+        /// Kept locally (no network); uploads when back online.
+        case savedOffline
     }
 
     private var isInline: Bool { request.presentation == .inline }
@@ -361,10 +366,10 @@ struct ComposeView: View {
         }
         // Already saved this exact content.
         if contentFingerprint == lastSavedFingerprint {
-            draftStatus = .saved
+            draftStatus = localDraft != nil ? .savedOffline : .saved
             return
         }
-        draftStatus = draftStatus == .saved ? .idle : draftStatus
+        draftStatus = (draftStatus == .saved || draftStatus == .savedOffline) ? .idle : draftStatus
         autosaveTask = Task { @MainActor in
             try? await Task.sleep(nanoseconds: 1_500_000_000)
             guard !Task.isCancelled else { return }
@@ -413,7 +418,7 @@ struct ComposeView: View {
         }
         let fingerprint = contentFingerprint
         if fingerprint == lastSavedFingerprint {
-            if silent { draftStatus = .saved }
+            if silent { draftStatus = localDraft != nil ? .savedOffline : .saved }
             // Already on the server — still sync on dismiss so Drafts/thread UI
             // pick up a silent autosave that never called sync().
             if syncAfter, didSilentSave || liveDraft != nil {
@@ -469,13 +474,38 @@ struct ComposeView: View {
             draftStatus = .idle
             return
         }
-        let saved = await store.saveDraft(from: apiAccount, fromEmail: identity,
-                                          to: to, cc: cc, bcc: bcc, subject: subj,
-                                          body: body, replyTo: reply, forward: isForward,
-                                          attachments: atts, replacing: old,
-                                          silent: silent,
-                                          syncAfter: syncAfter)
-        if let saved {
+        let outcome = await store.persistDraft(from: apiAccount, fromEmail: identity,
+                                               to: to, cc: cc, bcc: bcc, subject: subj,
+                                               body: body, replyTo: reply, forward: isForward,
+                                               forwardAll: request.forwardAll,
+                                               attachments: atts, replacing: old,
+                                               local: localDraft,
+                                               silent: silent,
+                                               syncAfter: syncAfter)
+        switch outcome {
+        case .keptLocally(let row):
+            // On a plane: the text is safe in the Outbox. Keep the editor
+            // bound to that row so further typing updates it instead of
+            // stacking copies; the reconnect flush uploads it after close.
+            localDraft = row
+            if store.composeRequest?.id == request.id {
+                store.composingLocalDraftId = row.id
+            }
+            lastSavedFingerprint = fingerprint
+            if silent { didSilentSave = true }
+            draftStatus = .savedOffline
+            if silent, !didFinish, hasContent,
+               contentFingerprint != lastSavedFingerprint {
+                await performPersist(silent: true, syncAfter: false)
+            }
+        case .failed:
+            draftStatus = .failed
+        case .uploaded(let saved):
+            // A save that reached Gmail retires the Outbox copy.
+            if localDraft != nil {
+                localDraft = nil
+                store.composingLocalDraftId = nil
+            }
             // createDraft was already on the wire when Send cancelled the task:
             // delete the just-created draft so Gmail Drafts doesn't keep sent
             // content (PendingSend.replacingDraft is the older completed id).
@@ -501,8 +531,6 @@ struct ComposeView: View {
                contentFingerprint != lastSavedFingerprint {
                 await performPersist(silent: true, syncAfter: false)
             }
-        } else {
-            draftStatus = .failed
         }
     }
 
@@ -542,6 +570,9 @@ struct ComposeView: View {
         Task { @MainActor in
             // Finish any in-flight createDraft so we delete the real server draft.
             await awaitPersistIdle()
+            if let localDraft {
+                store.deleteLocalDraft(localDraft, silent: true)
+            }
             if let draft = liveDraft {
                 await store.deleteUnderlyingDraft(draft)
             }
@@ -583,6 +614,8 @@ struct ComposeView: View {
             // Seed the replace chain before prefill so undo-send restores any
             // draft that Send was about to delete.
             replacingDraft = editingDraft ?? request.restore?.replacingDraft
+            localDraft = request.localDraft
+            store.composingLocalDraftId = request.localDraft?.id
             // Hide this draft's in-thread card while its editor is open.
             store.noteComposingDraft(editingDraft?.id, requestId: request.id)
             store.noteComposingDraft(replacingDraft?.id, requestId: request.id)
@@ -593,7 +626,11 @@ struct ComposeView: View {
             // has the last-autosaved body; anything typed in the ≤1.5s before
             // Send lives only in restore.body. Treating that as clean loses
             // the tail on Esc (H4 residual).
-            if request.restore != nil {
+            if request.localDraft != nil {
+                // Reopened from the Outbox: what's on screen is what's saved.
+                lastSavedFingerprint = contentFingerprint
+                draftStatus = .savedOffline
+            } else if request.restore != nil {
                 lastSavedFingerprint = ""
                 draftStatus = .idle
             } else if editingDraft != nil {
@@ -617,6 +654,9 @@ struct ComposeView: View {
             // Release the draft-card hide keyed to *this* request only; a newer
             // card that already appeared keeps its own claim.
             store.endComposingDrafts(requestId: request.id)
+            if let id = localDraft?.id, store.composingLocalDraftId == id {
+                store.composingLocalDraftId = nil
+            }
             store.composeMinimized = false
             store.slashPickerVisible = false
             autosaveTask?.cancel()
@@ -930,6 +970,13 @@ struct ComposeView: View {
                     .foregroundStyle(.red.opacity(0.85))
                     .lineLimit(1)
                     .accessibilityIdentifier("draftStatusFailed")
+            case .savedOffline:
+                Text(ComposeDraftStatusLayout.savedOfflineLabel)
+                    .font(.system(size: ComposeDraftStatusLayout.fontSize))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .help("No network — this draft is in the Outbox and uploads to Gmail Drafts when you're back online.")
+                    .accessibilityIdentifier("draftStatusSavedOffline")
             }
         }
         .frame(height: ComposeDraftStatusLayout.rowHeight)
@@ -2529,8 +2576,17 @@ struct ComposeView: View {
             abortFinish()
             return
         }
+        retireLocalDraft()
         store.queueSend(pending)
         close()
+    }
+
+    /// The Outbox copy is superseded once the content is queued as mail
+    /// (undo-send restores from `PendingSend`, not from the Outbox row).
+    private func retireLocalDraft() {
+        guard let localDraft else { return }
+        store.deleteLocalDraft(localDraft, silent: true)
+        self.localDraft = nil
     }
 
     private func scheduleSend(at date: Date) {
@@ -2540,6 +2596,7 @@ struct ComposeView: View {
             abortFinish()
             return
         }
+        retireLocalDraft()
         store.scheduleSend(pending, at: date)
         close()
     }

@@ -361,6 +361,135 @@ struct ScheduledSend: Codable, Identifiable, Hashable, FetchableRecord, Persista
     }
 }
 
+/// The Gmail side of an optimistic thread mutation. A value (not a closure)
+/// so a change that fails offline can be persisted and replayed later.
+enum RemoteThreadChange: Codable, Equatable, Sendable {
+    case modify(add: [String] = [], remove: [String] = [])
+    case trash
+
+    var addLabels: [String] {
+        if case .modify(let add, _) = self { return add }
+        return []
+    }
+
+    var removeLabels: [String] {
+        if case .modify(_, let remove) = self { return remove }
+        return []
+    }
+
+    /// Fold a later change into this one so a queue of offline edits to the
+    /// same thread stays one request (star, then archive, then unstar → one
+    /// modify). Trash wins over label edits; a later un-trash (add INBOX,
+    /// remove TRASH) folds back into a modify.
+    func merged(with next: RemoteThreadChange) -> RemoteThreadChange {
+        switch (self, next) {
+        case (_, .trash):
+            return .trash
+        case (.trash, .modify(let add, let remove)):
+            if remove.contains("TRASH") {
+                return .modify(add: add, remove: remove)
+            }
+            return .trash
+        case (.modify(let add, let remove), .modify(let nextAdd, let nextRemove)):
+            // A label toggled back cancels out (archive then undo → nothing
+            // to send); everything else accumulates, without repeats.
+            var mergedAdd = add.filter { !nextRemove.contains($0) }
+            var mergedRemove = remove.filter { !nextAdd.contains($0) }
+            for label in nextAdd where !remove.contains(label) && !mergedAdd.contains(label) {
+                mergedAdd.append(label)
+            }
+            for label in nextRemove where !add.contains(label) && !mergedRemove.contains(label) {
+                mergedRemove.append(label)
+            }
+            return .modify(add: mergedAdd, remove: mergedRemove)
+        }
+    }
+
+    /// True when replaying this would be a no-op (a folded pair cancelled out).
+    var isEmpty: Bool {
+        if case .modify(let add, let remove) = self { return add.isEmpty && remove.isEmpty }
+        return false
+    }
+}
+
+/// An optimistic thread mutation whose Gmail call failed offline (v38).
+/// The local row already shows the result; this row makes sure Gmail gets it
+/// once the network is back, instead of the next sync silently reverting it.
+struct PendingThreadOp: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "pendingThreadOp"
+    var id: Int64?
+    var accountId: String
+    var gmailThreadId: String
+    var changeJSON: Data
+    var createdAt: Date
+    var updatedAt: Date
+    mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+
+    var change: RemoteThreadChange? {
+        try? JSONDecoder().decode(RemoteThreadChange.self, from: changeJSON)
+    }
+
+    static func encode(_ change: RemoteThreadChange) -> Data {
+        (try? JSONEncoder().encode(change)) ?? Data()
+    }
+
+    /// Insert or fold into the existing row for the same thread.
+    static func enqueue(_ db: Database, accountId: String, gmailThreadId: String,
+                        change: RemoteThreadChange, now: Date = Date()) throws {
+        let existing = try PendingThreadOp
+            .filter(Column("accountId") == accountId && Column("gmailThreadId") == gmailThreadId)
+            .fetchOne(db)
+        if var row = existing {
+            let merged = (row.change ?? .modify()).merged(with: change)
+            if merged.isEmpty {
+                _ = try row.delete(db)
+                return
+            }
+            row.changeJSON = encode(merged)
+            row.updatedAt = now
+            try row.update(db)
+        } else {
+            guard !change.isEmpty else { return }
+            var row = PendingThreadOp(id: nil, accountId: accountId,
+                                      gmailThreadId: gmailThreadId,
+                                      changeJSON: encode(change),
+                                      createdAt: now, updatedAt: now)
+            try row.insert(db)
+        }
+    }
+}
+
+/// A draft the user saved while Gmail was unreachable (v38). Lives in the
+/// Outbox until it can be uploaded as a real Gmail draft; editing reopens it
+/// in compose, and a successful upload deletes the row.
+struct LocalDraft: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
+    static let databaseTableName = "localDraft"
+    var id: Int64?
+    var accountId: String
+    var fromEmail: String
+    var toHeader: String
+    var ccHeader: String
+    var bccHeader: String
+    var subject: String
+    var body: String
+    var replyToMessageId: String?   // Message.id, for reply threading
+    var forward: Bool
+    var forwardAll: Bool = false
+    var replacingDraftId: String?   // Message.id of the Gmail draft this replaces
+    var attachmentsJSON: Data
+    var createdAt: Date
+    var updatedAt: Date
+    mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
+
+    var effectiveFromEmail: String {
+        fromEmail.isEmpty ? accountId : fromEmail
+    }
+
+    var attachments: [MIMEBuilder.Attachment] {
+        (try? JSONDecoder().decode([MIMEBuilder.Attachment].self, from: attachmentsJSON)) ?? []
+    }
+}
+
 /// On-device AI triage result for a thread (see MailStore.classifyInbox).
 struct ThreadAICategory: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "threadAI"
@@ -1521,6 +1650,38 @@ final class AppDatabase: @unchecked Sendable {
             try db.alter(table: "message") { t in
                 t.add(column: "listUnsubscribe", .text)
                 t.add(column: "listUnsubscribePost", .text)
+            }
+        }
+
+        // v38: offline queues. Thread edits made without a network land in
+        // pendingThreadOp and replay before the next sync; drafts saved
+        // without a network land in localDraft (the Outbox) until uploaded.
+        m.registerMigration("v38") { db in
+            try db.create(table: "pendingThreadOp") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("accountId", .text).notNull()
+                t.column("gmailThreadId", .text).notNull()
+                t.column("changeJSON", .blob).notNull()
+                t.column("createdAt", .datetime).notNull()
+                t.column("updatedAt", .datetime).notNull()
+                t.uniqueKey(["accountId", "gmailThreadId"])
+            }
+            try db.create(table: "localDraft") { t in
+                t.autoIncrementedPrimaryKey("id")
+                t.column("accountId", .text).notNull()
+                t.column("fromEmail", .text).notNull().defaults(to: "")
+                t.column("toHeader", .text).notNull()
+                t.column("ccHeader", .text).notNull()
+                t.column("bccHeader", .text).notNull()
+                t.column("subject", .text).notNull()
+                t.column("body", .text).notNull()
+                t.column("replyToMessageId", .text)
+                t.column("forward", .boolean).notNull().defaults(to: false)
+                t.column("forwardAll", .boolean).notNull().defaults(to: false)
+                t.column("replacingDraftId", .text)
+                t.column("attachmentsJSON", .blob).notNull()
+                t.column("createdAt", .datetime).notNull()
+                t.column("updatedAt", .datetime).notNull().indexed()
             }
         }
         return m

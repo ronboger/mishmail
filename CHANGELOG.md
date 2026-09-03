@@ -11,6 +11,23 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Added
+- **Works on a plane.** Drafts saved without a network go to a local
+  **Outbox** (sidebar) instead of failing, and upload to Gmail Drafts on
+  reconnect; the compose footer reads "Saved offline". Archive, star,
+  read/unread, snooze, labels, spam and trash made offline are queued and
+  replayed before the next sync, so Gmail no longer reverts them. A Send
+  that finds no network waits in **Scheduled** as "Waiting for connection"
+  and goes out on reconnect instead of bouncing back into compose.
+
+### Fixed
+- **No more sticky "won't sync" banner offline.** Connectivity failures on
+  any sync (background, manual, or the follow-up after a save or edit) now
+  flip the sync control to "Offline · N to sync" with a passing notice on
+  manual sync; the orange banner is reserved for errors that need you.
+  Reachability is watched so queued work replays as soon as the network
+  is back, not at the next poll.
+
 ### Changed
 - **Ask Mish hides stale models in the picker.** Grok 4.2, Grok 2/3, image
   and non-reasoning ids, and Gemini 1.x/2.x no longer fill the browse list.
