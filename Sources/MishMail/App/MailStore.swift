@@ -13,6 +13,7 @@ enum MailboxView: Hashable {
     case reminders
     case drafts
     case scheduled      // locally scheduled sends (not Gmail threads)
+    case outbox         // drafts saved offline, waiting to upload (not Gmail threads)
     case sent
     case allMail
     case trash
@@ -31,6 +32,7 @@ enum MailboxView: Hashable {
         case .reminders: return "Reminders"
         case .drafts: return "Drafts"
         case .scheduled: return "Scheduled"
+        case .outbox: return "Outbox"
         case .sent: return "Sent"
         case .allMail: return "All Mail"
         case .trash: return "Trash"
@@ -60,7 +62,7 @@ enum MailboxView: Hashable {
         // unique within an account, so two accounts' labels must not share
         // a preference slot.
         case .label(let account, let labelId, _): return "label.\(account).\(labelId)"
-        case .scheduled, .saved: return nil
+        case .scheduled, .outbox, .saved: return nil
         }
     }
 }
@@ -496,6 +498,19 @@ final class MailStore {
     /// refresh token); the Accounts settings pane offers a "Reauthorize"
     /// button for these.
     var accountsNeedingReauth: Set<String> = []
+    /// True once a Gmail call failed for want of a network, or the path
+    /// monitor reports none. Cleared by the next request that succeeds. Drives
+    /// the "Offline" sync control and routes edits/drafts/sends into the
+    /// offline queues instead of the error banner.
+    var isOffline = false
+    /// Drafts saved while offline (the Outbox). Uploaded on reconnect.
+    private(set) var localDrafts: [LocalDraft] = []
+    /// Thread edits waiting to replay against Gmail (see `PendingThreadOp`).
+    private(set) var pendingThreadOpCount = 0
+    @ObservationIgnored private var connectivity: ConnectivityMonitor?
+    /// The Outbox draft open in compose right now — the reconnect flush must
+    /// not upload it underneath the editor.
+    @ObservationIgnored var composingLocalDraftId: Int64?
     var composeRequest: ComposeRequest?
     /// Compose card is collapsed to a title strip (Notion Mail-style). Draft
     /// state stays mounted; inbox shortcuts work again while minimized.
@@ -1352,12 +1367,10 @@ final class MailStore {
             }) ?? []
         }
         for thread in hits {
-            mutateThread(thread) { t in
+            mutateThread(thread, remote: .modify(add: ["SPAM"], remove: ["INBOX"])) { t in
                 // Same path as markSpam — preserves tab-category denorm and
                 // keeps labelIds / inSpam / inInbox coherent.
                 t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
-            } remote: { client, id in
-                try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
             }
         }
     }
@@ -1396,6 +1409,9 @@ struct ComposeRequest: Identifiable {
         var forwardAll = false
         var editDraft: Message? = nil   // an existing Gmail draft being edited
         var restore: PendingSend? = nil // undone send: reopen with this content
+        /// Outbox row this compose continues (saved offline). Autosave
+        /// updates it in place until the upload succeeds.
+        var localDraft: LocalDraft? = nil
         var prefillTo: String? = nil    // new mail straight to this address
         /// Optional headers from a `mailto:` handoff (cc/bcc/subject/body).
         var prefillCc: String? = nil
@@ -1992,6 +2008,8 @@ struct ComposeRequest: Identifiable {
     private func runDeferredStartupWork() async {
         guard !isShuttingDown else { return }
         reloadScheduledSends()
+        reloadLocalDrafts()
+        await reloadPendingThreadOpCount()
         // Baseline before polling: every unread thread already in the cache
         // would otherwise look new and fire a notification.
         await seedUnreadBaseline()
@@ -2038,6 +2056,7 @@ struct ComposeRequest: Identifiable {
         loadBlocked()
         reloadThreads()
         reloadScheduledSends()
+        reloadLocalDrafts()
         sendIdentities = fallbackIdentities()
         showNotice("Fictional mail — nothing syncs or sends")
     }
@@ -2067,6 +2086,7 @@ struct ComposeRequest: Identifiable {
         loadBlocked()
         reloadThreads()
         reloadScheduledSends()
+        reloadLocalDrafts()
         sendIdentities = []
         filtersByAccount[DemoSeed.account] = nil
         filtersLoadError[DemoSeed.account] = nil
@@ -2299,6 +2319,8 @@ struct ComposeRequest: Identifiable {
         // force: true to bypass that gate.
         AppDatabase.shared.beginShutdown()
         stopObservingActivityForPolling()
+        connectivity?.stop()
+        connectivity = nil
         syncTimer?.invalidate()
         syncTimer = nil
         syncTimerInterval = nil
@@ -3242,6 +3264,9 @@ struct ComposeRequest: Identifiable {
         case .scheduled:
             // Scheduled sends aren't threads; ScheduledListView renders them.
             q = q.none()
+        case .outbox:
+            // Offline drafts aren't threads; OutboxListView renders them.
+            q = q.none()
         case .sent:
             q = q.filter(Column("inSent") == true && Column("inTrash") == false)
         case .allMail:
@@ -3781,7 +3806,34 @@ struct ComposeRequest: Identifiable {
         await fireDueSnoozes()
         guard !isShuttingDown else { return }
         observeActivityForPolling()
+        observeConnectivity()
         armSyncTimer()
+    }
+
+    /// Reachability edges. Losing the path flips the sync control to
+    /// "Offline" before the first request times out; regaining it replays
+    /// the offline queues now instead of at the next poll. Neither edge is
+    /// trusted on its own — a captive portal reports a satisfied path — so
+    /// `isOffline` is only cleared by a request that actually succeeds.
+    private func observeConnectivity() {
+        guard connectivity == nil else { return }
+        let monitor = ConnectivityMonitor()
+        monitor.onChange = { [weak self] reachable in
+            guard let self, !self.isShuttingDown else { return }
+            if !reachable {
+                self.isOffline = true
+                return
+            }
+            guard self.syncTickTask == nil else { return }
+            self.syncTickTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.syncTickTask = nil }
+                guard !self.isShuttingDown else { return }
+                await self.syncAll(interactive: false)
+            }
+        }
+        monitor.start()
+        connectivity = monitor
     }
 
     private var currentPollInterval: TimeInterval {
@@ -3915,6 +3967,12 @@ struct ComposeRequest: Identifiable {
         for id in ids where engines[id] == nil {
             engines[id] = SyncEngine(accountId: id)
         }
+        // Offline work first, so the history read below sees it applied
+        // rather than reverting it, and queued mail leaves before new mail
+        // is fetched. Each stops at the first connectivity failure.
+        await flushPendingThreadOps()
+        await flushLocalDrafts()
+        await fireDueScheduledSends()
         // Capture engine refs before leaving MainActor for the task group.
         let pairs: [(String, SyncEngine)] = ids.compactMap { id in
             engines[id].map { (id, $0) }
@@ -3961,14 +4019,20 @@ struct ComposeRequest: Identifiable {
                         accountsNeedingReauth.remove(id)
                         await backfillSenderNameIfNeeded(accountId: id)
                         await refreshSendIdentities(accountId: id)
-                    } else if !interactive && TransientNetworkError.isTransient(error) {
-                        // Background tick: silent; next poll retries.
+                    } else if !OfflinePolicy.surfacesSyncFailure(error) {
+                        // No network. The sync control reads "Offline";
+                        // a user-initiated sync gets a passing notice, the
+                        // background tick stays silent. Either way no
+                        // sticky banner: the next poll retries on its own.
+                        isOffline = true
+                        if interactive { showNotice(OfflinePolicy.offlineSyncNotice) }
                     } else {
                         setSyncFailureError(
                             "\(id): \(error.localizedDescription)",
                             accountId: id)
                     }
                 } else {
+                    isOffline = false
                     accountsNeedingReauth.remove(id)
                     clearSyncFailureErrorIfNeeded(for: id)
                     await backfillSenderNameIfNeeded(accountId: id)
@@ -4010,6 +4074,7 @@ struct ComposeRequest: Identifiable {
             }
             applyThreadContentChange(change)
             syncStatus = ""
+            isOffline = false
             accountsNeedingReauth.remove(accountId)
             clearSyncFailureErrorIfNeeded(for: accountId)
             await backfillSenderNameIfNeeded(accountId: accountId)
@@ -4030,6 +4095,10 @@ struct ComposeRequest: Identifiable {
                 await refreshSendIdentities(accountId: accountId)
                 reloadAccounts()
                 reloadThreads()
+            } else if !OfflinePolicy.surfacesSyncFailure(error) {
+                // Follow-up syncs (after a save, a failed edit) run without
+                // the user asking; offline they must not stack banners.
+                isOffline = true
             } else {
                 setSyncFailureError(
                     "\(accountId): \(error.localizedDescription)",
@@ -4462,7 +4531,8 @@ struct ComposeRequest: Identifiable {
 
     func toggleLabel(_ thread: MailThread, labelId: String) {
         let has = thread.labels.contains(labelId)
-        mutateThread(thread) { t in
+        mutateThread(thread, remote: .modify(add: has ? [] : [labelId],
+                                             remove: has ? [labelId] : [])) { t in
             // applyLabelMutation seeds INBOX/STARRED from denorm flags and only
             // rewrites tab categories when CATEGORY_* is the toggled id — so
             // flipping a user label cannot re-hide a Primary thread under
@@ -4472,9 +4542,6 @@ struct ComposeRequest: Identifiable {
             } else {
                 t.applyLabelMutation(add: [labelId])
             }
-        } remote: { client, id in
-            try await client.modifyThread(id: id, add: has ? [] : [labelId],
-                                          remove: has ? [labelId] : [])
         }
     }
 
@@ -4725,7 +4792,7 @@ struct ComposeRequest: Identifiable {
     private func mutateThread(_ thread: MailThread,
                               autoAdvanceAction: String? = nil,
                               local: (inout MailThread) -> Void,
-                              remote: @escaping (GmailClient, String) async throws -> Void) {
+                              remote: RemoteThreadChange) {
         guard !isShuttingDown else { return }
         var copy = thread
         local(&copy)
@@ -4768,13 +4835,139 @@ struct ComposeRequest: Identifiable {
             // Demo interactions are intentionally local. They should feel real
             // without attempting Gmail calls for the fictional account.
             guard !isDemo else { return }
-            do {
-                try await remote(client, gmailThreadId)
-            } catch {
-                await MainActor.run { self.lastError = error.localizedDescription }
-                await self.sync(accountId: thread.accountId)
+            await self.applyRemoteThreadChange(remote, client: client,
+                                               accountId: thread.accountId,
+                                               gmailThreadId: gmailThreadId)
+        }
+    }
+
+    /// Push one optimistic edit to Gmail, or park it for replay.
+    ///
+    /// Offline (known, or discovered by this very call) the edit is folded
+    /// into the thread's `PendingThreadOp` row: the local row already shows
+    /// the result, and the replay before the next sync keeps Gmail's history
+    /// from reverting it. A thread that already has a queued edit always
+    /// queues (order matters: replay applies the folded change last).
+    private func applyRemoteThreadChange(_ change: RemoteThreadChange,
+                                         client: GmailClient,
+                                         accountId: String,
+                                         gmailThreadId: String) async {
+        let pool = db
+        let alreadyQueued = (try? await pool.read { db in
+            try PendingThreadOp
+                .filter(Column("accountId") == accountId
+                        && Column("gmailThreadId") == gmailThreadId)
+                .fetchCount(db) > 0
+        }) ?? false
+        if isOffline || alreadyQueued {
+            await queueThreadChange(change, accountId: accountId, gmailThreadId: gmailThreadId)
+            return
+        }
+        do {
+            try await Self.perform(change, on: client, gmailThreadId: gmailThreadId)
+            isOffline = false
+        } catch {
+            if OfflinePolicy.shouldDefer(error) {
+                isOffline = true
+                await queueThreadChange(change, accountId: accountId, gmailThreadId: gmailThreadId)
+            } else {
+                lastError = error.localizedDescription
+                await sync(accountId: accountId)
             }
         }
+    }
+
+    private static func perform(_ change: RemoteThreadChange, on client: GmailClient,
+                                gmailThreadId: String) async throws {
+        switch change {
+        case .modify(let add, let remove):
+            try await client.modifyThread(id: gmailThreadId, add: add, remove: remove)
+        case .trash:
+            try await client.trashThread(id: gmailThreadId)
+        }
+    }
+
+    private func queueThreadChange(_ change: RemoteThreadChange,
+                                   accountId: String, gmailThreadId: String) async {
+        let pool = db
+        do {
+            try await pool.write { db in
+                try PendingThreadOp.enqueue(db, accountId: accountId,
+                                            gmailThreadId: gmailThreadId, change: change)
+            }
+        } catch {
+            lastError = "Couldn't queue the change for later: \(error.localizedDescription)"
+        }
+        await reloadPendingThreadOpCount()
+    }
+
+    /// One-at-a-time guards: the poll tick, the reconnect edge and the due
+    /// sweep can all ask for a flush at once; a second pass over the same
+    /// rows would double-send.
+    @ObservationIgnored private var pendingOpsFlushInFlight = false
+    @ObservationIgnored private var localDraftFlushInFlight = false
+    @ObservationIgnored private var scheduledSendFlushInFlight = false
+
+    private func reloadPendingThreadOpCount() async {
+        let pool = db
+        pendingThreadOpCount = (try? await pool.read { db in
+            try PendingThreadOp.fetchCount(db)
+        }) ?? 0
+    }
+
+    /// Replay queued thread edits, oldest first. Runs ahead of every sync so
+    /// Gmail's history reflects the user's offline work before it is read
+    /// back. Stops at the first connectivity failure (still offline); drops
+    /// rows Gmail rejects outright (a thread deleted meanwhile is a 404).
+    func flushPendingThreadOps() async {
+        guard !demoMode, !isShuttingDown, !pendingOpsFlushInFlight else { return }
+        pendingOpsFlushInFlight = true
+        defer { pendingOpsFlushInFlight = false }
+        let pool = db
+        let rows = (try? await pool.read { db in
+            try PendingThreadOp.order(Column("createdAt")).fetchAll(db)
+        }) ?? []
+        guard !rows.isEmpty else {
+            if pendingThreadOpCount != 0 { pendingThreadOpCount = 0 }
+            return
+        }
+        for row in rows {
+            guard !isShuttingDown else { break }
+            guard let change = row.change, !change.isEmpty else {
+                _ = try? await pool.write { db in try PendingThreadOp.deleteOne(db, key: row.id) }
+                continue
+            }
+            let gmail = client(for: row.accountId)
+            do {
+                try await Self.perform(change, on: gmail, gmailThreadId: row.gmailThreadId)
+                isOffline = false
+            } catch {
+                if OfflinePolicy.shouldDefer(error) {
+                    isOffline = true
+                    break
+                }
+                if Self.isReauthRequired(error) {
+                    requireReauthorization(for: row.accountId)
+                    break
+                }
+                // Gone or rejected: the next sync shows Gmail's truth.
+                if !SendThreading.isNotFound(error) {
+                    lastError = "Couldn't sync an offline change: \(error.localizedDescription)"
+                }
+            }
+            // Delete only if the row is still the one we replayed: a user edit
+            // made during the flush folds into it (enqueue sees the row and
+            // queues rather than calling Gmail), and an unconditional delete
+            // would drop that edit on the floor. A row that did change stays
+            // and replays next time — label edits and trash are idempotent, so
+            // re-sending the already-sent part is harmless.
+            _ = try? await pool.write { db in
+                let current = try PendingThreadOp.filter(Column("id") == row.id).fetchOne(db)
+                guard current?.updatedAt == row.updatedAt else { return }
+                _ = try PendingThreadOp.deleteOne(db, key: row.id)
+            }
+        }
+        await reloadPendingThreadOpCount()
     }
 
     private func enqueueThreadPersistence(
@@ -4839,7 +5032,7 @@ struct ComposeRequest: Identifiable {
     private func mutateThreads(_ targets: [MailThread],
                                autoAdvanceAction: String? = nil,
                                local: (inout MailThread) -> Void,
-                               remote: @escaping (GmailClient, String) async throws -> Void) {
+                               remote: RemoteThreadChange) {
         guard !isShuttingDown, !targets.isEmpty else { return }
         if let action = autoAdvanceAction {
             let leaving = Set(targets.compactMap { thread -> String? in
@@ -5123,22 +5316,19 @@ struct ComposeRequest: Identifiable {
         let priorFocus = selectedThreadId
         // Archive always marks read: selection advance cancels the reading-pane
         // dwell timer, and Gmail's own archive treats the conversation as seen.
-        mutateThread(thread, autoAdvanceAction: "archive") {
+        mutateThread(thread, autoAdvanceAction: "archive",
+                     remote: .modify(remove: ["INBOX", "UNREAD"])) {
             $0.inInbox = false
             $0.isUnread = false
-        } remote: { client, id in
-            try await client.modifyThread(id: id, remove: ["INBOX", "UNREAD"])
         }
         offerUndo("Archived") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep([thread.id])
             // Undo restores inbox only — stay read (matches Gmail undo-archive).
             // Local starts from the pre-archive snapshot, so re-assert isUnread.
-            self.mutateThread(thread) {
+            self.mutateThread(thread, remote: .modify(add: ["INBOX"])) {
                 $0.inInbox = true
                 $0.isUnread = false
-            } remote: { client, id in
-                try await client.modifyThread(id: id, add: ["INBOX"])
             }
             self.restoreSelectionFocus(priorFocus)
             self.undoAction = nil
@@ -5152,11 +5342,10 @@ struct ComposeRequest: Identifiable {
         let focus = selectedThreadId
         // Same as single archive: drop UNREAD so a fast multi-select `e`
         // does not leave archived mail unread (dwell is cancelled by advance).
-        mutateThreads(targets, autoAdvanceAction: "archive", local: {
+        mutateThreads(targets, autoAdvanceAction: "archive",
+                      remote: .modify(remove: ["INBOX", "UNREAD"]), local: {
             $0.inInbox = false
             $0.isUnread = false
-        }, remote: { client, id in
-            try await client.modifyThread(id: id, remove: ["INBOX", "UNREAD"])
         })
         clearCheckedThreads()
         let n = targets.count
@@ -5164,11 +5353,9 @@ struct ComposeRequest: Identifiable {
         offerUndo(n == 1 ? "Archived" : "Archived \(n) conversations") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep(ids)
-            self.mutateThreads(targets, local: {
+            self.mutateThreads(targets, remote: .modify(add: ["INBOX"]), local: {
                 $0.inInbox = true
                 $0.isUnread = false
-            }, remote: { client, id in
-                try await client.modifyThread(id: id, add: ["INBOX"])
             })
             self.restoreSelectionFocus(focus)
             self.undoAction = nil
@@ -5181,18 +5368,15 @@ struct ComposeRequest: Identifiable {
     /// UI and the next sync agree.
     func markSpam(_ thread: MailThread) {
         let priorFocus = selectedThreadId
-        mutateThread(thread, autoAdvanceAction: "spam") { t in
+        mutateThread(thread, autoAdvanceAction: "spam",
+                     remote: .modify(add: ["SPAM"], remove: ["INBOX"])) { t in
             t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
-        } remote: { client, id in
-            try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
         }
         offerUndo("Marked as spam") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep([thread.id])
-            self.mutateThread(thread) { t in
+            self.mutateThread(thread, remote: .modify(add: ["INBOX"], remove: ["SPAM"])) { t in
                 t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
-            } remote: { client, id in
-                try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
             }
             self.restoreSelectionFocus(priorFocus)
             self.undoAction = nil
@@ -5203,18 +5387,15 @@ struct ComposeRequest: Identifiable {
     /// overflow menu when the thread is already in Spam (and as spam-undo).
     func markNotSpam(_ thread: MailThread) {
         let priorFocus = selectedThreadId
-        mutateThread(thread, autoAdvanceAction: "not-spam") { t in
+        mutateThread(thread, autoAdvanceAction: "not-spam",
+                     remote: .modify(add: ["INBOX"], remove: ["SPAM"])) { t in
             t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
-        } remote: { client, id in
-            try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
         }
         offerUndo("Marked as not spam") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep([thread.id])
-            self.mutateThread(thread) { t in
+            self.mutateThread(thread, remote: .modify(add: ["SPAM"], remove: ["INBOX"])) { t in
                 t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
-            } remote: { client, id in
-                try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
             }
             self.restoreSelectionFocus(priorFocus)
             self.undoAction = nil
@@ -5229,16 +5410,14 @@ struct ComposeRequest: Identifiable {
         let focus = selectedThreadId
         let markAsSpam = targets.contains { !$0.inSpam }
         if markAsSpam {
-            mutateThreads(targets, autoAdvanceAction: "spam", local: { t in
+            mutateThreads(targets, autoAdvanceAction: "spam",
+                          remote: .modify(add: ["SPAM"], remove: ["INBOX"]), local: { t in
                 t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
-            }, remote: { client, id in
-                try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
             })
         } else {
-            mutateThreads(targets, autoAdvanceAction: "not-spam", local: { t in
+            mutateThreads(targets, autoAdvanceAction: "not-spam",
+                          remote: .modify(add: ["INBOX"], remove: ["SPAM"]), local: { t in
                 t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
-            }, remote: { client, id in
-                try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
             })
         }
         clearCheckedThreads()
@@ -5251,16 +5430,12 @@ struct ComposeRequest: Identifiable {
             guard let self else { return }
             self.pinReadStateKeep(ids)
             if markAsSpam {
-                self.mutateThreads(targets, local: { t in
+                self.mutateThreads(targets, remote: .modify(add: ["INBOX"], remove: ["SPAM"]), local: { t in
                     t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
-                }, remote: { client, id in
-                    try await client.modifyThread(id: id, add: ["INBOX"], remove: ["SPAM"])
                 })
             } else {
-                self.mutateThreads(targets, local: { t in
+                self.mutateThreads(targets, remote: .modify(add: ["SPAM"], remove: ["INBOX"]), local: { t in
                     t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
-                }, remote: { client, id in
-                    try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
                 })
             }
             self.restoreSelectionFocus(focus)
@@ -5276,10 +5451,8 @@ struct ComposeRequest: Identifiable {
         let priorFocus = selectedThreadId
         // Keep labelIds + denorm flags coherent (same pattern as markSpam) so
         // search filters on inTrash and any labelIds-based UI agree.
-        mutateThread(thread, autoAdvanceAction: "trash") { t in
+        mutateThread(thread, autoAdvanceAction: "trash", remote: .trash) { t in
             t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
-        } remote: { client, id in
-            try await client.trashThread(id: id)
         }
         offerUndo("Moved to Trash") { [weak self] in
             guard let self else { return }
@@ -5287,10 +5460,8 @@ struct ComposeRequest: Identifiable {
             // under-is:unread rows were auto-marked read and dropped keepIds
             // on trash).
             self.pinReadStateKeep([thread.id])
-            self.mutateThread(thread) { t in
+            self.mutateThread(thread, remote: .modify(add: ["INBOX"], remove: ["TRASH"])) { t in
                 t.applyLabelMutation(add: ["INBOX"], remove: ["TRASH"])
-            } remote: { client, id in
-                try await client.modifyThread(id: id, add: ["INBOX"], remove: ["TRASH"])
             }
             self.restoreSelectionFocus(priorFocus)
             self.undoAction = nil
@@ -5302,10 +5473,8 @@ struct ComposeRequest: Identifiable {
         let targets = checkedThreadsInOrder
         guard !targets.isEmpty else { return }
         let focus = selectedThreadId
-        mutateThreads(targets, autoAdvanceAction: "trash", local: { t in
+        mutateThreads(targets, autoAdvanceAction: "trash", remote: .trash, local: { t in
             t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
-        }, remote: { client, id in
-            try await client.trashThread(id: id)
         })
         clearCheckedThreads()
         let n = targets.count
@@ -5313,10 +5482,8 @@ struct ComposeRequest: Identifiable {
         offerUndo(n == 1 ? "Moved to Trash" : "Moved \(n) to Trash") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep(ids)
-            self.mutateThreads(targets, local: { t in
+            self.mutateThreads(targets, remote: .modify(add: ["INBOX"], remove: ["TRASH"]), local: { t in
                 t.applyLabelMutation(add: ["INBOX"], remove: ["TRASH"])
-            }, remote: { client, id in
-                try await client.modifyThread(id: id, add: ["INBOX"], remove: ["TRASH"])
             })
             self.restoreSelectionFocus(focus)
             self.undoAction = nil
@@ -5335,9 +5502,9 @@ struct ComposeRequest: Identifiable {
         } else {
             captureStarNavAnchor(starredIds: [thread.id])
         }
-        mutateThread(thread) { $0.isStarred = starring } remote: { client, id in
-            try await client.modifyThread(id: id, add: starring ? ["STARRED"] : [],
-                                          remove: starring ? [] : ["STARRED"])
+        mutateThread(thread, remote: .modify(add: starring ? ["STARRED"] : [],
+                                             remove: starring ? [] : ["STARRED"])) {
+            $0.isStarred = starring
         }
     }
 
@@ -5352,10 +5519,9 @@ struct ComposeRequest: Identifiable {
         } else {
             captureStarNavAnchor(starredIds: Set(targets.map(\.id)))
         }
-        mutateThreads(targets, local: { $0.isStarred = starring }, remote: { client, id in
-            try await client.modifyThread(id: id, add: starring ? ["STARRED"] : [],
-                                          remove: starring ? [] : ["STARRED"])
-        })
+        mutateThreads(targets, remote: .modify(add: starring ? ["STARRED"] : [],
+                                               remove: starring ? [] : ["STARRED"]),
+                      local: { $0.isStarred = starring })
     }
 
     /// Remember pre-star Down/Up neighbors so the next ±1 move stays in the
@@ -5443,9 +5609,9 @@ struct ComposeRequest: Identifiable {
 
     func setRead(_ thread: MailThread, read: Bool) {
         if readStateFilterActive { readStateKeepIds.insert(thread.id) }
-        mutateThread(thread) { $0.isUnread = !read } remote: { client, id in
-            try await client.modifyThread(id: id, add: read ? [] : ["UNREAD"],
-                                          remove: read ? ["UNREAD"] : [])
+        mutateThread(thread, remote: .modify(add: read ? [] : ["UNREAD"],
+                                             remove: read ? ["UNREAD"] : [])) {
+            $0.isUnread = !read
         }
     }
 
@@ -5498,19 +5664,17 @@ struct ComposeRequest: Identifiable {
             if snoozingThread?.id == thread.id {
                 dismissSnoozePicker()
             }
-            mutateThread(thread) { $0.snoozeUntil = nil; $0.inInbox = true } remote: { client, id in
-                try await client.modifyThread(id: id, add: ["INBOX"])
+            mutateThread(thread, remote: .modify(add: ["INBOX"])) {
+                $0.snoozeUntil = nil; $0.inInbox = true
             }
             return
         }
         // Tear the picker down *before* the optimistic mutation so auto-advance
         // publishes into a visible window (same frame as archive/trash).
         dismissSnoozePicker()
-        mutateThread(thread, autoAdvanceAction: "snooze") {
+        mutateThread(thread, autoAdvanceAction: "snooze", remote: .modify(remove: ["INBOX"])) {
             $0.snoozeUntil = date
             $0.inInbox = false
-        } remote: { client, id in
-            try await client.modifyThread(id: id, remove: ["INBOX"])
         }
         // Reuse the shared formatter path — allocating DateFormatter on the
         // triage hot path is needlessly expensive on the main thread.
@@ -5536,11 +5700,9 @@ struct ComposeRequest: Identifiable {
         let targets = checkedThreadsInOrder
         guard !targets.isEmpty else { return }
         let focus = selectedThreadId
-        mutateThreads(targets, autoAdvanceAction: "snooze", local: {
+        mutateThreads(targets, autoAdvanceAction: "snooze", remote: .modify(remove: ["INBOX"]), local: {
             $0.snoozeUntil = date
             $0.inInbox = false
-        }, remote: { client, id in
-            try await client.modifyThread(id: id, remove: ["INBOX"])
         })
         clearCheckedThreads()
         let n = targets.count
@@ -5551,11 +5713,9 @@ struct ComposeRequest: Identifiable {
         offerUndo(label) { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep(ids)
-            self.mutateThreads(targets, local: {
+            self.mutateThreads(targets, remote: .modify(add: ["INBOX"]), local: {
                 $0.snoozeUntil = nil
                 $0.inInbox = true
-            }, remote: { client, id in
-                try await client.modifyThread(id: id, add: ["INBOX"])
             })
             self.restoreSelectionFocus(focus)
             self.undoAction = nil
@@ -5652,23 +5812,76 @@ struct ComposeRequest: Identifiable {
         return pendingSend
     }
 
+    private enum SendOutcome {
+        case sent
+        /// No network: the caller decides where the message waits.
+        case deferredOffline
+        /// Gmail rejected it; the message is back in compose with the error.
+        case failed
+    }
+
+    /// Undo window elapsed. Offline, the message moves to the Scheduled list
+    /// as "waiting for connection" and goes out on reconnect — the composer
+    /// does not reopen with an error the user can do nothing about.
     private func performSend(_ p: PendingSend) async {
+        switch await attemptSend(p) {
+        case .sent, .failed:
+            break
+        case .deferredOffline:
+            queueSendForReconnect(p)
+        }
+    }
+
+    private func attemptSend(_ p: PendingSend) async -> SendOutcome {
         do {
             try await send(from: p.accountId, fromEmail: p.effectiveFromEmail,
                            to: p.to, cc: p.cc, bcc: p.bcc,
                            subject: p.subject, body: p.body, replyTo: p.replyTo,
                            forward: p.forward,
                            attachments: p.attachments, replacingDraft: p.replacingDraft)
+            isOffline = false
             setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
             showNotice("Sent")
+            return .sent
         } catch {
+            if OfflinePolicy.shouldDefer(error) {
+                isOffline = true
+                return .deferredOffline
+            }
             // Bring the message back so nothing is lost.
             setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
             lastError = "Send failed: \(error.localizedDescription)"
             composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
                                             forwardAll: p.forwardAll,
                                             editDraft: p.replacingDraft, restore: p)
+            return .failed
         }
+    }
+
+    /// Park a send that found no network: a scheduled row due *now*, which
+    /// the reconnect flush and the poll backstop both pick up.
+    private func queueSendForReconnect(_ p: PendingSend) {
+        let row = ScheduledSend(
+            id: nil, accountId: p.accountId, fromEmail: p.effectiveFromEmail,
+            toHeader: p.to, ccHeader: p.cc,
+            bccHeader: p.bcc, subject: p.subject, body: p.body, sendAt: Date(),
+            replyToMessageId: p.replyTo?.id, forward: p.forward,
+            replacingDraftId: p.replacingDraft?.id,
+            attachmentsJSON: ScheduledSend.encodeAttachments(p.attachments),
+            createdAt: Date())
+        do {
+            try db.write { db in try row.insert(db) }
+        } catch {
+            // Last resort: back into compose rather than into the void.
+            setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
+            lastError = "Send failed: \(error.localizedDescription)"
+            composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
+                                            forwardAll: p.forwardAll,
+                                            editDraft: p.replacingDraft, restore: p)
+            return
+        }
+        reloadScheduledSends()
+        showNotice(OfflinePolicy.queuedSendNotice)
     }
 
     /// Update the local visibility before compose opens/closes. The underlying
@@ -5795,20 +6008,31 @@ struct ComposeRequest: Identifiable {
         scheduledSendTimer?.invalidate()
         scheduledSendTimer = nil
         guard let next = scheduledSends.map(\.sendAt).min() else { return }
-        scheduledSendTimer = Timer.scheduledTimer(withTimeInterval: max(next.timeIntervalSinceNow, 1),
+        // A due row stays put when the send found no network, so the 1s floor
+        // would re-arm this timer once a second for the whole flight.
+        let delay = OfflinePolicy.scheduledSendRetryDelay(next: next, isOffline: isOffline)
+        scheduledSendTimer = Timer.scheduledTimer(withTimeInterval: delay,
                                                   repeats: false) { [weak self] _ in
             Task { @MainActor in await self?.fireDueScheduledSends() }
         }
     }
 
+    /// Send everything whose time has come. A row that cannot go out for
+    /// want of a network stays put (it reads "Waiting for connection" in the
+    /// Scheduled list) and the loop stops — the rest would fail the same way.
     func fireDueScheduledSends() async {
-        guard !demoMode else { return }
+        guard !demoMode, !isShuttingDown, !scheduledSendFlushInFlight else { return }
+        scheduledSendFlushInFlight = true
+        defer { scheduledSendFlushInFlight = false }
         let due = scheduledSends.filter { $0.sendAt <= Date() }
         guard !due.isEmpty else { return }
         for s in due {
+            guard !isShuttingDown else { break }
             let p = pendingSend(from: s)
+            let outcome = await attemptSend(p)
+            if outcome == .deferredOffline { break }
             _ = try? await db.write { db in try ScheduledSend.deleteOne(db, key: s.id) }
-            await performSend(p)
+            guard outcome == .sent else { continue }
             Notifier.notify(title: "Scheduled message sent",
                             body: s.subject.isEmpty ? s.toHeader : s.subject,
                             id: "scheduled.\(s.id ?? 0)")
@@ -5997,12 +6221,199 @@ struct ComposeRequest: Identifiable {
                 messageIdHeader: "", referencesHeader: "",
                 labelIds: "DRAFT", isUnread: false, hasAttachment: !attachments.isEmpty)
         } catch {
+            lastDraftSaveError = error
             // Always surface close-path failures (silent=false). Autosave keeps
             // lastError clean and uses the in-card "Draft not saved" status.
-            if !silent {
+            // Connectivity failures never reach the banner: the caller keeps
+            // the draft locally instead (see `persistDraft`).
+            if !silent, OfflinePolicy.surfacesSyncFailure(error) {
                 lastError = "Draft not saved: \(error.localizedDescription)"
             }
             return nil
+        }
+    }
+
+    /// Why the last `saveDraft` returned nil, for the offline fallback.
+    @ObservationIgnored private var lastDraftSaveError: Error?
+
+    /// Where a compose draft ended up.
+    enum DraftSaveOutcome {
+        /// A real Gmail draft (the replace chain continues from it).
+        case uploaded(Message)
+        /// No network: kept in the Outbox; `flushLocalDrafts` uploads it.
+        case keptLocally(LocalDraft)
+        /// Gmail rejected it (lastError set on the close path).
+        case failed
+    }
+
+    /// `saveDraft` with the offline fallback the composer needs: a draft that
+    /// cannot reach Gmail is written to `localDraft` (updating `local` in
+    /// place when this compose already owns an Outbox row) so closing the
+    /// card on a plane never drops the text. A later save that *does* reach
+    /// Gmail deletes the Outbox row.
+    func persistDraft(from accountId: String, fromEmail: String = "",
+                      to: String, cc: String, bcc: String = "", subject: String,
+                      body: String, replyTo message: Message? = nil, forward: Bool = false,
+                      forwardAll: Bool = false,
+                      attachments: [MIMEBuilder.Attachment] = [],
+                      replacing draft: Message? = nil,
+                      local: LocalDraft? = nil,
+                      silent: Bool = false,
+                      syncAfter: Bool? = nil) async -> DraftSaveOutcome {
+        if !isOffline {
+            lastDraftSaveError = nil
+            if let saved = await saveDraft(from: accountId, fromEmail: fromEmail,
+                                           to: to, cc: cc, bcc: bcc, subject: subject,
+                                           body: body, replyTo: message, forward: forward,
+                                           attachments: attachments, replacing: draft,
+                                           silent: silent, syncAfter: syncAfter) {
+                if let local { deleteLocalDraft(local, silent: true) }
+                isOffline = false
+                return .uploaded(saved)
+            }
+            guard let error = lastDraftSaveError, OfflinePolicy.shouldDefer(error) else {
+                return .failed
+            }
+            isOffline = true
+        }
+        let now = Date()
+        var row = local ?? LocalDraft(
+            id: nil, accountId: accountId, fromEmail: fromEmail,
+            toHeader: to, ccHeader: cc, bccHeader: bcc, subject: subject, body: body,
+            replyToMessageId: message?.id, forward: forward, forwardAll: forwardAll,
+            replacingDraftId: draft?.id,
+            attachmentsJSON: ScheduledSend.encodeAttachments(attachments),
+            createdAt: now, updatedAt: now)
+        row.accountId = accountId
+        row.fromEmail = fromEmail
+        row.toHeader = to; row.ccHeader = cc; row.bccHeader = bcc
+        row.subject = subject; row.body = body
+        row.replyToMessageId = message?.id
+        row.forward = forward; row.forwardAll = forwardAll
+        row.replacingDraftId = draft?.id
+        row.attachmentsJSON = ScheduledSend.encodeAttachments(attachments)
+        row.updatedAt = now
+        let stored: LocalDraft
+        do {
+            stored = try db.write { db -> LocalDraft in
+                var saved = row
+                // Update in place only while the row is still there. The
+                // reconnect flush (or a Discard) can retire it between two
+                // autosaves; `update` would then throw and the composer would
+                // report "Draft not saved" with the text nowhere on disk.
+                var exists = false
+                if let id = saved.id {
+                    exists = try LocalDraft.filter(Column("id") == id).fetchCount(db) > 0
+                }
+                if exists {
+                    try saved.update(db)
+                } else {
+                    // Read the rowid back explicitly: the composer keys every
+                    // later autosave on it, and a nil id would stack copies.
+                    saved.id = nil
+                    try saved.insert(db)
+                    saved.id = db.lastInsertedRowID
+                }
+                return saved
+            }
+        } catch {
+            if !silent { lastError = "Draft not saved: \(error.localizedDescription)" }
+            return .failed
+        }
+        reloadLocalDrafts()
+        if !silent { showNotice(OfflinePolicy.localDraftNotice) }
+        return .keptLocally(stored)
+    }
+
+    // MARK: - Outbox (drafts saved offline)
+
+    func reloadLocalDrafts() {
+        localDrafts = (try? db.read {
+            try LocalDraft.order(Column("updatedAt").desc).fetchAll($0)
+        }) ?? []
+    }
+
+    /// Reopen an Outbox draft in compose. The row stays until the editor
+    /// uploads or discards it; autosave keeps updating it while offline.
+    func editLocalDraft(_ local: LocalDraft) {
+        let replyTo = local.replyToMessageId.flatMap { messageBody(id: $0) }
+        let draft = local.replacingDraftId.flatMap { messageBody(id: $0) }
+        let restore = PendingSend(accountId: local.accountId, fromEmail: local.effectiveFromEmail,
+                                  to: local.toHeader, cc: local.ccHeader,
+                                  bcc: local.bccHeader, subject: local.subject, body: local.body,
+                                  replyTo: replyTo, forward: local.forward,
+                                  forwardAll: local.forwardAll,
+                                  attachments: local.attachments, replacingDraft: draft)
+        var request = ComposeRequest(replyTo: replyTo, forward: local.forward,
+                                     forwardAll: local.forwardAll,
+                                     editDraft: draft, restore: restore)
+        request.localDraft = local
+        openCompose(request)
+    }
+
+    func deleteLocalDraft(_ local: LocalDraft, silent: Bool = false) {
+        guard let id = local.id else { return }
+        try? db.write { db in _ = try LocalDraft.deleteOne(db, key: id) }
+        if composingLocalDraftId == id { composingLocalDraftId = nil }
+        reloadLocalDrafts()
+        if !silent { showNotice("Offline draft discarded") }
+    }
+
+    /// Upload Outbox drafts as real Gmail drafts, oldest first, skipping the
+    /// one open in compose (its editor owns it). Stops at the first
+    /// connectivity failure. One Drafts-mailbox sync afterwards so the
+    /// uploaded rows appear where the user expects them.
+    func flushLocalDrafts() async {
+        guard !demoMode, !isShuttingDown, !localDraftFlushInFlight else { return }
+        localDraftFlushInFlight = true
+        defer { localDraftFlushInFlight = false }
+        let rows = (try? db.read {
+            try LocalDraft.order(Column("createdAt")).fetchAll($0)
+        }) ?? []
+        guard !rows.isEmpty else {
+            if !localDrafts.isEmpty { reloadLocalDrafts() }
+            return
+        }
+        var uploadedAccounts: Set<String> = []
+        var uploadedCount = 0
+        for local in rows where local.id != composingLocalDraftId {
+            guard !isShuttingDown else { break }
+            let replyTo = local.replyToMessageId.flatMap { messageBody(id: $0) }
+            let draft = local.replacingDraftId.flatMap { messageBody(id: $0) }
+            lastDraftSaveError = nil
+            let saved = await saveDraft(from: local.accountId, fromEmail: local.fromEmail,
+                                        to: local.toHeader, cc: local.ccHeader,
+                                        bcc: local.bccHeader, subject: local.subject,
+                                        body: local.body, replyTo: replyTo,
+                                        forward: local.forward,
+                                        attachments: local.attachments, replacing: draft,
+                                        silent: true, syncAfter: false)
+            if saved != nil {
+                isOffline = false
+                uploadedAccounts.insert(local.accountId)
+                uploadedCount += 1
+                deleteLocalDraft(local, silent: true)
+                continue
+            }
+            if let error = lastDraftSaveError, OfflinePolicy.shouldDefer(error) {
+                isOffline = true
+                break
+            }
+            if let error = lastDraftSaveError, Self.isReauthRequired(error) {
+                requireReauthorization(for: local.accountId)
+                break
+            }
+            // Rejected outright: keep the row so the user can open and fix it.
+            if let error = lastDraftSaveError {
+                lastError = "Couldn't upload an offline draft: \(error.localizedDescription)"
+            }
+        }
+        for account in uploadedAccounts {
+            await syncDraftMailbox(account)
+        }
+        if uploadedCount > 0 {
+            showNotice(uploadedCount == 1 ? "Offline draft uploaded to Drafts"
+                                          : "\(uploadedCount) offline drafts uploaded to Drafts")
         }
     }
 

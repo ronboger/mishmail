@@ -15,6 +15,8 @@ final class DatabaseMigrationTests: XCTestCase {
             XCTAssertTrue(try db.tableExists("message_fts"))
             XCTAssertTrue(try db.tableExists("vipSender"), "v11 must add vipSender")
             XCTAssertTrue(try db.tableExists("vipSenderGroup"), "v34 must add vipSenderGroup")
+            XCTAssertTrue(try db.tableExists("pendingThreadOp"), "v38 must add pendingThreadOp")
+            XCTAssertTrue(try db.tableExists("localDraft"), "v38 must add localDraft")
             let messageCols = try db.columns(in: "message").map(\.name)
             XCTAssertTrue(messageCols.contains("bccHeader"), "v4 must add bccHeader")
             XCTAssertTrue(messageCols.contains("hasAttachment"))

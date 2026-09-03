@@ -1,21 +1,22 @@
 import SwiftUI
 
-/// The Scheduled view: locally scheduled sends waiting for their time.
-/// Not Gmail threads — rows edit back into compose, send now, or discard.
-struct ScheduledListView: View {
+/// The Outbox: drafts saved while Gmail was unreachable. Not Gmail threads —
+/// rows reopen in compose or are discarded; a successful upload (on
+/// reconnect, or from the editor) removes them.
+struct OutboxListView: View {
     @Environment(MailStore.self) var store
 
     var body: some View {
         Group {
-            if store.scheduledSends.isEmpty {
+            if store.localDrafts.isEmpty {
                 VStack(spacing: 8) {
-                    Image(systemName: "calendar.badge.clock")
+                    Image(systemName: "tray.and.arrow.up")
                         .font(.system(size: 28))
                         .foregroundStyle(.tertiary)
-                    Text("Nothing scheduled")
+                    Text("Outbox is empty")
                         .font(.system(size: 13, weight: .medium))
                         .foregroundStyle(.secondary)
-                    Text("Schedule a message from the arrow next to Send.")
+                    Text("Drafts saved while offline wait here until they upload.")
                         .font(.system(size: 11))
                         .foregroundStyle(.tertiary)
                 }
@@ -23,8 +24,8 @@ struct ScheduledListView: View {
             } else {
                 ScrollView {
                     LazyVStack(spacing: 2) {
-                        ForEach(store.scheduledSends) { send in
-                            ScheduledRow(send: send)
+                        ForEach(store.localDrafts) { draft in
+                            OutboxRow(draft: draft)
                         }
                     }
                     .padding(.horizontal, 8)
@@ -34,13 +35,22 @@ struct ScheduledListView: View {
         }
         .safeAreaInset(edge: .top, spacing: 0) {
             HStack(spacing: 6) {
-                Text("Scheduled")
+                Text("Outbox")
                     .font(.system(size: 12, weight: .semibold))
                     .foregroundStyle(.primary.opacity(0.7))
-                Text("· sends while MishMail is open")
+                Text(store.isOffline
+                     ? "· uploads to Drafts when you're back online"
+                     : "· uploading to Drafts")
                     .font(.system(size: 11))
                     .foregroundStyle(.tertiary)
                 Spacer()
+                if !store.isOffline && !store.localDrafts.isEmpty {
+                    Button("Upload now") {
+                        Task { await store.flushLocalDrafts() }
+                    }
+                    .buttonStyle(.borderless)
+                    .font(.system(size: 11))
+                }
             }
             .padding(.horizontal, 16).padding(.vertical, 8)
             .background(.background)
@@ -48,20 +58,20 @@ struct ScheduledListView: View {
     }
 }
 
-private struct ScheduledRow: View {
+private struct OutboxRow: View {
     @Environment(MailStore.self) var store
-    let send: ScheduledSend
+    let draft: LocalDraft
     @State private var hovering = false
 
     private var recipients: String {
-        MessageParser.splitAddresses(send.toHeader)
+        MessageParser.splitAddresses(draft.toHeader)
             .map { MessageParser.displayName(fromHeader: $0) }
             .joined(separator: ", ")
     }
 
     var body: some View {
         HStack(spacing: 10) {
-            Image(systemName: "clock")
+            Image(systemName: "wifi.slash")
                 .font(.system(size: 11))
                 .foregroundStyle(.secondary)
                 .frame(width: 16)
@@ -71,9 +81,9 @@ private struct ScheduledRow: View {
                 .lineLimit(1)
                 .frame(width: 170, alignment: .leading)
 
-            (Text(send.subject.isEmpty ? "(no subject)" : send.subject)
+            (Text(draft.subject.isEmpty ? "(no subject)" : draft.subject)
                 .fontWeight(.medium)
-             + Text("  \(send.body.replacingOccurrences(of: "\n", with: " "))")
+             + Text("  \(draft.body.replacingOccurrences(of: "\n", with: " "))")
                 .foregroundColor(.secondary))
                 .font(.system(size: 13))
                 .lineLimit(1)
@@ -83,23 +93,14 @@ private struct ScheduledRow: View {
             if hovering {
                 HStack(spacing: 10) {
                     rowButton("pencil", help: "Edit (back to compose)") {
-                        store.editScheduledSend(send)
-                    }
-                    rowButton("paperplane", help: "Send now") {
-                        store.sendScheduledNow(send)
+                        store.editLocalDraft(draft)
                     }
                     rowButton("trash", help: "Discard") {
-                        store.discardScheduledSend(send)
+                        store.deleteLocalDraft(draft)
                     }
                 }
-            } else if OfflinePolicy.isWaitingForConnection(sendAt: send.sendAt) {
-                // Due but not sent: the network, not the clock, is what it waits on.
-                Label(OfflinePolicy.waitingForConnectionLabel, systemImage: "wifi.slash")
-                    .font(.system(size: 12))
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1)
             } else {
-                Text(SendSchedule.describe(send.sendAt))
+                Text(draft.updatedAt, format: .relative(presentation: .named))
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
@@ -108,15 +109,16 @@ private struct ScheduledRow: View {
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(hovering ? Color.primary.opacity(0.07) : .clear,
                     in: RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
+        .onTapGesture(count: 2) { store.editLocalDraft(draft) }
         .onHover { inside in
             hovering = inside
             if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
         }
         .contextMenu {
-            Button("Edit in Compose") { store.editScheduledSend(send) }
-            Button("Send Now") { store.sendScheduledNow(send) }
+            Button("Edit in Compose") { store.editLocalDraft(draft) }
             Divider()
-            Button("Discard", role: .destructive) { store.discardScheduledSend(send) }
+            Button("Discard", role: .destructive) { store.deleteLocalDraft(draft) }
         }
     }
 
