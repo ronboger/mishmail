@@ -53,4 +53,23 @@ enum OfflinePolicy {
     }
 
     static let waitingForConnectionLabel = "Waiting for connection"
+
+    /// Floor for the scheduled-send timer when the next row is due now.
+    static let sendRetryFloor: TimeInterval = 1
+    /// Backoff for a due row that could not go out for want of a network.
+    static let offlineSendRetry: TimeInterval = 60
+
+    /// How long the scheduled-send timer should wait before firing again.
+    ///
+    /// A row whose time has already passed is one the last sweep could not
+    /// send. Offline that is the network's fault and re-arming at the 1s
+    /// floor would retry — building the full MIME and hitting the wire —
+    /// about once a second for the whole flight. Back off instead and let
+    /// the poll tick and the reconnect edge drive the retry.
+    static func scheduledSendRetryDelay(next: Date, isOffline: Bool,
+                                        now: Date = Date()) -> TimeInterval {
+        let remaining = next.timeIntervalSince(now)
+        if remaining > sendRetryFloor { return remaining }
+        return isOffline ? offlineSendRetry : sendRetryFloor
+    }
 }

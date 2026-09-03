@@ -40,6 +40,36 @@ final class OfflinePolicyTests: XCTestCase {
             "Offline · 2 messages to send, 1 draft to upload, 3 changes to sync")
     }
 
+    /// A due row that could not go out offline must not re-arm the
+    /// scheduled-send timer at its 1s floor — that is a once-a-second retry
+    /// for the whole flight.
+    func testScheduledSendRetryBacksOffWhileOffline() {
+        let now = Date()
+        XCTAssertEqual(
+            OfflinePolicy.scheduledSendRetryDelay(next: now.addingTimeInterval(-30),
+                                                  isOffline: true, now: now),
+            OfflinePolicy.offlineSendRetry)
+        XCTAssertEqual(
+            OfflinePolicy.scheduledSendRetryDelay(next: now, isOffline: true, now: now),
+            OfflinePolicy.offlineSendRetry)
+    }
+
+    func testScheduledSendRetryKeepsTheFloorWhenOnline() {
+        let now = Date()
+        XCTAssertEqual(
+            OfflinePolicy.scheduledSendRetryDelay(next: now.addingTimeInterval(-30),
+                                                  isOffline: false, now: now),
+            OfflinePolicy.sendRetryFloor)
+    }
+
+    func testScheduledSendRetryHonorsATimeStillInTheFuture() {
+        let now = Date()
+        XCTAssertEqual(
+            OfflinePolicy.scheduledSendRetryDelay(next: now.addingTimeInterval(300),
+                                                  isOffline: true, now: now),
+            300, accuracy: 0.001)
+    }
+
     func testDueScheduledSendIsWaitingForConnection() {
         let now = Date()
         XCTAssertTrue(OfflinePolicy.isWaitingForConnection(sendAt: now.addingTimeInterval(-60), now: now))

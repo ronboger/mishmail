@@ -4955,7 +4955,17 @@ struct ComposeRequest: Identifiable {
                     lastError = "Couldn't sync an offline change: \(error.localizedDescription)"
                 }
             }
-            _ = try? await pool.write { db in try PendingThreadOp.deleteOne(db, key: row.id) }
+            // Delete only if the row is still the one we replayed: a user edit
+            // made during the flush folds into it (enqueue sees the row and
+            // queues rather than calling Gmail), and an unconditional delete
+            // would drop that edit on the floor. A row that did change stays
+            // and replays next time — label edits and trash are idempotent, so
+            // re-sending the already-sent part is harmless.
+            _ = try? await pool.write { db in
+                let current = try PendingThreadOp.filter(Column("id") == row.id).fetchOne(db)
+                guard current?.updatedAt == row.updatedAt else { return }
+                _ = try PendingThreadOp.deleteOne(db, key: row.id)
+            }
         }
         await reloadPendingThreadOpCount()
     }
@@ -5998,7 +6008,10 @@ struct ComposeRequest: Identifiable {
         scheduledSendTimer?.invalidate()
         scheduledSendTimer = nil
         guard let next = scheduledSends.map(\.sendAt).min() else { return }
-        scheduledSendTimer = Timer.scheduledTimer(withTimeInterval: max(next.timeIntervalSinceNow, 1),
+        // A due row stays put when the send found no network, so the 1s floor
+        // would re-arm this timer once a second for the whole flight.
+        let delay = OfflinePolicy.scheduledSendRetryDelay(next: next, isOffline: isOffline)
+        scheduledSendTimer = Timer.scheduledTimer(withTimeInterval: delay,
                                                   repeats: false) { [weak self] _ in
             Task { @MainActor in await self?.fireDueScheduledSends() }
         }
@@ -6284,13 +6297,22 @@ struct ComposeRequest: Identifiable {
         do {
             stored = try db.write { db -> LocalDraft in
                 var saved = row
-                if saved.id == nil {
+                // Update in place only while the row is still there. The
+                // reconnect flush (or a Discard) can retire it between two
+                // autosaves; `update` would then throw and the composer would
+                // report "Draft not saved" with the text nowhere on disk.
+                var exists = false
+                if let id = saved.id {
+                    exists = try LocalDraft.filter(Column("id") == id).fetchCount(db) > 0
+                }
+                if exists {
+                    try saved.update(db)
+                } else {
                     // Read the rowid back explicitly: the composer keys every
                     // later autosave on it, and a nil id would stack copies.
+                    saved.id = nil
                     try saved.insert(db)
                     saved.id = db.lastInsertedRowID
-                } else {
-                    try saved.update(db)
                 }
                 return saved
             }
