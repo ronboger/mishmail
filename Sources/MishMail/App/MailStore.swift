@@ -1433,12 +1433,10 @@ struct ComposeRequest: Identifiable {
     /// a direct open (e.g. after minimize) clears it.
     private var pendingMailto: DefaultMailClient.Mailto?
 
-    /// Last `mailto:` handled and when. macOS can deliver one external open
-    /// to more than one scene (or an app can fire the link twice); a repeat
-    /// of the same payload inside `mailtoDedupeWindow` is dropped instead of
-    /// queuing a second card behind the one it just opened.
-    private var lastMailto: (mail: DefaultMailClient.Mailto, at: Date)?
-    static let mailtoDedupeWindow: TimeInterval = 2
+    /// Last `mailto:` that opened a compose card. Guards against one external
+    /// open reaching two scenes, or an app firing the link twice — see
+    /// `MailtoDedupe` for the rule.
+    private var lastMailto: MailtoDedupe.Record?
 
     /// Handle a system open-URL: compose for `mailto:`, or open a locally
     /// cached Gmail conversation for an app-owned `mishmail://thread/…` link.
@@ -1448,16 +1446,12 @@ struct ComposeRequest: Identifiable {
             return
         }
         guard let mail = DefaultMailClient.parseMailto(url) else { return }
-        // One external open can reach more than one scene, or an app can fire
-        // the link twice. Drop a repeat of the same payload while its card is
-        // still up — but never when nothing is open, so a deliberate re-click
-        // after dismissing the card always composes again.
-        let now = Date()
-        if composeRequest != nil, let last = lastMailto, last.mail == mail,
-           now.timeIntervalSince(last.at) < Self.mailtoDedupeWindow {
+        if MailtoDedupe.shouldDrop(mail, last: lastMailto,
+                                   activeRequestId: composeRequest?.id,
+                                   now: Date()) {
             return
         }
-        lastMailto = (mail, now)
+        lastMailto = .init(mail: mail, at: Date(), requestId: nil)
         NSApp.activate(ignoringOtherApps: true)
         // Expanded compose owns the card — same guard as in-app shortcuts.
         // Content would still land in Gmail Drafts via onDisappear →
@@ -1546,6 +1540,9 @@ struct ComposeRequest: Identifiable {
             prefillBcc: fields.bcc,
             prefillSubject: fields.subject,
             prefillBody: fields.body))
+        // Bind the dedupe record to the card this link just opened, so a
+        // repeat delivery is dropped but a re-click after it closes is not.
+        lastMailto?.requestId = composeRequest?.id
     }
 
     /// Clear the active compose card. Flushes a queued `mailto:` if any so a
