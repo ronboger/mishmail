@@ -1402,6 +1402,11 @@ struct ComposeRequest: Identifiable {
         var prefillBcc: String? = nil
         var prefillSubject: String? = nil
         var prefillBody: String? = nil
+        /// Mailbox to send from when nothing else pins one (new mail only).
+        /// A `mailto:` handoff sets this to the account that last
+        /// corresponded with the recipient, so a link from a calendar
+        /// invite sent to one address doesn't default to another.
+        var preferredAccountId: String? = nil
         /// Floating card vs reading-pane dock. Placement helpers set this;
         /// pop-out / hide-pane can promote inline → floating without remount.
         var presentation: ComposePresentation = .floating
@@ -1433,6 +1438,13 @@ struct ComposeRequest: Identifiable {
     /// a direct open (e.g. after minimize) clears it.
     private var pendingMailto: DefaultMailClient.Mailto?
 
+    /// Last `mailto:` handled and when. macOS can deliver one external open
+    /// to more than one scene (or an app can fire the link twice); a repeat
+    /// of the same payload inside `mailtoDedupeWindow` is dropped instead of
+    /// queuing a second card behind the one it just opened.
+    private var lastMailto: (mail: DefaultMailClient.Mailto, at: Date)?
+    static let mailtoDedupeWindow: TimeInterval = 2
+
     /// Handle a system open-URL: compose for `mailto:`, or open a locally
     /// cached Gmail conversation for an app-owned `mishmail://thread/…` link.
     func handleOpenURL(_ url: URL) {
@@ -1441,6 +1453,12 @@ struct ComposeRequest: Identifiable {
             return
         }
         guard let mail = DefaultMailClient.parseMailto(url) else { return }
+        let now = Date()
+        if let last = lastMailto, last.mail == mail,
+           now.timeIntervalSince(last.at) < Self.mailtoDedupeWindow {
+            return
+        }
+        lastMailto = (mail, now)
         NSApp.activate(ignoringOtherApps: true)
         // Expanded compose owns the card — same guard as in-app shortcuts.
         // Content would still land in Gmail Drafts via onDisappear →
@@ -1528,7 +1546,31 @@ struct ComposeRequest: Identifiable {
             prefillCc: fields.cc,
             prefillBcc: fields.bcc,
             prefillSubject: fields.subject,
-            prefillBody: fields.body))
+            prefillBody: fields.body,
+            preferredAccountId: mailboxForCorrespondents(mail.to + mail.cc)))
+    }
+
+    /// Mailbox that most recently exchanged mail with any of `addresses`
+    /// (as sender or To/Cc recipient). Nil when none has, or when only one
+    /// account is connected — the picker's normal default applies then.
+    func mailboxForCorrespondents(_ addresses: [String]) -> String? {
+        guard accounts.count > 1 else { return nil }
+        let wanted = MailtoSender.lookupAddresses(addresses, own: ownEmailAddresses)
+        guard !wanted.isEmpty else { return nil }
+        return try? db.read { db in
+            let clauses = wanted.map { _ in
+                "(lower(fromHeader) LIKE ? ESCAPE '\\' OR lower(toHeader) LIKE ? ESCAPE '\\' OR lower(ccHeader) LIKE ? ESCAPE '\\')"
+            }.joined(separator: " OR ")
+            var args: [String] = []
+            for address in wanted {
+                let pattern = "%" + MailtoSender.likeEscaped(address) + "%"
+                args += [pattern, pattern, pattern]
+            }
+            return try String.fetchOne(
+                db,
+                sql: "SELECT accountId FROM message WHERE \(clauses) ORDER BY date DESC LIMIT 1",
+                arguments: StatementArguments(args))
+        }
     }
 
     /// Clear the active compose card. Flushes a queued `mailto:` if any so a
