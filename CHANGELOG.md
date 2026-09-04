@@ -57,6 +57,11 @@ minor versions may still change behavior.
   `~/.config/mishmail/mcp-token`.
 
 ### Added
+- **Moving from Notion Mail.** Settings opens with a migration pane: what
+  to save before 22 Sep 2026, how drafts/scheduled mail stay in Gmail, and
+  a JSON/CSV snippet importer that reads Notion exports (`shortcut`/`content`,
+  `{ "snippets": […] }`, `{{First Name}}`). Cmd-K has “Moving from Notion
+  Mail…”. README has the same steps.
 - **Sign in with OpenRouter.** Settings → AI → Subscriptions can open a
   browser login and mint an API key for this app, the same PKCE flow Pi
   uses. You can still paste a key. The minted key stays in the Keychain.

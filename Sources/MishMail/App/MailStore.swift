@@ -4597,9 +4597,9 @@ struct ComposeRequest: Identifiable {
         reloadSnippets()
     }
 
-    /// Imports snippets from a JSON file
-    /// (`[{"name", "body", "movesToBcc", "accountIds"}]`), skipping any whose
-    /// name already exists so re-importing is harmless.
+    /// Imports snippets from JSON or CSV (MishMail array, Notion `{snippets}`,
+    /// shortcut/content keys, CSV headers). Skips names that already exist so
+    /// re-importing is harmless.
     /// `unknownAccountIds` counts scope emails that don't match a signed-in
     /// account (typos hide the snippet until fixed).
     func importSnippets(from url: URL) throws -> (added: Int, skipped: Int, unknownAccountIds: Int) {
