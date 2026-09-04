@@ -21,12 +21,24 @@ enum ExternalOpenDedupe {
         var requestId: UUID?
     }
 
+    /// Identifies the compose card currently on screen, if any.
+    struct ActiveCard: Equatable {
+        var id: UUID
+        /// A minimized card is replaceable, so it does not suppress a repeat:
+        /// dropping one would make the click appear to do nothing.
+        var isMinimized: Bool
+    }
+
     /// True when an identical payload arrived inside the window.
+    ///
+    /// A negative interval means the clock stepped backwards; that is not a
+    /// repeat, or a queued link would be dropped until the clock caught up.
     static func isRepeat<Payload: Equatable>(
         _ incoming: Payload, last: (payload: Payload, at: Date)?, now: Date,
         window: TimeInterval = window) -> Bool {
         guard let last, last.payload == incoming else { return false }
-        return now.timeIntervalSince(last.at) < window
+        let elapsed = now.timeIntervalSince(last.at)
+        return elapsed >= 0 && elapsed < window
     }
 
     /// True when a `mailto:` should be ignored.
@@ -36,13 +48,11 @@ enum ExternalOpenDedupe {
     /// dismissed — or while an unrelated draft is open — is a fresh request
     /// and must go through, or the handoff is silently lost.
     ///
-    /// - Parameter activeRequestId: `composeRequest?.id` for a card the user
-    ///   can see, nil when none is open or the card is minimized. A minimized
-    ///   card is replaceable, so a repeat is allowed to open a visible one
-    ///   rather than appearing to do nothing.
+    /// - Parameter activeCard: the compose card on screen, or nil when none
+    ///   is open.
     static func shouldDropMailto(_ incoming: DefaultMailClient.Mailto,
                                  last: MailtoRecord?,
-                                 activeRequestId: UUID?,
+                                 activeCard: ActiveCard?,
                                  now: Date,
                                  window: TimeInterval = window) -> Bool {
         guard let last,
@@ -52,6 +62,7 @@ enum ExternalOpenDedupe {
         // someone else's draft — a repeat would just re-queue the same handoff
         // and show the notice twice.
         guard let openId = last.requestId else { return true }
-        return activeRequestId == openId
+        guard let activeCard, !activeCard.isMinimized else { return false }
+        return activeCard.id == openId
     }
 }

@@ -1444,8 +1444,11 @@ struct ComposeRequest: Identifiable {
     func handleOpenURL(_ url: URL) {
         let now = Date()
         if let target = MishMailDeepLinks.parseThreadURL(url) {
-            // A doubled delivery would activate twice and repeat the
-            // "not available" notice.
+            // Raise the app first: even a delivery we drop was a click, and
+            // the window it already opened has to come front.
+            NSApp.activate(ignoringOtherApps: true)
+            // A doubled delivery would otherwise repeat the "not available"
+            // notice and re-open the thread.
             guard !ExternalOpenDedupe.isRepeat(target, last: lastDeepLink, now: now)
             else { return }
             lastDeepLink = (target, now)
@@ -1456,11 +1459,11 @@ struct ComposeRequest: Identifiable {
         // Raise the app before anything else: even a delivery we drop was a
         // click on a link, and the window it already opened has to come front.
         NSApp.activate(ignoringOtherApps: true)
-        // A minimized card is replaceable, so it does not suppress a repeat —
-        // otherwise the click would appear to do nothing.
         if ExternalOpenDedupe.shouldDropMailto(
             mail, last: lastMailto,
-            activeRequestId: composeMinimized ? nil : composeRequest?.id,
+            activeCard: composeRequest.map {
+                .init(id: $0.id, isMinimized: composeMinimized)
+            },
             now: now) {
             return
         }

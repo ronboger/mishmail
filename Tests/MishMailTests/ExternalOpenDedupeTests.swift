@@ -11,9 +11,14 @@ final class ExternalOpenDedupeTests: XCTestCase {
         .init(mail: mail, at: at, requestId: requestId)
     }
 
+    private func card(_ id: UUID, minimized: Bool = false)
+    -> ExternalOpenDedupe.ActiveCard {
+        .init(id: id, isMinimized: minimized)
+    }
+
     func testFirstDeliveryIsNeverDropped() {
         XCTAssertFalse(ExternalOpenDedupe.shouldDropMailto(
-            link, last: nil, activeRequestId: nil, now: t0))
+            link, last: nil, activeCard: nil, now: t0))
     }
 
     /// The case this exists for: one open reaches two scenes, so the same
@@ -22,7 +27,7 @@ final class ExternalOpenDedupeTests: XCTestCase {
         let id = UUID()
         XCTAssertTrue(ExternalOpenDedupe.shouldDropMailto(
             link, last: record(link, at: t0, requestId: id),
-            activeRequestId: id, now: t0.addingTimeInterval(0.2)))
+            activeCard: card(id), now: t0.addingTimeInterval(0.2)))
     }
 
     /// Re-clicking after dismissing the card is a fresh request, not a
@@ -30,22 +35,25 @@ final class ExternalOpenDedupeTests: XCTestCase {
     func testAllowsReclickAfterCardClosed() {
         XCTAssertFalse(ExternalOpenDedupe.shouldDropMailto(
             link, last: record(link, at: t0, requestId: UUID()),
-            activeRequestId: nil, now: t0.addingTimeInterval(0.5)))
+            activeCard: nil, now: t0.addingTimeInterval(0.5)))
     }
 
-    /// A minimized card is passed as no active card: it is replaceable, so a
-    /// repeat opens a visible one instead of appearing to do nothing.
-    func testAllowsRepeatWhenItsCardIsMinimized() {
+    /// A minimized card is replaceable, so a repeat opens a visible one
+    /// instead of appearing to do nothing. Same card id as the record —
+    /// only `isMinimized` lets it through.
+    func testAllowsRepeatWhenItsOwnCardIsMinimized() {
+        let id = UUID()
         XCTAssertFalse(ExternalOpenDedupe.shouldDropMailto(
-            link, last: record(link, at: t0, requestId: UUID()),
-            activeRequestId: nil, now: t0.addingTimeInterval(0.2)))
+            link, last: record(link, at: t0, requestId: id),
+            activeCard: card(id, minimized: true),
+            now: t0.addingTimeInterval(0.2)))
     }
 
     /// An unrelated draft being open says nothing about this link.
     func testAllowsRepeatWhenADifferentCardIsOpen() {
         XCTAssertFalse(ExternalOpenDedupe.shouldDropMailto(
             link, last: record(link, at: t0, requestId: UUID()),
-            activeRequestId: UUID(), now: t0.addingTimeInterval(0.5)))
+            activeCard: card(UUID()), now: t0.addingTimeInterval(0.5)))
     }
 
     /// Queued behind a draft (no card of its own yet): a repeat would only
@@ -53,21 +61,22 @@ final class ExternalOpenDedupeTests: XCTestCase {
     func testDropsRepeatWhileQueued() {
         XCTAssertTrue(ExternalOpenDedupe.shouldDropMailto(
             link, last: record(link, at: t0, requestId: nil),
-            activeRequestId: UUID(), now: t0.addingTimeInterval(0.2)))
+            activeCard: card(UUID()), now: t0.addingTimeInterval(0.2)))
     }
 
     func testAllowsSameLinkAfterWindowElapses() {
         let id = UUID()
         XCTAssertFalse(ExternalOpenDedupe.shouldDropMailto(
             link, last: record(link, at: t0, requestId: id),
-            activeRequestId: id, now: t0.addingTimeInterval(ExternalOpenDedupe.window + 0.1)))
+            activeCard: card(id),
+            now: t0.addingTimeInterval(ExternalOpenDedupe.window + 0.1)))
     }
 
     func testAllowsADifferentLink() {
         let id = UUID()
         XCTAssertFalse(ExternalOpenDedupe.shouldDropMailto(
             other, last: record(link, at: t0, requestId: id),
-            activeRequestId: id, now: t0.addingTimeInterval(0.2)))
+            activeCard: card(id), now: t0.addingTimeInterval(0.2)))
     }
 
     /// Same recipient but a different subject is a different message.
@@ -77,7 +86,18 @@ final class ExternalOpenDedupeTests: XCTestCase {
         let id = UUID()
         XCTAssertFalse(ExternalOpenDedupe.shouldDropMailto(
             withOther, last: record(withSubject, at: t0, requestId: id),
-            activeRequestId: id, now: t0.addingTimeInterval(0.2)))
+            activeCard: card(id), now: t0.addingTimeInterval(0.2)))
+    }
+
+    /// A clock step backwards must not read as "just delivered", or a queued
+    /// link would be dropped until the clock caught up.
+    func testBackwardsClockIsNotARepeat() {
+        XCTAssertFalse(ExternalOpenDedupe.shouldDropMailto(
+            link, last: record(link, at: t0, requestId: nil),
+            activeCard: card(UUID()), now: t0.addingTimeInterval(-60)))
+        let target = MishMailDeepLinks.ThreadTarget(token: "abc", accountEmail: nil)
+        XCTAssertFalse(ExternalOpenDedupe.isRepeat(
+            target, last: (target, t0), now: t0.addingTimeInterval(-60)))
     }
 
     // MARK: - isRepeat (thread deep links)
