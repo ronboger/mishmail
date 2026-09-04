@@ -17,10 +17,6 @@ minor versions may still change behavior.
   already open. A duplicate delivery of the same link within two seconds is
   ignored while its card is still up, so no second compose card is queued;
   re-clicking a link after dismissing the card still composes.
-- **mailto: compose sends from the mailbox that knows the recipient.** With
-  several accounts connected, the From defaults to the account that most
-  recently exchanged mail with the addressee, not the active or first one.
-  Spam and trash do not count as correspondence.
 
 ### Changed
 - **Ask Mish hides stale models in the picker.** Grok 4.2, Grok 2/3, image
