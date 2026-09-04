@@ -19,6 +19,19 @@ minor versions may still change behavior.
   re-clicking a link after dismissing the card still composes.
 
 ### Changed
+- **MailStore command work is split out of the observable hub.** Sync,
+  mutations, compose/drafts, reminders, AI triage, and account lifecycle live
+  in `MailStore+…` files and Support policy types. The main class keeps UI
+  state.
+- **CI runs on every pull request and every push to main.** Unit tests and
+  the app build are one job; the UI smoke suite is a separate job so a UI
+  hang cannot hide unit-test results.
+- **README privacy copy matches hosted AI.** Mail stays on this Mac except
+  Gmail API traffic; a hosted model you assign can receive that task's mail
+  text after host consent. Silent auto-sort still refuses cloud providers.
+- **The unit-test target includes domain sources by directory.** New
+  Gmail/Store/Auth/Support files no longer need a `project.yml` line. App-only
+  files stay on an exclude list.
 - **Ask Mish hides stale models in the picker.** Grok 4.2, Grok 2/3, image
   and non-reasoning ids, and Gemini 1.x/2.x no longer fill the browse list.
   Grok defaults to Grok 4.6. Gemini defaults to 3.7 Flash. A stored stale

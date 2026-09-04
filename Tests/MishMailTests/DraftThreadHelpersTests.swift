@@ -84,6 +84,30 @@ final class DraftThreadHelpersTests: XCTestCase {
             "listDrafts miss must not invent a draft id")
     }
 
+    func testReplyParentSkipsForwardDraftsAndPicksReferences() {
+        let inbound = msg(id: "1", labels: "INBOX")
+        let later = msg(id: "2", labels: "INBOX SENT", date: 10)
+        var replyDraft = msg(id: "d1", labels: "DRAFT", date: 20)
+        replyDraft.referencesHeader = inbound.messageIdHeader
+        XCTAssertEqual(
+            ComposeDrafts.replyParent(forDraft: replyDraft, inThread: [inbound, later, replyDraft])?.gmailId,
+            "1")
+
+        var fwd = msg(id: "d2", labels: "DRAFT", date: 20)
+        fwd.subject = "Fwd: hi"
+        XCTAssertNil(ComposeDrafts.replyParent(forDraft: fwd, inThread: [inbound, fwd]))
+
+        var marked = msg(id: "d3", labels: "DRAFT", date: 20)
+        marked.bodyText = "hi\n\(ForwardComposer.marker)\nquoted"
+        XCTAssertNil(ComposeDrafts.replyParent(forDraft: marked, inThread: [inbound, marked]))
+
+        var plain = msg(id: "d4", labels: "DRAFT", date: 20)
+        XCTAssertEqual(
+            ComposeDrafts.replyParent(forDraft: plain, inThread: [inbound, later, plain])?.gmailId,
+            "2",
+            "no References → last non-draft")
+    }
+
     func testAuthoredPreviewEmptyComposeSaveUsesReplyComposerShape() {
         // Reply opened, user typed nothing, closed → body is "\n\n" + plainQuote.
         let original = msg(id: "orig", labels: "INBOX")
