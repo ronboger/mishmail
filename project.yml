@@ -121,8 +121,10 @@ targets:
         ENABLE_HARDENED_RUNTIME: true
         SKIP_INSTALL: true
   # Standalone unit tests over the non-UI core (parsers, MIME, DB schema,
-  # sync derivation). Compiles those sources directly — no app host, so no
-  # keychain prompts, no network, no real database.
+  # sync derivation). Compiles those sources by directory — no app host, so no
+  # keychain prompts, no network, no real database. New Gmail/Store/Auth/Support
+  # files are picked up automatically; only app-only files need an exclude.
+  # Longer term this set becomes a Swift package both targets import.
   MishMailTests:
     type: bundle.unit-test
     platform: macOS
@@ -132,126 +134,25 @@ targets:
       # runner is unsandboxed — the same reason the strip lives in the helper.
       - Sources/MishMailRelauncher/Quarantine.swift
       - Sources/MishMailRelauncher/Relaunch.swift
-      - Sources/MishMail/Gmail
-      - Sources/MishMail/Store/Database.swift
-      - Sources/MishMail/Store/SidebarCounts.swift
-      - Sources/MishMail/Store/CategoryHide.swift
-      - Sources/MishMail/Store/ThreadLabels.swift
-      - Sources/MishMail/Support/AskMishContext.swift
-      - Sources/MishMail/Support/AskMishLayout.swift
-      - Sources/MishMail/Support/AskMishModelMenu.swift
-      - Sources/MishMail/Support/AskMishTools.swift
-      - Sources/MishMail/Support/AskMishTrace.swift
-      - Sources/MishMail/Support/ContactMiner.swift
-      - Sources/MishMail/Support/RecipientMailbox.swift
-      - Sources/MishMail/Support/ComposeLinks.swift
-      - Sources/MishMail/Support/TextDirection.swift
-      - Sources/MishMail/Support/HTMLEntities.swift
-      - Sources/MishMail/Support/KeyBindings.swift
-      - Sources/MishMail/Support/LabelSearch.swift
-      - Sources/MishMail/Support/ListUnsubscribe.swift
-      - Sources/MishMail/Support/LLMChat.swift
-      - Sources/MishMail/Support/LLMOAuth.swift
-      - Sources/MishMail/Support/LLMPricing.swift
-      - Sources/MishMail/Support/LLMWireOpenAI.swift
-      - Sources/MishMail/Support/LLMWireAnthropic.swift
-      - Sources/MishMail/Support/LLMWireOllama.swift
-      - Sources/MishMail/Support/LLMProviderStore.swift
-      - Sources/MishMail/Support/LLMUsageLog.swift
-      - Sources/MishMail/Support/LLMPrompts.swift
-      - Sources/MishMail/Support/Keychain.swift
-      - Sources/MishMail/Support/SearchQuery.swift
-      - Sources/MishMail/Support/SelectionAdvance.swift
-      - Sources/MishMail/Support/ReadingPaneSpaceScroll.swift
-      - Sources/MishMail/Support/StarStickiness.swift
-      - Sources/MishMail/Support/TextFocus.swift
-      - Sources/MishMail/Support/ThreadContentRevisions.swift
-      - Sources/MishMail/Support/ThreadDetailMirror.swift
-      - Sources/MishMail/Support/GoToMailbox.swift
-      - Sources/MishMail/Support/ListReselectPolicy.swift
-      - Sources/MishMail/Support/AccountOrder.swift
-      - Sources/MishMail/Support/GmailFilterMatch.swift
-      - Sources/MishMail/Support/GmailWebLinks.swift
-      - Sources/MishMail/Support/DatePickRows.swift
-      - Sources/MishMail/Support/DatePickQueryInput.swift
-      - Sources/MishMail/Support/SnoozeDateParser.swift
-      - Sources/MishMail/Support/SnoozePresets.swift
-      - Sources/MishMail/Support/PollCadence.swift
-      - Sources/MishMail/Support/PrioritySplit.swift
-      - Sources/MishMail/Support/VIPMembership.swift
-      - Sources/MishMail/Support/PriorityCandidates.swift
-      - Sources/MishMail/Support/PrioritySectionAdvance.swift
-      - Sources/MishMail/Support/StarNavAnchor.swift
-      - Sources/MishMail/Support/ParticipantMenuVIP.swift
-      - Sources/MishMail/Support/TokenAddressEditing.swift
-      - Sources/MishMail/Support/AppTheme.swift
-      - Sources/MishMail/Support/SendSchedule.swift
-      - Sources/MishMail/Support/SendIdentity.swift
-      - Sources/MishMail/Support/SendThreading.swift
-      - Sources/MishMail/Support/Classifier.swift
-      - Sources/MishMail/Support/SnippetDefaults.swift
-      - Sources/MishMail/Support/SnippetExpander.swift
-      - Sources/MishMail/Support/SnippetImport.swift
-      - Sources/MishMail/Support/SnippetInsertion.swift
-      - Sources/MishMail/Support/SnippetMatch.swift
-      - Sources/MishMail/Support/GreetingAutocomplete.swift
-      - Sources/MishMail/Support/SlashSnippetPickerLayout.swift
-      - Sources/MishMail/Support/UpdateChecker.swift
-      - Sources/MishMail/Support/UpdateInstaller.swift
-      - Sources/MishMail/Support/HTMLBodyCSP.swift
-      - Sources/MishMail/Support/HTMLBodyDarkMode.swift
-      - Sources/MishMail/Support/HTMLBodyDocument.swift
-      - Sources/MishMail/Support/HTMLBodyLayout.swift
-      - Sources/MishMail/Support/HTMLBodyPerformance.swift
-      - Sources/MishMail/Support/HTMLRemoteImageBlocker.swift
-      - Sources/MishMail/Support/CIDImageInliner.swift
-      - Sources/MishMail/Support/RemoteImagePolicy.swift
-      - Sources/MishMail/Support/ThreadExporter.swift
-      - Sources/MishMail/Support/Markdown.swift
-      - Sources/MishMail/Support/MailLayout.swift
-      - Sources/MishMail/Support/CenterPeek.swift
-      - Sources/MishMail/Support/ComposePlacement.swift
-      - Sources/MishMail/Support/ComposeDraftStatusLayout.swift
-      - Sources/MishMail/Support/ComposeBodyLayout.swift
-      - Sources/MishMail/Support/ComposeAttachmentDrop.swift
-      - Sources/MishMail/Support/ComposeFooterLayout.swift
-      - Sources/MishMail/Support/MessageAttachmentChipLayout.swift
-      - Sources/MishMail/Support/ComposeToolbarVisibility.swift
-      - Sources/MishMail/Support/ComposeKeyOwnership.swift
-      - Sources/MishMail/Support/ComposeEsc.swift
-      - Sources/MishMail/Support/FromPickerModel.swift
-      - Sources/MishMail/Support/QuickLookKeyOwnership.swift
-      - Sources/MishMail/Support/DemoSeed.swift
-      - Sources/MishMail/Support/ErrorRecovery.swift
-      - Sources/MishMail/Support/ExternalLinkRecovery.swift
-      - Sources/MishMail/Support/Ollama.swift
-      - Sources/MishMail/Support/PerfMetrics.swift
-      - Sources/MishMail/Support/ThreadTypeahead.swift
-      - Sources/MishMail/Support/FuzzySearch.swift
-      - Sources/MishMail/Support/OpenFromSearch.swift
-      - Sources/MishMail/Support/HistoryFetchFormat.swift
-      - Sources/MishMail/Support/ThreadListCursor.swift
-      - Sources/MishMail/Support/ThreadListDraftCue.swift
-      - Sources/MishMail/Support/ThreadRowPillChrome.swift
-      - Sources/MishMail/Support/NeighborPrefetch.swift
-      - Sources/MishMail/Support/ThreadRefresh.swift
-      - Sources/MishMail/Support/ThreadDetailCache.swift
-      - Sources/MishMail/Support/DefaultMailClient.swift
-      - Sources/MishMail/Support/MarkReadOnOpen.swift
-      - Sources/MishMail/Support/MessageExpandPolicy.swift
-      - Sources/MishMail/Support/GmailMarkReadKeys.swift
-      - Sources/MishMail/Support/PendingDraftVisibility.swift
-      - Sources/MishMail/Support/ComposingDraftVisibility.swift
-      - Sources/MishMail/Support/CalendarInvite.swift
-      - Sources/MishMail/Support/UndoToast.swift
-      - Sources/MishMail/Support/TransientNetworkError.swift
-      - Sources/MishMail/Auth/OAuth.swift
-      # Pure MCP helpers (HTTP parse, JSON-RPC router, tool schemas). Networking
-      # + MailStore bridge stay app-only (AppKit / NWListener).
-      - Sources/MishMail/MCP/MCPHTTP.swift
-      - Sources/MishMail/MCP/MCPRouter.swift
-      - Sources/MishMail/MCP/MCPTools.swift
-      - Sources/MishMail/Support/MCPConnectSnippets.swift
+      - path: Sources/MishMail/Gmail
+      - path: Sources/MishMail/Store
+      - path: Sources/MishMail/Auth
+      - path: Sources/MishMail/MCP
+        excludes:
+          # MailStore-backed bridge + NWListener stay app-only.
+          - MCPBridge.swift
+          - MCPServer.swift
+      - path: Sources/MishMail/Support
+        excludes:
+          # MailStore / SwiftUI-environment / WebKit pool — app target only.
+          - AskMishController.swift
+          - GmailFilterDisplay.swift
+          - HTMLBodyPrerender.swift
+          - QuickLookController.swift
+          - WebViewPool.swift
+          - Colors.swift
+          - Styles.swift
+          - UITestBreadcrumbs.swift
     dependencies:
       - package: GRDB
     configFiles:

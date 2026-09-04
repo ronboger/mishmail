@@ -24,28 +24,37 @@ Signing defaults to portable ad-hoc; see
 ## The test gate
 
 `make test` must pass before every commit (the pre-commit hook enforces this
-locally, and CI runs it on every push/PR). `make ui-test` is the small
-end-to-end gate for launch, demo navigation, compose, and Settings. Tests live in
+locally, and CI runs it on every push to `main` and every pull request).
+`make ui-test` is a separate CI job for launch, demo navigation, compose, and
+Settings — it does not block the unit-test job from reporting. Tests live in
 `Tests/MishMailTests` and cover the non-UI core: message/MIME parsing, the
 DB schema and migrations, thread derivation, search-query parsing, and
-send-scheduling. The test target is **hostless** — it compiles the relevant
-`Sources/` files directly, so it needs no app host, Keychain, or network. When
-you touch parser/DB/search/sync-derivation logic, add or update a test.
+send-scheduling. The test target is **hostless** — it compiles `Gmail/`,
+`Store/`, `Auth/`, MCP helpers, and `Support/` by directory (app-only files
+are excluded in `project.yml`), so it needs no app host, Keychain, or network.
+Do not add individual production files to the test target; put new domain
+code in those folders. Longer term this set becomes a Swift package both
+targets import. When you touch parser/DB/search/sync-derivation logic, add or
+update a test.
 
 ## Code layout
 
 ```
 Sources/MishMail/
-  App/        app entry + MailStore (the observable app state)
+  App/        app entry + MailStore (observable UI state) and MailStore+*
+              command extensions (sync, mutations, compose, reminders, AI,
+              accounts)
   Auth/       OAuth (PKCE, loopback listener)
   Gmail/      GmailClient, SyncEngine, MessageParsing/MIME
   Store/      Database (GRDB models, migrations, SQLCipher)
-  Support/    Keychain, Ollama, SearchQuery, SendSchedule, Notifier, styles/colors
+  Support/    domain helpers and command policy (AccountLifecycle, AITriage,
+              LocalReminders, ComposeDrafts, SearchQuery, …)
   UI/         SwiftUI views (ContentView, ThreadList/Detail, Compose, …)
 ```
 
-`MailStore` is the hub most features touch; UI is SwiftUI-only with no view
-models beyond `MailStore`.
+`MailStore` is the observable state hub. Put new command/service work in a
+`MailStore+…` extension or a Support policy type — do not grow the main
+class, and do not add per-view MVVM objects.
 
 ## Conventions
 

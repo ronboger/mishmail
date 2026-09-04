@@ -1,8 +1,10 @@
 # MishMail
 
 A native, local-first Gmail client for macOS. SwiftUI, Gmail REST API, SQLite.
-No server, no telemetry — nothing leaves your Mac except calls to Google's own
-API (and, optionally, a local Ollama model that also never leaves the machine).
+No MishMail server, no telemetry. Mail stays on your Mac except calls to
+Google's Gmail API. Optional AI can stay on-device (Ollama) or, if you turn it
+on, send mail text to a hosted model you choose — with host consent, and with
+silent auto-sort refusing cloud providers.
 
 > **Status:** early but usable (v0.x). Built for people who want a fast,
 > keyboard-driven, Notion-Mail-style inbox that runs entirely on their own
@@ -27,6 +29,29 @@ API (and, optionally, a local Ollama model that also never leaves the machine).
 Connecting a real inbox requires your own free Google Desktop OAuth client;
 the guided setup is below. You can evaluate the entire interface first.
 
+## Moving from Notion Mail
+
+Notion Mail shuts down on **22 Sep 2026**. Mail already in Gmail stays there.
+The pieces that live only in Notion Mail — snippets, drafts, scheduled send,
+auto-label instructions, reminders, custom views — need a save before
+21 Sep 2026. MishMail is built for that move:
+
+1. In Notion Mail, **migrate drafts and scheduled mail to Gmail** (Notion’s
+   own export). Connect the same Google account in MishMail; those drafts
+   sync on the next poll.
+2. **Export snippets** from Notion Mail → Settings → Snippets. In MishMail
+   open **Settings → Moving from Notion Mail** (or Snippets → Import) and
+   drop the JSON or CSV. Slash triggers (`/name`) and `{first_name}` /
+   `{{First Name}}` variables map across. Re-import skips names you already
+   have.
+3. Recreate auto-label instructions as **saved views**, Gmail filters, or
+   AI triage. MishMail has local follow-up **reminders**; Notion Mail
+   reminders do not transfer.
+4. Download **files attached to snippets** by hand — they are not in the
+   snippet export.
+
+See Notion’s [shutdown guide](https://www.notion.com/help/notion-mail-inbox-is-going-away-what-to-do-next).
+
 ## Features
 
 - **Unified multi-account inbox** — connect several Google accounts; view them
@@ -46,9 +71,12 @@ the guided setup is below. You can evaluate the entire interface first.
   Snippets trigger with `/name` in the body (Notion Mail-style), fill
   variables like `{first_name}` and `{my_first_name}`, and can move an
   introducer to Bcc for you.
-- **Optional on-device AI** — draft and summarize with a local
-  [Ollama](https://ollama.com) model. Nothing is uploaded; it works in airplane
-  mode. Off unless you turn it on.
+- **Optional AI** — draft, summarize, triage, and Ask Mish. The default is a
+  local [Ollama](https://ollama.com) model (nothing is uploaded; it works in
+  airplane mode). You can also attach hosted providers (Claude, ChatGPT, Grok,
+  Gemini, OpenRouter, or a custom endpoint). Hosted tasks send mail text off
+  this Mac only after you configure them; custom hosts need an explicit consent
+  toggle; silent auto-sort never uses a cloud model.
 - **Private by construction** — see [Security](#security).
 
 ## Requirements
@@ -57,7 +85,7 @@ the guided setup is below. You can evaluate the entire interface first.
 - **Xcode 15.3+** (Swift 5.10) to build
 - **[xcodegen](https://github.com/yonaskolb/XcodeGen)** — `brew install xcodegen`
 - A **free Google account** and a personal OAuth client (see below)
-- *(optional)* **Ollama** for on-device AI drafting/summaries
+- *(optional)* **Ollama** for on-device AI, or a hosted provider in Settings → AI
 
 ## One-time Google setup (~5 minutes)
 
@@ -251,19 +279,29 @@ Fixed shortcuts (not customizable):
 | Cmd-+ / Cmd-− / Cmd-0 | Text size |
 | Cmd-, | Settings |
 
-## On-device AI (optional)
+## AI (optional)
 
-Install [Ollama](https://ollama.com) and pull a small model:
+Mail text stays on this Mac unless you assign a task to a hosted model.
+
+**Local (default).** Install [Ollama](https://ollama.com) and pull a small model:
 
 ```sh
 ollama pull llama3.2
 ```
 
 Then in **Settings → AI** point MishMail at your local Ollama (default
-`http://127.0.0.1:11434`). You get "Draft with AI" in compose and thread
-summaries — all computed locally. MishMail refuses cleartext non-loopback
-endpoints, and requires an explicit “Allow remote Ollama” toggle before any
-mail content is sent to a remote HTTPS host.
+`http://127.0.0.1:11434`). Drafts, summaries, triage, and Ask Mish run on
+this Mac. MishMail refuses cleartext non-loopback endpoints. LAN Ollama
+(RFC1918 / link-local) is treated as on-network, not as a cloud host.
+
+**Hosted.** Settings → AI can connect Claude, ChatGPT, Grok, Gemini,
+OpenRouter, or a custom OpenAI-compatible endpoint. Each task (drafts,
+summaries, triage, Ask Mish) has its own assignment. A hosted assignment
+sends that task's mail text to the provider. Preset hosts are expected;
+a typed-in host requires an explicit consent that matches scheme, host, and
+port. Silent inbox auto-sort skips when Triage is a cloud model so new-mail
+snippets are not uploaded in the background. Ask Mish shows a one-time notice
+before a hosted chat.
 
 ## Where things live
 
@@ -302,8 +340,10 @@ mail content is sent to a remote HTTPS host.
 - **No secret logging**, parameterized SQL throughout, CRLF-folded MIME headers,
   and path-traversal-safe attachment filenames.
 - **No bundled Google secrets** — every user (and every Debug vs Release copy)
-  pastes their own OAuth client in Settings; nothing leaves the machine except
-  calls to Google.
+  pastes their own OAuth client in Settings. Gmail traffic goes to Google.
+  Optional AI is local Ollama by default; a hosted model you assign in
+  Settings → AI sends that task's mail text to that provider, only after
+  host-consent checks. Silent auto-sort never uses a hosted provider.
 - Snooze and reminders are local-only (Gmail's API has no snooze); everything
   else — archive, trash, star, read state, send/reply — syncs to Gmail
   immediately.

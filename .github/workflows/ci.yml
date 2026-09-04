@@ -1,6 +1,9 @@
 name: CI
 
 on:
+  push:
+    branches: [main]
+  pull_request:
   release:
     types: [published]
   workflow_dispatch:
@@ -11,7 +14,7 @@ concurrency:
 
 jobs:
   test:
-    name: Build & test
+    name: Unit tests & build
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
@@ -19,11 +22,21 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
-      - name: Run tests
+      - name: Run unit tests
         run: make test
 
       - name: Build app
         run: make build
+
+  ui-test:
+    name: UI smoke tests
+    runs-on: macos-26
+    # Separate job so a UI hang or desktop hijack cannot hide unit-test results.
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install xcodegen
+        run: brew install xcodegen
 
       - name: Run UI smoke test
         run: make ui-test

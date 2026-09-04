@@ -11,7 +11,27 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Fixed
+- **A mailto: link no longer opens a second MishMail window.** Email links
+  from other apps (browsers, Notion Calendar) now land in the window that is
+  already open. A duplicate delivery of the same link within two seconds is
+  ignored while its card is still up, so no second compose card is queued;
+  re-clicking a link after dismissing the card still composes.
+
 ### Changed
+- **MailStore command work is split out of the observable hub.** Sync,
+  mutations, compose/drafts, reminders, AI triage, and account lifecycle live
+  in `MailStore+…` files and Support policy types. The main class keeps UI
+  state.
+- **CI runs on every pull request and every push to main.** Unit tests and
+  the app build are one job; the UI smoke suite is a separate job so a UI
+  hang cannot hide unit-test results.
+- **README privacy copy matches hosted AI.** Mail stays on this Mac except
+  Gmail API traffic; a hosted model you assign can receive that task's mail
+  text after host consent. Silent auto-sort still refuses cloud providers.
+- **The unit-test target includes domain sources by directory.** New
+  Gmail/Store/Auth/Support files no longer need a `project.yml` line. App-only
+  files stay on an exclude list.
 - **Ask Mish hides stale models in the picker.** Grok 4.2, Grok 2/3, image
   and non-reasoning ids, and Gemini 1.x/2.x no longer fill the browse list.
   Grok defaults to Grok 4.6. Gemini defaults to 3.7 Flash. A stored stale
@@ -37,6 +57,11 @@ minor versions may still change behavior.
   `~/.config/mishmail/mcp-token`.
 
 ### Added
+- **Moving from Notion Mail.** Settings lists a migration pane first: what
+  to save before 22 Sep 2026, how drafts/scheduled mail stay in Gmail, and
+  a JSON/CSV snippet importer that reads Notion exports (`shortcut`/`content`,
+  `{ "snippets": […] }`, `{{First Name}}`). Cmd-K has “Moving from Notion
+  Mail…”. README has the same steps.
 - **Sign in with OpenRouter.** Settings → AI → Subscriptions can open a
   browser login and mint an API key for this app, the same PKCE flow Pi
   uses. You can still paste a key. The minted key stays in the Keychain.

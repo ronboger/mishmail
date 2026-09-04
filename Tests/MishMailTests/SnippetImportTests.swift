@@ -55,4 +55,72 @@ final class SnippetImportTests: XCTestCase {
         XCTAssertEqual(SnippetImport.plan(items, existingNames: []).count, items.count)
         XCTAssertEqual(SnippetImport.plan(items, existingNames: items.map(\.name)).count, 0)
     }
+
+    func testNotionWrappedJSONUsesShortcutAndContent() throws {
+        let json = """
+        {"snippets": [
+          {"shortcut": "intro", "content": "Hi {{First Name}},\\n\\nBest,\\n{{Your Name}}"},
+          {"title": "cal", "text": "Link: {date}"}
+        ]}
+        """
+        let items = try SnippetImport.decode(Data(json.utf8))
+        XCTAssertEqual(items.map(\.name), ["intro", "cal"])
+        XCTAssertEqual(items[0].body, "Hi {first_name},\n\nBest,\n{my_name}")
+        XCTAssertEqual(items[1].body, "Link: {date}")
+    }
+
+    func testSingleObjectJSONImports() throws {
+        let json = #"{"name": "thanks", "body": "Thanks {{first_name}}!"}"#
+        let items = try SnippetImport.decode(Data(json.utf8))
+        XCTAssertEqual(items.map(\.name), ["thanks"])
+        XCTAssertEqual(items[0].body, "Thanks {first_name}!")
+    }
+
+    func testCSVImportMapsShortcutContentHeader() throws {
+        let csv = """
+        shortcut,content,bcc
+        intro,"Hi {{First Name}}",true
+        cal,See you {date},false
+        """
+        let items = try SnippetImport.decode(Data(csv.utf8))
+        XCTAssertEqual(items.map(\.name), ["intro", "cal"])
+        XCTAssertEqual(items[0].body, "Hi {first_name}")
+        XCTAssertEqual(items[0].movesToBcc, true)
+        XCTAssertEqual(items[1].movesToBcc, false)
+    }
+
+    func testCSVQuotedNewlinesStayInBody() throws {
+        let csv = """
+        name,body
+        intro,"Hello,
+        there"
+        """
+        let items = try SnippetImport.decode(Data(csv.utf8))
+        XCTAssertEqual(items.count, 1)
+        XCTAssertEqual(items[0].body, "Hello,\nthere")
+    }
+
+    func testEmptyJSONArrayIsValid() throws {
+        XCTAssertEqual(try SnippetImport.decode(Data("[]".utf8)), [])
+    }
+
+    func testGarbageIsUnrecognized() {
+        XCTAssertThrowsError(try SnippetImport.decode(Data("not json or csv".utf8))) { error in
+            XCTAssertTrue(error is SnippetImport.ImportError)
+        }
+    }
+
+    func testRewriteMapsNotionAliasesAndLeavesCustomPrompts() {
+        XCTAssertEqual(
+            SnippetImport.rewriteNotionVariables("Hi {{First Name}} from {{Your First Name}} — {{key_point_1}}"),
+            "Hi {first_name} from {my_first_name} — {{key_point_1}}")
+    }
+
+    func testRewriteLeavesCodeBracesAndUnknownTokens() {
+        let body = "struct X { let a = 1 } and {{Company Name}}"
+        XCTAssertEqual(SnippetImport.rewriteNotionVariables(body), body)
+        XCTAssertEqual(
+            SnippetImport.rewriteNotionVariables("See you {date}"),
+            "See you {date}")
+    }
 }
