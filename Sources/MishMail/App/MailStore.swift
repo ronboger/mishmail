@@ -1433,15 +1433,48 @@ struct ComposeRequest: Identifiable {
     /// a direct open (e.g. after minimize) clears it.
     private var pendingMailto: DefaultMailClient.Mailto?
 
+    /// Last `mailto:` that opened a compose card, and last thread deep link
+    /// opened. Guard against one external open reaching two scenes, or an app
+    /// firing the link twice — see `ExternalOpenDedupe` for the rules.
+    private var lastMailto: ExternalOpenDedupe.MailtoRecord?
+    private var lastDeepLink: (payload: MishMailDeepLinks.ThreadTarget, at: Date)?
+    /// Thread the last deep link actually opened, so a repeat is dropped only
+    /// while that conversation is still on screen.
+    private var lastDeepLinkThreadId: String?
+
     /// Handle a system open-URL: compose for `mailto:`, or open a locally
     /// cached Gmail conversation for an app-owned `mishmail://thread/…` link.
     func handleOpenURL(_ url: URL) {
+        let now = Date()
         if let target = MishMailDeepLinks.parseThreadURL(url) {
-            openDeepLinkedThread(target)
+            // Raise the app first: even a delivery we drop was a click, and
+            // the window it already opened has to come front.
+            NSApp.activate(ignoringOtherApps: true)
+            // A doubled delivery would otherwise repeat the "not available"
+            // notice and re-open the thread. Only suppress it while the
+            // conversation it opened is still showing: a lookup that failed,
+            // or a user who has navigated away, deserves a real re-open.
+            if ExternalOpenDedupe.isRepeat(target, last: lastDeepLink, now: now),
+               let opened = lastDeepLinkThreadId, selectedThreadId == opened {
+                return
+            }
+            lastDeepLink = (target, now)
+            lastDeepLinkThreadId = openDeepLinkedThread(target)
             return
         }
         guard let mail = DefaultMailClient.parseMailto(url) else { return }
+        // Raise the app before anything else: even a delivery we drop was a
+        // click on a link, and the window it already opened has to come front.
         NSApp.activate(ignoringOtherApps: true)
+        if ExternalOpenDedupe.shouldDropMailto(
+            mail, last: lastMailto,
+            activeCard: composeRequest.map {
+                .init(id: $0.id, isMinimized: composeMinimized)
+            },
+            now: now) {
+            return
+        }
+        lastMailto = .init(mail: mail, at: now, requestId: nil)
         // Expanded compose owns the card — same guard as in-app shortcuts.
         // Content would still land in Gmail Drafts via onDisappear →
         // saveDraftIfNeeded, but yanking the open card mid-sentence is bad UX.
@@ -1457,7 +1490,9 @@ struct ComposeRequest: Identifiable {
 
     /// Resolve both Gmail thread ids and message ids. Gmail web links commonly
     /// carry a message token even though opening them displays the conversation.
-    private func openDeepLinkedThread(_ target: MishMailDeepLinks.ThreadTarget) {
+    @discardableResult
+    private func openDeepLinkedThread(
+        _ target: MishMailDeepLinks.ThreadTarget) -> String? {
         let thread: MailThread? = try? db.read { db in
             if let account = target.accountEmail {
                 if let exact = try MailThread.fetchOne(
@@ -1509,9 +1544,10 @@ struct ComposeRequest: Identifiable {
         NSApp.activate(ignoringOtherApps: true)
         guard let thread else {
             showNotice("That Gmail conversation isn't available in MishMail yet")
-            return
+            return nil
         }
         openThread(thread)
+        return thread.id
     }
 
     /// Open compose from a parsed `mailto:`. Joins address arrays with ", "
@@ -1529,6 +1565,9 @@ struct ComposeRequest: Identifiable {
             prefillBcc: fields.bcc,
             prefillSubject: fields.subject,
             prefillBody: fields.body))
+        // Bind the dedupe record to the card this link just opened, so a
+        // repeat delivery is dropped but a re-click after it closes is not.
+        lastMailto?.requestId = composeRequest?.id
     }
 
     /// Clear the active compose card. Flushes a queued `mailto:` if any so a
@@ -2057,7 +2096,12 @@ struct ComposeRequest: Identifiable {
         selectedView = .inbox
         clearSelection()
         // Drop any queued browser mailto: — demo teardown isn't a user close.
+        // The dedupe record goes too, or a re-click would be read as a repeat
+        // of a handoff that no longer exists.
         pendingMailto = nil
+        lastMailto = nil
+        lastDeepLink = nil
+        lastDeepLinkThreadId = nil
         composeRequest = nil
         composeMinimized = false
         composeFinishing = false

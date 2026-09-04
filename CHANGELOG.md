@@ -11,6 +11,13 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Fixed
+- **A mailto: link no longer opens a second MishMail window.** Email links
+  from other apps (browsers, Notion Calendar) now land in the window that is
+  already open. A duplicate delivery of the same link within two seconds is
+  ignored while its card is still up, so no second compose card is queued;
+  re-clicking a link after dismissing the card still composes.
+
 ### Changed
 - **Ask Mish hides stale models in the picker.** Grok 4.2, Grok 2/3, image
   and non-reasoning ids, and Gemini 1.x/2.x no longer fill the browse list.
