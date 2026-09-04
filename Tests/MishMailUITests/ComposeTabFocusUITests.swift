@@ -141,7 +141,11 @@ final class ComposeTabFocusUITests: XCTestCase {
         let suggestion = app.buttons
             .matching(identifier: "addressSuggestion.To.dana@brightloop.io")
             .firstMatch
-        XCTAssertTrue(suggestion.waitForExistence(timeout: 3))
+        // Suggestions come from the deferred startup contact mine. On a cold
+        // CI launch that can trail the compose card by several seconds, so
+        // wait as long as the other launch-bound steps do.
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 10),
+                      "recipient suggestion should appear once contacts are mined")
         suggestion.click()
 
         XCTAssertTrue(waitForKeyboardFocus(to, timeout: 2),

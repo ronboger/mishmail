@@ -143,6 +143,7 @@ targets:
       - Sources/MishMail/Support/AskMishTools.swift
       - Sources/MishMail/Support/AskMishTrace.swift
       - Sources/MishMail/Support/ContactMiner.swift
+      - Sources/MishMail/Support/RecipientMailbox.swift
       - Sources/MishMail/Support/ComposeLinks.swift
       - Sources/MishMail/Support/TextDirection.swift
       - Sources/MishMail/Support/HTMLEntities.swift

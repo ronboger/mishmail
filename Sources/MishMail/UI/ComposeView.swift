@@ -1519,6 +1519,15 @@ struct ComposeView: View {
             selectFrom(preferred)
             return
         }
+        // New compose from a `mailto:`: the mailbox that corresponds with
+        // these recipients, when the store found one.
+        if let preferred = request.preferredAccountId,
+           let identity = SendIdentityResolver.preferred(
+            store.sendIdentities.isEmpty ? options : store.sendIdentities,
+            in: preferred) {
+            selectFrom(identity)
+            return
+        }
         // New compose: active account's preferred identity, else first option.
         if let active = store.activeAccountId,
            let preferred = SendIdentityResolver.preferred(
