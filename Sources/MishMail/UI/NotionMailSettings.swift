@@ -69,7 +69,9 @@ struct NotionMailSettings: View {
                 isPresented: $showImporter,
                 allowedContentTypes: [.json, .commaSeparatedText, .tabSeparatedText, .plainText]
             ) { result in
-                importResult = SnippetFileImport.apply(result, store: store)
+                if let msg = SnippetFileImport.apply(result, store: store) {
+                    importResult = msg
+                }
             }
         }
     }
@@ -124,7 +126,7 @@ enum SnippetFileImport {
                 let counts = try store.importSnippets(from: url)
                 var msg = counts.skipped == 0
                     ? "Imported \(counts.added)"
-                    : "Imported \(counts.added), skipped \(counts.skipped) existing"
+                    : "Imported \(counts.added), skipped \(counts.skipped)"
                 if counts.unknownAccountIds > 0 {
                     msg += "; \(counts.unknownAccountIds) unknown account id"
                         + (counts.unknownAccountIds == 1 ? "" : "s")

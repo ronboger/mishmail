@@ -113,6 +113,14 @@ final class SnippetImportTests: XCTestCase {
     func testRewriteMapsNotionAliasesAndLeavesCustomPrompts() {
         XCTAssertEqual(
             SnippetImport.rewriteNotionVariables("Hi {{First Name}} from {{Your First Name}} — {{key_point_1}}"),
-            "Hi {first_name} from {my_first_name} — {key_point_1}")
+            "Hi {first_name} from {my_first_name} — {{key_point_1}}")
+    }
+
+    func testRewriteLeavesCodeBracesAndUnknownTokens() {
+        let body = "struct X { let a = 1 } and {{Company Name}}"
+        XCTAssertEqual(SnippetImport.rewriteNotionVariables(body), body)
+        XCTAssertEqual(
+            SnippetImport.rewriteNotionVariables("See you {date}"),
+            "See you {date}")
     }
 }

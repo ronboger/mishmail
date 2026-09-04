@@ -57,7 +57,7 @@ minor versions may still change behavior.
   `~/.config/mishmail/mcp-token`.
 
 ### Added
-- **Moving from Notion Mail.** Settings opens with a migration pane: what
+- **Moving from Notion Mail.** Settings lists a migration pane first: what
   to save before 22 Sep 2026, how drafts/scheduled mail stay in Gmail, and
   a JSON/CSV snippet importer that reads Notion exports (`shortcut`/`content`,
   `{ "snippets": […] }`, `{{First Name}}`). Cmd-K has “Moving from Notion

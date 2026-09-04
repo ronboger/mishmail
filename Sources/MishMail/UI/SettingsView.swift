@@ -580,7 +580,9 @@ struct SnippetsSettings: View {
         }
         .fileImporter(isPresented: $showImporter,
                       allowedContentTypes: [.json, .commaSeparatedText, .tabSeparatedText, .plainText]) { result in
-            importResult = SnippetFileImport.apply(result, store: store)
+            if let msg = SnippetFileImport.apply(result, store: store) {
+                importResult = msg
+            }
         }
     }
 }

@@ -46,8 +46,8 @@ enum SnippetImport {
     }
 
     /// Map Notion Mail `{{First Name}}` / `{{Your Name}}` tokens onto the
-    /// placeholders MishMail expands. Unknown tokens keep their text with
-    /// single braces so compose still treats them as fill-in prompts.
+    /// placeholders MishMail expands. Only known variable names rewrite.
+    /// Code braces and custom prompts stay verbatim.
     static func rewriteNotionVariables(_ body: String) -> String {
         guard let regex = placeholderRegex else { return body }
         let ns = body as NSString
@@ -55,10 +55,9 @@ enum SnippetImport {
         let matches = regex.matches(in: body, range: NSRange(location: 0, length: ns.length))
         for match in matches.reversed() {
             let inner = ns.substring(with: match.range(at: 1))
-            let token = canonicalVariable(inner)
-            let replacement = "{\(token)}"
+            guard let token = canonicalVariable(inner) else { continue }
             guard let range = Range(match.range, in: result) else { continue }
-            result.replaceSubrange(range, with: replacement)
+            result.replaceSubrange(range, with: "{\(token)}")
         }
         return result
     }
@@ -140,7 +139,7 @@ enum SnippetImport {
     // MARK: - Placeholders
 
     private static let placeholderRegex = try? NSRegularExpression(
-        pattern: #"\{{1,2}\s*([^}]+?)\s*\}{1,2}"#)
+        pattern: #"\{{1,2}\s*([A-Za-z][A-Za-z0-9 _-]*?)\s*\}{1,2}"#)
 
     private static let variableAliases: [String: String] = [
         "first_name": "first_name", "firstname": "first_name", "first": "first_name",
@@ -160,12 +159,12 @@ enum SnippetImport {
         "introducer": "bcc_name",
     ]
 
-    private static func canonicalVariable(_ raw: String) -> String {
+    private static func canonicalVariable(_ raw: String) -> String? {
         let key = raw.lowercased()
             .replacingOccurrences(of: "-", with: " ")
             .split(whereSeparator: { $0.isWhitespace })
             .joined(separator: "_")
-        return variableAliases[key] ?? key
+        return variableAliases[key]
     }
 
     // MARK: - Dict helpers
