@@ -1453,8 +1453,12 @@ struct ComposeRequest: Identifiable {
             return
         }
         guard let mail = DefaultMailClient.parseMailto(url) else { return }
+        // One external open can reach more than one scene, or an app can fire
+        // the link twice. Drop a repeat of the same payload while its card is
+        // still up — but never when nothing is open, so a deliberate re-click
+        // after dismissing the card always composes again.
         let now = Date()
-        if let last = lastMailto, last.mail == mail,
+        if composeRequest != nil, let last = lastMailto, last.mail == mail,
            now.timeIntervalSince(last.at) < Self.mailtoDedupeWindow {
             return
         }
@@ -1470,7 +1474,7 @@ struct ComposeRequest: Identifiable {
             showNotice("Finish your draft — the email link will open next")
             return
         }
-        openMailtoCompose(mail)
+        Task { await openMailtoCompose(mail) }
     }
 
     /// Resolve both Gmail thread ids and message ids. Gmail web links commonly
@@ -1535,10 +1539,19 @@ struct ComposeRequest: Identifiable {
     /// Open compose from a parsed `mailto:`. Joins address arrays with ", "
     /// for the existing String prefill fields (ComposeView re-splits via
     /// MessageParser — same path as header "email to X").
-    private func openMailtoCompose(_ mail: DefaultMailClient.Mailto) {
+    private func openMailtoCompose(_ mail: DefaultMailClient.Mailto) async {
         // Direct open supersedes anything queued (e.g. mailto while expanded,
         // then minimize, then a second mailto — only the direct one should win).
         pendingMailto = nil
+        let preferred = await mailboxForCorrespondents(mail.to + mail.cc)
+        // The lookup hits the database off the main actor; an expanded compose
+        // may have opened in that window. Same rule as the entry guard: don't
+        // yank a card the user is typing in — queue and open on dismiss.
+        if composeRequest != nil && !composeMinimized {
+            pendingMailto = mail
+            showNotice("Finish your draft — the email link will open next")
+            return
+        }
         let fields = DefaultMailClient.composePrefill(from: mail)
         openCompose(.init(
             replyTo: nil,
@@ -1547,17 +1560,22 @@ struct ComposeRequest: Identifiable {
             prefillBcc: fields.bcc,
             prefillSubject: fields.subject,
             prefillBody: fields.body,
-            preferredAccountId: mailboxForCorrespondents(mail.to + mail.cc)))
+            preferredAccountId: preferred))
     }
 
     /// Mailbox that most recently exchanged mail with any of `addresses`
     /// (as sender or To/Cc recipient). Nil when none has, or when only one
     /// account is connected — the picker's normal default applies then.
-    func mailboxForCorrespondents(_ addresses: [String]) -> String? {
+    ///
+    /// The SQL is a substring prefilter over a modest slice of recent mail;
+    /// `MailtoSender.mailbox` does the exact address match and drops
+    /// spam/trash. Runs off the main actor: `message` has no index for this
+    /// shape, so a large mailbox would otherwise stall the compose card.
+    func mailboxForCorrespondents(_ addresses: [String]) async -> String? {
         guard accounts.count > 1 else { return nil }
         let wanted = MailtoSender.lookupAddresses(addresses, own: ownEmailAddresses)
         guard !wanted.isEmpty else { return nil }
-        return try? db.read { db in
+        let candidates: [MailtoSender.Candidate]? = try? await db.read { db in
             let clauses = wanted.map { _ in
                 "(lower(fromHeader) LIKE ? ESCAPE '\\' OR lower(toHeader) LIKE ? ESCAPE '\\' OR lower(ccHeader) LIKE ? ESCAPE '\\')"
             }.joined(separator: " OR ")
@@ -1566,12 +1584,29 @@ struct ComposeRequest: Identifiable {
                 let pattern = "%" + MailtoSender.likeEscaped(address) + "%"
                 args += [pattern, pattern, pattern]
             }
-            return try String.fetchOne(
+            let rows = try Row.fetchAll(
                 db,
-                sql: "SELECT accountId FROM message WHERE \(clauses) ORDER BY date DESC LIMIT 1",
+                sql: """
+                    SELECT accountId, fromHeader, toHeader, ccHeader, labelIds
+                    FROM message WHERE \(clauses)
+                    ORDER BY date DESC LIMIT \(Self.mailtoCorrespondentScanLimit)
+                    """,
                 arguments: StatementArguments(args))
+            return rows.map {
+                MailtoSender.Candidate(
+                    accountId: $0["accountId"], fromHeader: $0["fromHeader"],
+                    toHeader: $0["toHeader"], ccHeader: $0["ccHeader"],
+                    labelIds: $0["labelIds"])
+            }
         }
+        guard let candidates else { return nil }
+        return MailtoSender.mailbox(matching: wanted, in: candidates)
     }
+
+    /// Newest rows the correspondent prefilter inspects. Deep enough that a
+    /// real correspondent is found, bounded so a mailbox full of near-miss
+    /// substring hits cannot turn the lookup into an unbounded read.
+    static let mailtoCorrespondentScanLimit = 200
 
     /// Clear the active compose card. Flushes a queued `mailto:` if any so a
     /// browser handoff still lands after the user closes their draft.
@@ -1583,7 +1618,7 @@ struct ComposeRequest: Identifiable {
         fromPickerOpen = false
         guard let mail = pendingMailto else { return }
         pendingMailto = nil
-        openMailtoCompose(mail)
+        Task { await openMailtoCompose(mail) }
     }
 
     /// Promote an inline compose to the floating card (same request id).
