@@ -1474,7 +1474,7 @@ struct ComposeRequest: Identifiable {
             showNotice("Finish your draft — the email link will open next")
             return
         }
-        Task { await openMailtoCompose(mail) }
+        openMailtoCompose(mail)
     }
 
     /// Resolve both Gmail thread ids and message ids. Gmail web links commonly
@@ -1539,19 +1539,11 @@ struct ComposeRequest: Identifiable {
     /// Open compose from a parsed `mailto:`. Joins address arrays with ", "
     /// for the existing String prefill fields (ComposeView re-splits via
     /// MessageParser — same path as header "email to X").
-    private func openMailtoCompose(_ mail: DefaultMailClient.Mailto) async {
+    private func openMailtoCompose(_ mail: DefaultMailClient.Mailto) {
         // Direct open supersedes anything queued (e.g. mailto while expanded,
         // then minimize, then a second mailto — only the direct one should win).
         pendingMailto = nil
-        let preferred = await mailboxForCorrespondents(mail.to + mail.cc)
-        // The lookup hits the database off the main actor; an expanded compose
-        // may have opened in that window. Same rule as the entry guard: don't
-        // yank a card the user is typing in — queue and open on dismiss.
-        if composeRequest != nil && !composeMinimized {
-            pendingMailto = mail
-            showNotice("Finish your draft — the email link will open next")
-            return
-        }
+        let preferred = mailboxForCorrespondents(mail.to + mail.cc)
         let fields = DefaultMailClient.composePrefill(from: mail)
         openCompose(.init(
             replyTo: nil,
@@ -1567,19 +1559,27 @@ struct ComposeRequest: Identifiable {
     /// (as sender or To/Cc recipient). Nil when none has, or when only one
     /// account is connected — the picker's normal default applies then.
     ///
-    /// The SQL is a substring prefilter over a modest slice of recent mail;
-    /// `MailtoSender.mailbox` does the exact address match and drops
-    /// spam/trash. Runs off the main actor: `message` has no index for this
-    /// shape, so a large mailbox would otherwise stall the compose card.
-    func mailboxForCorrespondents(_ addresses: [String]) async -> String? {
+    /// Reads only the newest `mailtoCorrespondentWindow` rows: a range scan
+    /// on the rowid primary key, with no `ORDER BY` for SQLite to sort. That
+    /// keeps this cheap enough to run inline — the compose card opens in the
+    /// same turn as the link, so a mailto: never lands on an empty window
+    /// that fills in later. Correspondence older than that window is not
+    /// found, and the From falls back to the usual default.
+    ///
+    /// Every prefilter hit in the window is returned rather than a truncated
+    /// slice: `LIKE` matches substrings, so a frequent `aaron@…` could
+    /// otherwise crowd out the one real `ron@…` row before
+    /// `MailtoSender.mailbox` gets to reject it.
+    func mailboxForCorrespondents(_ addresses: [String]) -> String? {
         guard accounts.count > 1 else { return nil }
         let wanted = MailtoSender.lookupAddresses(addresses, own: ownEmailAddresses)
         guard !wanted.isEmpty else { return nil }
-        let candidates: [MailtoSender.Candidate]? = try? await db.read { db in
+        let candidates: [MailtoSender.Candidate]? = try? db.read { db in
             let clauses = wanted.map { _ in
                 "(lower(fromHeader) LIKE ? ESCAPE '\\' OR lower(toHeader) LIKE ? ESCAPE '\\' OR lower(ccHeader) LIKE ? ESCAPE '\\')"
             }.joined(separator: " OR ")
-            var args: [String] = []
+            // Row window first, then three LIKE patterns per address.
+            var args: [any DatabaseValueConvertible] = [Self.mailtoCorrespondentWindow]
             for address in wanted {
                 let pattern = "%" + MailtoSender.likeEscaped(address) + "%"
                 args += [pattern, pattern, pattern]
@@ -1587,26 +1587,27 @@ struct ComposeRequest: Identifiable {
             let rows = try Row.fetchAll(
                 db,
                 sql: """
-                    SELECT accountId, fromHeader, toHeader, ccHeader, labelIds
-                    FROM message WHERE \(clauses)
-                    ORDER BY date DESC LIMIT \(Self.mailtoCorrespondentScanLimit)
+                    SELECT accountId, fromHeader, toHeader, ccHeader, labelIds, date
+                    FROM message
+                    WHERE rowid > (SELECT COALESCE(MAX(rowid), 0) FROM message) - ?
+                      AND (\(clauses))
                     """,
                 arguments: StatementArguments(args))
             return rows.map {
                 MailtoSender.Candidate(
                     accountId: $0["accountId"], fromHeader: $0["fromHeader"],
                     toHeader: $0["toHeader"], ccHeader: $0["ccHeader"],
-                    labelIds: $0["labelIds"])
+                    labelIds: $0["labelIds"], date: $0["date"])
             }
         }
         guard let candidates else { return nil }
         return MailtoSender.mailbox(matching: wanted, in: candidates)
     }
 
-    /// Newest rows the correspondent prefilter inspects. Deep enough that a
-    /// real correspondent is found, bounded so a mailbox full of near-miss
-    /// substring hits cannot turn the lookup into an unbounded read.
-    static let mailtoCorrespondentScanLimit = 200
+    /// How far back the correspondent lookup reads, in rows. Deep enough to
+    /// cover recent correspondence, small enough that the scan stays a
+    /// bounded key range instead of the whole `message` table.
+    static let mailtoCorrespondentWindow = 20_000
 
     /// Clear the active compose card. Flushes a queued `mailto:` if any so a
     /// browser handoff still lands after the user closes their draft.
@@ -1618,7 +1619,7 @@ struct ComposeRequest: Identifiable {
         fromPickerOpen = false
         guard let mail = pendingMailto else { return }
         pendingMailto = nil
-        Task { await openMailtoCompose(mail) }
+        openMailtoCompose(mail)
     }
 
     /// Promote an inline compose to the floating card (same request id).

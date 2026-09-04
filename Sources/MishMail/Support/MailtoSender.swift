@@ -12,6 +12,7 @@ enum MailtoSender {
         var toHeader: String
         var ccHeader: String
         var labelIds: String
+        var date: Date
     }
 
     /// Lowercased, de-duplicated recipient addresses that are real emails
@@ -43,7 +44,8 @@ enum MailtoSender {
     }
 
     /// Mailbox for the newest candidate that genuinely corresponds with one
-    /// of `addresses`. `candidates` must already be newest-first.
+    /// of `addresses`. Candidates arrive in storage order, so the newest is
+    /// picked here by `date` rather than by position.
     ///
     /// The SQL prefilter is a substring `LIKE`, so it also returns rows where
     /// the address is only a suffix of a longer one (`gabe@x.com` for a lookup
@@ -55,6 +57,7 @@ enum MailtoSender {
                         in candidates: [Candidate]) -> String? {
         let wanted = Set(addresses.map { $0.lowercased() })
         guard !wanted.isEmpty else { return nil }
+        var best: Candidate?
         for row in candidates {
             guard ContactMiner.isEligibleForContacts(
                 .init(rowid: 0, fromHeader: row.fromHeader, toHeader: row.toHeader,
@@ -66,10 +69,11 @@ enum MailtoSender {
                     MessageParser.emailAddress($0).lowercased()
                 }
             }
-            if addressesInRow.contains(where: { wanted.contains($0) }) {
-                return row.accountId
+            guard addressesInRow.contains(where: { wanted.contains($0) }) else {
+                continue
             }
+            if best == nil || row.date > best!.date { best = row }
         }
-        return nil
+        return best?.accountId
     }
 }

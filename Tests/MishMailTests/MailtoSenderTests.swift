@@ -2,11 +2,14 @@ import XCTest
 
 final class MailtoSenderTests: XCTestCase {
 
+    /// `daysAgo` orders candidates by recency; storage order is deliberately
+    /// unrelated to it, matching the unsorted query the store runs.
     private func candidate(_ accountId: String, from: String = "", to: String = "",
-                           cc: String = "", labels: String = "INBOX")
-    -> MailtoSender.Candidate {
+                           cc: String = "", labels: String = "INBOX",
+                           daysAgo: Double = 0) -> MailtoSender.Candidate {
         .init(accountId: accountId, fromHeader: from, toHeader: to,
-              ccHeader: cc, labelIds: labels)
+              ccHeader: cc, labelIds: labels,
+              date: Date(timeIntervalSince1970: 1_700_000_000 - daysAgo * 86_400))
     }
 
     // MARK: - lookupAddresses
@@ -31,11 +34,11 @@ final class MailtoSenderTests: XCTestCase {
 
     // MARK: - mailbox(matching:in:)
 
-    func testPicksNewestCandidateThatMatches() {
+    func testPicksNewestMatchRegardlessOfRowOrder() {
         let out = MailtoSender.mailbox(
             matching: ["abe@example.com"],
-            in: [candidate("work@x.com", to: "Abe <abe@example.com>"),
-                 candidate("personal@y.com", from: "abe@example.com")])
+            in: [candidate("personal@y.com", from: "abe@example.com", daysAgo: 30),
+                 candidate("work@x.com", to: "Abe <abe@example.com>", daysAgo: 1)])
         XCTAssertEqual(out, "work@x.com")
     }
 
@@ -55,17 +58,19 @@ final class MailtoSenderTests: XCTestCase {
     func testRejectsSubstringOnlyAddressMatch() {
         let out = MailtoSender.mailbox(
             matching: ["abe@example.com"],
-            in: [candidate("wrong@x.com", to: "gabe@example.com"),
-                 candidate("right@y.com", to: "abe@example.com")])
+            in: [candidate("wrong@x.com", to: "gabe@example.com", daysAgo: 1),
+                 candidate("right@y.com", to: "abe@example.com", daysAgo: 30)])
         XCTAssertEqual(out, "right@y.com")
     }
 
     func testSkipsSpamAndTrash() {
         let out = MailtoSender.mailbox(
             matching: ["abe@example.com"],
-            in: [candidate("spam@x.com", from: "abe@example.com", labels: "SPAM"),
-                 candidate("trash@x.com", from: "abe@example.com", labels: "TRASH INBOX"),
-                 candidate("real@y.com", from: "abe@example.com")])
+            in: [candidate("spam@x.com", from: "abe@example.com",
+                           labels: "SPAM", daysAgo: 1),
+                 candidate("trash@x.com", from: "abe@example.com",
+                           labels: "TRASH INBOX", daysAgo: 2),
+                 candidate("real@y.com", from: "abe@example.com", daysAgo: 30)])
         XCTAssertEqual(out, "real@y.com")
     }
 
