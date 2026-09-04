@@ -58,11 +58,15 @@ enum ExternalOpenDedupe {
         guard let last,
               isRepeat(incoming, last: (last.mail, last.at), now: now, window: window)
         else { return false }
+        // Nothing on screen, or a minimized card: the repeat has a visible
+        // card to open, so let it through rather than making the click a
+        // no-op. This covers a queued link too — minimizing the draft that
+        // blocked it makes it openable.
+        guard let activeCard, !activeCard.isMinimized else { return false }
         // Opening is synchronous, so a nil id means the link is queued behind
         // someone else's draft — a repeat would just re-queue the same handoff
         // and show the notice twice.
         guard let openId = last.requestId else { return true }
-        guard let activeCard, !activeCard.isMinimized else { return false }
         return activeCard.id == openId
     }
 }

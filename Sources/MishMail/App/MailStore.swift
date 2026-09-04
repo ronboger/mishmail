@@ -1438,6 +1438,9 @@ struct ComposeRequest: Identifiable {
     /// firing the link twice — see `ExternalOpenDedupe` for the rules.
     private var lastMailto: ExternalOpenDedupe.MailtoRecord?
     private var lastDeepLink: (payload: MishMailDeepLinks.ThreadTarget, at: Date)?
+    /// Thread the last deep link actually opened, so a repeat is dropped only
+    /// while that conversation is still on screen.
+    private var lastDeepLinkThreadId: String?
 
     /// Handle a system open-URL: compose for `mailto:`, or open a locally
     /// cached Gmail conversation for an app-owned `mishmail://thread/…` link.
@@ -1448,11 +1451,15 @@ struct ComposeRequest: Identifiable {
             // the window it already opened has to come front.
             NSApp.activate(ignoringOtherApps: true)
             // A doubled delivery would otherwise repeat the "not available"
-            // notice and re-open the thread.
-            guard !ExternalOpenDedupe.isRepeat(target, last: lastDeepLink, now: now)
-            else { return }
+            // notice and re-open the thread. Only suppress it while the
+            // conversation it opened is still showing: a lookup that failed,
+            // or a user who has navigated away, deserves a real re-open.
+            if ExternalOpenDedupe.isRepeat(target, last: lastDeepLink, now: now),
+               let opened = lastDeepLinkThreadId, selectedThreadId == opened {
+                return
+            }
             lastDeepLink = (target, now)
-            openDeepLinkedThread(target)
+            lastDeepLinkThreadId = openDeepLinkedThread(target)
             return
         }
         guard let mail = DefaultMailClient.parseMailto(url) else { return }
@@ -1483,7 +1490,9 @@ struct ComposeRequest: Identifiable {
 
     /// Resolve both Gmail thread ids and message ids. Gmail web links commonly
     /// carry a message token even though opening them displays the conversation.
-    private func openDeepLinkedThread(_ target: MishMailDeepLinks.ThreadTarget) {
+    @discardableResult
+    private func openDeepLinkedThread(
+        _ target: MishMailDeepLinks.ThreadTarget) -> String? {
         let thread: MailThread? = try? db.read { db in
             if let account = target.accountEmail {
                 if let exact = try MailThread.fetchOne(
@@ -1535,9 +1544,10 @@ struct ComposeRequest: Identifiable {
         NSApp.activate(ignoringOtherApps: true)
         guard let thread else {
             showNotice("That Gmail conversation isn't available in MishMail yet")
-            return
+            return nil
         }
         openThread(thread)
+        return thread.id
     }
 
     /// Open compose from a parsed `mailto:`. Joins address arrays with ", "
@@ -2091,6 +2101,7 @@ struct ComposeRequest: Identifiable {
         pendingMailto = nil
         lastMailto = nil
         lastDeepLink = nil
+        lastDeepLinkThreadId = nil
         composeRequest = nil
         composeMinimized = false
         composeFinishing = false

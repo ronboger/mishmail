@@ -64,6 +64,15 @@ final class ExternalOpenDedupeTests: XCTestCase {
             activeCard: card(UUID()), now: t0.addingTimeInterval(0.2)))
     }
 
+    /// Minimizing the draft that queued a link makes the link openable, so a
+    /// repeat must not be swallowed.
+    func testAllowsQueuedRepeatWhenTheBlockingDraftIsMinimized() {
+        XCTAssertFalse(ExternalOpenDedupe.shouldDropMailto(
+            link, last: record(link, at: t0, requestId: nil),
+            activeCard: card(UUID(), minimized: true),
+            now: t0.addingTimeInterval(0.2)))
+    }
+
     func testAllowsSameLinkAfterWindowElapses() {
         let id = UUID()
         XCTAssertFalse(ExternalOpenDedupe.shouldDropMailto(
