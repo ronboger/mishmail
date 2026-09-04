@@ -18,7 +18,8 @@ enum AITriage {
     }
 
     /// Silent auto-sort must not upload inbox snippets to a cloud host.
-    /// `nil` config means "no provider resolved" — skip rather than guess.
+    /// `nil` config means no provider resolved — do not skip; the classify
+    /// pass runs and fails locally, same as before.
     static func shouldSkipSilentAutoSort(config: LLMProviderConfig?) -> Bool {
         guard let config else { return false }
         return LLMRemotePolicy.blocksSilentAutoSort(config)
