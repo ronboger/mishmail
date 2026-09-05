@@ -1308,6 +1308,10 @@ struct ComposeRequest: Identifiable {
         var prefillBcc: String? = nil
         var prefillSubject: String? = nil
         var prefillBody: String? = nil
+        /// Mailbox a brand-new compose should send from when nothing else
+        /// pins one (no reply parent, no draft). Set by the `mailto:` path
+        /// from the recipients' correspondence history; nil = active account.
+        var preferredAccountId: String? = nil
         /// Floating card vs reading-pane dock. Placement helpers set this;
         /// pop-out / hide-pane can promote inline → floating without remount.
         var presentation: ComposePresentation = .floating
@@ -1459,10 +1463,45 @@ struct ComposeRequest: Identifiable {
     /// Open compose from a parsed `mailto:`. Joins address arrays with ", "
     /// for the existing String prefill fields (ComposeView re-splits via
     /// MessageParser — same path as header "email to X").
+    ///
+    /// With several linked mailboxes the From default comes from who the
+    /// mail is addressed to (`RecipientMailbox`), looked up on a pool reader
+    /// before the card mounts. The user sees the right account, not a card
+    /// that flips a moment after it opens.
     private func openMailtoCompose(_ mail: DefaultMailClient.Mailto) {
         // Direct open supersedes anything queued (e.g. mailto while expanded,
         // then minimize, then a second mailto — only the direct one should win).
         pendingMailto = nil
+        mailtoOpenGeneration += 1
+        let generation = mailtoOpenGeneration
+        guard accounts.count > 1 else {
+            presentMailtoCompose(mail, preferredAccountId: nil)
+            return
+        }
+        let addresses = mail.to + mail.cc + mail.bcc
+        let pool = db
+        Task { [weak self] in
+            let mailbox = try? await pool.read { db in
+                try RecipientMailbox.mostRecentMailbox(db: db, addresses: addresses)
+            }
+            guard let self, !self.isShuttingDown,
+                  generation == self.mailtoOpenGeneration else { return }
+            // A compose opened while we looked: same rule as handleOpenURL.
+            if self.composeRequest != nil && !self.composeMinimized {
+                self.pendingMailto = mail
+                self.showNotice("Finish your draft — the email link will open next")
+                return
+            }
+            self.presentMailtoCompose(mail, preferredAccountId: mailbox)
+        }
+    }
+
+    /// Latest `mailto:` open wins; an older lookup still in flight must not
+    /// present its card over a newer one.
+    @ObservationIgnored private var mailtoOpenGeneration = 0
+
+    private func presentMailtoCompose(_ mail: DefaultMailClient.Mailto,
+                                      preferredAccountId: String?) {
         let fields = DefaultMailClient.composePrefill(from: mail)
         openCompose(.init(
             replyTo: nil,
@@ -1470,7 +1509,8 @@ struct ComposeRequest: Identifiable {
             prefillCc: fields.cc,
             prefillBcc: fields.bcc,
             prefillSubject: fields.subject,
-            prefillBody: fields.body))
+            prefillBody: fields.body,
+            preferredAccountId: preferredAccountId))
         // Bind the dedupe record to the card this link just opened, so a
         // repeat delivery is dropped but a re-click after it closes is not.
         lastMailto?.requestId = composeRequest?.id
@@ -1937,13 +1977,16 @@ struct ComposeRequest: Identifiable {
     private func runDeferredStartupWork() async {
         guard !isShuttingDown else { return }
         reloadScheduledSends()
+        // Contacts first: recipient autocomplete is the first deferred
+        // surface a user reaches (`c`, type a name), and the mine runs on a
+        // pool reader, so nothing below waits on it.
+        rebuildContacts()
         // Baseline before polling: every unread thread already in the cache
         // would otherwise look new and fire a notification.
         await seedUnreadBaseline()
         Notifier.requestPermission()
         await startPolling()
         rebuildMetadataIfNeeded()
-        rebuildContacts()
         reloadSnippets()
         seedDefaultSnippetsIfNeeded()
 
