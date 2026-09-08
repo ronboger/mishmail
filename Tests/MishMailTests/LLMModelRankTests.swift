@@ -2,6 +2,7 @@ import XCTest
 
 final class LLMModelRankTests: XCTestCase {
     func testClaudeRanks() {
+        XCTAssertEqual(LLMModelIntelligence.of("claude-fable-5-1"), .frontier)
         XCTAssertEqual(LLMModelIntelligence.of("claude-opus-5"), .frontier)
         XCTAssertEqual(LLMModelIntelligence.of("claude-opus-4-6"), .frontier)
         XCTAssertEqual(LLMModelIntelligence.of("claude-sonnet-5"), .strong)
@@ -69,5 +70,9 @@ final class LLMModelRankTests: XCTestCase {
         XCTAssertEqual(LLMHostedThinking.anthropicEffort("xhigh", model: "claude-opus-4-6"), "max")
         XCTAssertEqual(LLMHostedThinking.anthropicEffort("xhigh", model: "claude-opus-5"), "xhigh")
         XCTAssertEqual(LLMHostedThinking.anthropicEffort("high", model: "claude-opus-4-6"), "high")
+        XCTAssertFalse(LLMHostedThinking.acceptsDisabled("claude-fable-5-1"))
+        XCTAssertTrue(LLMHostedThinking.acceptsDisabled("claude-sonnet-5"))
+        XCTAssertFalse(LLMHostedThinking.acceptsDisabled("claude-sonnet-4-5"))
+        XCTAssertEqual(LLMHostedThinking.openAIEffort("medium", model: "grok-3-mini"), "high")
     }
 }

@@ -132,6 +132,14 @@ final class LLMWireAnthropicTests: XCTestCase {
         XCTAssertEqual((body["thinking"] as! [String: Any])["type"] as? String, "disabled")
     }
 
+    func testRequestBodyOmitsOffOnFable() throws {
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-fable-5-1", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], maxTokens: 4096, thinking: .off))
+        XCTAssertNil(body["thinking"])
+        XCTAssertNil(body["output_config"])
+    }
+
     func testRequestBodyOmitsOffOnPreAdaptiveClaude() throws {
         let body = try decode(try AnthropicWire.requestBody(
             model: "claude-sonnet-4-5", messages: [LLMMessage(role: .user, text: "hi")],

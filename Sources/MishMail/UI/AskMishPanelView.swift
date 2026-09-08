@@ -1103,7 +1103,8 @@ private struct ModelPickerPopover: View {
                             .font(.system(size: 9))
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
-                    } else if title != model {
+                    }
+                    if title != model {
                         // Routed ids keep the vendor prefix visible as a subtitle.
                         Text(model)
                             .font(.system(size: 9))
@@ -1192,7 +1193,8 @@ private struct ModelPickerPopover: View {
                                     .font(.system(size: 9))
                                     .foregroundStyle(.tertiary)
                                     .lineLimit(1)
-                            } else if AskMishModelMenu.displayName(hit.model) != hit.model {
+                            }
+                            if AskMishModelMenu.displayName(hit.model) != hit.model {
                                 Text(hit.model)
                                     .font(.system(size: 9))
                                     .foregroundStyle(.tertiary)

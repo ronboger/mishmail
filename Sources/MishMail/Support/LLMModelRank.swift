@@ -39,6 +39,7 @@ enum LLMModelIntelligence: Int, Comparable, CaseIterable, Hashable, Sendable {
 
     private static func claudeRank(_ name: String) -> LLMModelIntelligence {
         if isClaude3(name) { return .older }
+        if name.contains("fable") { return .frontier }
         if name.contains("haiku") { return .current }
         if name.contains("opus") { return .frontier }
         if name.contains("sonnet") { return .strong }

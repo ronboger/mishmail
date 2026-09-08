@@ -72,9 +72,9 @@ enum AnthropicWire {
         case .modelDefault:
             return
         case .off:
-            // Claude 4.6+ accepts disabled. Older thinking models 400 on it,
-            // so omit and keep the model's own default.
-            if LLMHostedThinking.usesAdaptive(model) {
+            // Claude 4.6+ accepts disabled. Fable and older thinking models
+            // 400 on it, so omit and keep the model's own default.
+            if LLMHostedThinking.acceptsDisabled(model) {
                 body["thinking"] = ["type": "disabled"]
             }
         case .level(let level):

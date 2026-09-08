@@ -130,6 +130,12 @@ enum LLMHostedThinking {
         return false
     }
 
+    /// True when `thinking: { type: disabled }` is accepted. Fable rejects it.
+    static func acceptsDisabled(_ model: String) -> Bool {
+        if leafName(model).contains("fable") { return false }
+        return usesAdaptive(model)
+    }
+
     /// Claude 4.6+ uses adaptive thinking plus `output_config.effort`.
     /// Older thinking models still take `budget_tokens`.
     static func usesAdaptive(_ model: String) -> Bool {
@@ -174,8 +180,11 @@ enum LLMHostedThinking {
     /// OpenAI accepts `xhigh` from GPT-5.1 onward. Older GPT-5 and o-series
     /// reject it, so map down to `high`.
     static func openAIEffort(_ level: String, model: String) -> String {
-        guard level == "xhigh" else { return level }
         let name = leafName(model)
+        if name.hasPrefix("grok-") && name.contains("mini") && level == "medium" {
+            return "high"
+        }
+        guard level == "xhigh" else { return level }
         if name.hasPrefix("gpt-5.1") || name.hasPrefix("gpt-5.2")
             || name.contains("gpt-5.4") || name.contains("gpt-5.5")
             || name.contains("gpt-5.6") {

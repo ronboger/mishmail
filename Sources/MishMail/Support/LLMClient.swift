@@ -137,14 +137,14 @@ actor LLMClient {
         let path = LLMEndpoint.chatPath(kind: config.kind, base: config.baseURL)
         let body: Data
         let thinking = Ollama.thinking(for: task)
+        let hosted = config.kind == .ollama || LLMHostedThinking.supports(model)
+            ? thinking : .modelDefault
         switch config.kind {
         case .openAICompatible:
-            let hosted = LLMHostedThinking.supports(model) ? thinking : .modelDefault
             let openRouter = LLMRemotePolicy.host(of: config.baseURL) == "openrouter.ai"
             body = try OpenAIWire.requestBody(model: model, messages: messages, tools: tools,
                                               thinking: hosted, openRouter: openRouter)
         case .anthropic:
-            let hosted = LLMHostedThinking.supports(model) ? thinking : .modelDefault
             body = try AnthropicWire.requestBody(model: model, messages: messages,
                                                  tools: tools, maxTokens: 8192,
                                                  thinking: hosted)
@@ -179,7 +179,7 @@ actor LLMClient {
         request.timeoutInterval = 300
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        try applyAuth(to: &request, config: config, thinking: thinking, hasTools: !tools.isEmpty)
+        try applyAuth(to: &request, config: config, thinking: hosted, hasTools: !tools.isEmpty)
         return request
     }
 
