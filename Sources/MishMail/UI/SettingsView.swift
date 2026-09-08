@@ -1638,9 +1638,9 @@ struct AISettings: View {
                     thinkingPicker("Summaries", task: .summaries)
                     thinkingPicker("Auto-sort", task: .triage)
                 } header: {
-                    Text("Thinking (local models)")
+                    Text("Thinking")
                 } footer: {
-                    Text("A thinking model reasons before it answers. That helps Ask Mish, and mostly wastes time on a one-word category or a short draft — one classification measured 11.4 s with thinking and 0.85 s without. Models that cannot think ignore this.")
+                    Text("A thinking model reasons before it answers. That helps Ask Mish, and mostly wastes time on a one-word category or a short draft — one classification measured 11.4 s with thinking and 0.85 s without. Models that cannot think ignore this. Hosted models that support thinking use the same setting.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
@@ -1905,6 +1905,7 @@ struct AISettings: View {
                 Text("Low").tag("low")
                 Text("Medium").tag("medium")
                 Text("High").tag("high")
+                Text("Extra high").tag("xhigh")
                 Text("Model default").tag("default")
             }
     }
@@ -2085,7 +2086,7 @@ private struct ProviderEditSheet: View {
                baseURL: "https://generativelanguage.googleapis.com/v1beta/openai",
                defaultModel: "gemini-3.7-flash", keyHint: "aistudio.google.com"),
         Preset(name: "OpenRouter", kind: .openAICompatible, baseURL: "https://openrouter.ai/api/v1",
-               defaultModel: "openai/gpt-4o", keyHint: "openrouter.ai/keys"),
+               defaultModel: "openai/gpt-5", keyHint: "openrouter.ai/keys"),
         Preset(name: "Grok (xAI)", kind: .openAICompatible, baseURL: "https://api.x.ai/v1",
                defaultModel: "grok-4.6", keyHint: "console.x.ai"),
         Preset(name: "Groq", kind: .openAICompatible, baseURL: "https://api.groq.com/openai/v1",

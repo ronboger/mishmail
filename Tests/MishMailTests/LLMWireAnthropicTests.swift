@@ -81,4 +81,63 @@ final class LLMWireAnthropicTests: XCTestCase {
         XCTAssertEqual(events, [.reasoning("hmm")])
     }
 
+    func testRequestBodyOmitsThinkingByDefault() throws {
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-sonnet-5", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], maxTokens: 4096))
+        XCTAssertNil(body["thinking"])
+        XCTAssertNil(body["output_config"])
+        XCTAssertEqual(body["max_tokens"] as? Int, 4096)
+    }
+
+    func testRequestBodySendsAdaptiveThinkingAndEffort() throws {
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-opus-4-6", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], maxTokens: 4096, thinking: .level("high")))
+        let thinking = body["thinking"] as! [String: Any]
+        XCTAssertEqual(thinking["type"] as? String, "adaptive")
+        XCTAssertEqual((body["output_config"] as! [String: Any])["effort"] as? String, "high")
+    }
+
+    func testRequestBodyMapsXhighToMaxOnClaude46() throws {
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-sonnet-4-6", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], maxTokens: 4096, thinking: .level("xhigh")))
+        XCTAssertEqual((body["output_config"] as! [String: Any])["effort"] as? String, "max")
+    }
+
+    func testRequestBodySendsBudgetThinkingOnClaude45() throws {
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-sonnet-4-5", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], maxTokens: 4096, thinking: .level("low")))
+        let thinking = body["thinking"] as! [String: Any]
+        XCTAssertEqual(thinking["type"] as? String, "enabled")
+        XCTAssertEqual(thinking["budget_tokens"] as? Int, 2_048)
+        XCTAssertEqual(body["max_tokens"] as? Int, 4096)
+    }
+
+    func testRequestBodyRaisesMaxTokensWhenBudgetWouldNotFit() throws {
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-sonnet-4-5", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], maxTokens: 4096, thinking: .level("high")))
+        let thinking = body["thinking"] as! [String: Any]
+        XCTAssertEqual(thinking["budget_tokens"] as? Int, 16_384)
+        XCTAssertEqual(body["max_tokens"] as? Int, 16_384 + 8_192)
+    }
+
+    func testRequestBodyDisablesThinking() throws {
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-sonnet-5", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], maxTokens: 4096, thinking: .off))
+        XCTAssertEqual((body["thinking"] as! [String: Any])["type"] as? String, "disabled")
+    }
+
+    func testRequestBodyOmitsThinkingOnModelsThatCannotThink() throws {
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-3-5-haiku", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], maxTokens: 4096, thinking: .level("high")))
+        XCTAssertNil(body["thinking"])
+        XCTAssertNil(body["output_config"])
+    }
+
 }

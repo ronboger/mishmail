@@ -112,11 +112,11 @@ final class LLMWireOllamaTests: XCTestCase {
     }
 
     func testThinkingRoundTripsThroughItsStoredForm() {
-        for mode in [LLMThinking.modelDefault, .off, .level("low"), .level("high")] {
+        for mode in [LLMThinking.modelDefault, .off, .level("low"), .level("high"), .level("xhigh")] {
             XCTAssertEqual(LLMThinking(rawValue: mode.rawValue), mode)
         }
         // Anything unknown falls back to the model's own behavior.
-        XCTAssertEqual(LLMThinking(rawValue: "xhigh"), .modelDefault)
+        XCTAssertEqual(LLMThinking(rawValue: "max"), .modelDefault)
     }
 
     func testUnloadBodyIsEmptyChatWithZeroKeepAlive() throws {

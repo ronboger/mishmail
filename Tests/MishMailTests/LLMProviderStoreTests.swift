@@ -145,7 +145,10 @@ final class LLMProviderStoreTests: XCTestCase {
         XCTAssertEqual(openRouterPreset.kind, .openAICompatible)
         XCTAssertEqual(openRouterPreset.baseURL, "https://openrouter.ai/api/v1")
         XCTAssertEqual(openRouterPreset.label, "OpenRouter")
-        XCTAssertTrue(openRouterPreset.fallbackModels.contains("openai/gpt-4o"))
+        XCTAssertTrue(openRouterPreset.fallbackModels.contains("openai/gpt-5"))
+        XCTAssertFalse(openRouterPreset.fallbackModels.contains("openai/gpt-4o"))
+        XCTAssertFalse(LLMProviderStore.subscriptionPreset(for: .claude)
+            .fallbackModels.contains("claude-3-5-haiku"))
         let openRouter = LLMProviderConfig(
             id: UUID(), kind: .openAICompatible, label: "OpenRouter",
             baseURL: "https://openrouter.ai/api/v1", defaultModel: "openai/gpt-4o",

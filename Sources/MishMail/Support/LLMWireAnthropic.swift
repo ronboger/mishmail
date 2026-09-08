@@ -3,7 +3,8 @@ import Foundation
 /// Pure codec for the Anthropic Messages API (SSE streaming, tool use).
 enum AnthropicWire {
     static func requestBody(model: String, messages: [LLMMessage],
-                            tools: [LLMToolSpec], maxTokens: Int) throws -> Data {
+                            tools: [LLMToolSpec], maxTokens: Int,
+                            thinking: LLMThinking = .modelDefault) throws -> Data {
         var system = ""
         var wireMessages: [[String: Any]] = []
         for message in messages {
@@ -33,12 +34,14 @@ enum AnthropicWire {
                 wireMessages.append(["role": "user", "content": content])
             }
         }
+        var resolvedMax = maxTokens
         var body: [String: Any] = [
             "model": model,
-            "max_tokens": maxTokens,
             "messages": wireMessages,
             "stream": true,
         ]
+        applyThinking(model: model, thinking: thinking, maxTokens: &resolvedMax, to: &body)
+        body["max_tokens"] = resolvedMax
         if !system.isEmpty { body["system"] = system }
         if !tools.isEmpty {
             body["tools"] = try tools.map { tool -> [String: Any] in
@@ -48,6 +51,31 @@ enum AnthropicWire {
             }
         }
         return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    /// Encodes thinking only when this model accepts it. A level on a
+    /// non-thinking id is omitted so the request still runs.
+    private static func applyThinking(model: String, thinking: LLMThinking,
+                                      maxTokens: inout Int,
+                                      to body: inout [String: Any]) {
+        guard LLMHostedThinking.supports(model) else { return }
+        switch thinking {
+        case .modelDefault:
+            return
+        case .off:
+            body["thinking"] = ["type": "disabled"]
+        case .level(let level):
+            if LLMHostedThinking.usesAdaptive(model) {
+                body["thinking"] = ["type": "adaptive"]
+                body["output_config"] = [
+                    "effort": LLMHostedThinking.anthropicEffort(level, model: model)
+                ]
+            } else {
+                let budget = LLMHostedThinking.budgetTokens(level)
+                if maxTokens <= budget { maxTokens = budget + 8_192 }
+                body["thinking"] = ["type": "enabled", "budget_tokens": budget]
+            }
+        }
     }
 
     struct StreamState {

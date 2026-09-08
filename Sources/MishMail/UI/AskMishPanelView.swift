@@ -83,9 +83,10 @@ struct AskMishPanelView: View {
                     .help(local
                           ? "This model runs on this Mac or on your LAN."
                           : "This model runs off this Mac. Mail text is sent to the provider.")
-                if config.kind == .ollama {
+                if config.kind == .ollama || LLMHostedThinking.supports(controller.modelID) {
                     thinkingMenu
-                } else if LLMRemotePolicy.sendsMailOffDevice(config) {
+                }
+                if config.kind != .ollama, LLMRemotePolicy.sendsMailOffDevice(config) {
                     hostedSpeedMenu
                 }
             }
@@ -179,6 +180,8 @@ struct AskMishPanelView: View {
                 localModels: localModels,
                 currentProviderID: controller.providerID,
                 currentModelID: controller.modelID,
+                thinking: thinking,
+                onSetThinking: { setThinking($0) },
                 onPick: { providerID, model in
                     let previous = controller.modelID
                     let wasLocal = controller.providerID == LLMProviderStore.builtInOllamaID
@@ -519,9 +522,10 @@ struct AskMishPanelView: View {
             Button("Low") { setThinking("low") }
             Button("Medium") { setThinking("medium") }
             Button("High") { setThinking("high") }
+            Button("Extra high") { setThinking("xhigh") }
             Button("Model default") { setThinking("default") }
         } label: {
-            Text(thinking == "default" ? "Think" : "Think: \(thinking)")
+            Text(thinking == "default" ? "Think" : "Think: \(LLMThinking(rawValue: thinking).displayLabel)")
                 .font(.caption2)
                 .foregroundStyle(.tertiary)
                 .padding(.horizontal, 4)
@@ -530,7 +534,7 @@ struct AskMishPanelView: View {
         }
         .menuStyle(.borderlessButton)
         .disabled(controller.isRunning)
-        .help("Thinking effort for local models")
+        .help("How hard the model thinks before it answers")
     }
 
     private var hostedSpeedMenu: some View {
@@ -899,6 +903,8 @@ private struct ModelPickerPopover: View {
     let localModels: [String]
     let currentProviderID: UUID
     let currentModelID: String
+    let thinking: String
+    let onSetThinking: (String) -> Void
     let onPick: (UUID, String) -> Void
     let onSetDefault: (LLMProviderConfig, String) -> Void
     let onTogglePin: (LLMProviderConfig, String) -> Void
@@ -909,6 +915,7 @@ private struct ModelPickerPopover: View {
     @State private var providers: [LLMProviderConfig] = LLMProviderStore.load()
     @State private var query = ""
     @State private var expandedProviderID: UUID?
+    @State private var floor: LLMModelIntelligence? = AskMishModelMenu.storedFloor()
     @FocusState private var searchFocused: Bool
 
     private func mutate(_ action: () -> Void) {
@@ -938,6 +945,29 @@ private struct ModelPickerPopover: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
+            if !isSearching {
+                Divider()
+                HStack(spacing: 6) {
+                    Text("Show")
+                        .font(.caption2)
+                        .foregroundStyle(.tertiary)
+                    Menu {
+                        Button("Frontier") { setFloor(.frontier) }
+                        Button("Strong and above") { setFloor(.strong) }
+                        Button("Current and above") { setFloor(.current) }
+                        Button("All models") { setFloor(nil) }
+                    } label: {
+                        Text(AskMishModelMenu.floorLabel(floor))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                    .menuStyle(.borderlessButton)
+                    .fixedSize()
+                    Spacer(minLength: 0)
+                }
+                .padding(.horizontal, 10)
+                .padding(.vertical, 4)
+            }
             Divider()
             HStack(alignment: .top, spacing: 0) {
                 ScrollView {
@@ -955,7 +985,7 @@ private struct ModelPickerPopover: View {
                 if let provider = expandedProvider {
                     Divider()
                     modelColumn(provider)
-                        .frame(width: 210)
+                        .frame(width: 240)
                         .transition(.opacity)
                 }
             }
@@ -963,7 +993,7 @@ private struct ModelPickerPopover: View {
         }
         // Explicit width: sizing to ideal content lets the text field
         // stretch the popover across the window.
-        .frame(width: isSearching ? 280 : (expandedProvider == nil ? 220 : 431))
+        .frame(width: isSearching ? 280 : (expandedProvider == nil ? 220 : 461))
         .onAppear {
             expandedProviderID = currentProviderID
             searchFocused = true
@@ -980,7 +1010,13 @@ private struct ModelPickerPopover: View {
             listed.models = localModels
         }
         let isCurrent = provider.id == currentProviderID
-        return AskMishModelMenu.models(for: listed, selected: isCurrent ? currentModelID : nil)
+        return AskMishModelMenu.models(for: listed, selected: isCurrent ? currentModelID : nil,
+                                       floor: floor)
+    }
+
+    private func setFloor(_ value: LLMModelIntelligence?) {
+        floor = value
+        AskMishModelMenu.setStoredFloor(value)
     }
 
     private func providerRow(_ provider: LLMProviderConfig) -> some View {
@@ -1014,10 +1050,22 @@ private struct ModelPickerPopover: View {
 
     private func modelColumn(_ provider: LLMProviderConfig) -> some View {
         let entry = listedModels(provider)
+        let groups = AskMishModelMenu.grouped(entry.models)
         return ScrollView {
             LazyVStack(alignment: .leading, spacing: 1) {
-                ForEach(entry.models, id: \.self) { model in
-                    modelRow(provider: provider, model: model)
+                ForEach(groups) { group in
+                    if groups.count > 1 {
+                        Text(group.intelligence.title)
+                            .font(.system(size: 9, weight: .semibold))
+                            .foregroundStyle(.tertiary)
+                            .textCase(.uppercase)
+                            .padding(.horizontal, 8)
+                            .padding(.top, 6)
+                            .padding(.bottom, 1)
+                    }
+                    ForEach(group.models, id: \.self) { model in
+                        modelRow(provider: provider, model: model)
+                    }
                 }
                 if entry.hiddenCount > 0 {
                     Text("\(entry.hiddenCount) more — search above")
@@ -1050,8 +1098,13 @@ private struct ModelPickerPopover: View {
                         .font(.system(size: 12))
                         .lineLimit(1)
                         .truncationMode(.tail)
-                    // Routed ids keep the vendor prefix visible as a subtitle.
-                    if title != model {
+                    if LLMHostedThinking.supports(model) {
+                        Text("thinking: \(LLMThinking(rawValue: thinking).displayLabel)")
+                            .font(.system(size: 9))
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    } else if title != model {
+                        // Routed ids keep the vendor prefix visible as a subtitle.
                         Text(model)
                             .font(.system(size: 9))
                             .foregroundStyle(.tertiary)
@@ -1095,6 +1148,20 @@ private struct ModelPickerPopover: View {
                 mutate { onSetDefault(provider, model) }
             }
         }
+        if LLMHostedThinking.supports(model) {
+            Divider()
+            Button("Think: off") { pickWithThinking(provider, model, "off") }
+            Button("Think: low") { pickWithThinking(provider, model, "low") }
+            Button("Think: medium") { pickWithThinking(provider, model, "medium") }
+            Button("Think: high") { pickWithThinking(provider, model, "high") }
+            Button("Think: extra high") { pickWithThinking(provider, model, "xhigh") }
+            Button("Think: model default") { pickWithThinking(provider, model, "default") }
+        }
+    }
+
+    private func pickWithThinking(_ provider: LLMProviderConfig, _ model: String, _ level: String) {
+        onSetThinking(level)
+        onPick(provider.id, model)
     }
 
     // MARK: - Search mode
@@ -1120,7 +1187,12 @@ private struct ModelPickerPopover: View {
                                 .font(.system(size: 12))
                                 .lineLimit(1)
                                 .truncationMode(.tail)
-                            if AskMishModelMenu.displayName(hit.model) != hit.model {
+                            if LLMHostedThinking.supports(hit.model) {
+                                Text("thinking: \(LLMThinking(rawValue: thinking).displayLabel)")
+                                    .font(.system(size: 9))
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            } else if AskMishModelMenu.displayName(hit.model) != hit.model {
                                 Text(hit.model)
                                     .font(.system(size: 9))
                                     .foregroundStyle(.tertiary)

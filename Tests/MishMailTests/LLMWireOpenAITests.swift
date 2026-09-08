@@ -95,4 +95,46 @@ final class LLMWireOpenAITests: XCTestCase {
         XCTAssertEqual(events, [.reasoning("step 1"), .reasoning("step 2"), .token("hi")])
     }
 
+    func testRequestBodyOmitsReasoningByDefault() throws {
+        let body = try decode(try OpenAIWire.requestBody(
+            model: "gpt-5", messages: [LLMMessage(role: .user, text: "hi")], tools: []))
+        XCTAssertNil(body["reasoning_effort"])
+        XCTAssertNil(body["reasoning"])
+    }
+
+    func testRequestBodySendsOpenAIReasoningEffort() throws {
+        let body = try decode(try OpenAIWire.requestBody(
+            model: "gpt-5", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], thinking: .level("high")))
+        XCTAssertEqual(body["reasoning_effort"] as? String, "high")
+        XCTAssertNil(body["reasoning"])
+    }
+
+    func testRequestBodyTurnsOpenAIThinkingOff() throws {
+        let body = try decode(try OpenAIWire.requestBody(
+            model: "gpt-5", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], thinking: .off))
+        XCTAssertEqual(body["reasoning_effort"] as? String, "none")
+    }
+
+    func testRequestBodySendsOpenRouterReasoningObject() throws {
+        let on = try decode(try OpenAIWire.requestBody(
+            model: "anthropic/claude-sonnet-5", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], thinking: .level("low"), openRouter: true))
+        XCTAssertEqual((on["reasoning"] as! [String: Any])["effort"] as? String, "low")
+        XCTAssertNil(on["reasoning_effort"])
+        let off = try decode(try OpenAIWire.requestBody(
+            model: "anthropic/claude-sonnet-5", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], thinking: .off, openRouter: true))
+        XCTAssertEqual((off["reasoning"] as! [String: Any])["enabled"] as? Bool, false)
+    }
+
+    func testRequestBodyOmitsReasoningOnModelsThatCannotThink() throws {
+        let body = try decode(try OpenAIWire.requestBody(
+            model: "gpt-4o", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], thinking: .level("high")))
+        XCTAssertNil(body["reasoning_effort"])
+        XCTAssertNil(body["reasoning"])
+    }
+
 }

@@ -19,6 +19,14 @@ minor versions may still change behavior.
   re-clicking a link after dismissing the card still composes.
 
 ### Changed
+- **Ask Mish thinking works on hosted models.** The Think control is no
+  longer local-only. Claude, GPT-5, Grok, Gemini, and OpenRouter models that
+  can think send that effort on the wire (off / low / medium / high / extra
+  high). Models that cannot think ignore it.
+- **The model picker leads with models worth using.** Browse groups Frontier,
+  Strong, and Current, and hides older ids such as Claude 3.5 Haiku and GPT-4o.
+  A Show menu sets the floor (Frontier / Strong / Current / All). Search still
+  finds the full list. Right-click a thinking model to set its effort.
 - **MailStore command work is split out of the observable hub.** Sync,
   mutations, compose/drafts, reminders, AI triage, and account lifecycle live
   in `MailStore+…` files and Support policy types. The main class keeps UI

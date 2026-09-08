@@ -28,8 +28,47 @@ enum AskMishModelMenu {
         var hiddenCount: Int
     }
 
+    /// UserDefaults key for the picker's intelligence floor.
+    static let floorKey = "askMish.modelIntelligenceFloor"
+
+    /// Browse hides models below this rank. `nil` means show every
+    /// chat-worthy id. Default is current-and-above, so Haiku 3.5 stays out.
+    static func storedFloor(from defaults: UserDefaults = .standard) -> LLMModelIntelligence? {
+        switch defaults.string(forKey: floorKey) {
+        case "all": return nil
+        case "frontier": return .frontier
+        case "strong": return .strong
+        case "current", nil: return .current
+        default: return .current
+        }
+    }
+
+    static func setStoredFloor(_ floor: LLMModelIntelligence?,
+                               to defaults: UserDefaults = .standard) {
+        let raw: String
+        switch floor {
+        case nil: raw = "all"
+        case .frontier: raw = "frontier"
+        case .strong: raw = "strong"
+        case .current: raw = "current"
+        case .older: raw = "all"
+        }
+        defaults.set(raw, forKey: floorKey)
+    }
+
+    static func floorLabel(_ floor: LLMModelIntelligence?) -> String {
+        switch floor {
+        case nil: return "All models"
+        case .frontier: return "Frontier"
+        case .strong: return "Strong and above"
+        case .current: return "Current and above"
+        case .older: return "All models"
+        }
+    }
+
     static func models(for provider: LLMProviderConfig,
-                       selected: String? = nil) -> ProviderModels {
+                       selected: String? = nil,
+                       floor: LLMModelIntelligence? = .current) -> ProviderModels {
         var seen = Set<String>()
         var list = (provider.models ?? [])
             .filter { !$0.isEmpty && seen.insert($0).inserted }
@@ -65,9 +104,16 @@ enum AskMishModelMenu {
         if provider.kind != .ollama {
             let relevant = list.filter { isBrowseWorthy($0) }
             if !relevant.isEmpty { list = relevant }
+            if let floor {
+                let ranked = list.filter { LLMModelIntelligence.of($0) >= floor }
+                if !ranked.isEmpty { list = ranked }
+            }
         }
         if let vendor = subscriptionVendor(of: provider) {
             list = orderedByFallback(list, vendor: vendor)
+        }
+        if provider.kind != .ollama {
+            list = sortedByIntelligence(list)
         }
         if list.count > maxModelsPerProvider {
             let curated = list.filter { id in
@@ -95,6 +141,36 @@ enum AskMishModelMenu {
             }
         }
         return ProviderModels(models: list, hiddenCount: hiddenCount(stored: storedIDs, shown: list))
+    }
+
+    /// Frontier first, then strong, current, older. Order inside a rank is kept.
+    static func sortedByIntelligence(_ models: [String]) -> [String] {
+        models.enumerated()
+            .sorted { lhs, rhs in
+                let left = LLMModelIntelligence.of(lhs.element)
+                let right = LLMModelIntelligence.of(rhs.element)
+                if left != right { return left > right }
+                return lhs.offset < rhs.offset
+            }
+            .map(\.element)
+    }
+
+    struct RankedGroup: Equatable, Identifiable {
+        var intelligence: LLMModelIntelligence
+        var models: [String]
+        var id: Int { intelligence.rawValue }
+    }
+
+    /// Section the browse column: Frontier, Strong, Current, Older.
+    static func grouped(_ models: [String]) -> [RankedGroup] {
+        var buckets: [LLMModelIntelligence: [String]] = [:]
+        for model in models {
+            buckets[LLMModelIntelligence.of(model), default: []].append(model)
+        }
+        return [LLMModelIntelligence.frontier, .strong, .current, .older].compactMap { rank in
+            guard let group = buckets[rank], !group.isEmpty else { return nil }
+            return RankedGroup(intelligence: rank, models: group)
+        }
     }
 
     /// True when `model` belongs in a browse list: chat, current generation,

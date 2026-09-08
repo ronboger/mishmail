@@ -33,8 +33,8 @@ actor LLMClient {
     /// second POST fail and destroys the sign-in. Callers join instead.
     private var refreshTasks: [UUID: Task<Void, Error>] = [:]
 
-    /// `task` only affects local (Ollama) requests, where thinking effort and
-    /// the output cap are per-task. Remote providers ignore it.
+    /// `task` selects the stored thinking effort (every provider) and, for
+    /// local models, the output cap.
     func stream(messages: [LLMMessage], tools: [LLMToolSpec],
                 config: LLMProviderConfig, model: String,
                 task: LLMTask, maxOutputTokens: Int? = nil) -> AsyncThrowingStream<LLMEvent, Error> {
@@ -136,25 +136,31 @@ actor LLMClient {
                               maxOutputTokens: Int?) async throws -> URLRequest {
         let path = LLMEndpoint.chatPath(kind: config.kind, base: config.baseURL)
         let body: Data
+        let thinking = Ollama.thinking(for: task)
         switch config.kind {
         case .openAICompatible:
-            body = try OpenAIWire.requestBody(model: model, messages: messages, tools: tools)
+            let hosted = LLMHostedThinking.supports(model) ? thinking : .modelDefault
+            let openRouter = LLMRemotePolicy.host(of: config.baseURL) == "openrouter.ai"
+            body = try OpenAIWire.requestBody(model: model, messages: messages, tools: tools,
+                                              thinking: hosted, openRouter: openRouter)
         case .anthropic:
+            let hosted = LLMHostedThinking.supports(model) ? thinking : .modelDefault
             body = try AnthropicWire.requestBody(model: model, messages: messages,
-                                                 tools: tools, maxTokens: 8192)
+                                                 tools: tools, maxTokens: 8192,
+                                                 thinking: hosted)
         case .ollama:
             // A thinking *level* on a model without the capability fails the
             // request, so fall back to the model's own default there. `off` is
             // always safe and needs no check.
-            var thinking = Ollama.thinking(for: task)
-            if case .level = thinking, await !Ollama.supportsThinking(model: model) {
-                thinking = .modelDefault
+            var localThinking = thinking
+            if case .level = localThinking, await !Ollama.supportsThinking(model: model) {
+                localThinking = .modelDefault
             }
             body = try OllamaChatWire.requestBody(
                 model: model, messages: messages, tools: tools,
                 keepAliveSeconds: Ollama.keepAliveSeconds,
                 contextTokens: Ollama.contextTokens,
-                thinking: thinking,
+                thinking: localThinking,
                 maxOutputTokens: maxOutputTokens ?? Ollama.maxOutputTokens(for: task))
             await Ollama.LoadedModels.shared.note(model)
         }
@@ -188,7 +194,7 @@ actor LLMClient {
             switch config.kind {
             case .anthropic:
                 request.setValue(key, forHTTPHeaderField: "x-api-key")
-                request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+                applyAnthropicVersionHeaders(to: &request, oauth: false)
             default:
                 request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
             }
@@ -196,10 +202,19 @@ actor LLMClient {
             let tokens = try requiredTokens(providerID: config.id)
             request.setValue("Bearer \(tokens.accessToken)", forHTTPHeaderField: "Authorization")
             if config.kind == .anthropic {
-                request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
-                request.setValue("oauth-2025-04-20", forHTTPHeaderField: "anthropic-beta")
+                applyAnthropicVersionHeaders(to: &request, oauth: true)
             }
         }
+    }
+
+    /// Thinking + tools needs interleaved thinking. OAuth needs its own beta
+    /// token. Combine them so a thinking Ask Mish turn can call tools.
+    private func applyAnthropicVersionHeaders(to request: inout URLRequest, oauth: Bool) {
+        request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
+        var betas: [String] = []
+        if oauth { betas.append("oauth-2025-04-20") }
+        betas.append("interleaved-thinking-2025-05-14")
+        request.setValue(betas.joined(separator: ","), forHTTPHeaderField: "anthropic-beta")
     }
 
     /// A locked or otherwise unreadable Keychain is not a missing credential:

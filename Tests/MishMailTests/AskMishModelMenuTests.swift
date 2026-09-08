@@ -165,4 +165,84 @@ final class AskMishModelMenuTests: XCTestCase {
         p.label = "xAI"
         XCTAssertEqual(AskMishModelMenu.brandAsset(for: p), "ProviderGrok")
     }
+
+    private func claude(models: [String], defaultModel: String) -> LLMProviderConfig {
+        LLMProviderConfig(
+            id: UUID(), kind: .anthropic, label: "Claude",
+            baseURL: "https://api.anthropic.com", defaultModel: defaultModel,
+            authMode: .oauth(.claude), models: models)
+    }
+
+    func testCurrentFloorHidesHaiku35AndClaude3() {
+        let catalog = [
+            "claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5",
+            "claude-3-5-haiku", "claude-3-5-sonnet", "claude-3-7-sonnet",
+        ]
+        let result = AskMishModelMenu.models(
+            for: claude(models: catalog, defaultModel: "claude-opus-5"),
+            floor: .current)
+        XCTAssertTrue(result.models.contains("claude-opus-5"))
+        XCTAssertTrue(result.models.contains("claude-sonnet-5"))
+        XCTAssertTrue(result.models.contains("claude-haiku-4-5"))
+        XCTAssertFalse(result.models.contains("claude-3-5-haiku"))
+        XCTAssertFalse(result.models.contains("claude-3-5-sonnet"))
+        XCTAssertFalse(result.models.contains("claude-3-7-sonnet"))
+        XCTAssertEqual(result.models.first, "claude-opus-5")
+        XCTAssertGreaterThan(result.hiddenCount, 0)
+    }
+
+    func testAllFloorShowsOlderClaude() {
+        let catalog = ["claude-opus-5", "claude-3-5-haiku"]
+        let result = AskMishModelMenu.models(
+            for: claude(models: catalog, defaultModel: "claude-opus-5"),
+            floor: nil)
+        XCTAssertTrue(result.models.contains("claude-3-5-haiku"))
+        XCTAssertEqual(result.models.first, "claude-opus-5")
+    }
+
+    func testFrontierFloorKeepsOpusOnly() {
+        let catalog = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]
+        let result = AskMishModelMenu.models(
+            for: claude(models: catalog, defaultModel: "claude-opus-5"),
+            floor: .frontier)
+        XCTAssertEqual(result.models, ["claude-opus-5"])
+    }
+
+    func testSelectedOlderModelStaysVisible() {
+        let catalog = ["claude-opus-5", "claude-3-5-haiku"]
+        let result = AskMishModelMenu.models(
+            for: claude(models: catalog, defaultModel: "claude-opus-5"),
+            selected: "claude-3-5-haiku",
+            floor: .current)
+        XCTAssertTrue(result.models.contains("claude-3-5-haiku"))
+    }
+
+    func testGroupedOrdersFrontierFirst() {
+        let groups = AskMishModelMenu.grouped([
+            "claude-haiku-4-5", "claude-opus-5", "claude-sonnet-5", "claude-3-5-haiku",
+        ])
+        XCTAssertEqual(groups.map(\.intelligence), [.frontier, .strong, .current, .older])
+        XCTAssertEqual(groups[0].models, ["claude-opus-5"])
+        XCTAssertEqual(groups[1].models, ["claude-sonnet-5"])
+        XCTAssertEqual(groups[2].models, ["claude-haiku-4-5"])
+        XCTAssertEqual(groups[3].models, ["claude-3-5-haiku"])
+    }
+
+    func testFloorPersistence() {
+        let defaults = UserDefaults(suiteName: "AskMishModelMenu.floor.\(UUID().uuidString)")!
+        XCTAssertEqual(AskMishModelMenu.storedFloor(from: defaults), .current)
+        AskMishModelMenu.setStoredFloor(.frontier, to: defaults)
+        XCTAssertEqual(AskMishModelMenu.storedFloor(from: defaults), .frontier)
+        AskMishModelMenu.setStoredFloor(nil, to: defaults)
+        XCTAssertNil(AskMishModelMenu.storedFloor(from: defaults))
+        AskMishModelMenu.setStoredFloor(.current, to: defaults)
+        XCTAssertEqual(AskMishModelMenu.storedFloor(from: defaults), .current)
+    }
+
+    func testSearchStillFindsOlderClaude() {
+        let p = claude(models: ["claude-opus-5", "claude-3-5-haiku"],
+                       defaultModel: "claude-opus-5")
+        XCTAssertEqual(AskMishModelMenu.search(providers: [p], query: "haiku").map(\.model),
+                       ["claude-3-5-haiku"])
+    }
 }

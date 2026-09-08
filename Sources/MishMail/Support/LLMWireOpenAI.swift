@@ -4,7 +4,9 @@ import Foundation
 /// Also speaks for OpenRouter, Groq, xAI Grok, and LM Studio.
 enum OpenAIWire {
     static func requestBody(model: String, messages: [LLMMessage],
-                            tools: [LLMToolSpec]) throws -> Data {
+                            tools: [LLMToolSpec],
+                            thinking: LLMThinking = .modelDefault,
+                            openRouter: Bool = false) throws -> Data {
         var wireMessages: [[String: Any]] = []
         for message in messages {
             switch message.role {
@@ -45,7 +47,32 @@ enum OpenAIWire {
                                      "parameters": schema]]
             }
         }
+        applyThinking(model: model, thinking: thinking, openRouter: openRouter, to: &body)
         return try JSONSerialization.data(withJSONObject: body)
+    }
+
+    /// OpenRouter takes a `reasoning` object; OpenAI, Gemini, and Grok take
+    /// `reasoning_effort`. Omit on models that cannot think.
+    private static func applyThinking(model: String, thinking: LLMThinking,
+                                      openRouter: Bool,
+                                      to body: inout [String: Any]) {
+        guard LLMHostedThinking.supports(model) else { return }
+        switch thinking {
+        case .modelDefault:
+            return
+        case .off:
+            if openRouter {
+                body["reasoning"] = ["enabled": false]
+            } else {
+                body["reasoning_effort"] = "none"
+            }
+        case .level(let level):
+            if openRouter {
+                body["reasoning"] = ["effort": level]
+            } else {
+                body["reasoning_effort"] = level
+            }
+        }
     }
 
     /// Incremental SSE parser. Feed each line; collect events. Tool-call

@@ -64,10 +64,13 @@ enum LLMThinking: Equatable, Sendable {
     init(rawValue: String) {
         switch rawValue {
         case "off": self = .off
-        case "low", "medium", "high": self = .level(rawValue)
+        case "low", "medium", "high", "xhigh": self = .level(rawValue)
         default: self = .modelDefault
         }
     }
+
+    /// Values the Think picker offers, in display order.
+    static let pickerValues = ["off", "low", "medium", "high", "xhigh", "default"]
 
     /// The JSON value for `think`, or nil when the field should be left out.
     var wireValue: Any? {
@@ -75,6 +78,93 @@ enum LLMThinking: Equatable, Sendable {
         case .modelDefault: return nil
         case .off: return false
         case .level(let level): return level
+        }
+    }
+
+    /// Short label for menus and picker rows.
+    var displayLabel: String {
+        switch self {
+        case .modelDefault: return "default"
+        case .off: return "off"
+        case .level("xhigh"): return "extra high"
+        case .level(let level): return level
+        }
+    }
+}
+
+/// Hosted-provider thinking: which models accept a reasoning knob, and how
+/// that knob is encoded. Pure — the codecs call this; the network layer
+/// does not guess.
+enum LLMHostedThinking {
+    /// Routed ids keep a vendor prefix; thinking checks the leaf name.
+    private static func leafName(_ model: String) -> String {
+        (model.split(separator: "/").last.map(String.init) ?? model).lowercased()
+    }
+
+    /// True when sending a thinking/reasoning field is expected to work.
+    /// Unknown ids stay false so a level never fails a model that cannot think.
+    static func supports(_ model: String) -> Bool {
+        let name = leafName(model)
+        if name.contains("claude") {
+            if name.contains("3-5") || name.contains("3.5") { return false }
+            if name.contains("claude-3-opus") || name.contains("claude-3-sonnet")
+                || name.contains("claude-3-haiku") { return false }
+            return name.contains("3-7") || name.contains("3.7")
+                || name.contains("claude-4") || name.contains("sonnet-4")
+                || name.contains("opus-4") || name.contains("haiku-4")
+                || name.contains("sonnet-5") || name.contains("opus-5")
+                || name.contains("haiku-5") || name.contains("claude-5")
+                || name.contains("fable")
+        }
+        if name.hasPrefix("gpt-5") { return true }
+        if name.hasPrefix("o1") || name.hasPrefix("o3") || name.hasPrefix("o4") { return true }
+        if name.contains("gemini") {
+            return name.contains("2.5") || name.contains("2-5")
+                || name.contains("gemini-3") || name.contains("gemini-4")
+        }
+        if name.hasPrefix("grok-") { return !name.hasPrefix("grok-2") }
+        if name.contains("deepseek-r1") || name.contains("reasoner") { return true }
+        return false
+    }
+
+    /// Claude 4.6+ uses adaptive thinking plus `output_config.effort`.
+    /// Older thinking models still take `budget_tokens`.
+    static func usesAdaptive(_ model: String) -> Bool {
+        let name = leafName(model)
+        if name.contains("4-6") || name.contains("4.6") { return true }
+        if name.contains("4-7") || name.contains("4.7") { return true }
+        if name.contains("4-8") || name.contains("4.8") { return true }
+        if name.contains("opus-5") || name.contains("sonnet-5")
+            || name.contains("haiku-5") || name.contains("claude-5") { return true }
+        if name.contains("fable") { return true }
+        return false
+    }
+
+    static func anthropicEffort(_ level: String, model: String) -> String {
+        if level == "xhigh" {
+            return usesXhighEffort(model) ? "xhigh" : "max"
+        }
+        return level
+    }
+
+    /// Opus 4.7+ and Sonnet 5 accept `xhigh`. 4.6 only has `max`.
+    static func usesXhighEffort(_ model: String) -> Bool {
+        let name = leafName(model)
+        if name.contains("4-6") || name.contains("4.6") { return false }
+        if name.contains("4-7") || name.contains("4.7") { return true }
+        if name.contains("4-8") || name.contains("4.8") { return true }
+        if name.contains("opus-5") || name.contains("sonnet-5")
+            || name.contains("haiku-5") || name.contains("claude-5") { return true }
+        if name.contains("fable") { return true }
+        return false
+    }
+
+    static func budgetTokens(_ level: String) -> Int {
+        switch level {
+        case "low": return 2_048
+        case "medium": return 8_192
+        case "high": return 16_384
+        default: return 32_000
         }
     }
 }
