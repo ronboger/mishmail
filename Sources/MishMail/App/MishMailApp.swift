@@ -109,6 +109,12 @@ struct MishMailApp: App {
                 // mailto: from browsers / other apps when we're the default
                 // email reader (Settings → General can claim that role).
                 .onOpenURL { store.handleOpenURL($0) }
+                // Route external URLs to the window that is already open.
+                // Without this a WindowGroup answers a mailto: from another
+                // app (browser, Notion Calendar, …) by spawning a second
+                // MishMail window — and since both observe the same store,
+                // the compose card shows up twice.
+                .handlesExternalEvents(preferring: ["*"], allowing: ["*"])
         }
         .defaultSize(width: 1000, height: 640)
         .commands {

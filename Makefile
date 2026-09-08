@@ -11,9 +11,9 @@
 #
 #   make test      is the gate: run it before every commit (the pre-commit
 #                  hook from `make hooks` does it).
-#   make ui-test   is CI-only: XCUITest hijacks the desktop. CI is manual-dispatch
-#                  now (gh workflow run CI --ref main) or release publish — run it
-#                  after merging UI work. Locally it refuses unless UI_TEST_LOCAL=1.
+#   make ui-test   is CI-only locally: XCUITest hijacks the desktop. GitHub
+#                  runs it as a separate job on pull_request and pushes to main.
+#                  Locally it refuses unless UI_TEST_LOCAL=1.
 #   make build     just compile the test (Debug) app; don't launch it.
 #   make release   build Release, zip the app, publish a GitHub release
 #                  (the in-app update checker looks at these releases).
@@ -116,13 +116,13 @@ test: gen
 # Small end-to-end pass over the fictional inbox. No Google account or network
 # is involved; this catches launch, navigation, compose, and Settings regressions.
 #
-# CI-ONLY: XCUITest cannot run headless on macOS — it launches the app, takes
-# focus, and injects keyboard/mouse events into the live desktop, so a local
-# run hijacks the machine for its duration. CI (.github/workflows/ci.yml) is
-# no longer push-triggered (Actions overuse): dispatch it manually after
-# merging UI work with `gh workflow run CI --ref main`, or it runs on release
-# publish. Locally the gate is `make test`. To run the UI suite here anyway
-# (and surrender the desktop while it runs): UI_TEST_LOCAL=1 make ui-test
+# CI-ONLY locally: XCUITest cannot run headless on macOS — it launches the app,
+# takes focus, and injects keyboard/mouse events into the live desktop, so a
+# local run hijacks the machine for its duration. GitHub Actions runs unit
+# tests + build on every pull_request and push to main, and the UI suite as a
+# separate job on the same triggers. Locally the gate is `make test`. To run
+# the UI suite here anyway (and surrender the desktop while it runs):
+# UI_TEST_LOCAL=1 make ui-test
 ui-test: gen
 	@if [ "$$CI" != "true" ] && [ "$(UI_TEST_LOCAL)" != "1" ]; then \
 		echo "ui-test is CI-only: XCUITest takes over the desktop while it runs."; \

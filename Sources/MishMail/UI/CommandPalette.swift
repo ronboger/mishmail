@@ -3,6 +3,7 @@ import SwiftUI
 /// Cmd-K palette: jump to views, compose, sync.
 struct CommandPalette: View {
     @Environment(MailStore.self) var store
+    @Environment(\.openSettings) private var openSettings
     // `commands` reads `store.selectedThread`; selection publishes through
     // ListFocusState (not MailStore), so observe it to keep the context
     // actions fresh. Cheap: the palette is mounted only while open.
@@ -82,6 +83,13 @@ struct CommandPalette: View {
             Command(id: "aisort", title: "Sort Inbox with AI", icon: "sparkles") { $0.classifyInbox() },
             Command(id: "newview", title: "Add View…", icon: "plus") {
                 $0.editingView = SavedView.empty()
+            },
+            Command(id: "notionmail", title: "Moving from Notion Mail…",
+                    icon: "arrow.right.doc.on.clipboard") { s in
+                UserDefaults.standard.set(SettingsView.Pane.notionMail.rawValue,
+                                          forKey: "settingsPane")
+                openSettings()
+                s.showCommandPalette = false
             },
         ]
         // Context actions on the selected thread, so Cmd-K can drive the

@@ -9,12 +9,13 @@ struct SettingsView: View {
     @Environment(MailStore.self) var store
 
     enum Pane: String, Identifiable {
-        case accounts, googleAPI, filters, snippets, general, appearance, shortcuts, ai, updates
+        case notionMail, accounts, googleAPI, filters, snippets, general, appearance, shortcuts, ai, updates
 
         var id: String { rawValue }
 
         var title: String {
             switch self {
+            case .notionMail: return "Moving from Notion Mail"
             case .accounts: return "Accounts"
             case .googleAPI: return "Google API"
             case .filters: return "Gmail filters"
@@ -29,6 +30,7 @@ struct SettingsView: View {
 
         var icon: String {
             switch self {
+            case .notionMail: return "arrow.right.doc.on.clipboard"
             case .accounts: return "person.2"
             case .googleAPI: return "key"
             case .filters: return "line.3.horizontal.decrease"
@@ -48,6 +50,9 @@ struct SettingsView: View {
     var body: some View {
         HStack(spacing: 0) {
             List(selection: $pane) {
+                Section {
+                    row(.notionMail)
+                }
                 Section("Account") {
                     row(.accounts)
                     row(.googleAPI)
@@ -90,6 +95,7 @@ struct SettingsView: View {
     @ViewBuilder
     private var detail: some View {
         switch pane {
+        case .notionMail: NotionMailSettings()
         case .accounts: AccountsSettings()
         case .googleAPI: GoogleAPISettings()
         case .filters: GmailFiltersSettings()
@@ -468,7 +474,7 @@ struct SnippetsSettings: View {
 
     var body: some View {
         PaneScaffold(title: "Snippets",
-                     subtitle: "Reusable text you can drop into any email by typing / in compose") {
+                     subtitle: "Reusable text you can drop into any email by typing / in compose. Import JSON or CSV, including a Notion Mail export.") {
             VStack(alignment: .leading, spacing: 0) {
                 HStack(spacing: 10) {
                     SearchField(prompt: "Search snippets…", text: $search)
@@ -482,7 +488,7 @@ struct SnippetsSettings: View {
                             .foregroundStyle(.secondary)
                     }
                     Button("Import…") { showImporter = true }
-                        .help("Import snippets from a JSON file: [{\"name\", \"body\", \"movesToBcc\", \"accountIds\"}]")
+                        .help("Import JSON or CSV snippets, including a Notion Mail export")
                     Button("Create new") {
                         editing = Snippet(id: nil, name: "", body: "")
                     }
@@ -573,25 +579,9 @@ struct SnippetsSettings: View {
             SnippetEditor(snippet: snippet)
         }
         .fileImporter(isPresented: $showImporter,
-                      allowedContentTypes: [.json]) { result in
-            switch result {
-            case .success(let url):
-                do {
-                    let counts = try store.importSnippets(from: url)
-                    var msg = counts.skipped == 0
-                        ? "Imported \(counts.added)"
-                        : "Imported \(counts.added), skipped \(counts.skipped) existing"
-                    if counts.unknownAccountIds > 0 {
-                        msg += "; \(counts.unknownAccountIds) unknown account id"
-                            + (counts.unknownAccountIds == 1 ? "" : "s")
-                            + " (snippet hidden until fixed)"
-                    }
-                    importResult = msg
-                } catch {
-                    importResult = "Import failed: \(error.localizedDescription)"
-                }
-            case .failure:
-                break
+                      allowedContentTypes: [.json, .commaSeparatedText, .tabSeparatedText, .plainText]) { result in
+            if let msg = SnippetFileImport.apply(result, store: store) {
+                importResult = msg
             }
         }
     }

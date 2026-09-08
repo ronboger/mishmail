@@ -138,10 +138,14 @@ final class ComposeTabFocusUITests: XCTestCase {
         let (to, _) = openCompose(app)
 
         app.typeText("dana")
-        let suggestion = app.buttons
-            .matching(identifier: "addressSuggestion.To.dana@brightloop.io")
-            .firstMatch
-        XCTAssertTrue(suggestion.waitForExistence(timeout: 3))
+        // SwiftUI hands the enclosing card's accessibilityIdentifier down to
+        // the floating suggestion rows, so the row's own identifier never
+        // reaches the AX tree (it reads "composeCard"). Match the label too.
+        let suggestion = app.buttons.matching(NSPredicate(
+            format: "identifier == 'addressSuggestion.To.dana@brightloop.io' "
+                + "OR label CONTAINS 'dana@brightloop.io'")).firstMatch
+        XCTAssertTrue(suggestion.waitForExistence(timeout: 10),
+                      "recipient suggestion should appear once contacts are mined")
         suggestion.click()
 
         XCTAssertTrue(waitForKeyboardFocus(to, timeout: 2),

@@ -22,6 +22,7 @@ struct OnboardingView: View {
                 header
 
                 demoCallout
+                notionMailCallout
 
                 step(1, "Create a Google Cloud project & enable Gmail") {
                     Text("Create a project, then enable the Gmail API for it.")
@@ -109,6 +110,25 @@ struct OnboardingView: View {
         }
         .padding(PMSpacing.md)
         .background(Color.notionAccent.opacity(0.08),
+                    in: RoundedRectangle(cornerRadius: PMRadius.md))
+    }
+
+    private var notionMailCallout: some View {
+        HStack(spacing: PMSpacing.md) {
+            Image(systemName: "arrow.right.doc.on.clipboard")
+                .font(.system(size: 24))
+                .foregroundStyle(Color.notionAccent)
+                .frame(width: 38, height: 38)
+            VStack(alignment: .leading, spacing: 3) {
+                Text("Moving from Notion Mail?")
+                    .font(PMFont.body().weight(.semibold))
+                Text("Your Gmail history stays. After you connect, open Settings → Moving from Notion Mail to import snippets from JSON or CSV.")
+                    .font(PMFont.caption()).foregroundStyle(.secondary)
+            }
+        }
+        .padding(PMSpacing.md)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.primary.opacity(0.04),
                     in: RoundedRectangle(cornerRadius: PMRadius.md))
     }
 
