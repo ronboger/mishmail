@@ -132,6 +132,48 @@ final class LLMWireAnthropicTests: XCTestCase {
         XCTAssertEqual((body["thinking"] as! [String: Any])["type"] as? String, "disabled")
     }
 
+    func testRequestBodyOmitsOffOnPreAdaptiveClaude() throws {
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-sonnet-4-5", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], maxTokens: 4096, thinking: .off))
+        XCTAssertNil(body["thinking"])
+    }
+
+    func testRequestBodyReplaysThinkingBlocksBeforeToolUse() throws {
+        let block = LLMThinkingBlock(thinking: "plan", signature: "sig-1")
+        let messages: [LLMMessage] = [
+            LLMMessage(role: .user, text: "search"),
+            LLMMessage(role: .assistant, text: "",
+                       toolCalls: [LLMToolCall(id: "tu1", name: "search_threads",
+                                               argumentsJSON: #"{"query":"acme"}"#)],
+                       thinkingBlocks: [block]),
+            LLMMessage(role: .tool, text: "",
+                       toolResults: [LLMToolResult(callID: "tu1", content: "[]", isError: false)]),
+        ]
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-sonnet-5", messages: messages, tools: [], maxTokens: 4096,
+            thinking: .level("high")))
+        let wire = body["messages"] as! [[String: Any]]
+        let assistantContent = wire[1]["content"] as! [[String: Any]]
+        XCTAssertEqual(assistantContent[0]["type"] as? String, "thinking")
+        XCTAssertEqual(assistantContent[0]["thinking"] as? String, "plan")
+        XCTAssertEqual(assistantContent[0]["signature"] as? String, "sig-1")
+        XCTAssertEqual(assistantContent[1]["type"] as? String, "tool_use")
+    }
+
+    func testStreamEmitsThinkingBlockWithSignature() {
+        var state = AnthropicWire.StreamState()
+        var events: [LLMEvent] = []
+        events += state.consume(line: #"data: {"type":"content_block_start","content_block":{"type":"thinking"}}"#)
+        events += state.consume(line: #"data: {"type":"content_block_delta","delta":{"type":"thinking_delta","thinking":"plan"}}"#)
+        events += state.consume(line: #"data: {"type":"content_block_delta","delta":{"type":"signature_delta","signature":"sig-1"}}"#)
+        events += state.consume(line: #"data: {"type":"content_block_stop"}"#)
+        XCTAssertEqual(events, [
+            .reasoning("plan"),
+            .thinkingBlock(LLMThinkingBlock(thinking: "plan", signature: "sig-1")),
+        ])
+    }
+
     func testRequestBodyOmitsThinkingOnModelsThatCannotThink() throws {
         let body = try decode(try AnthropicWire.requestBody(
             model: "claude-3-5-haiku", messages: [LLMMessage(role: .user, text: "hi")],

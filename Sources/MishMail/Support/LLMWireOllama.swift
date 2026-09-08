@@ -48,7 +48,9 @@ enum OllamaChatWire {
         // `draft_num_predict` is deliberately not set. A model with
         // multi-token-prediction layers ships its own value and decodes ~25%
         // faster with it; overriding it measured slower at every other setting.
-        if let think = thinking.wireValue { body["think"] = think }
+        var thinkMode = thinking
+        if case .level("xhigh") = thinkMode { thinkMode = .level("high") }
+        if let think = thinkMode.wireValue { body["think"] = think }
         if !tools.isEmpty {
             body["tools"] = try tools.map { tool -> [String: Any] in
                 ["type": "function",

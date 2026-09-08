@@ -200,6 +200,15 @@ final class AskMishModelMenuTests: XCTestCase {
         XCTAssertEqual(result.models.first, "claude-opus-5")
     }
 
+    func testFrontierFloorDoesNotFallBackToOlderModels() {
+        let catalog = ["gpt-4o", "gpt-4.1"]
+        let result = AskMishModelMenu.models(
+            for: provider(models: catalog, defaultModel: "gpt-4o"),
+            floor: .frontier)
+        XCTAssertTrue(result.models.isEmpty)
+        XCTAssertGreaterThan(result.hiddenCount, 0)
+    }
+
     func testFrontierFloorKeepsOpusOnly() {
         let catalog = ["claude-opus-5", "claude-sonnet-5", "claude-haiku-4-5"]
         let result = AskMishModelMenu.models(

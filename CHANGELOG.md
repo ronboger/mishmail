@@ -26,7 +26,7 @@ minor versions may still change behavior.
 - **The model picker leads with models worth using.** Browse groups Frontier,
   Strong, and Current, and hides older ids such as Claude 3.5 Haiku and GPT-4o.
   A Show menu sets the floor (Frontier / Strong / Current / All). Search still
-  finds the full list. Right-click a thinking model to set its effort.
+  finds the full list. Right-click a thinking model to set Ask Mish thinking.
 - **MailStore command work is split out of the observable hub.** Sync,
   mutations, compose/drafts, reminders, AI triage, and account lifecycle live
   in `MailStore+…` files and Support policy types. The main class keeps UI

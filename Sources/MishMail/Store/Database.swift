@@ -402,6 +402,9 @@ struct ChatMessageRow: Codable, Identifiable, Hashable, FetchableRecord, Persist
     var text: String
     var toolCallsJSON: String     // JSON [LLMToolCall]; "[]" when none
     var toolResultsJSON: String   // JSON [LLMToolResult]; "[]" when none
+    /// JSON [LLMThinkingBlock]; "[]" when none. Anthropic needs these on
+    /// the next assistant turn when thinking is on.
+    var thinkingBlocksJSON: String = "[]"
     var promptTokens: Int?        // usage, assistant rows only
     var completionTokens: Int?
     var createdAt: Date
@@ -1521,6 +1524,14 @@ final class AppDatabase: @unchecked Sendable {
             try db.alter(table: "message") { t in
                 t.add(column: "listUnsubscribe", .text)
                 t.add(column: "listUnsubscribePost", .text)
+            }
+        }
+
+        // v38: Anthropic thinking blocks (signature included) so a reload
+        // can replay them on the next tool turn.
+        m.registerMigration("v38") { db in
+            try db.alter(table: "chatMessage") { t in
+                t.add(column: "thinkingBlocksJSON", .text).notNull().defaults(to: "[]")
             }
         }
         return m

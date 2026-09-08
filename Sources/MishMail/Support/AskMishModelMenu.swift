@@ -105,8 +105,7 @@ enum AskMishModelMenu {
             let relevant = list.filter { isBrowseWorthy($0) }
             if !relevant.isEmpty { list = relevant }
             if let floor {
-                let ranked = list.filter { LLMModelIntelligence.of($0) >= floor }
-                if !ranked.isEmpty { list = ranked }
+                list = list.filter { LLMModelIntelligence.of($0) >= floor }
             }
         }
         if let vendor = subscriptionVendor(of: provider) {
@@ -130,7 +129,8 @@ enum AskMishModelMenu {
         if let selected, !selected.isEmpty, !list.contains(selected) {
             list.insert(selected, at: 0)
         }
-        if !leading.isEmpty {
+        let leadingOK = floor.map { LLMModelIntelligence.of(leading) >= $0 } ?? true
+        if !leading.isEmpty, leadingOK {
             if let index = list.firstIndex(of: leading) {
                 if index > 0 {
                     list.remove(at: index)

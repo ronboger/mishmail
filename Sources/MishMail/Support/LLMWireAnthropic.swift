@@ -16,6 +16,15 @@ enum AnthropicWire {
                                      "content": [["type": "text", "text": message.text]]])
             case .assistant:
                 var content: [[String: Any]] = []
+                for block in message.thinkingBlocks {
+                    if let data = block.redactedData, !data.isEmpty {
+                        content.append(["type": "redacted_thinking", "data": data])
+                    } else {
+                        content.append(["type": "thinking",
+                                        "thinking": block.thinking,
+                                        "signature": block.signature])
+                    }
+                }
                 if !message.text.isEmpty {
                     content.append(["type": "text", "text": message.text])
                 }
@@ -63,7 +72,11 @@ enum AnthropicWire {
         case .modelDefault:
             return
         case .off:
-            body["thinking"] = ["type": "disabled"]
+            // Claude 4.6+ accepts disabled. Older thinking models 400 on it,
+            // so omit and keep the model's own default.
+            if LLMHostedThinking.usesAdaptive(model) {
+                body["thinking"] = ["type": "disabled"]
+            }
         case .level(let level):
             if LLMHostedThinking.usesAdaptive(model) {
                 body["thinking"] = ["type": "adaptive"]
@@ -83,6 +96,10 @@ enum AnthropicWire {
         private var toolName = ""
         private var toolArgs = ""
         private var inToolBlock = false
+        private var inThinking = false
+        private var thinkingText = ""
+        private var thinkingSignature = ""
+        private var redactedData: String?
         private var promptTokens = 0
         private var completionTokens = 0
         private var stopReason = "end_turn"
@@ -106,12 +123,26 @@ enum AnthropicWire {
                 }
                 return []
             case "content_block_start":
-                if let block = object["content_block"] as? [String: Any],
-                   block["type"] as? String == "tool_use" {
-                    inToolBlock = true
-                    toolID = block["id"] as? String ?? ""
-                    toolName = block["name"] as? String ?? ""
-                    toolArgs = ""
+                if let block = object["content_block"] as? [String: Any] {
+                    switch block["type"] as? String {
+                    case "tool_use":
+                        inToolBlock = true
+                        toolID = block["id"] as? String ?? ""
+                        toolName = block["name"] as? String ?? ""
+                        toolArgs = ""
+                    case "thinking":
+                        inThinking = true
+                        thinkingText = block["thinking"] as? String ?? ""
+                        thinkingSignature = block["signature"] as? String ?? ""
+                        redactedData = nil
+                    case "redacted_thinking":
+                        inThinking = true
+                        thinkingText = ""
+                        thinkingSignature = ""
+                        redactedData = block["data"] as? String ?? ""
+                    default:
+                        break
+                    }
                 }
                 return []
             case "content_block_delta":
@@ -120,13 +151,28 @@ enum AnthropicWire {
                     return [.token(text)]
                 }
                 if let trace = delta["thinking"] as? String, !trace.isEmpty {
+                    thinkingText += trace
                     return [.reasoning(trace)]
+                }
+                if let signature = delta["signature"] as? String, !signature.isEmpty {
+                    thinkingSignature += signature
+                    return []
                 }
                 if let partial = delta["partial_json"] as? String {
                     toolArgs += partial
                 }
                 return []
             case "content_block_stop":
+                if inThinking {
+                    inThinking = false
+                    let block = LLMThinkingBlock(thinking: thinkingText,
+                                                 signature: thinkingSignature,
+                                                 redactedData: redactedData)
+                    thinkingText = ""
+                    thinkingSignature = ""
+                    redactedData = nil
+                    return [.thinkingBlock(block)]
+                }
                 guard inToolBlock else { return [] }
                 inToolBlock = false
                 let call = LLMToolCall(id: toolID, name: toolName,

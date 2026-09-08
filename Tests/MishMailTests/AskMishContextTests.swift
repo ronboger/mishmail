@@ -42,6 +42,27 @@ final class AskMishContextTests: XCTestCase {
         XCTAssertEqual(messages[2].toolResults, results)
     }
 
+    func testHistoryDecodingRoundTripsThinkingBlocks() throws {
+        let calls = [LLMToolCall(id: "c1", name: "search_threads", argumentsJSON: "{}")]
+        let callsJSON = String(decoding: try JSONEncoder().encode(calls), as: UTF8.self)
+        let results = [LLMToolResult(callID: "c1", content: "[]", isError: false)]
+        let resultsJSON = String(decoding: try JSONEncoder().encode(results), as: UTF8.self)
+        let blocks = [LLMThinkingBlock(thinking: "plan", signature: "sig-1")]
+        let blocksJSON = String(decoding: try JSONEncoder().encode(blocks), as: UTF8.self)
+        let rows = [
+            ChatMessageRow(id: "1", conversationId: "c", role: "assistant", text: "",
+                           toolCallsJSON: callsJSON, toolResultsJSON: "[]",
+                           thinkingBlocksJSON: blocksJSON,
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+            ChatMessageRow(id: "2", conversationId: "c", role: "tool", text: "",
+                           toolCallsJSON: "[]", toolResultsJSON: resultsJSON,
+                           promptTokens: nil, completionTokens: nil, createdAt: Date()),
+        ]
+        let messages = AskMishContext.llmMessages(history: rows)
+        XCTAssertEqual(messages[0].thinkingBlocks, blocks)
+        XCTAssertEqual(messages[0].toolCalls, calls)
+    }
+
     func testOrphanedToolResultsAreDropped() throws {
         let results = [LLMToolResult(callID: "c1", content: "{}", isError: false)]
         let resultsJSON = String(decoding: try JSONEncoder().encode(results), as: UTF8.self)

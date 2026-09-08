@@ -1099,7 +1099,7 @@ private struct ModelPickerPopover: View {
                         .lineLimit(1)
                         .truncationMode(.tail)
                     if LLMHostedThinking.supports(model) {
-                        Text("thinking: \(LLMThinking(rawValue: thinking).displayLabel)")
+                        Text("Ask Mish thinking: \(LLMThinking(rawValue: thinking).displayLabel)")
                             .font(.system(size: 9))
                             .foregroundStyle(.tertiary)
                             .lineLimit(1)
@@ -1188,7 +1188,7 @@ private struct ModelPickerPopover: View {
                                 .lineLimit(1)
                                 .truncationMode(.tail)
                             if LLMHostedThinking.supports(hit.model) {
-                                Text("thinking: \(LLMThinking(rawValue: thinking).displayLabel)")
+                                Text("Ask Mish thinking: \(LLMThinking(rawValue: thinking).displayLabel)")
                                     .font(.system(size: 9))
                                     .foregroundStyle(.tertiary)
                                     .lineLimit(1)

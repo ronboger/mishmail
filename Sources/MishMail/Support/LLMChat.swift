@@ -122,7 +122,10 @@ enum LLMHostedThinking {
             return name.contains("2.5") || name.contains("2-5")
                 || name.contains("gemini-3") || name.contains("gemini-4")
         }
-        if name.hasPrefix("grok-") { return !name.hasPrefix("grok-2") }
+        // Grok 4 rejects `reasoning_effort`. grok-3-mini accepts it.
+        if name.hasPrefix("grok-") {
+            return name.contains("mini") && !name.hasPrefix("grok-2")
+        }
         if name.contains("deepseek-r1") || name.contains("reasoner") { return true }
         return false
     }
@@ -167,6 +170,29 @@ enum LLMHostedThinking {
         default: return 32_000
         }
     }
+
+    /// OpenAI accepts `xhigh` from GPT-5.1 onward. Older GPT-5 and o-series
+    /// reject it, so map down to `high`.
+    static func openAIEffort(_ level: String, model: String) -> String {
+        guard level == "xhigh" else { return level }
+        let name = leafName(model)
+        if name.hasPrefix("gpt-5.1") || name.hasPrefix("gpt-5.2")
+            || name.contains("gpt-5.4") || name.contains("gpt-5.5")
+            || name.contains("gpt-5.6") {
+            return "xhigh"
+        }
+        return "high"
+    }
+}
+
+/// Anthropic thinking block that must be sent back on the next assistant
+/// turn when thinking is on, or the follow-up request after a tool call
+/// returns 400.
+struct LLMThinkingBlock: Codable, Equatable, Sendable {
+    var thinking: String = ""
+    var signature: String = ""
+    /// When set, the wire form is `redacted_thinking` with this payload.
+    var redactedData: String? = nil
 }
 
 struct LLMToolCall: Codable, Equatable, Sendable {
@@ -188,13 +214,16 @@ struct LLMMessage: Codable, Equatable, Sendable {
     var text: String
     var toolCalls: [LLMToolCall] = []
     var toolResults: [LLMToolResult] = []
+    var thinkingBlocks: [LLMThinkingBlock] = []
 
     init(role: LLMRole, text: String,
-         toolCalls: [LLMToolCall] = [], toolResults: [LLMToolResult] = []) {
+         toolCalls: [LLMToolCall] = [], toolResults: [LLMToolResult] = [],
+         thinkingBlocks: [LLMThinkingBlock] = []) {
         self.role = role
         self.text = text
         self.toolCalls = toolCalls
         self.toolResults = toolResults
+        self.thinkingBlocks = thinkingBlocks
     }
 }
 
@@ -215,6 +244,9 @@ enum LLMEvent: Equatable, Sendable {
     /// A fragment of the model's thinking trace (DeepSeek `reasoning_content`,
     /// OpenRouter `reasoning`, Ollama `thinking`, Anthropic thinking deltas).
     case reasoning(String)
+    /// A complete Anthropic thinking block, including the signature that
+    /// later assistant turns must replay.
+    case thinkingBlock(LLMThinkingBlock)
     case toolCall(LLMToolCall)
     case done(stopReason: String, usage: LLMUsage?)
 }

@@ -199,7 +199,10 @@ enum AskMishContext {
                                                    from: Data(row.toolCallsJSON.utf8))) ?? []
             let results = (try? JSONDecoder().decode([LLMToolResult].self,
                                                      from: Data(row.toolResultsJSON.utf8))) ?? []
-            return LLMMessage(role: role, text: row.text, toolCalls: calls, toolResults: results)
+            let thinking = (try? JSONDecoder().decode([LLMThinkingBlock].self,
+                                                      from: Data(row.thinkingBlocksJSON.utf8))) ?? []
+            return LLMMessage(role: role, text: row.text, toolCalls: calls,
+                              toolResults: results, thinkingBlocks: thinking)
         }
         // Anthropic and OpenAI reject a request that holds a tool_use without
         // its results, or results without their tool_use. Stored JSON can fail

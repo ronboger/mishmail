@@ -110,11 +110,23 @@ final class LLMWireOpenAITests: XCTestCase {
         XCTAssertNil(body["reasoning"])
     }
 
-    func testRequestBodyTurnsOpenAIThinkingOff() throws {
+    func testRequestBodyOmitsOpenAIThinkingWhenOff() throws {
         let body = try decode(try OpenAIWire.requestBody(
             model: "gpt-5", messages: [LLMMessage(role: .user, text: "hi")],
             tools: [], thinking: .off))
-        XCTAssertEqual(body["reasoning_effort"] as? String, "none")
+        XCTAssertNil(body["reasoning_effort"])
+        XCTAssertNil(body["reasoning"])
+    }
+
+    func testRequestBodyMapsXhighToHighOnGPT5() throws {
+        let body = try decode(try OpenAIWire.requestBody(
+            model: "gpt-5", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], thinking: .level("xhigh")))
+        XCTAssertEqual(body["reasoning_effort"] as? String, "high")
+        let newer = try decode(try OpenAIWire.requestBody(
+            model: "gpt-5.4", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], thinking: .level("xhigh")))
+        XCTAssertEqual(newer["reasoning_effort"] as? String, "xhigh")
     }
 
     func testRequestBodySendsOpenRouterReasoningObject() throws {
@@ -126,7 +138,8 @@ final class LLMWireOpenAITests: XCTestCase {
         let off = try decode(try OpenAIWire.requestBody(
             model: "anthropic/claude-sonnet-5", messages: [LLMMessage(role: .user, text: "hi")],
             tools: [], thinking: .off, openRouter: true))
-        XCTAssertEqual((off["reasoning"] as! [String: Any])["enabled"] as? Bool, false)
+        XCTAssertNil(off["reasoning"])
+        XCTAssertNil(off["reasoning_effort"])
     }
 
     func testRequestBodyOmitsReasoningOnModelsThatCannotThink() throws {

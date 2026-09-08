@@ -95,6 +95,7 @@ final class LLMWireOllamaTests: XCTestCase {
         }
         XCTAssertEqual(try body(.off, cap: nil)["think"] as? Bool, false)
         XCTAssertEqual(try body(.level("low"), cap: nil)["think"] as? String, "low")
+        XCTAssertEqual(try body(.level("xhigh"), cap: nil)["think"] as? String, "high")
         XCTAssertNil(try body(.modelDefault, cap: nil)["think"])
         XCTAssertEqual((try body(.off, cap: 32)["options"] as! [String: Any])["num_predict"] as? Int, 32)
         // 0 means "no cap"; it must not become num_predict 0, which would stop

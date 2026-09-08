@@ -179,11 +179,13 @@ actor LLMClient {
         request.timeoutInterval = 300
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        try applyAuth(to: &request, config: config)
+        try applyAuth(to: &request, config: config, thinking: thinking, hasTools: !tools.isEmpty)
         return request
     }
 
-    private func applyAuth(to request: inout URLRequest, config: LLMProviderConfig) throws {
+    private func applyAuth(to request: inout URLRequest, config: LLMProviderConfig,
+                           thinking: LLMThinking = .modelDefault,
+                           hasTools: Bool = false) throws {
         if config.kind == .ollama { return } // local, keyless
         guard OAuthConfig.usesKeychain(environment: ProcessInfo.processInfo.environment) else {
             throw LLMClientError.missingCredential // fixture builds never touch Keychain
@@ -194,7 +196,8 @@ actor LLMClient {
             switch config.kind {
             case .anthropic:
                 request.setValue(key, forHTTPHeaderField: "x-api-key")
-                applyAnthropicVersionHeaders(to: &request, oauth: false)
+                applyAnthropicVersionHeaders(to: &request, oauth: false,
+                                             thinking: thinking, hasTools: hasTools)
             default:
                 request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
             }
@@ -202,19 +205,25 @@ actor LLMClient {
             let tokens = try requiredTokens(providerID: config.id)
             request.setValue("Bearer \(tokens.accessToken)", forHTTPHeaderField: "Authorization")
             if config.kind == .anthropic {
-                applyAnthropicVersionHeaders(to: &request, oauth: true)
+                applyAnthropicVersionHeaders(to: &request, oauth: true,
+                                             thinking: thinking, hasTools: hasTools)
             }
         }
     }
 
     /// Thinking + tools needs interleaved thinking. OAuth needs its own beta
     /// token. Combine them so a thinking Ask Mish turn can call tools.
-    private func applyAnthropicVersionHeaders(to request: inout URLRequest, oauth: Bool) {
+    private func applyAnthropicVersionHeaders(to request: inout URLRequest, oauth: Bool,
+                                              thinking: LLMThinking, hasTools: Bool) {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         var betas: [String] = []
         if oauth { betas.append("oauth-2025-04-20") }
-        betas.append("interleaved-thinking-2025-05-14")
-        request.setValue(betas.joined(separator: ","), forHTTPHeaderField: "anthropic-beta")
+        if hasTools, case .level = thinking {
+            betas.append("interleaved-thinking-2025-05-14")
+        }
+        if !betas.isEmpty {
+            request.setValue(betas.joined(separator: ","), forHTTPHeaderField: "anthropic-beta")
+        }
     }
 
     /// A locked or otherwise unreadable Keychain is not a missing credential:

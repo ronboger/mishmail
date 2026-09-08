@@ -21,6 +21,9 @@ final class DatabaseMigrationTests: XCTestCase {
             XCTAssertTrue(messageCols.contains("senderAuth"), "v29 must add senderAuth")
             XCTAssertTrue(messageCols.contains("listUnsubscribe"), "v37 must add listUnsubscribe")
             XCTAssertTrue(messageCols.contains("listUnsubscribePost"), "v37 must add listUnsubscribePost")
+            let chatCols = try db.columns(in: "chatMessage").map(\.name)
+            XCTAssertTrue(chatCols.contains("thinkingBlocksJSON"),
+                          "v38 must add thinkingBlocksJSON")
             let accountCols = try db.columns(in: "account").map(\.name)
             XCTAssertTrue(accountCols.contains("senderName"), "v3 must add senderName")
             let threadCols = try db.columns(in: "thread").map(\.name)

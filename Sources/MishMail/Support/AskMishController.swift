@@ -332,6 +332,7 @@ final class AskMishController {
         for _ in 0..<AskMishContext.maxToolTurnsPerUserTurn {
             var streamedText = ""
             var calls: [LLMToolCall] = []
+            var thinkingBlocks: [LLMThinkingBlock] = []
             var usage: LLMUsage?
             let bubbleID = beginAssistantBubble()
             let request = [systemMessage()] + AskMishContext.prepareForModel(history)
@@ -346,6 +347,8 @@ final class AskMishController {
                         updateBubble(bubbleID, text: streamedText)
                     case .reasoning(let trace):
                         appendReasoning(bubbleID, trace)
+                    case .thinkingBlock(let block):
+                        thinkingBlocks.append(block)
                     case .toolCall(let call):
                         calls.append(call)
                         appendTrace(bubbleID, AskMishTrace.running(call))
@@ -358,8 +361,10 @@ final class AskMishController {
                 // tool_use without results makes the whole turn unusable.
                 markInterrupted(bubbleID)
                 await persistTurn(assistantText: streamedText, calls: [],
-                                  results: nil, usage: usage)
-                appendToHistory(assistantText: streamedText, calls: [])
+                                  results: nil, usage: usage,
+                                  thinkingBlocks: thinkingBlocks)
+                appendToHistory(assistantText: streamedText, calls: [],
+                                thinkingBlocks: thinkingBlocks)
                 return
             } catch {
                 markError(bubbleID, error.localizedDescription)
@@ -368,8 +373,10 @@ final class AskMishController {
             if Task.isCancelled {
                 markInterrupted(bubbleID)
                 await persistTurn(assistantText: streamedText, calls: [],
-                                  results: nil, usage: usage)
-                appendToHistory(assistantText: streamedText, calls: [])
+                                  results: nil, usage: usage,
+                                  thinkingBlocks: thinkingBlocks)
+                appendToHistory(assistantText: streamedText, calls: [],
+                                thinkingBlocks: thinkingBlocks)
                 return
             }
             addUsage(usage)
@@ -386,8 +393,10 @@ final class AskMishController {
                     return
                 }
                 await persistTurn(assistantText: streamedText, calls: [],
-                                  results: nil, usage: usage)
-                appendToHistory(assistantText: streamedText, calls: [])
+                                  results: nil, usage: usage,
+                                  thinkingBlocks: thinkingBlocks)
+                appendToHistory(assistantText: streamedText, calls: [],
+                                thinkingBlocks: thinkingBlocks)
                 finishTurnChrome(bubbleID)
                 return
             }
@@ -409,8 +418,10 @@ final class AskMishController {
                 updateTrace(bubbleID, callID: call.id, result: result)
             }
             await persistTurn(assistantText: streamedText, calls: calls,
-                              results: results, usage: usage)
-            appendToHistory(assistantText: streamedText, calls: calls, results: results)
+                              results: results, usage: usage,
+                              thinkingBlocks: thinkingBlocks)
+            appendToHistory(assistantText: streamedText, calls: calls, results: results,
+                            thinkingBlocks: thinkingBlocks)
             if Task.isCancelled {
                 markInterrupted(bubbleID)
                 return
@@ -602,9 +613,11 @@ final class AskMishController {
     /// append exactly that and poison every later send in the conversation.
     /// The guard lives here so no caller can bypass it.
     private func appendToHistory(assistantText: String, calls: [LLMToolCall],
-                                results: [LLMToolResult]? = nil) {
+                                results: [LLMToolResult]? = nil,
+                                thinkingBlocks: [LLMThinkingBlock] = []) {
         guard !assistantText.isEmpty || !calls.isEmpty else { return }
-        history.append(LLMMessage(role: .assistant, text: assistantText, toolCalls: calls))
+        history.append(LLMMessage(role: .assistant, text: assistantText,
+                                  toolCalls: calls, thinkingBlocks: thinkingBlocks))
         if let results, !results.isEmpty {
             history.append(LLMMessage(role: .tool, text: "", toolResults: results))
         }
@@ -816,13 +829,15 @@ final class AskMishController {
     /// Writes one assistant turn. The assistant row and its tool row go in the
     /// same transaction so a reload never sees a tool_use without its results.
     private func persistTurn(assistantText: String, calls: [LLMToolCall],
-                             results: [LLMToolResult]?, usage: LLMUsage?) async {
+                             results: [LLMToolResult]?, usage: LLMUsage?,
+                             thinkingBlocks: [LLMThinkingBlock] = []) async {
         guard !assistantText.isEmpty || !calls.isEmpty else { return }
         let now = Date()
         var rows = [ChatMessageRow(
             id: UUID().uuidString, conversationId: conversationID ?? "",
             role: LLMRole.assistant.rawValue, text: assistantText,
             toolCallsJSON: Self.encode(calls), toolResultsJSON: "[]",
+            thinkingBlocksJSON: Self.encode(thinkingBlocks),
             promptTokens: usage?.promptTokens, completionTokens: usage?.completionTokens,
             createdAt: now)]
         if let results, !results.isEmpty {

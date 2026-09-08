@@ -61,16 +61,16 @@ enum OpenAIWire {
         case .modelDefault:
             return
         case .off:
-            if openRouter {
-                body["reasoning"] = ["enabled": false]
-            } else {
-                body["reasoning_effort"] = "none"
-            }
+            // Omit. `reasoning_effort: "none"` 400s on GPT-5 and o-series;
+            // drafts/summaries/triage default to off, so sending it would
+            // break those tasks for anyone on those models.
+            return
         case .level(let level):
+            let effort = LLMHostedThinking.openAIEffort(level, model: model)
             if openRouter {
-                body["reasoning"] = ["effort": level]
+                body["reasoning"] = ["effort": effort]
             } else {
-                body["reasoning_effort"] = level
+                body["reasoning_effort"] = effort
             }
         }
     }
