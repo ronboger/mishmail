@@ -9,8 +9,8 @@ extension MailStore {
 
     func mutateThread(_ thread: MailThread,
                       autoAdvanceAction: String? = nil,
-                      local: (inout MailThread) -> Void,
-                      remote: RemoteThreadChange) {
+                      remote: RemoteThreadChange,
+                      local: (inout MailThread) -> Void) {
         guard !isShuttingDown else { return }
         var copy = thread
         local(&copy)
@@ -242,8 +242,8 @@ extension MailStore {
     /// runs once after all optimistic writes.
     func mutateThreads(_ targets: [MailThread],
                        autoAdvanceAction: String? = nil,
-                       local: (inout MailThread) -> Void,
-                       remote: RemoteThreadChange) {
+                       remote: RemoteThreadChange,
+                       local: (inout MailThread) -> Void) {
         guard !isShuttingDown, !targets.isEmpty else { return }
         if let action = autoAdvanceAction {
             let leaving = Set(targets.compactMap { thread -> String? in
@@ -257,7 +257,7 @@ extension MailStore {
         }
         suppressThreadReload = true
         for thread in targets {
-            mutateThread(thread, local: local, remote: remote)
+            mutateThread(thread, remote: remote, local: local)
         }
         suppressThreadReload = false
         scheduleThreadMutationReconciliation()

@@ -552,9 +552,10 @@ extension MailStore {
         row.attachmentsJSON = ScheduledSend.encodeAttachments(attachments)
         row.updatedAt = now
         let stored: LocalDraft
+        let pending = row
         do {
-            stored = try db.write { db -> LocalDraft in
-                var saved = row
+            stored = try await db.write { db -> LocalDraft in
+                var saved = pending
                 // Update in place only while the row is still there. The
                 // reconnect flush (or a Discard) can retire it between two
                 // autosaves; `update` would then throw and the composer would
@@ -625,7 +626,7 @@ extension MailStore {
         guard !demoMode, !isShuttingDown, !localDraftFlushInFlight else { return }
         localDraftFlushInFlight = true
         defer { localDraftFlushInFlight = false }
-        let rows = (try? db.read {
+        let rows = (try? await db.read {
             try LocalDraft.order(Column("createdAt")).fetchAll($0)
         }) ?? []
         guard !rows.isEmpty else {
