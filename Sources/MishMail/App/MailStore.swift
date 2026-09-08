@@ -13,6 +13,7 @@ enum MailboxView: Hashable {
     case reminders
     case drafts
     case scheduled      // locally scheduled sends (not Gmail threads)
+    case outbox         // drafts saved offline, waiting to upload (not Gmail threads)
     case sent
     case allMail
     case trash
@@ -31,6 +32,7 @@ enum MailboxView: Hashable {
         case .reminders: return "Reminders"
         case .drafts: return "Drafts"
         case .scheduled: return "Scheduled"
+        case .outbox: return "Outbox"
         case .sent: return "Sent"
         case .allMail: return "All Mail"
         case .trash: return "Trash"
@@ -60,7 +62,7 @@ enum MailboxView: Hashable {
         // unique within an account, so two accounts' labels must not share
         // a preference slot.
         case .label(let account, let labelId, _): return "label.\(account).\(labelId)"
-        case .scheduled, .saved: return nil
+        case .scheduled, .outbox, .saved: return nil
         }
     }
 }
@@ -500,6 +502,28 @@ final class MailStore {
     /// refresh token); the Accounts settings pane offers a "Reauthorize"
     /// button for these.
     var accountsNeedingReauth: Set<String> = []
+    /// True once a Gmail call failed for want of a network, or the path
+    /// monitor reports none. Cleared by the next request that succeeds. Drives
+    /// the "Offline" sync control and routes edits/drafts/sends into the
+    /// offline queues instead of the error banner.
+    var isOffline = false
+    /// Drafts saved while offline (the Outbox). Uploaded on reconnect.
+    var localDrafts: [LocalDraft] = []
+    /// Thread edits waiting to replay against Gmail (see `PendingThreadOp`).
+    var pendingThreadOpCount = 0
+    @ObservationIgnored var connectivity: ConnectivityMonitor?
+    /// One-at-a-time guards: the poll tick, the reconnect edge and the due
+    /// sweep can all ask for a flush at once; a second pass over the same
+    /// rows would double-send. Stored here (not in the `MailStore+…` files
+    /// that use them) because extensions cannot hold stored properties.
+    @ObservationIgnored var pendingOpsFlushInFlight = false
+    @ObservationIgnored var localDraftFlushInFlight = false
+    @ObservationIgnored var scheduledSendFlushInFlight = false
+    /// Why the last `saveDraft` returned nil, for the offline fallback.
+    @ObservationIgnored var lastDraftSaveError: Error?
+    /// The Outbox draft open in compose right now — the reconnect flush must
+    /// not upload it underneath the editor.
+    @ObservationIgnored var composingLocalDraftId: Int64?
     var composeRequest: ComposeRequest?
     /// Compose card is collapsed to a title strip (Notion Mail-style). Draft
     /// state stays mounted; inbox shortcuts work again while minimized.
@@ -1258,12 +1282,10 @@ final class MailStore {
             }) ?? []
         }
         for thread in hits {
-            mutateThread(thread) { t in
+            mutateThread(thread, remote: .modify(add: ["SPAM"], remove: ["INBOX"])) { t in
                 // Same path as markSpam — preserves tab-category denorm and
                 // keeps labelIds / inSpam / inInbox coherent.
                 t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
-            } remote: { client, id in
-                try await client.modifyThread(id: id, add: ["SPAM"], remove: ["INBOX"])
             }
         }
     }
@@ -1302,6 +1324,9 @@ struct ComposeRequest: Identifiable {
         var forwardAll = false
         var editDraft: Message? = nil   // an existing Gmail draft being edited
         var restore: PendingSend? = nil // undone send: reopen with this content
+        /// Outbox row this compose continues (saved offline). Autosave
+        /// updates it in place until the upload succeeds.
+        var localDraft: LocalDraft? = nil
         var prefillTo: String? = nil    // new mail straight to this address
         /// Optional headers from a `mailto:` handoff (cc/bcc/subject/body).
         var prefillCc: String? = nil
@@ -1977,6 +2002,8 @@ struct ComposeRequest: Identifiable {
     private func runDeferredStartupWork() async {
         guard !isShuttingDown else { return }
         reloadScheduledSends()
+        reloadLocalDrafts()
+        await reloadPendingThreadOpCount()
         // Contacts first: recipient autocomplete is the first deferred
         // surface a user reaches (`c`, type a name), and the mine runs on a
         // pool reader, so nothing below waits on it.
@@ -2026,6 +2053,7 @@ struct ComposeRequest: Identifiable {
         loadBlocked()
         reloadThreads()
         reloadScheduledSends()
+        reloadLocalDrafts()
         sendIdentities = fallbackIdentities()
         showNotice("Fictional mail — nothing syncs or sends")
     }
@@ -2060,6 +2088,7 @@ struct ComposeRequest: Identifiable {
         loadBlocked()
         reloadThreads()
         reloadScheduledSends()
+        reloadLocalDrafts()
         sendIdentities = []
         filtersByAccount[DemoSeed.account] = nil
         filtersLoadError[DemoSeed.account] = nil
@@ -2292,6 +2321,8 @@ struct ComposeRequest: Identifiable {
         // force: true to bypass that gate.
         AppDatabase.shared.beginShutdown()
         stopObservingActivityForPolling()
+        connectivity?.stop()
+        connectivity = nil
         syncTimer?.invalidate()
         syncTimer = nil
         syncTimerInterval = nil
@@ -3235,6 +3266,9 @@ struct ComposeRequest: Identifiable {
         case .scheduled:
             // Scheduled sends aren't threads; ScheduledListView renders them.
             q = q.none()
+        case .outbox:
+            // Offline drafts aren't threads; OutboxListView renders them.
+            q = q.none()
         case .sent:
             q = q.filter(Column("inSent") == true && Column("inTrash") == false)
         case .allMail:
@@ -3913,7 +3947,8 @@ struct ComposeRequest: Identifiable {
 
     func toggleLabel(_ thread: MailThread, labelId: String) {
         let has = thread.labels.contains(labelId)
-        mutateThread(thread) { t in
+        mutateThread(thread, remote: .modify(add: has ? [] : [labelId],
+                                             remove: has ? [labelId] : [])) { t in
             // applyLabelMutation seeds INBOX/STARRED from denorm flags and only
             // rewrites tab categories when CATEGORY_* is the toggled id — so
             // flipping a user label cannot re-hide a Primary thread under
@@ -3923,9 +3958,6 @@ struct ComposeRequest: Identifiable {
             } else {
                 t.applyLabelMutation(add: [labelId])
             }
-        } remote: { client, id in
-            try await client.modifyThread(id: id, add: has ? [] : [labelId],
-                                          remove: has ? [labelId] : [])
         }
     }
 

@@ -96,6 +96,7 @@ extension MailboxView {
         case .reminders: return "bell.fill"
         case .drafts: return "doc.text"
         case .scheduled: return "calendar.badge.clock"
+        case .outbox: return "tray.and.arrow.up"
         case .sent: return "paperplane"
         case .allMail: return "archivebox"
         case .trash: return "trash"

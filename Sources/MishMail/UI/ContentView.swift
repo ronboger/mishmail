@@ -778,6 +778,8 @@ struct ContentView: View {
     private var listColumn: some View {
         if store.selectedView == .scheduled {
             ScheduledListView()
+        } else if store.selectedView == .outbox {
+            OutboxListView()
         } else {
             ThreadListView()
         }
@@ -1660,6 +1662,10 @@ struct Sidebar: View {
                     if !store.scheduledSends.isEmpty || store.selectedView == .scheduled {
                         sidebarItem(.scheduled, badge: store.scheduledSends.count)
                     }
+                    // Drafts kept locally while offline; gone once uploaded.
+                    if !store.localDrafts.isEmpty || store.selectedView == .outbox {
+                        sidebarItem(.outbox, badge: store.localDrafts.count)
+                    }
                     sidebarItem(.reminders, badge: store.unreadCounts["reminders"])
                     sidebarItem(.trash)
                 }
@@ -1757,6 +1763,7 @@ struct Sidebar: View {
         switch view {
         case .account(let email): return "sidebar.account.\(email)"
         case .scheduled: return "sidebar.scheduled"
+        case .outbox: return "sidebar.outbox"
         case .saved(let id, _): return "sidebar.saved.\(id)"
         case .label(let account, let labelId, _):
             return "sidebar.label.\(account).\(labelId)"

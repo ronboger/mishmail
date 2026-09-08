@@ -19,7 +19,34 @@ extension MailStore {
         await fireDueSnoozes()
         guard !isShuttingDown else { return }
         observeActivityForPolling()
+        observeConnectivity()
         armSyncTimer()
+    }
+
+    /// Reachability edges. Losing the path flips the sync control to
+    /// "Offline" before the first request times out; regaining it replays
+    /// the offline queues now instead of at the next poll. Neither edge is
+    /// trusted on its own — a captive portal reports a satisfied path — so
+    /// `isOffline` is only cleared by a request that actually succeeds.
+    private func observeConnectivity() {
+        guard connectivity == nil else { return }
+        let monitor = ConnectivityMonitor()
+        monitor.onChange = { [weak self] reachable in
+            guard let self, !self.isShuttingDown else { return }
+            if !reachable {
+                self.isOffline = true
+                return
+            }
+            guard self.syncTickTask == nil else { return }
+            self.syncTickTask = Task { @MainActor [weak self] in
+                guard let self else { return }
+                defer { self.syncTickTask = nil }
+                guard !self.isShuttingDown else { return }
+                await self.syncAll(interactive: false)
+            }
+        }
+        monitor.start()
+        connectivity = monitor
     }
 
     private var currentPollInterval: TimeInterval {
@@ -143,6 +170,12 @@ extension MailStore {
         for id in ids where engines[id] == nil {
             engines[id] = SyncEngine(accountId: id)
         }
+        // Offline work first, so the history read below sees it applied
+        // rather than reverting it, and queued mail leaves before new mail
+        // is fetched. Each stops at the first connectivity failure.
+        await flushPendingThreadOps()
+        await flushLocalDrafts()
+        await fireDueScheduledSends()
         // Capture engine refs before leaving MainActor for the task group.
         let pairs: [(String, SyncEngine)] = ids.compactMap { id in
             engines[id].map { (id, $0) }
@@ -189,14 +222,20 @@ extension MailStore {
                         accountsNeedingReauth.remove(id)
                         await backfillSenderNameIfNeeded(accountId: id)
                         await refreshSendIdentities(accountId: id)
-                    } else if !interactive && TransientNetworkError.isTransient(error) {
-                        // Background tick: silent; next poll retries.
+                    } else if !OfflinePolicy.surfacesSyncFailure(error) {
+                        // No network. The sync control reads "Offline";
+                        // a user-initiated sync gets a passing notice, the
+                        // background tick stays silent. Either way no
+                        // sticky banner: the next poll retries on its own.
+                        isOffline = true
+                        if interactive { showNotice(OfflinePolicy.offlineSyncNotice) }
                     } else {
                         setSyncFailureError(
                             "\(id): \(error.localizedDescription)",
                             accountId: id)
                     }
                 } else {
+                    isOffline = false
                     accountsNeedingReauth.remove(id)
                     clearSyncFailureErrorIfNeeded(for: id)
                     await backfillSenderNameIfNeeded(accountId: id)
@@ -238,6 +277,7 @@ extension MailStore {
             }
             applyThreadContentChange(change)
             syncStatus = ""
+            isOffline = false
             accountsNeedingReauth.remove(accountId)
             clearSyncFailureErrorIfNeeded(for: accountId)
             await backfillSenderNameIfNeeded(accountId: accountId)
@@ -258,6 +298,10 @@ extension MailStore {
                 await refreshSendIdentities(accountId: accountId)
                 reloadAccounts()
                 reloadThreads()
+            } else if !OfflinePolicy.surfacesSyncFailure(error) {
+                // Follow-up syncs (after a save, a failed edit) run without
+                // the user asking; offline they must not stack banners.
+                isOffline = true
             } else {
                 setSyncFailureError(
                     "\(accountId): \(error.localizedDescription)",

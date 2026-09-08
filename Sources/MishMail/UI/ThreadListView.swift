@@ -706,6 +706,17 @@ struct FilterBar: View {
                     if store.demoMode {
                         Image(systemName: "sparkles.rectangle.stack")
                         Text("Demo inbox")
+                    } else if store.isOffline && store.syncStatus.isEmpty {
+                        // Cached mail stays browsable; queued work is counted
+                        // here instead of repeated in an error banner.
+                        Image(systemName: "wifi.slash")
+                        Text(OfflinePolicy.offlineStatusLabel(
+                            queuedSends: store.scheduledSends.filter {
+                                OfflinePolicy.isWaitingForConnection(sendAt: $0.sendAt)
+                            }.count,
+                            localDrafts: store.localDrafts.count,
+                            pendingEdits: store.pendingThreadOpCount))
+                            .accessibilityIdentifier("syncStatusOffline")
                     } else if store.syncStatus.isEmpty {
                         Image(systemName: "arrow.clockwise")
                         if let last = lastSync {
@@ -720,7 +731,8 @@ struct FilterBar: View {
             }
             .buttonStyle(.plain)
             .help(store.demoMode ? "Fictional mail — syncing is disabled"
-                                 : "Sync now (Cmd-Shift-R)")
+                  : store.isOffline ? "Offline — showing cached mail. Queued edits, drafts and sends go out when you're back online. Click to retry."
+                  : "Sync now (Cmd-Shift-R)")
             .keyboardShortcut("r", modifiers: [.command, .shift])
             .disabled(store.demoMode)
         }

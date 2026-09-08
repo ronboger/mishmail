@@ -18,6 +18,7 @@ final class ComposeDraftStatusLayoutTests: XCTestCase {
             ComposeDraftStatusLayout.savingLabel,
             ComposeDraftStatusLayout.savedLabel,
             ComposeDraftStatusLayout.failedLabel,
+            ComposeDraftStatusLayout.savedOfflineLabel,
         ])
         // Idle must not paint a string into the slot.
         XCTAssertFalse(labels.contains(""))

@@ -76,23 +76,76 @@ extension MailStore {
         return pendingSend
     }
 
+    private enum SendOutcome {
+        case sent
+        /// No network: the caller decides where the message waits.
+        case deferredOffline
+        /// Gmail rejected it; the message is back in compose with the error.
+        case failed
+    }
+
+    /// Undo window elapsed. Offline, the message moves to the Scheduled list
+    /// as "waiting for connection" and goes out on reconnect — the composer
+    /// does not reopen with an error the user can do nothing about.
     private func performSend(_ p: PendingSend) async {
+        switch await attemptSend(p) {
+        case .sent, .failed:
+            break
+        case .deferredOffline:
+            queueSendForReconnect(p)
+        }
+    }
+
+    private func attemptSend(_ p: PendingSend) async -> SendOutcome {
         do {
             try await send(from: p.accountId, fromEmail: p.effectiveFromEmail,
                            to: p.to, cc: p.cc, bcc: p.bcc,
                            subject: p.subject, body: p.body, replyTo: p.replyTo,
                            forward: p.forward,
                            attachments: p.attachments, replacingDraft: p.replacingDraft)
+            isOffline = false
             setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
             showNotice("Sent")
+            return .sent
         } catch {
+            if OfflinePolicy.shouldDefer(error) {
+                isOffline = true
+                return .deferredOffline
+            }
             // Bring the message back so nothing is lost.
             setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
             lastError = "Send failed: \(error.localizedDescription)"
             composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
                                             forwardAll: p.forwardAll,
                                             editDraft: p.replacingDraft, restore: p)
+            return .failed
         }
+    }
+
+    /// Park a send that found no network: a scheduled row due *now*, which
+    /// the reconnect flush and the poll backstop both pick up.
+    private func queueSendForReconnect(_ p: PendingSend) {
+        let row = ScheduledSend(
+            id: nil, accountId: p.accountId, fromEmail: p.effectiveFromEmail,
+            toHeader: p.to, ccHeader: p.cc,
+            bccHeader: p.bcc, subject: p.subject, body: p.body, sendAt: Date(),
+            replyToMessageId: p.replyTo?.id, forward: p.forward,
+            replacingDraftId: p.replacingDraft?.id,
+            attachmentsJSON: ScheduledSend.encodeAttachments(p.attachments),
+            createdAt: Date())
+        do {
+            try db.write { db in try row.insert(db) }
+        } catch {
+            // Last resort: back into compose rather than into the void.
+            setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
+            lastError = "Send failed: \(error.localizedDescription)"
+            composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
+                                            forwardAll: p.forwardAll,
+                                            editDraft: p.replacingDraft, restore: p)
+            return
+        }
+        reloadScheduledSends()
+        showNotice(OfflinePolicy.queuedSendNotice)
     }
 
     /// Update the local visibility before compose opens/closes. The underlying
@@ -216,20 +269,31 @@ extension MailStore {
         scheduledSendTimer?.invalidate()
         scheduledSendTimer = nil
         guard let next = scheduledSends.map(\.sendAt).min() else { return }
-        scheduledSendTimer = Timer.scheduledTimer(withTimeInterval: max(next.timeIntervalSinceNow, 1),
+        // A due row stays put when the send found no network, so the 1s floor
+        // would re-arm this timer once a second for the whole flight.
+        let delay = OfflinePolicy.scheduledSendRetryDelay(next: next, isOffline: isOffline)
+        scheduledSendTimer = Timer.scheduledTimer(withTimeInterval: delay,
                                                   repeats: false) { [weak self] _ in
             Task { @MainActor in await self?.fireDueScheduledSends() }
         }
     }
 
+    /// Send everything whose time has come. A row that cannot go out for
+    /// want of a network stays put (it reads "Waiting for connection" in the
+    /// Scheduled list) and the loop stops — the rest would fail the same way.
     func fireDueScheduledSends() async {
-        guard !demoMode else { return }
+        guard !demoMode, !isShuttingDown, !scheduledSendFlushInFlight else { return }
+        scheduledSendFlushInFlight = true
+        defer { scheduledSendFlushInFlight = false }
         let due = scheduledSends.filter { $0.sendAt <= Date() }
         guard !due.isEmpty else { return }
         for s in due {
+            guard !isShuttingDown else { break }
             let p = pendingSend(from: s)
+            let outcome = await attemptSend(p)
+            if outcome == .deferredOffline { break }
             _ = try? await db.write { db in try ScheduledSend.deleteOne(db, key: s.id) }
-            await performSend(p)
+            guard outcome == .sent else { continue }
             Notifier.notify(title: "Scheduled message sent",
                             body: s.subject.isEmpty ? s.toHeader : s.subject,
                             id: "scheduled.\(s.id ?? 0)")
@@ -418,12 +482,197 @@ extension MailStore {
                 messageIdHeader: "", referencesHeader: "",
                 labelIds: "DRAFT", isUnread: false, hasAttachment: !attachments.isEmpty)
         } catch {
+            lastDraftSaveError = error
             // Always surface close-path failures (silent=false). Autosave keeps
             // lastError clean and uses the in-card "Draft not saved" status.
-            if !silent {
+            // Connectivity failures never reach the banner: the caller keeps
+            // the draft locally instead (see `persistDraft`).
+            if !silent, OfflinePolicy.surfacesSyncFailure(error) {
                 lastError = "Draft not saved: \(error.localizedDescription)"
             }
             return nil
+        }
+    }
+
+    /// Where a compose draft ended up.
+    enum DraftSaveOutcome {
+        /// A real Gmail draft (the replace chain continues from it).
+        case uploaded(Message)
+        /// No network: kept in the Outbox; `flushLocalDrafts` uploads it.
+        case keptLocally(LocalDraft)
+        /// Gmail rejected it (lastError set on the close path).
+        case failed
+    }
+
+    /// `saveDraft` with the offline fallback the composer needs: a draft that
+    /// cannot reach Gmail is written to `localDraft` (updating `local` in
+    /// place when this compose already owns an Outbox row) so closing the
+    /// card on a plane never drops the text. A later save that *does* reach
+    /// Gmail deletes the Outbox row.
+    func persistDraft(from accountId: String, fromEmail: String = "",
+                      to: String, cc: String, bcc: String = "", subject: String,
+                      body: String, replyTo message: Message? = nil, forward: Bool = false,
+                      forwardAll: Bool = false,
+                      attachments: [MIMEBuilder.Attachment] = [],
+                      replacing draft: Message? = nil,
+                      local: LocalDraft? = nil,
+                      silent: Bool = false,
+                      syncAfter: Bool? = nil) async -> DraftSaveOutcome {
+        if !isOffline {
+            lastDraftSaveError = nil
+            if let saved = await saveDraft(from: accountId, fromEmail: fromEmail,
+                                           to: to, cc: cc, bcc: bcc, subject: subject,
+                                           body: body, replyTo: message, forward: forward,
+                                           attachments: attachments, replacing: draft,
+                                           silent: silent, syncAfter: syncAfter) {
+                if let local { deleteLocalDraft(local, silent: true) }
+                isOffline = false
+                return .uploaded(saved)
+            }
+            guard let error = lastDraftSaveError, OfflinePolicy.shouldDefer(error) else {
+                return .failed
+            }
+            isOffline = true
+        }
+        let now = Date()
+        var row = local ?? LocalDraft(
+            id: nil, accountId: accountId, fromEmail: fromEmail,
+            toHeader: to, ccHeader: cc, bccHeader: bcc, subject: subject, body: body,
+            replyToMessageId: message?.id, forward: forward, forwardAll: forwardAll,
+            replacingDraftId: draft?.id,
+            attachmentsJSON: ScheduledSend.encodeAttachments(attachments),
+            createdAt: now, updatedAt: now)
+        row.accountId = accountId
+        row.fromEmail = fromEmail
+        row.toHeader = to; row.ccHeader = cc; row.bccHeader = bcc
+        row.subject = subject; row.body = body
+        row.replyToMessageId = message?.id
+        row.forward = forward; row.forwardAll = forwardAll
+        row.replacingDraftId = draft?.id
+        row.attachmentsJSON = ScheduledSend.encodeAttachments(attachments)
+        row.updatedAt = now
+        let stored: LocalDraft
+        let pending = row
+        do {
+            stored = try await db.write { db -> LocalDraft in
+                var saved = pending
+                // Update in place only while the row is still there. The
+                // reconnect flush (or a Discard) can retire it between two
+                // autosaves; `update` would then throw and the composer would
+                // report "Draft not saved" with the text nowhere on disk.
+                var exists = false
+                if let id = saved.id {
+                    exists = try LocalDraft.filter(Column("id") == id).fetchCount(db) > 0
+                }
+                if exists {
+                    try saved.update(db)
+                } else {
+                    // Read the rowid back explicitly: the composer keys every
+                    // later autosave on it, and a nil id would stack copies.
+                    saved.id = nil
+                    try saved.insert(db)
+                    saved.id = db.lastInsertedRowID
+                }
+                return saved
+            }
+        } catch {
+            if !silent { lastError = "Draft not saved: \(error.localizedDescription)" }
+            return .failed
+        }
+        reloadLocalDrafts()
+        if !silent { showNotice(OfflinePolicy.localDraftNotice) }
+        return .keptLocally(stored)
+    }
+
+    // MARK: - Outbox (drafts saved offline)
+
+    func reloadLocalDrafts() {
+        localDrafts = (try? db.read {
+            try LocalDraft.order(Column("updatedAt").desc).fetchAll($0)
+        }) ?? []
+    }
+
+    /// Reopen an Outbox draft in compose. The row stays until the editor
+    /// uploads or discards it; autosave keeps updating it while offline.
+    func editLocalDraft(_ local: LocalDraft) {
+        let replyTo = local.replyToMessageId.flatMap { messageBody(id: $0) }
+        let draft = local.replacingDraftId.flatMap { messageBody(id: $0) }
+        let restore = PendingSend(accountId: local.accountId, fromEmail: local.effectiveFromEmail,
+                                  to: local.toHeader, cc: local.ccHeader,
+                                  bcc: local.bccHeader, subject: local.subject, body: local.body,
+                                  replyTo: replyTo, forward: local.forward,
+                                  forwardAll: local.forwardAll,
+                                  attachments: local.attachments, replacingDraft: draft)
+        var request = ComposeRequest(replyTo: replyTo, forward: local.forward,
+                                     forwardAll: local.forwardAll,
+                                     editDraft: draft, restore: restore)
+        request.localDraft = local
+        openCompose(request)
+    }
+
+    func deleteLocalDraft(_ local: LocalDraft, silent: Bool = false) {
+        guard let id = local.id else { return }
+        try? db.write { db in _ = try LocalDraft.deleteOne(db, key: id) }
+        if composingLocalDraftId == id { composingLocalDraftId = nil }
+        reloadLocalDrafts()
+        if !silent { showNotice("Offline draft discarded") }
+    }
+
+    /// Upload Outbox drafts as real Gmail drafts, oldest first, skipping the
+    /// one open in compose (its editor owns it). Stops at the first
+    /// connectivity failure. One Drafts-mailbox sync afterwards so the
+    /// uploaded rows appear where the user expects them.
+    func flushLocalDrafts() async {
+        guard !demoMode, !isShuttingDown, !localDraftFlushInFlight else { return }
+        localDraftFlushInFlight = true
+        defer { localDraftFlushInFlight = false }
+        let rows = (try? await db.read {
+            try LocalDraft.order(Column("createdAt")).fetchAll($0)
+        }) ?? []
+        guard !rows.isEmpty else {
+            if !localDrafts.isEmpty { reloadLocalDrafts() }
+            return
+        }
+        var uploadedAccounts: Set<String> = []
+        var uploadedCount = 0
+        for local in rows where local.id != composingLocalDraftId {
+            guard !isShuttingDown else { break }
+            let replyTo = local.replyToMessageId.flatMap { messageBody(id: $0) }
+            let draft = local.replacingDraftId.flatMap { messageBody(id: $0) }
+            lastDraftSaveError = nil
+            let saved = await saveDraft(from: local.accountId, fromEmail: local.fromEmail,
+                                        to: local.toHeader, cc: local.ccHeader,
+                                        bcc: local.bccHeader, subject: local.subject,
+                                        body: local.body, replyTo: replyTo,
+                                        forward: local.forward,
+                                        attachments: local.attachments, replacing: draft,
+                                        silent: true, syncAfter: false)
+            if saved != nil {
+                isOffline = false
+                uploadedAccounts.insert(local.accountId)
+                uploadedCount += 1
+                deleteLocalDraft(local, silent: true)
+                continue
+            }
+            if let error = lastDraftSaveError, OfflinePolicy.shouldDefer(error) {
+                isOffline = true
+                break
+            }
+            if let error = lastDraftSaveError, AccountLifecycle.isReauthRequired(error) {
+                requireReauthorization(for: local.accountId)
+                break
+            }
+            // Rejected outright: keep the row so the user can open and fix it.
+            if let error = lastDraftSaveError {
+                lastError = "Couldn't upload an offline draft: \(error.localizedDescription)"
+            }
+        }
+        for account in uploadedAccounts {
+            await syncDraftMailbox(account)
+        }
+        if uploadedCount > 0 {
+            showNotice(uploadedCount == 1 ? "Offline draft uploaded to Drafts"
+                                          : "\(uploadedCount) offline drafts uploaded to Drafts")
         }
     }
 

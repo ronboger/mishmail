@@ -17,13 +17,15 @@ enum ComposeDraftStatusLayout {
     static let savingLabel = "Saving…"
     static let savedLabel = "Draft saved"
     static let failedLabel = "Draft not saved"
+    /// No network: the draft is in the Outbox, not on Gmail yet.
+    static let savedOfflineLabel = "Saved offline"
 
     /// Longest user-visible status string — width sizer for the reserved slot.
     static var widthSizerLabel: String { failedLabel }
 
     /// Labels that paint in the reserved slot (idle is empty but still sized).
     static var visibleLabels: [String] {
-        [savingLabel, savedLabel, failedLabel]
+        [savingLabel, savedLabel, failedLabel, savedOfflineLabel]
     }
 
     /// Character-count proxy that the sizer is at least as long as every
