@@ -382,6 +382,10 @@ struct ThreadDetailView: View {
                         Label("Reply", systemImage: "arrowshape.turn.up.left")
                     }
                     .help("Reply (\(store.keyBindings.key(for: .reply)))")
+                    Button { store.handleSelectedThreadWithMish() } label: {
+                        Label("Handle with Mish", systemImage: "wand.and.sparkles")
+                    }
+                    .help("Handle with Mish · the agent works this conversation and stops before anything is sent")
                     if ReplyComposer.hasAdditionalReplyAllRecipients(
                         last, ownAddresses: store.ownEmailAddresses) {
                         Button {

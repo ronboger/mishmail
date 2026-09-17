@@ -3,7 +3,8 @@ import Foundation
 
 enum LLMClientError: LocalizedError {
     case missingCredential
-    case http(Int)
+    /// Status plus the provider's own error message, when the body had one.
+    case http(Int, String? = nil)
     case keychainUnavailable
     case untrustedEndpoint(String)
 
@@ -11,7 +12,10 @@ enum LLMClientError: LocalizedError {
         switch self {
         case .missingCredential:
             return "No API key or sign-in for this provider. Add one in Settings → AI."
-        case .http(let code):
+        case .http(let code, let detail):
+            if let detail, !detail.isEmpty {
+                return "The model provider returned HTTP \(code): \(detail)"
+            }
             return "The model provider returned HTTP \(code)."
         case .keychainUnavailable:
             return "Keychain is unavailable. Unlock your Mac and try again."
@@ -84,7 +88,9 @@ actor LLMClient {
             if config.kind == .ollama, let failure = Ollama.chatFailure(status: status, model: model) {
                 throw failure
             }
-            throw LLMClientError.http(status)
+            // The body names the rejected field ("thinking.type", "messages.3
+            // .content"). Without it a 400 is undiagnosable from the UI.
+            throw LLMClientError.http(status, await Self.errorDetail(from: bytes))
         }
 
         switch config.kind {
@@ -109,6 +115,19 @@ actor LLMClient {
                            finalFlush: { [.done(stopReason: "stop", usage: nil)] },
                            yield: yield)
         }
+    }
+
+    /// Reads a failed response's body (capped) and pulls out the provider's
+    /// message. Never throws: the status is the error, the body is a bonus.
+    private static func errorDetail(from bytes: URLSession.AsyncBytes) async -> String? {
+        var data = Data()
+        do {
+            for try await byte in bytes {
+                data.append(byte)
+                if data.count >= LLMErrorBody.maxBytes { break }
+            }
+        } catch {}
+        return LLMErrorBody.message(from: data)
     }
 
     /// Feeds every line of the response to `consume`, forwards the events, and

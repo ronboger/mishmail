@@ -1634,6 +1634,7 @@ struct AISettings: View {
 
                 Section {
                     thinkingPicker("Ask Mish", task: .askMish)
+                    thinkingPicker("Handle with Mish", task: .handle)
                     thinkingPicker("Drafts", task: .drafts)
                     thinkingPicker("Summaries", task: .summaries)
                     thinkingPicker("Auto-sort", task: .triage)
@@ -1916,6 +1917,7 @@ struct AISettings: View {
         case .summaries: return "Summaries"
         case .triage: return "Triage"
         case .askMish: return "Ask Mish"
+        case .handle: return "Handle with Mish"
         }
     }
 
@@ -2027,6 +2029,7 @@ private struct TaskModelPicker: View {
         case .summaries: return "Summaries"
         case .triage: return "Triage"
         case .askMish: return "Ask Mish"
+        case .handle: return "Handle with Mish"
         }
     }
 

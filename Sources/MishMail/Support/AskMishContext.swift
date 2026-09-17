@@ -27,6 +27,17 @@ enum AskMishContext {
         """
     }
 
+    /// The turn "Handle with Mish" sends. The open thread rides along as
+    /// context. Writes still stop at the confirm card, so the model can
+    /// prepare a reply but never send one on its own.
+    static let handlePrompt = """
+    Handle the open thread for me. Work out what it needs from me, then do it \
+    with the tools: look up related mail if that helps, draft the reply when \
+    one is due, or say in one line that nothing needs doing. Do not ask me \
+    questions unless the request is truly ambiguous. When you finish, tell me \
+    what you did and what is left for me.
+    """
+
     static func truncatedThreadContext(markdown: String, headChars: Int, tailChars: Int) -> String {
         guard markdown.count > headChars + tailChars else { return markdown }
         let head = markdown.prefix(headChars)

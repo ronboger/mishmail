@@ -3,7 +3,7 @@ import Foundation
 /// Which app feature a model call belongs to. Each task can use a
 /// different provider/model (cheap local triage, hosted drafting).
 enum LLMTask: String, CaseIterable, Sendable {
-    case drafts, summaries, triage, askMish
+    case drafts, summaries, triage, askMish, handle
 }
 
 struct LLMTaskAssignment: Codable, Equatable, Sendable {
@@ -169,6 +169,10 @@ enum LLMProviderStore {
         if let data = defaults.data(forKey: assignmentKey(for: task)),
            let decoded = try? JSONDecoder().decode(LLMTaskAssignment.self, from: data) {
             stored = decoded
+        } else if task == .handle {
+            // Handle with Mish rides on the Ask Mish model until the user
+            // picks its own in Settings.
+            return assignment(for: .askMish, from: defaults)
         } else {
             return LLMTaskAssignment(providerID: builtInOllamaID, model: Ollama.model)
         }

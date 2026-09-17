@@ -539,3 +539,36 @@ struct LLMDoneDeduper {
         return out
     }
 }
+
+/// Pulls the human-readable message out of a provider error body.
+/// Anthropic and OpenAI-style servers send `{"error":{"message":…}}`;
+/// Ollama sends `{"error":"…"}`. Anything else falls back to the raw text.
+enum LLMErrorBody {
+    static let maxBytes = 8_192
+    static let maxMessageChars = 400
+
+    static func message(from data: Data) -> String? {
+        guard !data.isEmpty else { return nil }
+        var found: String?
+        if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
+            if let error = object["error"] as? [String: Any] {
+                found = error["message"] as? String
+            } else if let error = object["error"] as? String {
+                found = error
+            } else if let message = object["message"] as? String {
+                found = message
+            }
+        }
+        if found == nil, let text = String(data: data, encoding: .utf8) {
+            let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            // An HTML error page says nothing useful in one line.
+            if !trimmed.isEmpty, !trimmed.hasPrefix("<") { found = trimmed }
+        }
+        guard let found else { return nil }
+        let single = found.replacingOccurrences(of: "\n", with: " ")
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !single.isEmpty else { return nil }
+        return single.count > maxMessageChars
+            ? String(single.prefix(maxMessageChars)) + "…" : single
+    }
+}

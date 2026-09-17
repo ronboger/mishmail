@@ -12,6 +12,14 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Added
+- **Handle with Mish** — a wand button in the conversation toolbar opens
+  Ask Mish, starts a fresh chat on the "Handle with Mish" model (Settings →
+  AI; it follows the Ask Mish model until set), and asks the agent to work the
+  open thread: look up related mail, draft the reply, or report that nothing is
+  due. Sends still stop at the confirm card.
+- **Model errors show the provider's message** — an HTTP 400/4xx from Claude,
+  OpenAI-style, or Ollama endpoints now surfaces the server's own error text
+  ("thinking.type: …", "messages.3.content: …") instead of the bare status.
 - **Works on a plane.** Drafts saved without a network go to a local
   **Outbox** (sidebar) instead of failing, and upload to Gmail Drafts on
   reconnect; the compose footer reads "Saved offline". Archive, star,

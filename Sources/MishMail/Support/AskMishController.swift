@@ -86,6 +86,9 @@ final class AskMishController {
     var modelID: String
     /// Hosted chats: Fast picks a cheaper sibling of the assigned model.
     var hostedSpeedFast: Bool
+    /// Which task's thinking setting the turns use. `.handle` while a
+    /// Handle-with-Mish conversation runs; back to `.askMish` on a new chat.
+    private(set) var activeTask: LLMTask = .askMish
 
     /// Running token/cost total for the whole conversation. Nil until a turn
     /// reports usage (local models often report none).
@@ -207,6 +210,7 @@ final class AskMishController {
     /// Clears the panel. The old conversation stays on disk.
     func newConversation() {
         guard !isRunning else { return }
+        activeTask = .askMish
         conversationID = nil
         bubbles = []
         history = []
@@ -215,6 +219,27 @@ final class AskMishController {
         totalPromptTokens = 0
         totalCompletionTokens = 0
         conversationCostLabel = nil
+    }
+
+    /// Starts a fresh conversation on the Handle-with-Mish model and sends
+    /// the handle prompt with the open thread attached. A running turn is
+    /// stopped first so the click always does something visible.
+    func handleSelectedThread() {
+        let previous = turnTask
+        if isRunning { stop() }
+        Task { [weak self] in
+            // Let the cancelled turn unwind first: its completion clears
+            // `isRunning`, which must not land on the new turn.
+            await previous?.value
+            guard let self else { return }
+            self.newConversation()
+            let assignment = LLMProviderStore.assignment(for: .handle)
+            self.providerID = assignment.providerID
+            self.modelID = assignment.model
+            self.includeSelectedThread = true
+            self.activeTask = .handle
+            self.send(AskMishContext.handlePrompt)
+        }
     }
 
     /// Reloads a stored conversation into the panel.
@@ -340,7 +365,7 @@ final class AskMishController {
                 for try await event in await LLMClient.shared.stream(
                     messages: request, tools: tools, config: config,
                     model: wireModel,
-                    task: .askMish) {
+                    task: activeTask) {
                     switch event {
                     case .token(let token):
                         streamedText += token

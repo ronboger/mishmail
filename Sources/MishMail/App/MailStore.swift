@@ -608,6 +608,14 @@ final class MailStore {
         return controller
     }
 
+    /// "Handle with Mish": open the panel and let the agent work the open
+    /// thread on the Handle-with-Mish model.
+    func handleSelectedThreadWithMish() {
+        guard selectedThread != nil else { return }
+        showAskMish = true
+        askMishControllerCreatingIfNeeded().handleSelectedThread()
+    }
+
     var unreadCounts: [String: Int] = [:]   // sidebar badges
     var notice: String?                      // transient confirmation toast
     @ObservationIgnored

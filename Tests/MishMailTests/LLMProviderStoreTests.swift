@@ -100,6 +100,15 @@ final class LLMProviderStoreTests: XCTestCase {
         XCTAssertEqual(LLMProviderStore.assignment(for: .drafts, from: defaults), custom)
     }
 
+    func testHandleTaskFallsBackToAskMishAssignmentUntilSet() {
+        let askMish = LLMTaskAssignment(providerID: UUID(), model: "claude-opus-5")
+        LLMProviderStore.setAssignment(askMish, for: .askMish, to: defaults)
+        XCTAssertEqual(LLMProviderStore.assignment(for: .handle, from: defaults), askMish)
+        let own = LLMTaskAssignment(providerID: UUID(), model: "claude-sonnet-5")
+        LLMProviderStore.setAssignment(own, for: .handle, to: defaults)
+        XCTAssertEqual(LLMProviderStore.assignment(for: .handle, from: defaults), own)
+    }
+
     func testStaleAssignmentMigratesToPreferredDefault() {
         let grok = LLMProviderConfig(
             id: UUID(), kind: .openAICompatible, label: "Grok",

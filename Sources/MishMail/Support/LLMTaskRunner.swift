@@ -28,6 +28,7 @@ enum LLMTaskRunner {
             case .summaries: taskName = "summaries"
             case .triage: taskName = "triage"
             case .askMish: taskName = "Ask Mish"
+            case .handle: taskName = "Handle with Mish"
             }
             return "No model configured for \(taskName). Check Settings → AI."
         }

@@ -55,7 +55,7 @@ enum Ollama {
     }
 
     static func defaultThinking(for task: LLMTask) -> LLMThinking {
-        task == .askMish ? .modelDefault : .off
+        task == .askMish || task == .handle ? .modelDefault : .off
     }
 
     private static func thinkingKey(_ task: LLMTask) -> String {
