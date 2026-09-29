@@ -3,6 +3,48 @@ import CoreFoundation
 
 /// Converts a Gmail API `GMessage` (format=full) into our local rows.
 enum MessageParser {
+    /// Below this many messages the task-group overhead outweighs the win;
+    /// parse inline. Metadata refreshes and single-message history deltas
+    /// usually land here.
+    static let concurrentParseThreshold = 4
+
+    /// `parse` for a whole fetched page, results in input order.
+    ///
+    /// `nonisolated async` so it runs on the global concurrent executor, not
+    /// on the calling actor: SyncEngine used to parse each message serially
+    /// on its own actor, so a page of HTML-heavy mail (base64 decode, charset
+    /// transcode, CID inlining, stripHTML) pinned one core while the rest sat
+    /// idle and every other SyncEngine call queued behind it.
+    ///
+    /// `parse` is pure and non-throwing, so there is no per-message failure
+    /// to preserve: every input yields exactly one output, at the same index.
+    /// Work is split into at most `activeProcessorCount` contiguous chunks so
+    /// a 25-100 message page costs a handful of child tasks, not one each.
+    nonisolated static func parseConcurrently(
+        _ messages: [GMessage], accountId: String
+    ) async -> [(Message, [AttachmentRow])] {
+        guard messages.count >= concurrentParseThreshold else {
+            return messages.map { parse($0, accountId: accountId) }
+        }
+        let workers = max(1, min(ProcessInfo.processInfo.activeProcessorCount,
+                                 messages.count))
+        let chunkSize = (messages.count + workers - 1) / workers
+        return await withTaskGroup(
+            of: (Int, [(Message, [AttachmentRow])]).self
+        ) { group in
+            for start in stride(from: 0, to: messages.count, by: chunkSize) {
+                let end = min(start + chunkSize, messages.count)
+                let slice = Array(messages[start..<end])
+                group.addTask {
+                    (start, slice.map { parse($0, accountId: accountId) })
+                }
+            }
+            var chunks: [(Int, [(Message, [AttachmentRow])])] = []
+            for await chunk in group { chunks.append(chunk) }
+            return chunks.sorted { $0.0 < $1.0 }.flatMap(\.1)
+        }
+    }
+
     static func parse(_ g: GMessage, accountId: String) -> (Message, [AttachmentRow]) {
         func header(_ name: String) -> String {
             g.payload?.headers?.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value ?? ""
@@ -257,10 +299,33 @@ enum MessageParser {
         return String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(encoding))
     }
 
+    /// Base64url (RFC 4648 §5, unpadded as Gmail sends it) → bytes.
+    ///
+    /// Single pass over the UTF-8 bytes: map `-`/`_` to `+`/`/` and append
+    /// the missing `=` padding once. The old version built two intermediate
+    /// Strings and then appended `=` in a loop whose `count` was an O(n)
+    /// Character walk, which adds up on multi-MB inline parts at sync time.
+    ///
+    /// Behavior is identical for every input: valid base64url is all ASCII
+    /// (so byte count == Character count), and any input with a byte outside
+    /// the base64 alphabet fails `Data(base64Encoded:)` both ways regardless
+    /// of how much padding was added. A length ≡ 1 (mod 4) still gets three
+    /// `=` and still decodes to nil. Pinned against the old implementation
+    /// in `SyncCPUEquivalenceTests`.
     static func decodeBase64URLData(_ s: String) -> Data? {
-        var b64 = s.replacingOccurrences(of: "-", with: "+").replacingOccurrences(of: "_", with: "/")
-        while b64.count % 4 != 0 { b64 += "=" }
-        return Data(base64Encoded: b64)
+        let utf8 = s.utf8
+        let padding = (4 - utf8.count % 4) % 4
+        var bytes = [UInt8]()
+        bytes.reserveCapacity(utf8.count + padding)
+        for byte in utf8 {
+            switch byte {
+            case UInt8(ascii: "-"): bytes.append(UInt8(ascii: "+"))
+            case UInt8(ascii: "_"): bytes.append(UInt8(ascii: "/"))
+            default: bytes.append(byte)
+            }
+        }
+        for _ in 0..<padding { bytes.append(UInt8(ascii: "=")) }
+        return Data(base64Encoded: Data(bytes))
     }
 
     /// MIME types that carry iCalendar payloads (not just `.ics` filenames).
@@ -295,33 +360,62 @@ enum MessageParser {
     /// contents* — Notion Mail in particular ships a large `<style>` block
     /// whose CSS used to leak into quoted replies. Structural tags become
     /// newlines so paragraphs survive, then entities are decoded.
+    /// Precompiled `stripHTML` patterns. `String.replacingOccurrences(of:
+    /// options: .regularExpression)` compiles a fresh NSRegularExpression on
+    /// every call, and stripHTML runs for every HTML-only message at sync
+    /// time: ~10 compiles per message plus one per *line*. It cannot simply
+    /// be made lazy — `bodyText` is persisted to `message_body` and read by
+    /// export, MCP, Gmail filter matching and compose quoting.
+    ///
+    /// The patterns and options below are exactly the ones the String API
+    /// used, and no replacement template contains `$` or `\`, so the output
+    /// is byte-identical (pinned by `SyncCPUEquivalenceTests`).
+    /// NSRegularExpression is documented thread-safe, which matters now that
+    /// sync parses a page of messages concurrently.
+    private static func stripRegex(_ pattern: String,
+                                   caseInsensitive: Bool = false) -> NSRegularExpression {
+        // Literal patterns: a compile failure is a programmer error.
+        try! NSRegularExpression(pattern: pattern,
+                                 options: caseInsensitive ? [.caseInsensitive] : [])
+    }
+    private static let stripNonContentTags: [NSRegularExpression] =
+        ["style", "script", "head", "title"].map {
+            stripRegex("<\($0)\\b[^>]*>[\\s\\S]*?</\($0)\\s*>", caseInsensitive: true)
+        }
+    private static let stripComments = stripRegex("<!--[\\s\\S]*?-->")
+    private static let stripBreaks = stripRegex("<br\\s*/?\\s*>", caseInsensitive: true)
+    private static let stripBlockClosers = stripRegex(
+        "</(p|div|li|ul|ol|h[1-6]|tr|table|blockquote|pre|section|article|header|footer)\\s*>",
+        caseInsensitive: true)
+    private static let stripAnyTag = stripRegex("<[^>]+>")
+    private static let stripHorizontalSpace = stripRegex("[ \\t\\r\u{00A0}]+")
+
+    private static func replacing(_ regex: NSRegularExpression, in s: String,
+                                  with template: String) -> String {
+        regex.stringByReplacingMatches(
+            in: s, range: NSRange(location: 0, length: (s as NSString).length),
+            withTemplate: template)
+    }
+
     static func stripHTML(_ html: String) -> String {
         var s = html
         // Tags whose contents are not message text: drop tag AND contents.
-        for tag in ["style", "script", "head", "title"] {
-            s = s.replacingOccurrences(
-                of: "<\(tag)\\b[^>]*>[\\s\\S]*?</\(tag)\\s*>",
-                with: " ", options: [.regularExpression, .caseInsensitive])
+        for regex in stripNonContentTags {
+            s = replacing(regex, in: s, with: " ")
         }
-        s = s.replacingOccurrences(of: "<!--[\\s\\S]*?-->", with: " ",
-                                   options: .regularExpression)
+        s = replacing(stripComments, in: s, with: " ")
         // Structure → newlines, before the tags themselves are stripped.
         // Closing tags only: open+close both breaking would leave a blank
         // line between every adjacent paragraph/list item.
-        s = s.replacingOccurrences(of: "<br\\s*/?\\s*>", with: "\n",
-                                   options: [.regularExpression, .caseInsensitive])
-        s = s.replacingOccurrences(
-            of: "</(p|div|li|ul|ol|h[1-6]|tr|table|blockquote|pre|section|article|header|footer)\\s*>",
-            with: "\n", options: [.regularExpression, .caseInsensitive])
-        s = s.replacingOccurrences(of: "<[^>]+>", with: "", options: .regularExpression)
+        s = replacing(stripBreaks, in: s, with: "\n")
+        s = replacing(stripBlockClosers, in: s, with: "\n")
+        s = replacing(stripAnyTag, in: s, with: "")
         s = decodeEntities(s)
         // Tidy: collapse horizontal whitespace per line, trim line edges,
         // and allow at most one blank line between paragraphs.
         var lines: [String] = []
         for raw in s.components(separatedBy: "\n") {
-            let line = raw
-                .replacingOccurrences(of: "[ \\t\\r\u{00A0}]+", with: " ",
-                                      options: .regularExpression)
+            let line = replacing(stripHorizontalSpace, in: raw, with: " ")
                 .trimmingCharacters(in: .whitespaces)
             if line.isEmpty && (lines.last?.isEmpty ?? true) { continue }
             lines.append(line)
@@ -332,13 +426,17 @@ enum MessageParser {
 
     /// Decodes the common named entities plus numeric forms
     /// (`&#8217;`, `&#x1F600;`). `&amp;` goes last so `&amp;lt;` stays `&lt;`.
+    /// Compiled once: decodeEntities runs inside every stripHTML (sync time).
+    private static let numericEntityRegex = try? NSRegularExpression(
+        pattern: "&#(x[0-9a-fA-F]+|[0-9]+);")
+
     static func decodeEntities(_ s: String) -> String {
         var r = s
         for (entity, ch) in [("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"),
                              ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'")] {
             r = r.replacingOccurrences(of: entity, with: ch)
         }
-        if let regex = try? NSRegularExpression(pattern: "&#(x[0-9a-fA-F]+|[0-9]+);") {
+        if let regex = numericEntityRegex {
             var result = ""
             var last = r.startIndex
             for m in regex.matches(in: r, range: NSRange(r.startIndex..., in: r)) {

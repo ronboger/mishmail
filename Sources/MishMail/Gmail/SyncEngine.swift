@@ -338,9 +338,11 @@ actor SyncEngine {
         do {
             let report = try await client.getMessages(ids: ids, format: "metadata")
             var touchedKeys = Set<String>()
-            let pending = report.messages.map { message in
-                let (parsed, _) = MessageParser.parse(message, accountId: accountId)
-                return PendingUpsert(message: parsed, attachments: [], headersOnly: true)
+            // Parsed off this actor, in parallel, results in input order.
+            let pending = await MessageParser.parseConcurrently(
+                report.messages, accountId: accountId
+            ).map { parsed, _ in
+                PendingUpsert(message: parsed, attachments: [], headersOnly: true)
             }
             if !pending.isEmpty {
                 let keys = try await db.write { db in
@@ -619,9 +621,12 @@ actor SyncEngine {
                 let missingGmailIds = listedIds.filter { missingSet.contains($0) }
                 // Batch HTTP when enabled; retry-exhausted ids retry next window pass.
                 let report = try await client.getMessages(ids: missingGmailIds)
-                for msg in report.messages {
+                // Parse the whole page off this actor, in parallel; the loop
+                // below then only buffers and flushes, in fetch order.
+                let parsedPage = await MessageParser.parseConcurrently(
+                    report.messages, accountId: accountId)
+                for (msg, (message, attachments)) in zip(report.messages, parsedPage) {
                     downloadedGmailIds.insert(msg.id)
-                    let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
                     writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
                     if writeBuffer.count >= Self.writeChunkSize {
                         try await flushUpserts(&writeBuffer, into: &touchedKeys)
@@ -790,9 +795,9 @@ actor SyncEngine {
                     let report = try await client.getMessages(
                         ids: needRepair, format: "full")
                     exhausted += report.retryExhaustedIds.count
-                    for msg in report.messages {
-                        let (message, attachments) = MessageParser.parse(
-                            msg, accountId: accountId)
+                    let parsedPage = await MessageParser.parseConcurrently(
+                        report.messages, accountId: accountId)
+                    for (message, attachments) in parsedPage {
                         writeBuffer.append(PendingUpsert(
                             message: message, attachments: attachments,
                             headersOnly: false))
@@ -1004,8 +1009,9 @@ actor SyncEngine {
             if !needFull.isEmpty {
                 let report = try await client.getMessages(ids: needFull, format: "full")
                 retryExhausted += report.retryExhaustedIds.count
-                for msg in report.messages {
-                    let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
+                let parsedPage = await MessageParser.parseConcurrently(
+                    report.messages, accountId: accountId)
+                for (message, attachments) in parsedPage {
                     writeBuffer.append(PendingUpsert(
                         message: message, attachments: attachments, headersOnly: false))
                     if writeBuffer.count >= Self.writeChunkSize {
@@ -1023,8 +1029,9 @@ actor SyncEngine {
             if !needMeta.isEmpty {
                 let report = try await client.getMessages(ids: needMeta, format: "metadata")
                 retryExhausted += report.retryExhaustedIds.count
-                for msg in report.messages {
-                    let (message, _) = MessageParser.parse(msg, accountId: accountId)
+                let parsedPage = await MessageParser.parseConcurrently(
+                    report.messages, accountId: accountId)
+                for (message, _) in parsedPage {
                     // headersOnly: patch labels/headers only — never touch message_body
                     // or attachments (metadata has empty payload).
                     writeBuffer.append(PendingUpsert(
