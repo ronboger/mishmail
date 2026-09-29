@@ -1742,6 +1742,55 @@ final class AppDatabase: @unchecked Sendable {
                 t.add(column: "cacheReadTokens", .integer).notNull().defaults(to: 0)
             }
         }
+        // v42: sort indexes for the inbox-style lists. Inbox, Promotions,
+        // Social, and the per-account inbox order by
+        // `COALESCE(lastInboundDate, lastDate) DESC, id DESC`
+        // (ThreadListQuery.orderSQL). The v18/v25 composites end in a plain
+        // column, so SQLite could use them for the WHERE but still sorted
+        // every matching row in a temp B-tree before LIMIT. An index ending
+        // in the exact same expression lets it walk rows already in order
+        // and stop after one page. The expression text must match the
+        // query's byte for byte (modulo whitespace) or SQLite ignores it —
+        // ThreadListIndexTests pins that with EXPLAIN QUERY PLAN.
+        m.registerMigration("v42") { db in
+            // Unified inbox: inInbox = 1 AND inTrash = 0 (+ snooze and
+            // category-hide residual filters, which are not indexable).
+            try db.execute(sql: """
+                CREATE INDEX thread_inbox_sort
+                ON thread(inInbox, inTrash,
+                          COALESCE(lastInboundDate, lastDate) DESC, id DESC)
+                """)
+            // Per-account inbox (and the unified inbox with an account
+            // selected): accountId leads so one account's page does not
+            // walk past every other account's rows.
+            try db.execute(sql: """
+                CREATE INDEX thread_account_inbox_sort
+                ON thread(accountId, inInbox, inTrash,
+                          COALESCE(lastInboundDate, lastDate) DESC, id DESC)
+                """)
+            // Promotions / Social tabs: four fixed equality flags.
+            try db.execute(sql: """
+                CREATE INDEX thread_promotions_sort
+                ON thread(inPromotions, inInbox, inTrash, inSpam,
+                          COALESCE(lastInboundDate, lastDate) DESC, id DESC)
+                """)
+            try db.execute(sql: """
+                CREATE INDEX thread_social_sort
+                ON thread(inSocial, inInbox, inTrash, inSpam,
+                          COALESCE(lastInboundDate, lastDate) DESC, id DESC)
+                """)
+            // Opening a thread and re-deriving it during sync both read
+            // `WHERE threadId = ? ORDER BY date`. The v1 single-column
+            // threadId index found the rows but still sorted them; this one
+            // returns them in order. It fully covers the old index's lookups
+            // (threadId is its prefix), so the old one goes — one fewer
+            // B-tree to update on every message insert.
+            try db.create(
+                index: "message_on_threadId_date",
+                on: "message",
+                columns: ["threadId", "date"])
+            try db.execute(sql: "DROP INDEX IF EXISTS message_on_threadId")
+        }
         return m
     }
 }
