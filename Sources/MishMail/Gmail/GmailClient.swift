@@ -447,14 +447,16 @@ actor GmailClient {
     }
 
     func getMessage(id: String, format: String = "full") async throws -> GMessage {
-        try await request("GET", "/messages/\(id)", query: ["format": format])
+        let data = try await requestData("GET", "/messages/\(id)", query: ["format": format])
+        return try await Self.decodeMessageOffActor(data)
     }
 
     /// Single attempt for `fetchOneClassified`, which runs its own retry loop.
     /// Retrying here too would multiply attempts (3 x 3) under a quota penalty.
     private func getMessageOnce(id: String, format: String) async throws -> GMessage {
-        try await request("GET", "/messages/\(id)", query: ["format": format],
-                          retryRateLimit: false)
+        let data = try await requestData("GET", "/messages/\(id)", query: ["format": format],
+                                         retryRateLimit: false)
+        return try await Self.decodeMessageOffActor(data)
     }
 
     /// Kill-switch for HTTP batch get. Env `MISHMAIL_GMAIL_BATCH=0` or
@@ -815,8 +817,32 @@ actor GmailClient {
                 throw GmailError.http(code, body)
             }
             let contentType = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? ""
-            return try GmailBatch.parseResults(data: data, contentType: contentType, ids: ids)
+            // Off the actor: splitting and JSON-decoding up to 25 full
+            // messages is the heaviest CPU in a batch fetch, and on the actor
+            // it would stall every other call (pacing, token refresh, the
+            // next chunk) until it finished.
+            return try await Self.parseBatchOffActor(
+                data: data, contentType: contentType, ids: ids)
         }
+    }
+
+    // MARK: - Off-actor decoding
+
+    /// `nonisolated async` functions run on the global concurrent executor
+    /// (SE-0338), not on this actor. A plain `nonisolated` *sync* helper
+    /// would still execute on the caller's executor — i.e. the actor — so
+    /// the `async` is what moves the work. The actor keeps only token and
+    /// quota state; the 8 concurrent single-message fetches and batch chunks
+    /// now decode in parallel instead of one at a time behind the actor.
+    /// `GMessage` and `GmailBatch.PartResult` are Sendable value types.
+    nonisolated private static func decodeMessageOffActor(_ data: Data) async throws -> GMessage {
+        try JSONDecoder().decode(GMessage.self, from: data)
+    }
+
+    nonisolated private static func parseBatchOffActor(
+        data: Data, contentType: String, ids: [String]
+    ) async throws -> [GmailBatch.PartResult] {
+        try GmailBatch.parseResults(data: data, contentType: contentType, ids: ids)
     }
 
     func modifyMessage(id: String, add: [String] = [], remove: [String] = []) async throws {
