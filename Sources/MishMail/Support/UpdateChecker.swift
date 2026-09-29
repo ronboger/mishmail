@@ -60,12 +60,24 @@ final class UpdateChecker: ObservableObject {
         // of MB behind, and without this the app has to update again to
         // notice.
         Task.detached(priority: .utility) { Self.sweepStaleWorkDirectories() }
-        Task { await check(quietly: true) }
+        // Delayed past launch: this runs from the first window's onAppear,
+        // exactly when the first list query, the deferred startup work and
+        // the first sync are all competing for the main actor and the
+        // network. Nothing about a release check is urgent to the second.
+        Task {
+            try? await Task.sleep(nanoseconds: Self.launchCheckDelay)
+            await check(quietly: true)
+        }
         timer?.invalidate()
         timer = Timer.scheduledTimer(withTimeInterval: 3_600, repeats: true) { _ in
             Task { @MainActor in UpdateChecker.shared.checkIfDue() }
         }
+        timer?.tolerance = TimerTolerance.forInterval(
+            3_600, cap: TimerTolerance.updateCheckCap)
     }
+
+    /// 30 s after the first frame.
+    private static let launchCheckDelay: UInt64 = 30_000_000_000
 
     private func checkIfDue() {
         let last = UserDefaults.standard.double(forKey: Self.lastCheckKey)

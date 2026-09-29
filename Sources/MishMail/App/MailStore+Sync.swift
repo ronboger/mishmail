@@ -91,6 +91,10 @@ extension MailStore {
                 }
             }
         }
+        // Let the kernel coalesce the poll wake with other timers; see
+        // `TimerTolerance`.
+        syncTimer?.tolerance = TimerTolerance.forInterval(
+            interval, cap: TimerTolerance.pollCap)
     }
 
     /// Re-arm only when the cadence actually changed. Focus flaps between two
@@ -223,7 +227,7 @@ extension MailStore {
                         // Still run post-sync so successful upserts appear.
                         accountsNeedingReauth.remove(id)
                         await backfillSenderNameIfNeeded(accountId: id)
-                        await refreshSendIdentities(accountId: id)
+                        await refreshSendIdentitiesIfStale(accountId: id)
                     } else if !OfflinePolicy.surfacesSyncFailure(error) {
                         // No network. The sync control reads "Offline";
                         // a user-initiated sync gets a passing notice, the
@@ -241,7 +245,7 @@ extension MailStore {
                     accountsNeedingReauth.remove(id)
                     clearSyncFailureErrorIfNeeded(for: id)
                     await backfillSenderNameIfNeeded(accountId: id)
-                    await refreshSendIdentities(accountId: id)
+                    await refreshSendIdentitiesIfStale(accountId: id)
                 }
             }
         }
@@ -286,7 +290,7 @@ extension MailStore {
             accountsNeedingReauth.remove(accountId)
             clearSyncFailureErrorIfNeeded(for: accountId)
             await backfillSenderNameIfNeeded(accountId: accountId)
-            await refreshSendIdentities(accountId: accountId)
+            await refreshSendIdentitiesIfStale(accountId: accountId)
             reloadAccounts()
             reloadThreads()
         } catch {
@@ -303,7 +307,7 @@ extension MailStore {
                 applyThreadContentChange(await engine.drainContentChange())
                 accountsNeedingReauth.remove(accountId)
                 await backfillSenderNameIfNeeded(accountId: accountId)
-                await refreshSendIdentities(accountId: accountId)
+                await refreshSendIdentitiesIfStale(accountId: accountId)
                 reloadAccounts()
                 reloadThreads()
             } else if !OfflinePolicy.surfacesSyncFailure(error) {

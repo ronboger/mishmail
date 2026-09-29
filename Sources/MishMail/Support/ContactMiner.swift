@@ -149,9 +149,20 @@ enum ContactMiner {
     /// Top contacts by weight (desc), capped for the published suggestion list.
     /// Scrubs email-shaped / email-equal names left from older weight maps so
     /// a full rebuild isn't required for the greeting fix to take effect.
-    static func ranked(from weights: WeightMap, limit: Int = 2000) -> [Contact] {
+    ///
+    /// `ownAddresses` are dropped here, at ranking time, rather than at merge
+    /// time. The own set grows when send-as aliases arrive (seconds after
+    /// launch, after the first mine has already started) and when an account
+    /// is added; filtering at merge time made every such change throw the
+    /// whole weight map away and rescan every message. Filtering here turns
+    /// it into a re-rank of the in-memory map.
+    static func ranked(from weights: WeightMap,
+                       excluding ownAddresses: Set<String> = [],
+                       limit: Int = 2000) -> [Contact] {
         Array(
             weights
+                .lazy
+                .filter { !ownAddresses.contains($0.key) }
                 .map { email, value in
                     let name = isUsableDisplayName(value.name, email: email)
                         ? value.name : ""

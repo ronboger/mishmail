@@ -947,52 +947,32 @@ final class MailStore {
     }
 
     /// Recomputes which of the loaded threads came from a VIP. Any message From
-    /// in the thread can pin it (not only the newest). Prefer the off-main path
-    /// in `reloadThreads` — this MainActor entry point is for VIP list mutations
-    /// that already hold the thread list in memory.
+    /// in the thread can pin it (not only the newest). Pure in-memory now
+    /// (see `computeVIPThreadIds`), so no database read on the main actor.
     func refreshVIPThreadIds() {
         let active = activeVIPEmails
         guard !active.isEmpty, !threads.isEmpty else {
             if !vipThreadIds.isEmpty { vipThreadIds = [] }
             return
         }
-        let snapshot = threads
-        vipThreadIds = (try? db.read { db in
-            try Self.computeVIPThreadIds(threads: snapshot, activeVIP: active, db: db)
-        }) ?? []
+        let hits = Self.computeVIPThreadIds(threads: threads, activeVIP: active)
+        if hits != vipThreadIds { vipThreadIds = hits }
     }
 
-    /// VIP hits for a thread list. A thread pins if *any* message's From is VIP
-    /// (replying must not drop Priority). Denorm `fromEmail` is a positive
-    /// short-circuit only; non-hits still scan messages. Safe off MainActor.
+    /// VIP hits for a thread list — see `VIPMembership.threadIds`. Pure and
+    /// in-memory; safe off MainActor.
+    nonisolated static func computeVIPThreadIds(threads: [MailThread],
+                                                activeVIP: Set<String>) -> Set<String> {
+        VIPMembership.threadIds(in: threads, activeVIP: activeVIP)
+    }
+
+    /// Source-compatible wrapper for callers that already hold a read
+    /// transaction (the off-main reload paths). The database is no longer
+    /// consulted.
     nonisolated static func computeVIPThreadIds(threads: [MailThread],
                                                 activeVIP: Set<String>,
                                                 db: Database) throws -> Set<String> {
-        guard !activeVIP.isEmpty, !threads.isEmpty else { return [] }
-        var hits = Set<String>()
-        var needScan: [String] = []
-        for t in threads {
-            // Newest From is VIP → hit without a message join.
-            if !t.fromEmail.isEmpty, activeVIP.contains(t.fromEmail) {
-                hits.insert(t.id)
-            } else {
-                // Still scan: an older message may be from a VIP.
-                needScan.append(t.id)
-            }
-        }
-        guard !needScan.isEmpty else { return hits }
-        let placeholders = needScan.map { _ in "?" }.joined(separator: ",")
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT DISTINCT threadId, fromHeader FROM message
-            WHERE threadId IN (\(placeholders))
-            """, arguments: StatementArguments(needScan))
-        for row in rows {
-            let header: String = row["fromHeader"]
-            if activeVIP.contains(MessageParser.emailAddress(header).lowercased()) {
-                hits.insert(row["threadId"])
-            }
-        }
-        return hits
+        computeVIPThreadIds(threads: threads, activeVIP: activeVIP)
     }
 
     // MARK: - Gmail filters (read-only cache)
@@ -1864,7 +1844,7 @@ struct ComposeRequest: Identifiable {
     /// the list query itself, which is already asynchronous.
     ///
     /// Everything else — snippets, scheduled sends, the unread notification
-    /// baseline, contact mining — is needed by a surface the user has not
+    /// baseline, contact mining, the MCP server — is needed by a surface the user has not
     /// reached yet, and moved to `runDeferredStartupWork`.
     init() {
         let demoSeeded = DemoSeed.seedIfRequested(AppDatabase.shared.dbPool)
@@ -1884,11 +1864,9 @@ struct ComposeRequest: Identifiable {
         loadBlocked()
         reloadThreads()
         startupTask = Task { await self.runDeferredStartupWork() }
-        // MCP is opt-in (UserDefaults). Start after the first frame so a bind
-        // failure only surfaces as a notice, not a launch crash.
-        if isMCPEnabled {
-            startMCPServer()
-        }
+        // The opt-in MCP server starts in runDeferredStartupWork, not here:
+        // its Keychain token read and NWListener bind are main-thread work
+        // no first-frame surface needs.
     }
 
     // MARK: - MCP server
@@ -2023,6 +2001,14 @@ struct ComposeRequest: Identifiable {
         reloadScheduledSends()
         reloadLocalDrafts()
         await reloadPendingThreadOpCount()
+        // MCP is opt-in (UserDefaults). It lived at the end of init, which
+        // ran its Keychain read (a securityd round trip) and listener bind
+        // before the first frame despite the intent. Here it is past the
+        // first suspension point, so the window has had a chance to draw;
+        // a bind failure still only surfaces as a notice.
+        if isMCPEnabled, !isShuttingDown {
+            startMCPServer()
+        }
         // Contacts first: recipient autocomplete is the first deferred
         // surface a user reaches (`c`, type a name), and the mine runs on a
         // pool reader, so nothing below waits on it.
@@ -2146,12 +2132,15 @@ struct ComposeRequest: Identifiable {
     /// (the published list is only the top 2000).
     @ObservationIgnored
     private var contactWeights: ContactMiner.WeightMap = [:]
-    /// Own addresses the current weight map was built under — account add/remove
-    /// forces a full rebuild so own-mail exclusion stays correct.
-    @ObservationIgnored
-    private var contactsOwnAddresses: Set<String> = []
+    /// Bumped by every mining pass; a pass commits its weight map only if no
+    /// newer pass started after it (the newer one began from the same base
+    /// map and high-water mark, so the older result is simply superseded).
     @ObservationIgnored
     private var contactsRebuildGeneration = 0
+    /// Bumped whenever the weight map is committed or a re-rank starts; an
+    /// off-main ranking publishes only if nothing newer has been ranked since.
+    @ObservationIgnored
+    private var contactsRankGeneration = 0
     private static let contactsHighWaterKey = "contacts.highWaterRowId"
 
     /// Every address we consider "me" for reply recipient filtering: linked
@@ -2179,16 +2168,33 @@ struct ComposeRequest: Identifiable {
         }
     }
 
+    /// Per-account send-as fetch stamps for `SendAsRefreshPolicy`.
+    @ObservationIgnored
+    private var sendAsLastSuccess: [String: Date] = [:]
+    @ObservationIgnored
+    private var sendAsLastAttempt: [String: Date] = [:]
+
+    /// Post-sync entry point: refresh one account's send-as aliases only when
+    /// `SendAsRefreshPolicy` says they are stale. Launch and sign-in call
+    /// `refreshSendIdentities` directly and always fetch.
+    func refreshSendIdentitiesIfStale(accountId: String) async {
+        guard SendAsRefreshPolicy.isDue(
+            lastSuccess: sendAsLastSuccess[accountId],
+            lastAttempt: sendAsLastAttempt[accountId],
+            now: Date()) else { return }
+        await refreshSendIdentities(accountId: accountId)
+    }
+
     /// Refresh send-as identities for one account (or all). Failures leave
     /// that account as primary-only so compose still works.
     func refreshSendIdentities(accountId: String? = nil) async {
         guard !demoMode else {
-            sendIdentities = fallbackIdentities()
+            setSendIdentities(fallbackIdentities())
             return
         }
         let targets = accountId.map { [$0] } ?? accounts.map(\.id)
         guard !targets.isEmpty else {
-            sendIdentities = []
+            setSendIdentities([])
             return
         }
         var byAccount = sendIdentities.reduce(into: [String: [SendIdentity]]()) { dict, id in
@@ -2198,8 +2204,10 @@ struct ComposeRequest: Identifiable {
         for id in targets {
             let senderName = accounts.first { $0.id == id }?.senderName ?? ""
             let rows: [GSendAs]
+            sendAsLastAttempt[id] = Date()
             do {
                 rows = try await client(for: id).listSendAs()
+                sendAsLastSuccess[id] = Date()
             } catch {
                 // Pre-scope tokens get 403; network blips too. Primary-only.
                 rows = []
@@ -2209,7 +2217,7 @@ struct ComposeRequest: Identifiable {
         }
         // Drop removed accounts.
         let live = Set(accounts.map(\.id))
-        sendIdentities = byAccount
+        setSendIdentities(byAccount
             .filter { live.contains($0.key) }
             .values
             .flatMap { $0 }
@@ -2217,35 +2225,69 @@ struct ComposeRequest: Identifiable {
                 if a.accountId != b.accountId { return a.accountId < b.accountId }
                 if a.isPrimary != b.isPrimary { return a.isPrimary }
                 return a.email.lowercased() < b.email.lowercased()
-            }
+            })
+    }
+
+    /// Assign only on change: the From picker and every compose surface
+    /// observe `sendIdentities`, and a refresh almost always returns the same
+    /// aliases. A real change alters the own-address set, so re-rank contacts
+    /// (own addresses are filtered at ranking, not mining — no rescan).
+    private func setSendIdentities(_ next: [SendIdentity]) {
+        guard next != sendIdentities else { return }
+        let ownBefore = ownEmailAddresses
+        sendIdentities = next
+        if ownEmailAddresses != ownBefore { rerankContacts() }
     }
 
     /// Re-mine contacts from message headers. Incremental by default (messages
     /// with rowid above the high-water mark); full when forced, on first run,
-    /// when the in-memory map is empty, or when the account set changes.
+    /// or when the in-memory map is empty (always the case at launch).
+    ///
+    /// Everything heavy runs off the main actor: the scan, the header parsing
+    /// in `ContactMiner.merge`, and the sort in `ranked`. On a large mailbox
+    /// the launch-time full pass parses every message's From/To/Cc, and doing
+    /// that inside `MainActor.run` froze the first seconds of scrolling. The
+    /// main actor only swaps in the finished map and the finished list.
+    ///
+    /// The map deliberately contains the user's own addresses; they are
+    /// dropped at ranking time (see `ContactMiner.ranked`). So send-as aliases
+    /// arriving after launch, or an account being added, only re-rank — they
+    /// no longer force a second full scan.
     func rebuildContacts(forceFull: Bool = false) {
         guard !isShuttingDown else { return }
-        let ownAddresses = ownEmailAddresses
-        let accountsChanged = ownAddresses != contactsOwnAddresses
-        let full = forceFull || accountsChanged
+        let full = forceFull
             || contactWeights.isEmpty
             || UserDefaults.standard.integer(forKey: Self.contactsHighWaterKey) == 0
         if full {
-            contactWeights = [:]
+            // Reset now, not at commit: if this pass is superseded before it
+            // lands, the pass that replaces it must also be full (a forced
+            // rebuild after account removal must not degrade to incremental).
             UserDefaults.standard.set(0, forKey: Self.contactsHighWaterKey)
         }
         let afterRowId = full
             ? Int64(0)
             : Int64(UserDefaults.standard.integer(forKey: Self.contactsHighWaterKey))
+        // Copy-on-write: the pass mutates its own copy off-main; the live map
+        // is only replaced on commit.
+        let base: ContactMiner.WeightMap = full ? [:] : contactWeights
+        let ownAddresses = ownEmailAddresses
         contactsRebuildGeneration += 1
         let generation = contactsRebuildGeneration
         let pool = db
         // Tracked Task (not fire-and-forget): termination must cancel + await
         // this full-table scan before closing the DatabasePool / process exit.
+        // Detached so the merge and ranking below never run on the main actor
+        // (a plain `Task {}` here inherits MailStore's isolation).
         contactsRebuildTask?.cancel()
-        contactsRebuildTask = Task { [weak self] in
+        contactsRebuildTask = Task.detached(priority: .utility) { [weak self] in
             guard !Task.isCancelled else { return }
-            let rows: [ContactMiner.MessageHeaders] = (try? await pool.read { db in
+            // Merge while streaming rows through a cursor rather than
+            // materializing every message's headers first: the launch pass
+            // touches the whole table, and the array was pure peak memory.
+            // Termination interrupts the pool, which ends the cursor early.
+            let mined: (weights: ContactMiner.WeightMap, maxSeen: Int64, rows: Int)?
+            mined = try? await pool.read {
+                db -> (weights: ContactMiner.WeightMap, maxSeen: Int64, rows: Int) in
                 let sql: String
                 let args: StatementArguments
                 if afterRowId > 0 {
@@ -2261,44 +2303,87 @@ struct ComposeRequest: Identifiable {
                         """
                     args = []
                 }
-                return try Row.fetchAll(db, sql: sql, arguments: args).map { row in
-                    ContactMiner.MessageHeaders(
+                var weights = base
+                var maxSeen: Int64 = 0
+                var count = 0
+                var batch: [ContactMiner.MessageHeaders] = []
+                batch.reserveCapacity(512)
+                func flush() {
+                    // Own addresses are kept in the map; `ranked` drops them.
+                    let seen = ContactMiner.merge(messages: batch, into: &weights,
+                                                  excluding: [])
+                    if seen > maxSeen { maxSeen = seen }
+                    batch.removeAll(keepingCapacity: true)
+                }
+                let cursor = try Row.fetchCursor(db, sql: sql, arguments: args)
+                while let row = try cursor.next() {
+                    batch.append(ContactMiner.MessageHeaders(
                         rowid: row["rowid"],
                         fromHeader: row["fromHeader"],
                         toHeader: row["toHeader"],
                         ccHeader: row["ccHeader"],
-                        labelIds: row["labelIds"])
+                        labelIds: row["labelIds"]))
+                    count += 1
+                    if batch.count >= 512 { flush() }
                 }
-            }) ?? []
-            guard !Task.isCancelled else { return }
+                if !batch.isEmpty { flush() }
+                return (weights, maxSeen, count)
+            }
+            // A failed read commits nothing — the old map and high-water mark
+            // stay, and the next pass retries. (Previously a failure published
+            // an empty list over a good one.)
+            guard let mined, !Task.isCancelled else { return }
+            // The steady state after every sync: no new rows since the last
+            // pass. Nothing to merge, so nothing to rank or publish.
+            if mined.rows == 0 && !full { return }
+            let ranked = ContactMiner.ranked(from: mined.weights, excluding: ownAddresses)
             await MainActor.run {
                 guard let self, !self.isShuttingDown,
                       generation == self.contactsRebuildGeneration else { return }
-                // Accounts changed mid-flight — restart with the current set
-                // (we may have already cleared weights for a full pass).
-                // Must be the same primaries+aliases set captured at start:
-                // a primaries-only set here always differed once a send-as
-                // alias existed, restarting forever (full scan + publish per
-                // pass — the 100% CPU / janky-scroll bug).
-                let currentOwn = self.ownEmailAddresses
-                if ownAddresses != currentOwn {
-                    self.rebuildContacts(forceFull: true)
-                    return
+                self.contactWeights = mined.weights
+                if mined.maxSeen > 0 {
+                    UserDefaults.standard.set(Int(mined.maxSeen),
+                                              forKey: Self.contactsHighWaterKey)
                 }
-                // Full passes already wiped the map; re-clear in case a stale
-                // incremental applied nothing after we reset (generation guards
-                // the common race; this keeps full-pass semantics explicit).
-                if full { self.contactWeights = [:] }
-                let maxSeen = ContactMiner.merge(messages: rows,
-                                                 into: &self.contactWeights,
-                                                 excluding: ownAddresses)
-                if maxSeen > 0 {
-                    UserDefaults.standard.set(Int(maxSeen), forKey: Self.contactsHighWaterKey)
+                // Any re-rank already in flight ranked the old map.
+                self.contactsRankGeneration += 1
+                if ownAddresses == self.ownEmailAddresses {
+                    self.publishContacts(ranked)
+                } else {
+                    // Aliases or accounts changed while this pass ran. The map
+                    // is still right (own mail is filtered at ranking); only
+                    // the ranking is stale.
+                    self.rerankContacts()
                 }
-                self.contactsOwnAddresses = ownAddresses
-                self.contacts = ContactMiner.ranked(from: self.contactWeights)
             }
         }
+    }
+
+    /// Re-rank the in-memory weight map against the current own-address set,
+    /// off the main actor. Used when send-as aliases or accounts change: the
+    /// map itself is unaffected, so there is nothing to re-mine.
+    func rerankContacts() {
+        guard !isShuttingDown, !contactWeights.isEmpty else { return }
+        contactsRankGeneration += 1
+        let generation = contactsRankGeneration
+        let weights = contactWeights
+        let ownAddresses = ownEmailAddresses
+        // Pure CPU on a snapshot — no database access, so it needs no
+        // termination tracking.
+        Task.detached(priority: .utility) { [weak self] in
+            let ranked = ContactMiner.ranked(from: weights, excluding: ownAddresses)
+            await MainActor.run {
+                guard let self, !self.isShuttingDown,
+                      generation == self.contactsRankGeneration else { return }
+                self.publishContacts(ranked)
+            }
+        }
+    }
+
+    /// Assign only on change: `contacts` is observed by every address field,
+    /// and an incremental pass usually ranks to the same list.
+    private func publishContacts(_ ranked: [Contact]) {
+        if contacts != ranked { contacts = ranked }
     }
 
     /// Stop timers, cancel and await active database Tasks, flush a pending
@@ -3545,6 +3630,22 @@ struct ComposeRequest: Identifiable {
     /// Sized for the neighbourhood the user is navigating: current, prev,
     /// next, plus the one they just left (a `k` straight back).
     private var payloadMirror = ThreadDetailMirror(capacity: 4)
+
+    /// System memory-pressure response (warning or critical), called from
+    /// the app delegate's dispatch source alongside the WebView pool drain.
+    /// Everything dropped here is a cache that refills on demand: the
+    /// reading-pane payloads (both the repository's LRU and this main-side
+    /// mirror) and SQLite's per-connection page caches, which on a large
+    /// SQLCipher mailbox are the biggest resident allocation after WebKit.
+    func releaseMemoryUnderPressure() {
+        payloadMirror.removeAll()
+        let repository = threadDetailRepository
+        Task { await repository.removeAll() }
+        // Never touch a pool that termination is closing. The "eventually"
+        // variant does not block the main thread waiting for busy readers.
+        guard !isShuttingDown else { return }
+        db.releaseMemoryEventually()
+    }
 
     /// Synchronous reading-pane payload, or nil when the caller must await.
     ///

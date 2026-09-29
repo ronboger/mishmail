@@ -21,6 +21,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             queue: .main)
         source.setEventHandler {
             HTMLWebViewPool.drain()
+            // Delivered on the main queue (see `queue:` above).
+            MainActor.assumeIsolated {
+                AppDelegate.store?.releaseMemoryUnderPressure()
+            }
         }
         source.resume()
         memoryPressureSource = source
