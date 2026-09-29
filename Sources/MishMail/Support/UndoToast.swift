@@ -1,4 +1,5 @@
 import Foundation
+import AppKit
 
 /// Timing and presentation rules for the bottom undo capsule (archive, trash,
 /// spam, snooze, …). Undo-send uses `MailStore.undoSendWindow` instead — that
@@ -7,7 +8,10 @@ enum UndoToast {
     /// How long the toast stays on screen after archive/trash/etc.
     /// Short enough that keyboard triage doesn't leave a lingering capsule;
     /// long enough to catch a mis-press with `z` / ⌘Z.
-    static let displayDuration: TimeInterval = 3.5
+    static var displayDuration: TimeInterval {
+        // VoiceOver users need a little longer to hear and reach the action.
+        NSWorkspace.shared.isVoiceOverEnabled ? 7.0 : 3.5
+    }
 
     /// Animate enter/exit on presence only. Driving animation off
     /// `UndoAction.id` re-slides the capsule on every replacement, which

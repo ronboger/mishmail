@@ -16,7 +16,18 @@ struct CommandPalette: View {
         let id: String
         let title: String
         let icon: String
+        let shortcut: ShortcutCommand?
         let action: (MailStore) -> Void
+
+        init(id: String, title: String, icon: String,
+             shortcut: ShortcutCommand? = nil,
+             action: @escaping (MailStore) -> Void) {
+            self.id = id
+            self.title = title
+            self.icon = icon
+            self.shortcut = shortcut
+            self.action = action
+        }
     }
 
     var body: some View {
@@ -34,28 +45,43 @@ struct CommandPalette: View {
                     .onSubmit { run(filtered[safe: highlighted]) }
                     .onChange(of: query) { highlighted = 0 }
                 Divider()
-                ScrollView {
-                    // Inner list padding so highlight pills sit concentrically inside the 12pt shell.
-                    LazyVStack(spacing: 2) {
-                        ForEach(Array(filtered.enumerated()), id: \.element.id) { idx, cmd in
-                            HStack {
-                                Image(systemName: cmd.icon).frame(width: 20)
-                                Text(cmd.title)
-                                Spacer()
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        // Inner list padding so highlight pills sit concentrically inside the 12pt shell.
+                        LazyVStack(spacing: 2) {
+                            ForEach(Array(filtered.enumerated()), id: \.element.id) { idx, cmd in
+                                Button { run(cmd) } label: {
+                                    HStack {
+                                        Image(systemName: cmd.icon).frame(width: 20)
+                                        Text(cmd.title)
+                                        Spacer()
+                                        if let shortcut = cmd.shortcut {
+                                            Text(store.keyBindings.key(for: shortcut))
+                                                .font(.system(size: 11, design: .monospaced))
+                                                .foregroundStyle(.secondary)
+                                        }
+                                    }
+                                    .padding(.horizontal, 10).padding(.vertical, 7)
+                                    .background(
+                                        idx == highlighted ? Color.notionAccent.opacity(0.2) : .clear,
+                                        in: RoundedRectangle(cornerRadius: PMRadius.sm)
+                                    )
+                                    .contentShape(Rectangle())
+                                }
+                                .buttonStyle(.plain)
+                                .id(cmd.id)
+                                .accessibilityAddTraits(idx == highlighted ? .isSelected : [])
+                                .onHover { if $0 { highlighted = idx } }
                             }
-                            .padding(.horizontal, 10).padding(.vertical, 7)
-                            .background(
-                                idx == highlighted ? Color.notionAccent.opacity(0.2) : .clear,
-                                in: RoundedRectangle(cornerRadius: PMRadius.sm)
-                            )
-                            .contentShape(Rectangle())
-                            .onTapGesture { run(cmd) }
-                            .onHover { if $0 { highlighted = idx } }
                         }
+                        .padding(6)
                     }
-                    .padding(6)
+                    .frame(maxHeight: 280)
+                    .onChange(of: highlighted) { _, index in
+                        guard let id = filtered[safe: index]?.id else { return }
+                        proxy.scrollTo(id, anchor: .center)
+                    }
                 }
-                .frame(maxHeight: 280)
             }
             .background(.regularMaterial, in: RoundedRectangle(cornerRadius: PMRadius.lg))
             .frame(width: 480)
@@ -96,24 +122,24 @@ struct CommandPalette: View {
         // keyboard-first flow end to end (Notion Mail-style).
         if let thread = store.selectedThread {
             cmds.append(contentsOf: [
-                Command(id: "act.archive", title: "Archive Conversation", icon: "archivebox") { $0.archive(thread) },
-                Command(id: "act.trash", title: "Trash Conversation", icon: "trash") { $0.trash(thread) },
+                Command(id: "act.archive", title: "Archive Conversation", icon: "archivebox", shortcut: .archive) { $0.perform(.archive) },
+                Command(id: "act.trash", title: "Trash Conversation", icon: "trash", shortcut: .trash) { $0.perform(.trash) },
                 Command(id: "act.star", title: thread.isStarred ? "Unstar Conversation" : "Star Conversation",
-                        icon: thread.isStarred ? "star.slash" : "star") { $0.toggleStar(thread) },
-                Command(id: "act.snooze", title: "Snooze Until Tomorrow", icon: "clock") {
+                        icon: thread.isStarred ? "star.slash" : "star", shortcut: .toggleStar) { $0.perform(.toggleStar) },
+                Command(id: "act.read", title: thread.isUnread ? "Mark Read" : "Mark Unread",
+                        icon: thread.isUnread ? "envelope.open" : "envelope", shortcut: .toggleRead) {
+                    $0.perform(.toggleRead)
+                },
+                Command(id: "act.snooze", title: "Snooze Until Tomorrow", icon: "clock", shortcut: .snooze) {
                     $0.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 1))
                 },
                 Command(id: "act.snoozeCustom", title: "Snooze Until…", icon: "calendar.badge.clock") {
                     $0.snoozingThread = thread
                 },
-                Command(id: "act.reply", title: "Reply", icon: "arrowshape.turn.up.left") { s in
-                    // Same "newest sent" resolver as keyboard r / toolbar —
-                    // never parent a reply on an unsent draft.
-                    if let last = s.newestSentMessage(inThread: thread.id) {
-                        s.openCompose(.init(replyTo: last))
-                    }
-                },
-                Command(id: "act.label", title: "Label Conversation…", icon: "tag") { $0.openLabelPicker() },
+                Command(id: "act.reply", title: "Reply", icon: "arrowshape.turn.up.left", shortcut: .reply) { $0.perform(.reply) },
+                Command(id: "act.replyAll", title: "Reply All", icon: "arrowshape.turn.up.left.2", shortcut: .replyAll) { $0.perform(.replyAll) },
+                Command(id: "act.forward", title: "Forward", icon: "arrowshape.turn.up.right", shortcut: .forward) { $0.perform(.forward) },
+                Command(id: "act.label", title: "Label Conversation…", icon: "tag", shortcut: .label) { $0.perform(.label) },
                 Command(id: "act.copyLink", title: "Copy Gmail Link to Conversation", icon: "link") {
                     $0.copyThreadLink(thread)
                 },

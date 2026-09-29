@@ -108,10 +108,8 @@ private struct ScheduledRow: View {
         .padding(.horizontal, 10).padding(.vertical, 7)
         .background(hovering ? Color.primary.opacity(0.07) : .clear,
                     in: RoundedRectangle(cornerRadius: 6))
-        .onHover { inside in
-            hovering = inside
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .onHover { hovering = $0 }
+        .pmPointingHandCursor()
         .contextMenu {
             Button("Edit in Compose") { store.editScheduledSend(send) }
             Button("Send Now") { store.sendScheduledNow(send) }
