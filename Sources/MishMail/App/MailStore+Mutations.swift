@@ -264,8 +264,13 @@ extension MailStore {
     }
 
     /// Apply `local`/`remote` to many threads with a single list reload.
-    /// Remote calls still fan out (one Task each) but the thread-list query
-    /// runs once after all optimistic writes.
+    ///
+    /// Two or more rows take the bulk path: one optimistic pass over the
+    /// in-memory list, one write transaction for every thread row (instead of
+    /// one chained transaction each), and one planned remote step that sends
+    /// plain label edits as `messages.batchModify` calls (see
+    /// `BulkThreadModify`). A single row keeps the per-thread path: its
+    /// `threads.modify` costs 10 quota units, a batch call 50.
     func mutateThreads(_ targets: [MailThread],
                        autoAdvanceAction: String? = nil,
                        remote: RemoteThreadChange,
@@ -281,12 +286,170 @@ extension MailStore {
                 leaving, action: action,
                 extraMeta: "bulk=\(targets.count)")
         }
-        suppressThreadReload = true
-        for thread in targets {
-            mutateThread(thread, remote: remote, local: local)
+        guard targets.count > 1 else {
+            suppressThreadReload = true
+            mutateThread(targets[0], remote: remote, local: local)
+            suppressThreadReload = false
+            scheduleThreadMutationReconciliation()
+            return
         }
-        suppressThreadReload = false
+
+        // Same optimistic order as `mutateThread`, per row, before any
+        // SQLCipher or Gmail work can delay what the user sees.
+        var edits: [(original: MailThread, updated: MailThread)] = []
+        edits.reserveCapacity(targets.count)
+        for thread in targets {
+            var copy = thread
+            local(&copy)
+            applyOptimisticSidebarCountDelta(from: thread, to: copy)
+            applyOptimisticThreadUpdate(copy)
+            edits.append((thread, copy))
+        }
         scheduleThreadMutationReconciliation()
+
+        let persistence = enqueueBulkThreadPersistence(edits)
+        let isDemo = demoMode
+        var accountIds: [String] = []
+        for thread in targets where !accountIds.contains(thread.accountId) {
+            accountIds.append(thread.accountId)
+        }
+        Task {
+            switch await persistence.value {
+            case .failure(let error):
+                // One transaction: every row rolled back together, so every
+                // thread takes the failure handling `mutateThread` gives one.
+                await MainActor.run {
+                    self.lastError = "Couldn't save the local change: \(error.localizedDescription)"
+                    self.scheduleThreadMutationReconciliation()
+                }
+                if !isDemo {
+                    for accountId in accountIds { await self.sync(accountId: accountId) }
+                }
+                return
+            case .success:
+                break
+            }
+            guard !isDemo else { return }
+            await self.applyRemoteBulkThreadChange(remote, threads: targets)
+        }
+    }
+
+    /// Bulk counterpart of `enqueueThreadPersistence`: every thread row in
+    /// one write transaction, still chained behind the serial write tail so
+    /// a later single-row edit cannot land before it.
+    private func enqueueBulkThreadPersistence(
+        _ edits: [(original: MailThread, updated: MailThread)]
+    ) -> Task<Result<Void, Error>, Never> {
+        let predecessor = threadMutationPersistenceTask
+        let pool = db
+        let task: Task<Result<Void, Error>, Never> = Task.detached {
+            () -> Result<Void, Error> in
+            _ = await predecessor?.value
+            do {
+                try await pool.write { db in
+                    for edit in edits {
+                        try OptimisticThreadWrite.updateChangedColumns(
+                            db, from: edit.original, to: edit.updated)
+                    }
+                }
+                return .success(())
+            } catch {
+                return .failure(error)
+            }
+        }
+        threadMutationPersistenceTask = task
+        return task
+    }
+
+    /// Push one bulk edit to Gmail. Plain label edits on locally complete
+    /// threads go out as `messages.batchModify` calls; everything else —
+    /// trash (its own `threads.trash` endpoint, not a label edit, so nothing
+    /// guarantees adding TRASH by id lands the same result), offline,
+    /// already-queued threads, and threads whose local rows may be partial —
+    /// takes `applyRemoteThreadChange` per thread, exactly as before.
+    private func applyRemoteBulkThreadChange(_ change: RemoteThreadChange,
+                                             threads: [MailThread]) async {
+        guard case .modify(let add, let remove) = change, !isOffline else {
+            fanOutRemoteThreadChange(change, threads: threads)
+            return
+        }
+        let pool = db
+        let ids = threads.map(\.id)
+        let snapshot = try? await pool.read { db in
+            (queued: try BulkThreadModify.queuedThreadIds(db),
+             facts: try BulkThreadModify.messageFacts(db, threadIds: ids))
+        }
+        guard let snapshot else {
+            fanOutRemoteThreadChange(change, threads: threads)
+            return
+        }
+        var byId: [String: MailThread] = [:]
+        var perThread: [MailThread] = []
+        var targets: [BulkThreadModify.Target] = []
+        var coverage: [String: BulkThreadModify.Coverage] = [:]
+        for thread in threads {
+            byId[thread.id] = thread
+            // A queued edit must stay ahead of this one: fold, don't send.
+            if snapshot.queued.contains(thread.id) {
+                perThread.append(thread)
+                continue
+            }
+            if coverage[thread.accountId] == nil {
+                coverage[thread.accountId] = BulkThreadModify.coverage(for: thread.accountId)
+            }
+            targets.append(.init(threadId: thread.id, accountId: thread.accountId,
+                                 add: add, remove: remove,
+                                 messages: snapshot.facts[thread.id] ?? []))
+        }
+        let plan = BulkThreadModify.plan(targets, coverage: coverage)
+        perThread += plan.fallbackThreadIds.compactMap { byId[$0] }
+        fanOutRemoteThreadChange(change, threads: perThread)
+
+        for batch in plan.batches {
+            guard !isShuttingDown else { return }
+            let members = batch.threadIds.compactMap { byId[$0] }
+            // Went offline on an earlier batch: park the rest the same way
+            // the per-thread path parks each thread.
+            if isOffline {
+                for thread in members {
+                    await queueThreadChange(change, accountId: thread.accountId,
+                                            gmailThreadId: thread.gmailThreadId)
+                }
+                continue
+            }
+            do {
+                try await client(for: batch.accountId).batchModifyMessages(
+                    ids: batch.messageIds, add: batch.add, remove: batch.remove)
+                isOffline = false
+            } catch {
+                if OfflinePolicy.shouldDefer(error) {
+                    isOffline = true
+                    for thread in members {
+                        await queueThreadChange(change, accountId: thread.accountId,
+                                                gmailThreadId: thread.gmailThreadId)
+                    }
+                } else {
+                    // Rejected as a batch (a message deleted meanwhile, a
+                    // quirk of the batch endpoint, auth). Retry each thread
+                    // on the old path so failures get the same per-thread
+                    // rollback, banner, and resync they always had.
+                    fanOutRemoteThreadChange(change, threads: members)
+                }
+            }
+        }
+    }
+
+    /// The pre-batch remote step: one concurrent task per thread.
+    private func fanOutRemoteThreadChange(_ change: RemoteThreadChange,
+                                          threads: [MailThread]) {
+        for thread in threads {
+            let client = client(for: thread.accountId)
+            Task {
+                await self.applyRemoteThreadChange(
+                    change, client: client, accountId: thread.accountId,
+                    gmailThreadId: thread.gmailThreadId)
+            }
+        }
     }
 
     /// Re-pin threads under an active unread/read filter so a previously
@@ -865,8 +1028,16 @@ extension MailStore {
         }
         let anyUnread = targets.contains { $0.isUnread }
         let read = GmailMarkReadKeys.desiredRead(chord: chord, anyUnread: anyUnread)
-        for thread in targets {
-            setRead(thread, read: read)
+        guard targets.count > 1 else {
+            setRead(targets[0], read: read)
+            return
+        }
+        // Same keep-pin as `setRead`, then one bulk mutation so a
+        // multi-select mark-read batches like archive and star do.
+        pinReadStateKeep(targets.map(\.id))
+        mutateThreads(targets, remote: .modify(add: read ? [] : ["UNREAD"],
+                                               remove: read ? ["UNREAD"] : [])) {
+            $0.isUnread = !read
         }
     }
 
