@@ -675,15 +675,15 @@ final class AppDatabase: @unchecked Sendable {
             allowConversion: !Self.anotherInstanceIsRunning())
         do {
             dbPool = try Self.openAndMigrate(path: path, key: key, scheme: scheme)
-        } catch let error as DatabaseError
-                    where Self.isUnreadableFileError(error) {
+        } catch where !Self.isTransientOpenError(error) {
             // The cache can't be opened — wrong key (keychain item lost or
             // rotated, e.g. a backup restore) or a corrupt file. Everything in
             // it resyncs from Gmail, so set it aside and start fresh instead
             // of crashing at launch. The fresh file is always raw-keyed.
-            // Only a key or corruption failure qualifies: disk full, I/O or
-            // busy errors say nothing about the file, and wiping a healthy
-            // 400 MB cache for them would be worse than failing this launch.
+            // Transient failures (disk full, I/O, busy) are excluded: they say
+            // nothing about the file, and wiping a healthy 400 MB cache for
+            // them would be worse than failing this launch. Everything else,
+            // including a migration that throws, still resets.
             NSLog("MishMail: mail cache unreadable (%@); resetting", "\(error)")
             try Self.setAsideUnreadable(path: path)
             dbPool = try Self.openAndMigrate(path: path, key: key, scheme: .raw)
@@ -772,7 +772,9 @@ final class AppDatabase: @unchecked Sendable {
         let keyString = scheme.keyString(for: key)
         var config = Configuration()
         config.prepareDatabase { db in
-            try db.usePassphrase(keyString)
+            if let keyString {
+                try db.usePassphrase(keyString)
+            }
             // Must follow the key: SQLCipher rejects most statements
             // on an un-keyed connection.
             try db.execute(sql: "PRAGMA cache_size = -\(pageCacheKiB)")
@@ -1001,12 +1003,16 @@ final class AppDatabase: @unchecked Sendable {
     enum KeyScheme: Equatable {
         case raw
         case passphrase
+        /// Pre-encryption file whose conversion was deferred this launch.
+        case plaintext
 
-        /// The string handed to `sqlite3_key` (via GRDB's `usePassphrase`).
-        func keyString(for hexKey: String) -> String {
+        /// The string handed to `sqlite3_key` (via GRDB's `usePassphrase`),
+        /// or nil for an unencrypted file.
+        func keyString(for hexKey: String) -> String? {
             switch self {
             case .raw: return AppDatabase.rawKeyLiteral(hexKey)
             case .passphrase: return hexKey
+            case .plaintext: return nil
             }
         }
     }
@@ -1018,10 +1024,17 @@ final class AppDatabase: @unchecked Sendable {
         "x'\(hexKey)'"
     }
 
-    /// Wrong key (`SQLITE_NOTADB`) or a damaged file (`SQLITE_CORRUPT`):
-    /// the only open failures that justify setting the cache aside.
-    static func isUnreadableFileError(_ error: DatabaseError) -> Bool {
-        error.resultCode == .SQLITE_NOTADB || error.resultCode == .SQLITE_CORRUPT
+    /// Failures of the environment, not of the file: retrying later can
+    /// succeed, so they must never route a healthy cache into set-aside.
+    static func isTransientOpenError(_ error: Error) -> Bool {
+        guard let error = error as? DatabaseError else { return false }
+        switch error.resultCode {
+        case .SQLITE_BUSY, .SQLITE_LOCKED, .SQLITE_FULL, .SQLITE_IOERR,
+             .SQLITE_NOMEM, .SQLITE_CANTOPEN:
+            return true
+        default:
+            return false
+        }
     }
 
     /// Another MishMail process with this bundle id (and so this container
@@ -1048,7 +1061,7 @@ final class AppDatabase: @unchecked Sendable {
     ///   passphrase, so the app still works and the next launch retries.
     /// - Neither key works (lost key, corrupt file): `.raw`, so the caller's
     ///   open fails and its set-aside-and-start-fresh recovery runs.
-    /// - Any other probe error (I/O, busy, disk full) is rethrown: it says
+    /// - A transient probe error (I/O, busy, disk full) is rethrown: it says
     ///   nothing about the key, and must not route a healthy file into the
     ///   caller's reset path.
     ///
@@ -1066,7 +1079,13 @@ final class AppDatabase: @unchecked Sendable {
     ) throws -> KeyScheme {
         guard FileManager.default.fileExists(atPath: path) else { return .raw }
         if isPlaintext(path) {
-            try encryptInPlace(path: path, key: key)
+            guard allowConversion else { return .plaintext }
+            do {
+                try encryptInPlace(path: path, key: key)
+            } catch RekeyError.busy {
+                NSLog("MishMail: plaintext cache busy; encryption deferred")
+                return .plaintext
+            }
             return .raw
         }
         do {
@@ -1074,10 +1093,15 @@ final class AppDatabase: @unchecked Sendable {
             return .raw
         } catch let error as DatabaseError where error.resultCode == .SQLITE_NOTADB {
             // Wrong key for this file: expected for a passphrase-keyed one.
+        } catch where !isTransientOpenError(error) {
+            // Raw key read page 1 but the file is damaged further in
+            // (SQLCipher reports a failed page HMAC as SQLITE_CORRUPT). Let
+            // the caller's open fail and take the reset path.
+            return .raw
         }
         do {
             try probe(path: path, keyString: key)
-        } catch let error as DatabaseError where isUnreadableFileError(error) {
+        } catch where !isTransientOpenError(error) {
             return .raw
         }
         guard allowConversion else {
@@ -1116,6 +1140,12 @@ final class AppDatabase: @unchecked Sendable {
         try plain.inDatabase { db in
             try db.execute(sql: "ATTACH DATABASE ? AS encrypted KEY ?",
                            arguments: [tmp, rawKeyLiteral(key)])
+            // Another connection on the WAL (a still-running old build) would
+            // keep writing to the file this swap unlinks. Retry next launch.
+            let checkpoint = try Row.fetchOne(db, sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+            if let busy: Int = checkpoint?[0], busy != 0 {
+                throw RekeyError.busy
+            }
             // Export does not carry auto_vacuum; set it on the empty target.
             try db.execute(sql: "PRAGMA encrypted.auto_vacuum = INCREMENTAL")
             try db.execute(sql: "SELECT sqlcipher_export('encrypted')")

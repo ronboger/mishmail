@@ -211,11 +211,26 @@ final class DatabaseRawKeyTests: XCTestCase {
         XCTAssertTrue(opens(keyString: key))
     }
 
-    func testOnlyKeyAndCorruptionErrorsCountAsUnreadable() {
-        XCTAssertTrue(AppDatabase.isUnreadableFileError(DatabaseError(resultCode: .SQLITE_NOTADB)))
-        XCTAssertTrue(AppDatabase.isUnreadableFileError(DatabaseError(resultCode: .SQLITE_CORRUPT)))
-        XCTAssertFalse(AppDatabase.isUnreadableFileError(DatabaseError(resultCode: .SQLITE_FULL)))
-        XCTAssertFalse(AppDatabase.isUnreadableFileError(DatabaseError(resultCode: .SQLITE_BUSY)))
-        XCTAssertFalse(AppDatabase.isUnreadableFileError(DatabaseError(resultCode: .SQLITE_IOERR)))
+    func testOnlyEnvironmentFailuresAreTransient() {
+        for code: ResultCode in [.SQLITE_BUSY, .SQLITE_LOCKED, .SQLITE_FULL,
+                                 .SQLITE_IOERR, .SQLITE_NOMEM, .SQLITE_CANTOPEN] {
+            XCTAssertTrue(AppDatabase.isTransientOpenError(DatabaseError(resultCode: code)), "\(code)")
+        }
+        // Key, corruption and migration failures keep the reset path.
+        for code: ResultCode in [.SQLITE_NOTADB, .SQLITE_CORRUPT, .SQLITE_CONSTRAINT, .SQLITE_ERROR] {
+            XCTAssertFalse(AppDatabase.isTransientOpenError(DatabaseError(resultCode: code)), "\(code)")
+        }
+        struct NotSQLite: Error {}
+        XCTAssertFalse(AppDatabase.isTransientOpenError(NotSQLite()))
+    }
+
+    func testPlaintextEncryptionDeferredWhileAnotherInstanceRuns() throws {
+        try makeDatabase(keyString: nil)
+        XCTAssertEqual(
+            try AppDatabase.prepareDatabaseFile(path: path, key: key, allowConversion: false),
+            .plaintext)
+        XCTAssertTrue(AppDatabase.isPlaintext(path))
+        XCTAssertEqual(try AppDatabase.prepareDatabaseFile(path: path, key: key), .raw)
+        XCTAssertTrue(opens(keyString: raw))
     }
 }
