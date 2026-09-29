@@ -46,6 +46,15 @@ final class LLMPricingTests: XCTestCase {
                        LLMPrice(inputPerMTok: 1.25, outputPerMTok: 10))
     }
 
+    func testSpecificDatedOpus4PricesBeatBroadPrefix() {
+        let dated = LLMPricing.price(model: "claude-opus-4-20250514", overrides: [:])
+        XCTAssertEqual(dated, LLMPrice(inputPerMTok: 15, outputPerMTok: 75))
+        XCTAssertEqual(LLMPricing.price(model: "claude-opus-4-1-20260101", overrides: [:]),
+                       LLMPrice(inputPerMTok: 15, outputPerMTok: 75))
+        XCTAssertEqual(LLMPricing.price(model: "claude-opus-4", overrides: [:]),
+                       LLMPrice(inputPerMTok: 5, outputPerMTok: 25))
+    }
+
     func testEmptyOverrideKeyIsIgnored() {
         let overrides = ["": LLMPrice(inputPerMTok: 999, outputPerMTok: 999)]
         XCTAssertEqual(LLMPricing.price(model: "claude-sonnet-5", overrides: overrides),
@@ -70,6 +79,14 @@ final class LLMPricingTests: XCTestCase {
         let price = LLMPrice(inputPerMTok: 3, outputPerMTok: 15)
         let usage = LLMUsage(promptTokens: 1_000_000, completionTokens: 2_000_000)
         XCTAssertEqual(LLMPricing.cost(usage: usage, price: price), 33.0, accuracy: 0.0001)
+    }
+
+    func testCacheCostUsesCreationAndReadMultipliers() {
+        let price = LLMPrice(inputPerMTok: 10, outputPerMTok: 20)
+        let usage = LLMUsage(promptTokens: 1_000_000, completionTokens: 0,
+                             cacheCreationInputTokens: 1_000_000,
+                             cacheReadInputTokens: 1_000_000)
+        XCTAssertEqual(LLMPricing.cost(usage: usage, price: price), 23.5, accuracy: 0.0001)
     }
 
     func testCostLabelRules() {

@@ -6,7 +6,8 @@ enum OpenAIWire {
     static func requestBody(model: String, messages: [LLMMessage],
                             tools: [LLMToolSpec],
                             thinking: LLMThinking = .modelDefault,
-                            openRouter: Bool = false) throws -> Data {
+                            openRouter: Bool = false,
+                            toolChoiceNone: Bool = false) throws -> Data {
         var wireMessages: [[String: Any]] = []
         for message in messages {
             switch message.role {
@@ -46,6 +47,9 @@ enum OpenAIWire {
                                      "description": tool.description,
                                      "parameters": schema]]
             }
+            // Keep the tools so the history's tool calls stay valid, but
+            // forbid new calls for an answer-only request.
+            if toolChoiceNone { body["tool_choice"] = "none" }
         }
         applyThinking(model: model, thinking: thinking, openRouter: openRouter, to: &body)
         return try JSONSerialization.data(withJSONObject: body)
@@ -102,6 +106,12 @@ enum OpenAIWire {
             guard let data = payload.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return [] }
+            if let providerError = object["error"] as? [String: Any] {
+                return [.error(providerError["message"] as? String ?? "OpenAI-compatible stream failed")]
+            }
+            if let providerError = object["error"] as? String {
+                return [.error(providerError)]
+            }
             if let u = object["usage"] as? [String: Any],
                let prompt = u["prompt_tokens"] as? Int,
                let completion = u["completion_tokens"] as? Int {

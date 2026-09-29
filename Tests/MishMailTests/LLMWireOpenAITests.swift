@@ -87,6 +87,13 @@ final class LLMWireOpenAITests: XCTestCase {
         XCTAssertEqual(state.consume(line: ""), [])
         XCTAssertEqual(state.consume(line: ": keep-alive"), [])
     }
+
+    func testTopLevelProviderErrorIsSurfaced() {
+        var state = OpenAIWire.StreamState()
+        XCTAssertEqual(
+            state.consume(line: #"data: {"error":{"message":"rate limited"}}"#),
+            [.error("rate limited")])
+    }
     func testStreamEmitsReasoningDeltas() {
         var state = OpenAIWire.StreamState()
         var events = state.consume(line: #"data: {"choices":[{"delta":{"reasoning_content":"step 1"}}]}"#)
@@ -150,4 +157,24 @@ final class LLMWireOpenAITests: XCTestCase {
         XCTAssertNil(body["reasoning"])
     }
 
+
+    func testToolChoiceNoneKeepsToolsAndSendsNone() throws {
+        let messages = [
+            LLMMessage(role: .user, text: "find acme"),
+            LLMMessage(role: .assistant, text: "", toolCalls: [
+                LLMToolCall(id: "c1", name: "search_threads", argumentsJSON: "{}")]),
+            LLMMessage(role: .tool, text: "", toolResults: [
+                LLMToolResult(callID: "c1", content: "[]", isError: false)]),
+        ]
+        let tools = [LLMToolSpec(name: "search_threads", description: "Search",
+                                 inputSchemaJSON: #"{"type":"object"}"#)]
+        let data = try OpenAIWire.requestBody(model: "gpt-5", messages: messages,
+                                              tools: tools, toolChoiceNone: true)
+        let body = try JSONSerialization.jsonObject(with: data) as! [String: Any]
+        XCTAssertEqual((body["tools"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual(body["tool_choice"] as? String, "none")
+        let plain = try JSONSerialization.jsonObject(with: try OpenAIWire.requestBody(
+            model: "gpt-5", messages: messages, tools: tools)) as! [String: Any]
+        XCTAssertNil(plain["tool_choice"])
+    }
 }

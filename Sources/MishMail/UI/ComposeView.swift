@@ -2022,7 +2022,10 @@ struct ComposeView: View {
                 originalBody: MessageParser.replyQuotableText(
                     text: original.bodyText, html: original.bodyHTML),
                 intent: intent,
-                userEmail: fromEmail)
+                userEmail: fromEmail,
+                characterBudget: LLMTaskRunner.resolve(.drafts)?.config.kind == .ollama
+                    ? LLMPrompts.localDraftOriginalBudget
+                    : LLMPrompts.hostedDraftOriginalBudget)
         } else {
             prompt = LLMPrompts.draftNew(intent: intent, userEmail: fromEmail)
         }
@@ -2031,7 +2034,9 @@ struct ComposeView: View {
             do {
                 // Stream tokens in as the local model produces them.
                 var accumulated = ""
-                for try await piece in LLMTaskRunner.stream(task: .drafts, prompt: prompt) {
+                for try await piece in LLMTaskRunner.stream(
+                    task: .drafts, prompt: prompt,
+                    onNotice: { notice in self.error = notice }) {
                     accumulated += piece
                     let snapshot = accumulated
                     await MainActor.run {
@@ -2090,7 +2095,9 @@ struct ComposeView: View {
         Task {
             var accumulated = ""
             do {
-                for try await piece in LLMTaskRunner.stream(task: .drafts, prompt: prompt) {
+                for try await piece in LLMTaskRunner.stream(
+                    task: .drafts, prompt: prompt,
+                    onNotice: { notice in self.error = notice }) {
                     accumulated += piece
                     let snapshot = accumulated
                     await MainActor.run {

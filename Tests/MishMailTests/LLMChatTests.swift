@@ -228,4 +228,30 @@ final class LLMChatTests: XCTestCase {
         let call = LLMToolCall(id: "1", name: "search", argumentsJSON: "{}")
         XCTAssertEqual(deduper.accept([.toolCall(call)]), [.toolCall(call)])
     }
+
+    func testAnthropicOutputCapsScaleWithThinkingEffort() {
+        XCTAssertEqual(LLMHostedThinking.anthropicMaxTokens(
+            model: "claude-sonnet-4-5", thinking: .level("low")), 16_384)
+        XCTAssertEqual(LLMHostedThinking.anthropicMaxTokens(
+            model: "claude-sonnet-4-5", thinking: .level("high")), 32_768)
+        XCTAssertEqual(LLMHostedThinking.anthropicMaxTokens(
+            model: "claude-sonnet-4-5", thinking: .level("xhigh")), 64_000)
+        XCTAssertEqual(LLMHostedThinking.anthropicMaxTokens(
+            model: "claude-3-5-sonnet-20241022", thinking: .level("high")), 8_192)
+    }
+
+    func testAdaptiveAnthropicModelsDoNotNeedInterleavedBetaForBudgetThinking() {
+        XCTAssertTrue(LLMHostedThinking.usesAdaptive("claude-sonnet-4-6"))
+        XCTAssertFalse(LLMHostedThinking.usesAdaptive("claude-sonnet-4-5"))
+    }
+
+    func testStopReasonsHaveVisibleNotices() {
+        XCTAssertEqual(LLMStopReason.notice(for: "max_tokens"),
+                       "Answer cut off at the length limit.")
+        XCTAssertEqual(LLMStopReason.notice(for: "length"),
+                       "Answer cut off at the length limit.")
+        XCTAssertEqual(LLMStopReason.notice(for: "refusal"),
+                       "The model declined to answer this request.")
+        XCTAssertNil(LLMStopReason.notice(for: "end_turn"))
+    }
 }

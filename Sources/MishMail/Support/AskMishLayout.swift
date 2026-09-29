@@ -27,4 +27,30 @@ enum AskMishLayout {
     static func showsPanel(hostWidth: CGFloat, enabled: Bool) -> Bool {
         enabled && hostWidth >= minHostWidth
     }
+
+    /// Transcript scroll state, reduced to what the near-bottom check needs.
+    struct ScrollMetrics: Equatable {
+        var offsetY: CGFloat
+        var containerHeight: CGFloat
+        var contentHeight: CGFloat
+    }
+
+    /// How close to the end still counts as "at the bottom".
+    static let nearBottomSlack: CGFloat = 48
+
+    static func isNearBottom(_ metrics: ScrollMetrics) -> Bool {
+        // Content shorter than the viewport is always at the bottom.
+        metrics.offsetY + metrics.containerHeight
+            >= metrics.contentHeight - nearBottomSlack
+    }
+
+    /// The new near-bottom value after a geometry change, or nil when the
+    /// offset did not move. Content that grows under a streaming answer
+    /// keeps the old value; only a real scroll (user or programmatic)
+    /// decides.
+    static func nearBottomAfterScroll(from old: ScrollMetrics,
+                                      to new: ScrollMetrics) -> Bool? {
+        guard abs(new.offsetY - old.offsetY) > 0.5 else { return nil }
+        return isNearBottom(new)
+    }
 }

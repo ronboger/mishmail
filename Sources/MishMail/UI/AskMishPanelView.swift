@@ -13,6 +13,7 @@ import SwiftUI
 struct AskMishPanelView: View {
     let controller: AskMishController
     @Environment(MailStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     @State private var input = ""
     @State private var conversations: [ChatConversationRow] = []
@@ -30,6 +31,13 @@ struct AskMishPanelView: View {
     @State private var expandedTraces: Set<String> = []
     @State private var thinking = Ollama.thinking(for: .askMish).rawValue
     @State private var revealedBubbleIDs: Set<UUID> = []
+    @State private var providerConfig: LLMProviderConfig?
+    @State private var transcriptNearBottom = true
+    /// Parsed markdown per bubble, with the text it came from. A bubble's
+    /// text can change after it stops streaming ("_Stopped._", an error
+    /// line), so a hit only counts when the source text still matches.
+    @State private var parsedBubbleText: [UUID: ParsedBubbleText] = [:]
+    @State private var expandedDraftIDs: Set<UUID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -38,13 +46,24 @@ struct AskMishPanelView: View {
             transcript
             if let pending = controller.pendingConfirmation {
                 Divider()
-                confirmCard(pending)
+                if expandedDraftIDs.contains(pending.id) {
+                    // The full draft has no height cap, so the card scrolls
+                    // as one unit. The buttons sit below the body, so the
+                    // user passes the whole draft on the way to them.
+                    ScrollView(.vertical) {
+                        confirmCard(pending)
+                    }
+                    .scrollIndicators(.visible)
+                } else {
+                    confirmCard(pending)
+                }
             }
             Divider()
             composer
         }
         .background(Color.notionSidebar)
         .task { await refreshConversations() }
+        .onAppear { refreshProviderConfig() }
         .task {
             let installed = (try? await Ollama.installedModels()) ?? []
             localModels = Ollama.enabledModels(installed: installed)
@@ -59,7 +78,10 @@ struct AskMishPanelView: View {
         .onChange(of: store.showAskMish) { _, shown in
             if !shown { declinePendingConfirmation() }
         }
-        .onChange(of: controller.providerID) { hostedNoticeDismissed = false }
+        .onChange(of: controller.providerID) {
+            hostedNoticeDismissed = false
+            refreshProviderConfig()
+        }
         .onDisappear {
             declinePendingConfirmation()
         }
@@ -101,6 +123,7 @@ struct AskMishPanelView: View {
             .buttonStyle(PressScaleButtonStyle())
             .foregroundStyle(.secondary)
             .help("Close Ask Mish (⌥⌘M)")
+            .accessibilityLabel("Close Ask Mish")
             .pmHitTarget()
         }
         .padding(.horizontal, 12)
@@ -255,9 +278,17 @@ struct AskMishPanelView: View {
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onChange(of: controller.bubbles.count) { scrollToTail(scroller) }
+            .onChange(of: controller.bubbles.count) {
+                // A new user turn always follows the tail again, however
+                // far up the user had scrolled.
+                if controller.bubbles.last?.role == .user { transcriptNearBottom = true }
+                if transcriptNearBottom { scrollToTail(scroller) }
+            }
             // Streaming appends to the last bubble without changing the count.
-            .onChange(of: controller.bubbles.last?.text) { scrollToTail(scroller) }
+            .onChange(of: controller.bubbles.last?.text) {
+                if transcriptNearBottom { scrollToTail(scroller) }
+            }
+            .modifier(TranscriptNearBottomTracker(nearBottom: $transcriptNearBottom))
             .onAppear {
                 if revealedBubbleIDs.isEmpty {
                     revealedBubbleIDs = Set(controller.bubbles.map(\.id))
@@ -322,9 +353,24 @@ struct AskMishPanelView: View {
                 }
                 if !bubble.text.isEmpty {
                     HStack(alignment: .bottom, spacing: 1) {
-                        Text(AskMishContext.displayedText(bubble.text))
-                            .textSelection(.enabled)
-                            .foregroundStyle(bubble.isError ? Color.red : Color.primary)
+                        Group {
+                            if bubble.isStreaming {
+                                Text(bubble.text)
+                            } else {
+                                Text(parsedBubbleText[bubble.id]
+                                        .flatMap { $0.source == bubble.text ? $0.parsed : nil }
+                                     ?? AttributedString(bubble.text))
+                                    .task(id: bubble.text) {
+                                        if parsedBubbleText[bubble.id]?.source != bubble.text {
+                                            parsedBubbleText[bubble.id] = ParsedBubbleText(
+                                                source: bubble.text,
+                                                parsed: AskMishContext.displayedText(bubble.text))
+                                        }
+                                    }
+                            }
+                        }
+                        .textSelection(.enabled)
+                        .foregroundStyle(bubble.isError ? Color.red : Color.primary)
                         if bubble.isStreaming { streamingCaret }
                     }
                 }
@@ -367,7 +413,11 @@ struct AskMishPanelView: View {
     }
 
     private var currentProviderConfig: LLMProviderConfig? {
-        LLMProviderStore.load().first { $0.id == controller.providerID }
+        providerConfig
+    }
+
+    private func refreshProviderConfig() {
+        providerConfig = LLMProviderStore.load().first { $0.id == controller.providerID }
     }
 
     /// Collapsed thinking trace. While the model is still reasoning (no
@@ -417,11 +467,19 @@ struct AskMishPanelView: View {
     }
 
     private var streamingCaret: some View {
-        TimelineView(.animation(minimumInterval: 0.53, paused: false)) { timeline in
-            let on = Int(timeline.date.timeIntervalSinceReferenceDate / 0.53) % 2 == 0
-            Text("▍")
-                .font(.system(size: 13))
-                .foregroundStyle(Color.primary.opacity(on ? 0.85 : 0.12))
+        Group {
+            if accessibilityReduceMotion {
+                Text("▍")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            } else {
+                TimelineView(.animation(minimumInterval: 0.53, paused: false)) { timeline in
+                    let on = Int(timeline.date.timeIntervalSinceReferenceDate / 0.53) % 2 == 0
+                    Text("▍")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.primary.opacity(on ? 0.85 : 0.12))
+                }
+            }
         }
         .accessibilityHidden(true)
     }
@@ -574,20 +632,23 @@ struct AskMishPanelView: View {
     /// transcript still shows what went wrong.
     private var retryButton: some View {
         Button("Retry") {
-            guard let text = controller.bubbles.last(where: { $0.role == .user })?.text
-            else { return }
-            controller.send(text)
+            controller.retryLastTurn()
         }
         .buttonStyle(.link)
         .font(.caption)
-        .disabled(controller.isRunning
-                  || !controller.bubbles.contains { $0.role == .user })
+        .disabled(!controller.canRetry)
     }
 
     // MARK: - Confirm card
 
     private func confirmCard(_ pending: AskMishController.PendingToolConfirmation) -> some View {
         let isSend = pending.toolName == AskMishTools.sendDraftToolName
+        let isCreate = pending.toolName == "create_draft"
+        let expanded = expandedDraftIDs.contains(pending.id)
+        let body = pending.bodyPreview
+        // Require an explicit expansion for every non-empty draft. This is a
+        // deliberate review gate when scroll-position tracking is uncertain.
+        let bodyNeedsReview = body.map { !$0.isEmpty } ?? false
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.shield")
@@ -600,16 +661,37 @@ struct AskMishPanelView: View {
             Text(pending.summary)
                 .font(.system(size: 13))
                 .fixedSize(horizontal: false, vertical: true)
-            if let body = pending.bodyPreview, !body.isEmpty {
-                Text(body)
-                    .font(.caption)
+            if let body, !body.isEmpty {
+                let lineCount = AskMishTools.confirmPreviewLineCount(body)
+                let preview = AskMishTools.confirmPreviewText(body)
+                Text("Draft body · \(body.count) characters · \(lineCount) lines")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .lineLimit(8)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                if expanded {
+                    // Expanded means the whole body, with no height cap and
+                    // no scroll region whose hidden scrollbar could keep a
+                    // tail out of sight.
+                    draftPreviewText(preview)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .background(Color.primary.opacity(0.04),
+                                    in: RoundedRectangle(cornerRadius: PMRadius.sm))
+                } else {
+                    ScrollView(.vertical) {
+                        draftPreviewText(preview)
+                    }
+                    .frame(maxHeight: 240)
                     .background(Color.primary.opacity(0.04),
                                 in: RoundedRectangle(cornerRadius: PMRadius.sm))
+                }
+                if bodyNeedsReview && !expanded {
+                    Button("Show full draft") {
+                        expandedDraftIDs.insert(pending.id)
+                    }
+                    .buttonStyle(.borderless)
+                    Text("Show full draft before confirming.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                }
             }
             if isSend {
                 Text("MishMail queues the message. You can undo it for \(Int(MailStore.undoSendWindow)) seconds.")
@@ -618,14 +700,15 @@ struct AskMishPanelView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
-                Button(isSend ? "Send" : "Allow") {
+                Button(isSend ? "Send" : (isCreate ? "Create draft" : "Allow")) {
                     controller.confirmPendingTool(allow: true)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(isSend ? .red : Color.notionAccent)
                 // Create and send put mail on the wire. Return would confirm
                 // a keystroke meant for the chat, so those need a click.
-                .keyboardShortcut(pending.requiresExplicitClick ? nil : KeyboardShortcut.defaultAction)
+                .keyboardShortcut(nil)
+                .disabled(bodyNeedsReview && !expanded)
                 Button("Don't allow") {
                     controller.confirmPendingTool(allow: false)
                 }
@@ -642,6 +725,15 @@ struct AskMishPanelView: View {
         .background(Color.notionContent,
                     in: RoundedRectangle(cornerRadius: PMRadius.outer(
                         inner: PMRadius.sm, padding: 12)))
+    }
+
+    private func draftPreviewText(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
     }
 
     // MARK: - Composer
@@ -675,6 +767,7 @@ struct AskMishPanelView: View {
                     }
                     .buttonStyle(PressScaleButtonStyle())
                     .help("Stop")
+                    .accessibilityLabel("Stop Ask Mish")
                     .pmHitTarget()
                 } else {
                     Button {
@@ -688,6 +781,7 @@ struct AskMishPanelView: View {
                         enabled: !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                     .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .help("Send (↩)")
+                    .accessibilityLabel("Send to Ask Mish")
                     .pmHitTarget()
                 }
             }
@@ -1219,6 +1313,40 @@ private struct ModelPickerPopover: View {
                                  isPinned: (provider.pinnedModels ?? []).contains(hit.model))
                 }
             }
+        }
+    }
+}
+
+/// Cached markdown for one finished bubble, keyed by the text it parsed.
+private struct ParsedBubbleText {
+    let source: String
+    let parsed: AttributedString
+}
+
+/// Keeps "follow the tail" in sync with wheel, trackpad, scrollbar and
+/// keyboard scrolling. Only an offset change counts: content growing under
+/// a streaming answer must not read as the user scrolling away.
+private struct TranscriptNearBottomTracker: ViewModifier {
+    @Binding var nearBottom: Bool
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.onScrollGeometryChange(for: AskMishLayout.ScrollMetrics.self) { geometry in
+                AskMishLayout.ScrollMetrics(
+                    offsetY: geometry.contentOffset.y,
+                    containerHeight: geometry.containerSize.height,
+                    contentHeight: geometry.contentSize.height)
+            } action: { old, new in
+                if let near = AskMishLayout.nearBottomAfterScroll(from: old, to: new) {
+                    nearBottom = near
+                }
+            }
+        } else {
+            // macOS 14 has no scroll geometry; a drag is the best signal.
+            content.simultaneousGesture(DragGesture(minimumDistance: 4).onChanged { value in
+                if value.translation.height < -8 { nearBottom = false }
+                if value.translation.height > 8 { nearBottom = true }
+            })
         }
     }
 }

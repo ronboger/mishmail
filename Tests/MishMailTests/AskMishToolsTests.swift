@@ -65,8 +65,9 @@ final class AskMishToolsTests: XCTestCase {
     func testCreateAndSendRequireExplicitClick() {
         XCTAssertTrue(AskMishTools.requiresExplicitClick("create_draft"))
         XCTAssertTrue(AskMishTools.requiresExplicitClick("send_draft"))
+        XCTAssertTrue(AskMishTools.requiresExplicitClick("add_vip"))
+        XCTAssertTrue(AskMishTools.requiresExplicitClick("set_thread_summary"))
         XCTAssertTrue(AskMishTools.requiresExplicitClick("invented_mutating_tool"))
-        XCTAssertFalse(AskMishTools.requiresExplicitClick("add_vip"))
         XCTAssertFalse(AskMishTools.requiresExplicitClick("search_threads"))
     }
 
@@ -123,13 +124,27 @@ final class AskMishToolsTests: XCTestCase {
         XCTAssertEqual(off, ["Eve@x.com"])
     }
 
-    func testPreviewTruncatesLongBodies() {
+    func testPreviewKeepsLongBodiesForFullReview() {
         XCTAssertNil(AskMishTools.preview("   "))
         XCTAssertEqual(AskMishTools.preview("short"), "short")
         let long = String(repeating: "x", count: 600)
         let preview = AskMishTools.preview(long, limit: 500)
-        XCTAssertEqual(preview?.count, 501) // 500 + ellipsis
-        XCTAssertTrue(preview?.hasSuffix("…") == true)
+        XCTAssertEqual(preview?.count, 600)
+        XCTAssertFalse(preview?.hasSuffix("…") == true)
+    }
+
+    func testCreateDraftSummaryWarnsAboutBccAndOffThreadRecipients() {
+        let summary = AskMishTools.createDraftSummary(
+            recipients: ["new@example.com"], subject: "Hi", hiddenCount: 1,
+            offThreadRecipients: ["new@example.com"])
+        XCTAssertTrue(summary.contains("Bcc"))
+        XCTAssertTrue(summary.contains("not on the thread"))
+    }
+
+    func testCollapsedBlankLinesExposeHiddenBodyContent() {
+        let collapsed = AskMishTools.collapsedBlankLines("top\n\n\n\nsecret")
+        XCTAssertTrue(collapsed.contains("blank lines"))
+        XCTAssertTrue(collapsed.contains("secret"))
     }
 
     func testDecodeArgumentsRejectsNonObject() {
@@ -289,4 +304,71 @@ private struct StubToolProvider: MCPToolProvider {
     func addVIPs(emails: [String], group: String?, groups: [String]?) async throws -> String { "{}" }
     func setVIPGroups(email: String, groups: [String]) async throws -> String { "{}" }
     func removeVIP(email: String) async throws -> String { "{}" }
+
+
+    // MARK: - Confirm-card hiding tricks
+
+    private func assertRunCollapsed(_ body: String, blank: Int,
+                                    file: StaticString = #filePath, line: UInt = #line) {
+        let preview = AskMishTools.confirmPreviewText(body)
+        XCTAssertTrue(preview.contains("[\(blank) blank lines]"),
+                      "got: \(preview.debugDescription)", file: file, line: line)
+        XCTAssertTrue(preview.contains("secret"), file: file, line: line)
+        XCTAssertLessThanOrEqual(preview.components(separatedBy: "\n").count, 3,
+                                 file: file, line: line)
+    }
+
+    func testConfirmPreviewCollapsesCRLFRuns() {
+        assertRunCollapsed("top" + String(repeating: "\r\n", count: 40) + "secret", blank: 39)
+    }
+
+    func testConfirmPreviewCollapsesBareCRRuns() {
+        assertRunCollapsed("top" + String(repeating: "\r", count: 10) + "secret", blank: 9)
+    }
+
+    func testConfirmPreviewCollapsesUnicodeLineAndParagraphSeparators() {
+        assertRunCollapsed("top" + String(repeating: "\u{2028}", count: 10) + "secret", blank: 9)
+        assertRunCollapsed("top" + String(repeating: "\u{2029}", count: 10) + "secret", blank: 9)
+    }
+
+    func testConfirmPreviewCollapsesVerticalTabAndFormFeed() {
+        assertRunCollapsed("top" + String(repeating: "\u{0B}", count: 10) + "secret", blank: 9)
+        assertRunCollapsed("top" + String(repeating: "\u{0C}", count: 10) + "secret", blank: 9)
+    }
+
+    func testConfirmPreviewTreatsNBSPAndIdeographicSpaceLinesAsBlank() {
+        assertRunCollapsed("top" + String(repeating: "\n\u{00A0}\u{00A0}", count: 10)
+                           + "\nsecret", blank: 10)
+        assertRunCollapsed("top" + String(repeating: "\n\u{3000}", count: 10)
+                           + "\nsecret", blank: 10)
+    }
+
+    func testConfirmPreviewTreatsZeroWidthOnlyLinesAsBlank() {
+        assertRunCollapsed("top" + String(repeating: "\n\u{200B}", count: 10)
+                           + "\nsecret", blank: 10)
+        assertRunCollapsed("top" + String(repeating: "\n\u{FEFF}\u{2060}", count: 10)
+                           + "\nsecret", blank: 10)
+    }
+
+    func testConfirmPreviewKeepsSingleBlankLine() {
+        XCTAssertEqual(AskMishTools.confirmPreviewText("a\n\nb"), "a\n\nb")
+    }
+
+    func testConfirmPreviewRevealsInvisibleFormatCharacters() {
+        let preview = AskMishTools.confirmPreviewText("pay\u{200B}me \u{202E}evil\u{2066}x\u{FEFF}")
+        XCTAssertTrue(preview.contains("⟨U+200B⟩"))
+        XCTAssertTrue(preview.contains("⟨U+202E⟩"))
+        XCTAssertTrue(preview.contains("⟨U+2066⟩"))
+        XCTAssertTrue(preview.contains("⟨U+FEFF⟩"))
+        for scalar in preview.unicodeScalars {
+            XCTAssertFalse(AskMishTools.isRevealedFormatCharacter(scalar.value))
+        }
+    }
+
+    func testConfirmPreviewLineCountIncludesEmptyLines() {
+        XCTAssertEqual(AskMishTools.confirmPreviewLineCount("a\n\n\n\nb"), 5)
+        XCTAssertEqual(AskMishTools.confirmPreviewLineCount("a\r\n\r\nb"), 3)
+        XCTAssertEqual(AskMishTools.confirmPreviewLineCount("a\u{2028}b\u{0C}c"), 3)
+        XCTAssertEqual(AskMishTools.confirmPreviewLineCount("one"), 1)
+    }
 }

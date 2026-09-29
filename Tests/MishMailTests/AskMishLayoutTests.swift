@@ -38,4 +38,34 @@ final class AskMishLayoutTests: XCTestCase {
         let panel = AskMishLayout.panelWidth(hostWidth: hostWidth)
         XCTAssertGreaterThanOrEqual(hostWidth - panel, AskMishLayout.minPanelWidth)
     }
+
+
+    // MARK: - Transcript near-bottom
+
+    func testNearBottomWithinSlack() {
+        XCTAssertTrue(AskMishLayout.isNearBottom(.init(offsetY: 560, containerHeight: 400,
+                                                        contentHeight: 1_000)))
+        XCTAssertFalse(AskMishLayout.isNearBottom(.init(offsetY: 100, containerHeight: 400,
+                                                         contentHeight: 1_000)))
+        // Short content is always at the bottom.
+        XCTAssertTrue(AskMishLayout.isNearBottom(.init(offsetY: 0, containerHeight: 400,
+                                                        contentHeight: 200)))
+    }
+
+    func testContentGrowthAloneDoesNotChangeNearBottom() {
+        let old = AskMishLayout.ScrollMetrics(offsetY: 600, containerHeight: 400,
+                                              contentHeight: 1_000)
+        let grown = AskMishLayout.ScrollMetrics(offsetY: 600, containerHeight: 400,
+                                                contentHeight: 1_400)
+        XCTAssertNil(AskMishLayout.nearBottomAfterScroll(from: old, to: grown))
+    }
+
+    func testWheelScrollUpAndBackDownUpdatesNearBottom() {
+        let bottom = AskMishLayout.ScrollMetrics(offsetY: 600, containerHeight: 400,
+                                                 contentHeight: 1_000)
+        let up = AskMishLayout.ScrollMetrics(offsetY: 200, containerHeight: 400,
+                                             contentHeight: 1_000)
+        XCTAssertEqual(AskMishLayout.nearBottomAfterScroll(from: bottom, to: up), false)
+        XCTAssertEqual(AskMishLayout.nearBottomAfterScroll(from: up, to: bottom), true)
+    }
 }

@@ -57,10 +57,7 @@ enum AskMishTools {
     ]
 
     /// Writes that can put mail on the wire. Return must not confirm these.
-    static let clickRequiredToolNames: Set<String> = [
-        "create_draft",
-        sendDraftToolName,
-    ]
+    static let clickRequiredToolNames: Set<String> = writeToolNames
 
     /// Read tools run freely. Anything not in `readToolNames` needs a confirm,
     /// including unknown names, so a new mutating tool cannot default to read.
@@ -175,13 +172,10 @@ enum AskMishTools {
     ) -> String? {
         switch toolName {
         case "create_draft":
-            let people = joined(recipients(args))
-            guard !people.isEmpty else { return nil }
-            var line = "Create a draft to \(people)."
-            if let subject = text(args, "subject"), !subject.isEmpty {
-                line += " Subject: \(quoted(subject))."
-            }
-            return line
+            return createDraftSummary(
+                recipients: recipients(args),
+                subject: text(args, "subject") ?? "",
+                hiddenCount: strings(args, "bcc").count)
 
         case sendDraftToolName:
             guard let id = text(args, "draft_id") else { return nil }
@@ -267,6 +261,51 @@ enum AskMishTools {
         return line + "."
     }
 
+    /// Summary for `create_draft`, including warnings that can be derived
+    /// before the draft exists. The controller adds the off-thread warning
+    /// after it compares recipients with the reply thread.
+    static func createDraftSummary(recipients: [String], subject: String,
+                                   hiddenCount: Int = 0,
+                                   offThreadRecipients: [String] = []) -> String {
+        let people = joined(recipients.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty })
+        var line = people.isEmpty ? "Create the draft" : "Create a draft to \(people)"
+        let title = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty { line += " — \(quoted(title))" }
+        let hidden = max(0, hiddenCount)
+        if hidden > 0 {
+            line += " Warning: includes \(hidden) Bcc recipient\(hidden == 1 ? "" : "s")."
+        } else {
+            line += "."
+        }
+        if !offThreadRecipients.isEmpty {
+            let listed = joined(offThreadRecipients)
+            line += " Warning: recipient\(offThreadRecipients.count == 1 ? "" : "s") not on the thread: \(listed)."
+        }
+        return line
+    }
+
+    static func createDraftRecipients(argumentsJSON: String) -> [String] {
+        let args = (try? decodeArguments(argumentsJSON)) ?? [:]
+        return recipients(args)
+    }
+
+    static func createDraftReplyThreadID(argumentsJSON: String) -> String? {
+        let args = (try? decodeArguments(argumentsJSON)) ?? [:]
+        return text(args, "reply_to_thread_id")
+    }
+
+    static func createDraftSubject(argumentsJSON: String) -> String {
+        let args = (try? decodeArguments(argumentsJSON)) ?? [:]
+        return text(args, "subject") ?? ""
+    }
+
+    static func createDraftBccCount(argumentsJSON: String) -> Int {
+        let args = (try? decodeArguments(argumentsJSON)) ?? [:]
+        return strings(args, "bcc").count
+    }
+
     /// Stable snapshot of the draft the user confirmed. Send aborts if the
     /// stored draft no longer matches.
     static func sendFingerprint(accountId: String, from: String,
@@ -295,13 +334,126 @@ enum AskMishTools {
         return out
     }
 
-    /// Truncated draft body for the confirm card. Nil when empty.
+    static func addresses(in header: String) -> [String] {
+        MessageParser.splitAddresses(header)
+            .map { MessageParser.emailAddress($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Full draft body for the confirm card. The view bounds it in a scroll
+    /// region and makes whitespace-only hiding visible.
     static func preview(_ text: String?, limit: Int = 500) -> String? {
         guard let text else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        if trimmed.count <= limit { return trimmed }
-        return String(trimmed.prefix(limit)) + "…"
+        _ = limit // Kept for source compatibility with older callers.
+        return trimmed
+    }
+
+    /// Replaces runs of blank lines with an explicit marker in bounded UI.
+    /// The original body remains unchanged for compose and send.
+    ///
+    /// A line counts as blank when it holds only whitespace, separators
+    /// (`\p{Z}`: NBSP, U+3000, …) or invisible format characters
+    /// (`\p{Cf}`: U+200B, U+FEFF, …). Every line-break form is normalized
+    /// first, so CRLF, U+2028 or a form feed cannot sneak a run past the
+    /// check.
+    static func collapsedBlankLines(_ text: String) -> String {
+        let lines = normalizedLineBreaks(text)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+        var output: [String] = []
+        var run = 0
+        func flushRun() {
+            if run >= 2 {
+                output.append("[\(run) blank lines]")
+            } else if run == 1 {
+                output.append("")
+            }
+            run = 0
+        }
+        for line in lines {
+            if isBlankLine(line) {
+                run += 1
+            } else {
+                flushRun()
+                output.append(String(line))
+            }
+        }
+        flushRun()
+        return output.joined(separator: "\n")
+    }
+
+    /// CRLF, CR, NEL, U+2028, U+2029, VT and FF all become `\n`.
+    static func normalizedLineBreaks(_ text: String) -> String {
+        var out = String.UnicodeScalarView()
+        var previousWasCR = false
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x0D:
+                out.append("\n")
+                previousWasCR = true
+                continue
+            case 0x0A:
+                if !previousWasCR { out.append("\n") }
+            case 0x0B, 0x0C, 0x85, 0x2028, 0x2029:
+                out.append("\n")
+            default:
+                out.append(scalar)
+            }
+            previousWasCR = false
+        }
+        return String(out)
+    }
+
+    /// Hangul and Braille fillers render as nothing but are letters or
+    /// symbols, so `\p{Z}` misses them.
+    private static let invisibleFillers: Set<UInt32> = [0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800]
+
+    static func isBlankLine<S: StringProtocol>(_ line: S) -> Bool {
+        line.unicodeScalars.allSatisfy { scalar in
+            scalar.properties.isWhitespace
+                || scalar.properties.generalCategory == .spaceSeparator
+                || scalar.properties.generalCategory == .lineSeparator
+                || scalar.properties.generalCategory == .paragraphSeparator
+                || scalar.properties.generalCategory == .format
+                || invisibleFillers.contains(scalar.value)
+        }
+    }
+
+    /// Zero-width and bidi control characters that can hide or reorder
+    /// text. The preview shows each one as a visible `⟨U+XXXX⟩` marker.
+    static func isRevealedFormatCharacter(_ value: UInt32) -> Bool {
+        (0x200B...0x200F).contains(value)
+            || (0x202A...0x202E).contains(value)
+            || (0x2060...0x2064).contains(value)
+            || (0x2066...0x2069).contains(value)
+            || value == 0xFEFF
+    }
+
+    static func revealedInvisibleCharacters(_ text: String) -> String {
+        var out = ""
+        for scalar in text.unicodeScalars {
+            if isRevealedFormatCharacter(scalar.value) {
+                out += String(format: "⟨U+%04X⟩", scalar.value)
+            } else {
+                out.unicodeScalars.append(scalar)
+            }
+        }
+        return out
+    }
+
+    /// Confirm-card text: line breaks normalized, blank runs collapsed to
+    /// a counted marker, then invisible format characters made visible.
+    static func confirmPreviewText(_ body: String) -> String {
+        revealedInvisibleCharacters(collapsedBlankLines(body))
+    }
+
+    /// Line count for the card header. Empty lines count: a run of blank
+    /// lines is exactly how a body hides text below the fold.
+    static func confirmPreviewLineCount(_ body: String) -> Int {
+        guard !body.isEmpty else { return 0 }
+        return normalizedLineBreaks(body)
+            .split(separator: "\n", omittingEmptySubsequences: false).count
     }
 
     // MARK: - Argument readers

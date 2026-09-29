@@ -14,6 +14,7 @@ enum LLMClientError: LocalizedError {
             return "No API key or sign-in for this provider. Add one in Settings → AI."
         case .http(let code, let detail):
             if let detail, !detail.isEmpty {
+                if code == 0 { return detail }
                 return "The model provider returned HTTP \(code): \(detail)"
             }
             return "The model provider returned HTTP \(code)."
@@ -22,6 +23,37 @@ enum LLMClientError: LocalizedError {
         case .untrustedEndpoint(let host):
             return "Mail would go to \(host). Open Settings → AI, edit this provider, and confirm that host."
         }
+    }
+}
+
+/// Pure retry policy for provider requests. Streaming retries are only safe
+/// before the first event, so the client applies this around request setup and
+/// status handling, never around the event pump itself.
+enum LLMRetryPolicy {
+    static let maxAttempts = 3
+
+    static func shouldRetry(status: Int) -> Bool {
+        [408, 409, 429, 500, 502, 503, 504, 529].contains(status)
+    }
+
+    static func shouldRetry(urlError: URLError) -> Bool {
+        [.networkConnectionLost, .timedOut, .cannotConnectToHost].contains(urlError.code)
+    }
+
+    /// `attempt` is zero-based and names the delay after that failed attempt.
+    /// Provider retry headers take precedence over the local exponential plan.
+    static func delay(attempt: Int, retryAfter: String? = nil,
+                      retryAfterMilliseconds: String? = nil,
+                      randomUnit: Double) -> TimeInterval {
+        if let milliseconds = retryAfterMilliseconds.flatMap(Double.init) {
+            return min(30, max(0, milliseconds / 1_000))
+        }
+        if let seconds = retryAfter.flatMap(Double.init) {
+            return min(30, max(0, seconds))
+        }
+        let base = min(30, 0.5 * pow(2, Double(max(0, attempt))))
+        let jitter = min(1, max(0, randomUnit))
+        return min(30, base * (0.5 + jitter * 0.5))
     }
 }
 
@@ -38,16 +70,19 @@ actor LLMClient {
     private var refreshTasks: [UUID: Task<Void, Error>] = [:]
 
     /// `task` selects the stored thinking effort (every provider) and, for
-    /// local models, the output cap.
+    /// local models, the output cap. `toolChoiceNone` keeps `tools` on the
+    /// wire (history may hold tool blocks) but asks for a plain answer.
     func stream(messages: [LLMMessage], tools: [LLMToolSpec],
                 config: LLMProviderConfig, model: String,
-                task: LLMTask, maxOutputTokens: Int? = nil) -> AsyncThrowingStream<LLMEvent, Error> {
+                task: LLMTask, maxOutputTokens: Int? = nil,
+                toolChoiceNone: Bool = false) -> AsyncThrowingStream<LLMEvent, Error> {
         AsyncThrowingStream { continuation in
             let streamTask = Task {
                 do {
                     try await self.run(messages: messages, tools: tools, config: config,
                                        model: model, task: task,
                                        maxOutputTokens: maxOutputTokens,
+                                       toolChoiceNone: toolChoiceNone,
                                        allowRefresh: true) { event in
                         continuation.yield(event)
                     }
@@ -63,6 +98,7 @@ actor LLMClient {
     private func run(messages: [LLMMessage], tools: [LLMToolSpec],
                      config: LLMProviderConfig, model: String, task: LLMTask,
                      maxOutputTokens: Int?,
+                     toolChoiceNone: Bool,
                      allowRefresh: Bool,
                      yield: @Sendable (LLMEvent) -> Void) async throws {
         // Refresh up front when the stored token already expired, so the common
@@ -72,48 +108,77 @@ actor LLMClient {
            storedTokensAreExpired(providerID: config.id) {
             try? await refreshTokens(vendor: vendor, providerID: config.id)
         }
-        let request = try await buildRequest(messages: messages, tools: tools,
-                                            config: config, model: model, task: task,
-                                            maxOutputTokens: maxOutputTokens)
-        let (bytes, response) = try await URLSession.shared.bytes(for: request)
-        let status = (response as? HTTPURLResponse)?.statusCode ?? 0
-        if status == 401, allowRefresh, case .oauth(let vendor) = config.authMode {
-            try await refreshTokens(vendor: vendor, providerID: config.id)
-            return try await run(messages: messages, tools: tools, config: config,
-                                 model: model, task: task,
-                                 maxOutputTokens: maxOutputTokens,
-                                 allowRefresh: false, yield: yield)
-        }
-        guard (200..<300).contains(status) else {
-            if config.kind == .ollama, let failure = Ollama.chatFailure(status: status, model: model) {
-                throw failure
+        var attempt = 0
+        while true {
+            try Task.checkCancellation()
+            let request = try await buildRequest(messages: messages, tools: tools,
+                                                config: config, model: model, task: task,
+                                                maxOutputTokens: maxOutputTokens,
+                                                toolChoiceNone: toolChoiceNone)
+            let pair: (URLSession.AsyncBytes, URLResponse)
+            do {
+                pair = try await URLSession.shared.bytes(for: request)
+            } catch let error as URLError {
+                guard attempt + 1 < LLMRetryPolicy.maxAttempts,
+                      LLMRetryPolicy.shouldRetry(urlError: error) else { throw error }
+                try await Self.waitBeforeRetry(attempt: attempt)
+                attempt += 1
+                continue
             }
-            // The body names the rejected field ("thinking.type", "messages.3
-            // .content"). Without it a 400 is undiagnosable from the UI.
-            throw LLMClientError.http(status, await Self.errorDetail(from: bytes))
-        }
+            let bytes = pair.0
+            let response = pair.1
+            let status = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if status == 401, allowRefresh, case .oauth(let vendor) = config.authMode {
+                try await refreshTokens(vendor: vendor, providerID: config.id)
+                return try await run(messages: messages, tools: tools, config: config,
+                                     model: model, task: task,
+                                     maxOutputTokens: maxOutputTokens,
+                                     toolChoiceNone: toolChoiceNone,
+                                     allowRefresh: false, yield: yield)
+            }
+            guard (200..<300).contains(status) else {
+                if config.kind == .ollama, let failure = Ollama.chatFailure(status: status, model: model) {
+                    throw failure
+                }
+                // The body names the rejected field ("thinking.type", "messages.3
+                // .content"). Without it a 400 is undiagnosable from the UI.
+                let detail = await Self.errorDetail(from: bytes)
+                guard attempt + 1 < LLMRetryPolicy.maxAttempts,
+                      LLMRetryPolicy.shouldRetry(status: status) else {
+                    throw LLMClientError.http(status, detail)
+                }
+                let headers = Self.stringHeaders(from: response)
+                try await Self.waitBeforeRetry(
+                    attempt: attempt,
+                    retryAfter: headers["retry-after"],
+                    retryAfterMilliseconds: headers["retry-after-ms"])
+                attempt += 1
+                continue
+            }
 
-        switch config.kind {
-        case .openAICompatible:
-            var state = OpenAIWire.StreamState()
-            // A server that closes without "data: [DONE]" still has to flush
-            // its buffered tool calls, so feed the terminator ourselves.
-            try await pump(bytes: bytes,
-                           consume: { state.consume(line: $0) },
-                           finalFlush: { state.consume(line: "data: [DONE]") },
-                           yield: yield)
-        case .anthropic:
-            var state = AnthropicWire.StreamState()
-            try await pump(bytes: bytes,
-                           consume: { state.consume(line: $0) },
-                           finalFlush: { [.done(stopReason: "stop", usage: nil)] },
-                           yield: yield)
-        case .ollama:
-            var state = OllamaChatWire.StreamState()
-            try await pump(bytes: bytes,
-                           consume: { state.consume(line: $0) },
-                           finalFlush: { [.done(stopReason: "stop", usage: nil)] },
-                           yield: yield)
+            // Once this pump starts, events may already have reached the UI.
+            // A transport failure after that point is never replayed.
+            switch config.kind {
+            case .openAICompatible:
+                var state = OpenAIWire.StreamState()
+                try await pump(bytes: bytes,
+                               consume: { state.consume(line: $0) },
+                               finalFlush: { state.consume(line: "data: [DONE]") },
+                               yield: yield)
+            case .anthropic:
+                var state = AnthropicWire.StreamState()
+                try await pump(bytes: bytes,
+                               consume: { state.consume(line: $0) },
+                               finalFlush: { state.finalEvents() },
+                               yield: yield)
+            case .ollama:
+                var state = OllamaChatWire.StreamState()
+                try await pump(bytes: bytes,
+                               consume: { state.consume(line: $0) },
+                               finalFlush: { [.done(stopReason: "stop", usage: nil)] },
+                               yield: yield)
+            }
+            return
         }
     }
 
@@ -139,20 +204,45 @@ actor LLMClient {
                       finalFlush: () -> [LLMEvent],
                       yield: @Sendable (LLMEvent) -> Void) async throws {
         var deduper = LLMDoneDeduper()
-        func emit(_ events: [LLMEvent]) {
-            for event in deduper.accept(events) { yield(event) }
+        func emit(_ events: [LLMEvent]) throws {
+            for event in deduper.accept(events) {
+                if case .error(let message) = event {
+                    throw LLMClientError.http(0, message)
+                }
+                yield(event)
+            }
         }
         for try await line in bytes.lines {
-            emit(consume(line))
+            try emit(consume(line))
         }
-        if !deduper.sawDone { emit(finalFlush()) }
-        if !deduper.sawDone { emit([.done(stopReason: "stop", usage: nil)]) }
+        if !deduper.sawDone { try emit(finalFlush()) }
+        if !deduper.sawDone { try emit([.done(stopReason: "stop", usage: nil)]) }
+    }
+
+    private static func stringHeaders(from response: URLResponse) -> [String: String] {
+        guard let response = response as? HTTPURLResponse else { return [:] }
+        return response.allHeaderFields.reduce(into: [String: String]()) { result, pair in
+            guard let key = pair.key as? String, let value = pair.value as? String else { return }
+            result[key.lowercased()] = value
+        }
+    }
+
+    private static func waitBeforeRetry(attempt: Int,
+                                        retryAfter: String? = nil,
+                                        retryAfterMilliseconds: String? = nil) async throws {
+        try Task.checkCancellation()
+        let unit = Double.random(in: 0...1)
+        let seconds = LLMRetryPolicy.delay(
+            attempt: attempt, retryAfter: retryAfter,
+            retryAfterMilliseconds: retryAfterMilliseconds, randomUnit: unit)
+        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
     private func buildRequest(messages: [LLMMessage], tools: [LLMToolSpec],
                               config: LLMProviderConfig, model: String,
                               task: LLMTask,
-                              maxOutputTokens: Int?) async throws -> URLRequest {
+                              maxOutputTokens: Int?,
+                              toolChoiceNone: Bool) async throws -> URLRequest {
         let path = LLMEndpoint.chatPath(kind: config.kind, base: config.baseURL)
         let body: Data
         let thinking = Ollama.thinking(for: task)
@@ -162,11 +252,15 @@ actor LLMClient {
         case .openAICompatible:
             let openRouter = LLMRemotePolicy.host(of: config.baseURL) == "openrouter.ai"
             body = try OpenAIWire.requestBody(model: model, messages: messages, tools: tools,
-                                              thinking: hosted, openRouter: openRouter)
+                                              thinking: hosted, openRouter: openRouter,
+                                              toolChoiceNone: toolChoiceNone)
         case .anthropic:
+            let anthropicMaxTokens = LLMHostedThinking.anthropicMaxTokens(
+                model: model, thinking: hosted)
             body = try AnthropicWire.requestBody(model: model, messages: messages,
-                                                 tools: tools, maxTokens: 8192,
-                                                 thinking: hosted)
+                                                 tools: tools, maxTokens: anthropicMaxTokens,
+                                                 thinking: hosted,
+                                                 toolChoiceNone: toolChoiceNone)
         case .ollama:
             // A thinking *level* on a model without the capability fails the
             // request, so fall back to the model's own default there. `off` is
@@ -180,7 +274,8 @@ actor LLMClient {
                 keepAliveSeconds: Ollama.keepAliveSeconds,
                 contextTokens: Ollama.contextTokens,
                 thinking: localThinking,
-                maxOutputTokens: maxOutputTokens ?? Ollama.maxOutputTokens(for: task))
+                maxOutputTokens: maxOutputTokens ?? Ollama.maxOutputTokens(for: task),
+                toolChoiceNone: toolChoiceNone)
             await Ollama.LoadedModels.shared.note(model)
         }
         guard let url = URL(string: path) else { throw LLMClientError.http(0) }
@@ -198,11 +293,13 @@ actor LLMClient {
         request.timeoutInterval = 300
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.httpBody = body
-        try applyAuth(to: &request, config: config, thinking: hosted, hasTools: !tools.isEmpty)
+        try applyAuth(to: &request, config: config, model: model,
+                      thinking: hosted, hasTools: !tools.isEmpty)
         return request
     }
 
     private func applyAuth(to request: inout URLRequest, config: LLMProviderConfig,
+                           model: String? = nil,
                            thinking: LLMThinking = .modelDefault,
                            hasTools: Bool = false) throws {
         if config.kind == .ollama { return } // local, keyless
@@ -216,7 +313,7 @@ actor LLMClient {
             case .anthropic:
                 request.setValue(key, forHTTPHeaderField: "x-api-key")
                 applyAnthropicVersionHeaders(to: &request, oauth: false,
-                                             thinking: thinking, hasTools: hasTools)
+                                             model: model, thinking: thinking, hasTools: hasTools)
             default:
                 request.setValue("Bearer \(key)", forHTTPHeaderField: "Authorization")
             }
@@ -225,7 +322,7 @@ actor LLMClient {
             request.setValue("Bearer \(tokens.accessToken)", forHTTPHeaderField: "Authorization")
             if config.kind == .anthropic {
                 applyAnthropicVersionHeaders(to: &request, oauth: true,
-                                             thinking: thinking, hasTools: hasTools)
+                                             model: model, thinking: thinking, hasTools: hasTools)
             }
         }
     }
@@ -233,11 +330,13 @@ actor LLMClient {
     /// Thinking + tools needs interleaved thinking. OAuth needs its own beta
     /// token. Combine them so a thinking Ask Mish turn can call tools.
     private func applyAnthropicVersionHeaders(to request: inout URLRequest, oauth: Bool,
+                                              model: String?,
                                               thinking: LLMThinking, hasTools: Bool) {
         request.setValue("2023-06-01", forHTTPHeaderField: "anthropic-version")
         var betas: [String] = []
         if oauth { betas.append("oauth-2025-04-20") }
-        if hasTools, case .level = thinking {
+        if hasTools, case .level = thinking,
+           !(model.map { LLMHostedThinking.usesAdaptive($0) } ?? false) {
             betas.append("interleaved-thinking-2025-05-14")
         }
         if !betas.isEmpty {
