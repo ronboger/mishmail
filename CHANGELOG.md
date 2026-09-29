@@ -11,6 +11,8 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-09-29
+
 ### Added
 - **Message and Go menus.** Reply, Reply All, Forward, Archive, Trash,
   Star, Read/Unread, Snooze and Label are in the menu bar, and Go jumps to

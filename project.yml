@@ -48,8 +48,8 @@ targets:
         # lost the ability to strip quarantine (its whole job).
         MISHMAIL_APP_ENTITLEMENTS: Sources/MishMail/MishMail.entitlements
         CODE_SIGN_ENTITLEMENTS: $(MISHMAIL_APP_ENTITLEMENTS)
-        MARKETING_VERSION: 0.4.17
-        CURRENT_PROJECT_VERSION: 3
+        MARKETING_VERSION: 0.5.0
+        CURRENT_PROJECT_VERSION: 4
         SWIFT_VERSION: 5.10
         GENERATE_INFOPLIST_FILE: true
         # Merged with generated keys: registers mailto: for default email app.
