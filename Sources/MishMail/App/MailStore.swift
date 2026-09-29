@@ -1864,7 +1864,7 @@ struct ComposeRequest: Identifiable {
     /// the list query itself, which is already asynchronous.
     ///
     /// Everything else — snippets, scheduled sends, the unread notification
-    /// baseline, contact mining — is needed by a surface the user has not
+    /// baseline, contact mining, the MCP server — is needed by a surface the user has not
     /// reached yet, and moved to `runDeferredStartupWork`.
     init() {
         let demoSeeded = DemoSeed.seedIfRequested(AppDatabase.shared.dbPool)
@@ -1884,11 +1884,9 @@ struct ComposeRequest: Identifiable {
         loadBlocked()
         reloadThreads()
         startupTask = Task { await self.runDeferredStartupWork() }
-        // MCP is opt-in (UserDefaults). Start after the first frame so a bind
-        // failure only surfaces as a notice, not a launch crash.
-        if isMCPEnabled {
-            startMCPServer()
-        }
+        // The opt-in MCP server starts in runDeferredStartupWork, not here:
+        // its Keychain token read and NWListener bind are main-thread work
+        // no first-frame surface needs.
     }
 
     // MARK: - MCP server
@@ -2023,6 +2021,14 @@ struct ComposeRequest: Identifiable {
         reloadScheduledSends()
         reloadLocalDrafts()
         await reloadPendingThreadOpCount()
+        // MCP is opt-in (UserDefaults). It lived at the end of init, which
+        // ran its Keychain read (a securityd round trip) and listener bind
+        // before the first frame despite the intent. Here it is past the
+        // first suspension point, so the window has had a chance to draw;
+        // a bind failure still only surfaces as a notice.
+        if isMCPEnabled, !isShuttingDown {
+            startMCPServer()
+        }
         // Contacts first: recipient autocomplete is the first deferred
         // surface a user reaches (`c`, type a name), and the mine runs on a
         // pool reader, so nothing below waits on it.
