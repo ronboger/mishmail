@@ -42,32 +42,62 @@ struct GmailQuotaBucket {
         count * messageGetUnits
     }
 
+    /// Longest penalty the bucket keeps: the longest wait honored from a
+    /// Gmail body plus the retry jitter. A clock jump or a bad stamp can then
+    /// never park the account for longer.
+    static let maxPenalty: TimeInterval = GmailRateLimit.maxWait + 1
+
+    /// Seconds left in the current penalty, or zero when none is active.
+    /// Clears an expired penalty and clamps one that lies further ahead than
+    /// `maxPenalty` (the clock jumped back, or a bad stamp got through).
+    mutating func penaltyRemaining(now: Date) -> TimeInterval {
+        guard let until = blockedUntil else { return 0 }
+        if until <= now {
+            blockedUntil = nil
+            return 0
+        }
+        let limit = now.addingTimeInterval(Self.maxPenalty)
+        if until > limit {
+            blockedUntil = limit
+            if let last = lastRefill, last > limit { lastRefill = limit }
+        }
+        return blockedUntil!.timeIntervalSince(now)
+    }
+
     /// Reserves `units` and returns how long the caller must wait before
     /// sending. Zero when the bucket has room now.
+    ///
+    /// Under a penalty the spend is reserved at the moment the penalty ends,
+    /// so callers parked behind it are released one refill apart instead of
+    /// all together. A single delay never exceeds `GmailRateLimit.maxWait`.
     mutating func delayBeforeSpending(units: Int, now: Date) -> TimeInterval {
-        if let blockedUntil, blockedUntil > now {
-            return blockedUntil.timeIntervalSince(now)
-        }
-        if let blockedUntil, blockedUntil <= now {
-            self.blockedUntil = nil
-        }
+        let penalty = penaltyRemaining(now: now)
+        let start = now.addingTimeInterval(penalty)
         if let last = lastRefill {
-            let elapsed = max(0, now.timeIntervalSince(last))
+            let elapsed = max(0, start.timeIntervalSince(last))
             tokens = min(Double(capacity), tokens + elapsed * Double(refillPerSecond))
+            // A clock that jumped back must not stretch the next refill.
+            lastRefill = min(max(last, start), now.addingTimeInterval(Self.maxPenalty))
+        } else {
+            lastRefill = start
         }
-        lastRefill = now
         tokens -= Double(units)
-        guard tokens < 0 else { return 0 }
         // Deficit refills at `refillPerSecond`; the caller sleeps that long.
-        return -tokens / Double(refillPerSecond)
+        let deficit = tokens < 0 ? -tokens / Double(refillPerSecond) : 0
+        return min(penalty + deficit, GmailRateLimit.maxWait)
     }
 
     /// Blocks every caller until Gmail's penalty window or the local retry
     /// backoff expires. The client owns this bucket, so unrelated requests for
-    /// the same account observe the same penalty.
+    /// the same account observe the same penalty. Gmail refused the last
+    /// spend, so the bucket restarts empty when the penalty ends.
     mutating func block(until: Date) {
         if self.blockedUntil == nil || until > self.blockedUntil! {
             self.blockedUntil = until
+        }
+        tokens = min(tokens, 0)
+        if lastRefill == nil || until > lastRefill! {
+            lastRefill = until
         }
     }
 }
@@ -141,10 +171,14 @@ enum HistorySlicer {
         let addedIds: [String]
         /// Messages whose labels the record changes (fetch when not cached).
         let labelChangedIds: [String]
+        /// Messages the record deletes. They cost no API call, but each one is
+        /// a bound SQL variable and a row write, so they count toward the
+        /// budget: one slice must not carry an unbounded delete.
+        var deletedIds: [String] = []
         /// Position in the caller's array, so the engine can map back.
         var index: Int = 0
 
-        var messageCount: Int { addedIds.count + labelChangedIds.count }
+        var messageCount: Int { addedIds.count + labelChangedIds.count + deletedIds.count }
     }
 
     struct Slice: Equatable {

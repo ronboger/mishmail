@@ -8,6 +8,19 @@ import Foundation
 /// id surfaces as `Gmail API error 404` on `messages.send` / `drafts.create`.
 enum SendThreading {
 
+    /// Gmail search that finds a sent message by its RFC 822 Message-ID.
+    /// Gmail matches `rfc822msgid:` against the bare `local@domain` form, so
+    /// the angle brackets of the header value are dropped. Nil when the id
+    /// has no usable content.
+    static func rfc822MessageIdQuery(_ messageId: String) -> String? {
+        let bare = messageId
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "<>"))
+            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !bare.isEmpty else { return nil }
+        return "rfc822msgid:\(bare)"
+    }
+
     /// Bare Gmail thread id to pass on send/draft, or `nil` to let Gmail
     /// start (or attach via headers only) a new conversation.
     ///

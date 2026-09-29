@@ -210,27 +210,33 @@ enum MessageParser {
     }
 
     /// Gmail's part `mimeType` omits the charset parameter; the MIME header
-    /// is authoritative for legacy mail. Decode UTF-8 first for the common
-    /// case, then honor the declared IANA charset, with Windows-1252 and
+    /// is authoritative for legacy mail. A declared charset other than
+    /// UTF-8 / US-ASCII decodes first: 7-bit encodings such as ISO-2022-JP
+    /// are also valid UTF-8 bytes, so trying UTF-8 first would keep their raw
+    /// escape sequences. Then UTF-8 (mislabeled mail), then Windows-1252 and
     /// ISO-8859-1 as the practical fallback for malformed headers.
     private static func decodeText(_ data: Data, contentType: String?) -> String? {
-        if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
-        let charset = contentType.flatMap { value -> String? in
-            guard let range = value.range(
-                of: #"charset\s*=\s*[\"']?([^;\"'\s]+)"#,
-                options: [.regularExpression, .caseInsensitive]) else { return nil }
-            let match = String(value[range])
-            guard let equals = match.firstIndex(of: "=") else { return nil }
-            return match[match.index(after: equals)...]
-                .trimmingCharacters(in: CharacterSet(charactersIn: " \t\"'"))
-        }
-        if let charset,
+        let charset = contentType.flatMap(declaredCharset)
+        if let charset, !["utf-8", "utf8", "us-ascii", "ascii"].contains(charset.lowercased()),
            let encoding = stringEncoding(forIANAName: charset),
            let decoded = String(data: data, encoding: encoding) {
             return decoded
         }
+        if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
         return String(data: data, encoding: .windowsCP1252)
             ?? String(data: data, encoding: .isoLatin1)
+    }
+
+    /// The `charset` parameter of a Content-Type value, unquoted.
+    private static func declaredCharset(_ contentType: String) -> String? {
+        guard let range = contentType.range(
+            of: #"charset\s*=\s*[\"']?([^;\"'\s]+)"#,
+            options: [.regularExpression, .caseInsensitive]) else { return nil }
+        let match = String(contentType[range])
+        guard let equals = match.firstIndex(of: "=") else { return nil }
+        let value = match[match.index(after: equals)...]
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \t\"'"))
+        return value.isEmpty ? nil : value
     }
 
     private static func stringEncoding(forIANAName name: String) -> String.Encoding? {

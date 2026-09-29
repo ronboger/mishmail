@@ -42,6 +42,25 @@ final class MessageParsingTests: XCTestCase {
             "あ")
     }
 
+    /// ISO-2022-JP is 7-bit, so its bytes are also valid UTF-8. The declared
+    /// charset must win, or the body shows raw escape sequences.
+    func testDecodeDeclaredISO2022JPBeforeUTF8() {
+        // ESC $ B 0x24 0x22 ESC ( B  ==  "あ"
+        let bytes = Data([0x1b, 0x24, 0x42, 0x24, 0x22, 0x1b, 0x28, 0x42]).base64URLEncoded()
+        XCTAssertEqual(
+            MessageParser.decodeBase64URL(bytes, contentType: "text/plain; charset=\"ISO-2022-JP\""),
+            "あ")
+        // Declared UTF-8 / US-ASCII and undeclared bodies still decode as UTF-8.
+        let utf8 = Data("café".utf8).base64URLEncoded()
+        XCTAssertEqual(MessageParser.decodeBase64URL(utf8, contentType: "text/plain; charset=utf-8"), "café")
+        XCTAssertEqual(MessageParser.decodeBase64URL(utf8, contentType: "text/plain; charset=us-ascii"), "café")
+        XCTAssertEqual(MessageParser.decodeBase64URL(utf8, contentType: nil), "café")
+        // An unknown charset name falls back to UTF-8, then Windows-1252.
+        XCTAssertEqual(MessageParser.decodeBase64URL(utf8, contentType: "text/plain; charset=x-bogus"), "café")
+        let cp1252 = Data([0x80]).base64URLEncoded()
+        XCTAssertEqual(MessageParser.decodeBase64URL(cp1252, contentType: "text/plain; charset=x-bogus"), "€")
+    }
+
     // MARK: - Header helpers
 
     func testDisplayName() {

@@ -314,7 +314,7 @@ actor GmailClient {
                         let delay = GmailRetryBackoff.delay(
                             attempt: 0, kind: .rateLimited,
                             retryAfter: Self.retryAfter(body: body, response: http))
-                        quota.block(until: Date().addingTimeInterval(delay))
+                        quota.block(until: Self.quotaNow().addingTimeInterval(delay))
                         var detail = body
                         if let header = http?.value(forHTTPHeaderField: "Retry-After") {
                             detail += "\nRetry-After: \(header)"
@@ -325,7 +325,7 @@ actor GmailClient {
                     let delay = GmailRetryBackoff.delay(
                         attempt: rateAttempt, kind: .rateLimited,
                         retryAfter: retryAfter, jitter: GmailRetryBackoff.jitter())
-                    quota.block(until: Date().addingTimeInterval(delay))
+                    quota.block(until: Self.quotaNow().addingTimeInterval(delay))
                     guard rateAttempt + 1 < Self.requestRetryAttempts else {
                         throw GmailError.http(code, body)
                     }
@@ -410,13 +410,31 @@ actor GmailClient {
         }
     }
 
+    /// `includeSpamTrash` must be true to list TRASH or SPAM: without it
+    /// Gmail can answer a `labelIds=TRASH` + `q` listing with nothing, and a
+    /// reconcile then reads every cached trash/spam row as deleted.
     func listMessages(query: String? = nil, labelIds: [String] = [],
-                      pageToken: String? = nil, maxResults: Int = 100) async throws -> GMessageList {
+                      pageToken: String? = nil, maxResults: Int = 100,
+                      includeSpamTrash: Bool = false) async throws -> GMessageList {
+        let q = Self.listMessagesQuery(
+            query: query, labelIds: labelIds, pageToken: pageToken,
+            maxResults: maxResults, includeSpamTrash: includeSpamTrash)
+        return try await request("GET", "/messages", query: q)
+    }
+
+    /// Query items for `messages.list`. Pure — unit-tested. A TRASH or SPAM
+    /// label always turns `includeSpamTrash` on, so no caller can forget it.
+    nonisolated static func listMessagesQuery(query: String?, labelIds: [String],
+                                              pageToken: String?, maxResults: Int,
+                                              includeSpamTrash: Bool) -> [String: String] {
         var q: [String: String] = ["maxResults": String(maxResults)]
         if let query { q["q"] = query }
         if !labelIds.isEmpty { q["labelIds"] = labelIds.joined(separator: ",") }
         if let pageToken { q["pageToken"] = pageToken }
-        return try await request("GET", "/messages", query: q)
+        if includeSpamTrash || labelIds.contains(where: { $0 == "TRASH" || $0 == "SPAM" }) {
+            q["includeSpamTrash"] = "true"
+        }
+        return q
     }
 
     func getMessage(id: String, format: String = "full") async throws -> GMessage {
@@ -592,7 +610,7 @@ actor GmailClient {
                         attempt: attempt, kind: kind, retryAfter: Self.retryAfter(error),
                         jitter: GmailRetryBackoff.jitter())
                     if kind == .rateLimited {
-                        quota.block(until: Date().addingTimeInterval(delay))
+                        quota.block(until: Self.quotaNow().addingTimeInterval(delay))
                     }
                     if attempt + 1 < Self.getRetryAttempts {
                         try await Self.sleep(delay)
@@ -610,10 +628,32 @@ actor GmailClient {
     /// the actor is fine: `Task.sleep` suspends and other calls proceed.
     private var quota = GmailQuotaBucket()
 
+    /// Clock for the quota bucket. System uptime only moves forward, so a
+    /// wall-clock change (NTP step, manual set, sleep/wake skew) cannot
+    /// stretch a penalty or refill window. Only differences are meaningful.
+    private static func quotaNow() -> Date {
+        Date(timeIntervalSinceReferenceDate: ProcessInfo.processInfo.systemUptime)
+    }
+
     /// Reserve `units` and wait until the bucket allows the spend.
+    ///
+    /// While a penalty is active, park until it ends (plus a small per-caller
+    /// jitter) and then reserve like any other caller. Reserving only after
+    /// the wake keeps a penalty that grew while this caller slept from being
+    /// ignored, and the bucket's refill spacing releases parked callers one
+    /// by one instead of all together.
     private func pace(units: Int) async throws {
-        let delay = quota.delayBeforeSpending(units: units, now: Date())
-        if delay > 0 { try await Self.sleep(delay) }
+        while true {
+            let penalty = quota.penaltyRemaining(now: Self.quotaNow())
+            if penalty > 0 {
+                try await Self.sleep(
+                    min(penalty, GmailRateLimit.maxWait) + GmailRetryBackoff.jitter())
+                continue
+            }
+            let delay = quota.delayBeforeSpending(units: units, now: Self.quotaNow())
+            if delay > 0 { try await Self.sleep(delay) }
+            return
+        }
     }
 
     private static func sleep(_ seconds: TimeInterval) async throws {
@@ -666,7 +706,7 @@ actor GmailClient {
                     attempt: attempt, kind: .rateLimited,
                     retryAfter: GmailRateLimit.retryAfter(body: body),
                     jitter: GmailRetryBackoff.jitter())
-                quota.block(until: Date().addingTimeInterval(delay))
+                quota.block(until: Self.quotaNow().addingTimeInterval(delay))
                 guard attempt + 1 < Self.getRetryAttempts else {
                     report.retryExhaustedIds += rateLimited
                     return report
@@ -679,7 +719,7 @@ actor GmailClient {
                 let delay = GmailRetryBackoff.delay(
                     attempt: attempt, kind: kind, retryAfter: Self.retryAfter(error),
                     jitter: GmailRetryBackoff.jitter())
-                quota.block(until: Date().addingTimeInterval(delay))
+                quota.block(until: Self.quotaNow().addingTimeInterval(delay))
                 guard attempt + 1 < Self.getRetryAttempts else { throw error }
                 try await Self.sleep(delay)
             }

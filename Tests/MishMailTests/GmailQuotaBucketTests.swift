@@ -73,8 +73,54 @@ final class GmailQuotaBucketTests: XCTestCase {
         var bucket = GmailQuotaBucket(capacity: 125, refillPerSecond: 250)
         let t0 = Date(timeIntervalSince1970: 1_000)
         bucket.block(until: t0.addingTimeInterval(4))
-        XCTAssertEqual(bucket.delayBeforeSpending(units: 5, now: t0), 4, accuracy: 0.001)
-        XCTAssertEqual(bucket.delayBeforeSpending(units: 5, now: t0.addingTimeInterval(4)),
-                       0, accuracy: 0.001)
+        XCTAssertEqual(bucket.penaltyRemaining(now: t0), 4, accuracy: 0.001)
+        XCTAssertEqual(bucket.delayBeforeSpending(units: 5, now: t0), 4.02, accuracy: 0.001)
+        XCTAssertEqual(bucket.penaltyRemaining(now: t0.addingTimeInterval(4)), 0, accuracy: 0.001)
+    }
+
+    /// Callers parked behind one penalty used to get the same wake time and
+    /// no reservation, so they all fired together and tripped the limit
+    /// again. Each reservation now lands one refill after the previous one.
+    func testCallersParkedBehindAPenaltyAreReleasedInSequence() {
+        var bucket = GmailQuotaBucket(capacity: 125, refillPerSecond: 200)
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        bucket.block(until: t0.addingTimeInterval(4))
+        let delays = (0..<3).map { _ in bucket.delayBeforeSpending(units: 50, now: t0) }
+        XCTAssertEqual(delays[0], 4.25, accuracy: 0.001)
+        XCTAssertEqual(delays[1], 4.5, accuracy: 0.001)
+        XCTAssertEqual(delays[2], 4.75, accuracy: 0.001)
+    }
+
+    /// The client parks until the penalty ends, then reserves. The bucket
+    /// restarts empty, so waking callers still queue behind each other.
+    func testReservingAfterThePenaltyStartsFromAnEmptyBucket() {
+        var bucket = GmailQuotaBucket(capacity: 125, refillPerSecond: 200)
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        bucket.block(until: t0.addingTimeInterval(2))
+        let wake = t0.addingTimeInterval(2)
+        XCTAssertEqual(bucket.penaltyRemaining(now: wake), 0)
+        XCTAssertEqual(bucket.delayBeforeSpending(units: 50, now: wake), 0.25, accuracy: 0.001)
+        XCTAssertEqual(bucket.delayBeforeSpending(units: 50, now: wake), 0.5, accuracy: 0.001)
+    }
+
+    /// A clock that jumped (or a far-future stamp) must not park the account
+    /// past the longest wait Gmail can ask for.
+    func testFarFuturePenaltyIsClamped() {
+        var bucket = GmailQuotaBucket(capacity: 125, refillPerSecond: 200)
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        bucket.block(until: t0.addingTimeInterval(3_600))
+        XCTAssertEqual(bucket.penaltyRemaining(now: t0), GmailQuotaBucket.maxPenalty, accuracy: 0.001)
+        XCTAssertLessThanOrEqual(bucket.delayBeforeSpending(units: 5, now: t0), GmailRateLimit.maxWait)
+        // Once the clamped penalty ends the bucket works normally again.
+        let later = t0.addingTimeInterval(GmailQuotaBucket.maxPenalty + 10)
+        XCTAssertEqual(bucket.penaltyRemaining(now: later), 0)
+        XCTAssertEqual(bucket.delayBeforeSpending(units: 5, now: later), 0, accuracy: 0.001)
+    }
+
+    func testSingleDelayIsCappedAtMaxWait() {
+        var bucket = GmailQuotaBucket(capacity: 10, refillPerSecond: 1)
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        XCTAssertEqual(bucket.delayBeforeSpending(units: 10_000, now: t0),
+                       GmailRateLimit.maxWait, accuracy: 0.001)
     }
 }

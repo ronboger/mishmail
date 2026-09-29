@@ -375,10 +375,12 @@ extension MailStore {
     /// the client saw a dropped connection. Search by the stable RFC id before
     /// replaying a persisted send.
     private func alreadySent(_ pending: PendingSend) async -> Bool {
-        guard !pending.messageId.isEmpty else { return false }
+        guard let query = SendThreading.rfc822MessageIdQuery(pending.messageId) else {
+            return false
+        }
         do {
             let page = try await client(for: pending.accountId).listMessages(
-                query: "rfc822msgid:\(pending.messageId)", maxResults: 1)
+                query: query, maxResults: 1)
             return !(page.messages ?? []).isEmpty
         } catch {
             return false
