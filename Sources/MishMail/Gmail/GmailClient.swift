@@ -296,13 +296,15 @@ actor GmailClient {
             guard (200..<300).contains(code) else {
                 let body = String(data: data, encoding: .utf8) ?? ""
                 if method == "GET",
-                   MessageFetchFailureKind.classify(GmailError.http(code, body)) == .rateLimited,
-                   rateAttempt + 1 < Self.requestRetryAttempts {
+                   MessageFetchFailureKind.classify(GmailError.http(code, body)) == .rateLimited {
                     let retryAfter = Self.retryAfter(body: body, response: http)
                     let delay = GmailRetryBackoff.delay(
                         attempt: rateAttempt, kind: .rateLimited,
                         retryAfter: retryAfter, jitter: GmailRetryBackoff.jitter())
                     quota.block(until: Date().addingTimeInterval(delay))
+                    guard rateAttempt + 1 < Self.requestRetryAttempts else {
+                        throw GmailError.http(code, body)
+                    }
                     rateAttempt += 1
                     try await Self.sleep(delay)
                     continue
@@ -555,13 +557,13 @@ actor GmailClient {
                         meta: "id=\(id) error=\(error.localizedDescription)") { () }
                     return .skipped(id)
                 case .retryable, .rateLimited:
+                    let delay = GmailRetryBackoff.delay(
+                        attempt: attempt, kind: kind, retryAfter: Self.retryAfter(error),
+                        jitter: GmailRetryBackoff.jitter())
+                    if kind == .rateLimited {
+                        quota.block(until: Date().addingTimeInterval(delay))
+                    }
                     if attempt + 1 < Self.getRetryAttempts {
-                        let delay = GmailRetryBackoff.delay(
-                            attempt: attempt, kind: kind, retryAfter: Self.retryAfter(error),
-                            jitter: GmailRetryBackoff.jitter())
-                        if kind == .rateLimited {
-                            quota.block(until: Date().addingTimeInterval(delay))
-                        }
                         try await Self.sleep(delay)
                     }
                 }
@@ -620,25 +622,26 @@ actor GmailClient {
                 }
                 guard !rateLimited.isEmpty else { return report }
                 pending = rateLimited
-                guard attempt + 1 < Self.getRetryAttempts else {
-                    report.retryExhaustedIds += rateLimited
-                    return report
-                }
                 let body = results.first { rateLimited.contains($0.id) }?.body ?? ""
                 let delay = GmailRetryBackoff.delay(
                     attempt: attempt, kind: .rateLimited,
                     retryAfter: GmailRateLimit.retryAfter(body: body),
                     jitter: GmailRetryBackoff.jitter())
                 quota.block(until: Date().addingTimeInterval(delay))
+                guard attempt + 1 < Self.getRetryAttempts else {
+                    report.retryExhaustedIds += rateLimited
+                    return report
+                }
                 try await Self.sleep(delay)
             } catch {
                 let kind = MessageFetchFailureKind.classify(error)
-                guard kind == .rateLimited, attempt + 1 < Self.getRetryAttempts else { throw error }
+                guard kind == .rateLimited else { throw error }
                 PerfMetrics.measure(.syncGetRetry, meta: "batch rateLimited attempt=\(attempt + 1)") { () }
                 let delay = GmailRetryBackoff.delay(
                     attempt: attempt, kind: kind, retryAfter: Self.retryAfter(error),
                     jitter: GmailRetryBackoff.jitter())
                 quota.block(until: Date().addingTimeInterval(delay))
+                guard attempt + 1 < Self.getRetryAttempts else { throw error }
                 try await Self.sleep(delay)
             }
         }
