@@ -368,7 +368,10 @@ extension MailStore {
             try await gmail.send(raw: raw, threadId: nil)
         }
         if let draft { await deleteUnderlyingDraft(draft, silent: true) }
-        await sync(accountId: apiAccountId)
+        // Not awaited: a sync pass can queue behind a long one, and the
+        // caller must drop its scheduled/outbox row the moment Gmail has
+        // the message, or a quit in between would send it again.
+        Task { await self.sync(accountId: apiAccountId) }
     }
 
     /// A send timeout is ambiguous: Gmail may have accepted the message while
@@ -493,7 +496,8 @@ extension MailStore {
                 showNotice("Draft saved — find it in Drafts")
             }
             if shouldSync {
-                await sync(accountId: apiAccountId)
+                // Not awaited: a save must not wait behind a queued sync pass.
+                Task { await self.sync(accountId: apiAccountId) }
             }
             // Stand-in for replace chaining. Prefer the local account-prefixed
             // id we already know only when Gmail actually accepted that thread.

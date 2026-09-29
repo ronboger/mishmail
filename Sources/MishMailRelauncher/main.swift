@@ -110,6 +110,12 @@ guard let resolvedTarget = Relaunch.resolvedTargetAppURL(
 // and quarantine walk, so a symlink in the plan cannot change meaning later.
 let target = resolvedTarget
 
+// Read this helper's Team ID now, while its bundle is still the old one.
+// After the swap the path holds the new bundle, and signing information
+// resolves through the path, so reading it later would let the update vouch
+// for itself.
+let helperTeam = Relaunch.runningTeamIdentifier()
+
 // Handshake, before anything else: MishMail refuses to swap until this file
 // exists, because a launch that is merely *requested* can still be destroyed
 // by the swap replacing this very bundle.
@@ -143,7 +149,7 @@ crumb("pid \(pid) gone after \(String(format: "%.1f", Date().timeIntervalSince(s
 // Only a bundle signed by this helper's own team loses quarantine. On a
 // mismatch the app is still reopened below, quarantined, so Gatekeeper makes
 // the call instead of the update failing silently.
-if Relaunch.hasValidTargetSignature(at: target, teamID: Relaunch.runningTeamIdentifier()) {
+if Relaunch.hasValidTargetSignature(at: target, teamID: helperTeam) {
     let stripped = Quarantine.strip(from: target)
     crumb("stripped quarantine from \(stripped) items under \(target.path)")
 } else {

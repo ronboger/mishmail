@@ -73,10 +73,10 @@ enum Relaunch {
         return target.path == enclosing.path ? target : nil
     }
 
-    /// Team ID of the running helper, read from the kernel's view of this
-    /// process. Reading the helper's file instead would be circular: after
-    /// the swap, the helper's path holds the NEW bundle's copy, so the update
-    /// would supply its own trust anchor. Nil for ad-hoc (Debug) helpers.
+    /// Team ID of the running helper. Signing information resolves through
+    /// the on-disk path, so call this at startup, before the swap replaces
+    /// the bundle; afterwards the update would supply its own trust anchor.
+    /// Nil for ad-hoc (Debug) helpers.
     static func runningTeamIdentifier() -> String? {
         var me: SecCode?
         guard SecCodeCopySelf([], &me) == errSecSuccess, let me else { return nil }

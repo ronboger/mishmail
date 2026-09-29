@@ -539,7 +539,7 @@ struct ChatMessageRow: Codable, Identifiable, Hashable, FetchableRecord, Persist
     var thinkingBlocksJSON: String = "[]"
     var promptTokens: Int?        // usage, assistant rows only
     var completionTokens: Int?
-    /// Anthropic prompt-cache usage (v40). Nil on older rows.
+    /// Anthropic prompt-cache usage (v41). Nil on older rows.
     var cacheCreationTokens: Int? = nil
     var cacheReadTokens: Int? = nil
     var createdAt: Date
@@ -553,7 +553,7 @@ struct LLMUsageRow: Codable, Identifiable, Hashable, FetchableRecord, Persistabl
     var model: String
     var promptTokens: Int
     var completionTokens: Int
-    /// Anthropic prompt-cache usage (v40). Zero on older rows.
+    /// Anthropic prompt-cache usage (v41). Zero on older rows.
     var cacheCreationTokens: Int = 0
     var cacheReadTokens: Int = 0
     var createdAt: Date

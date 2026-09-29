@@ -253,6 +253,9 @@ actor SyncEngine {
     }
 
     /// Cached rows the history-expired reconcile must re-read by id.
+    /// Most metadata gets one expired-history reconcile spends on labels.
+    static let maxReconcileLabelRefresh = 2_000
+
     private struct ReconcilePlan: Sendable {
         /// Every cached row inside the window: (local id, gmail id, thread key).
         var rows: [(id: String, gmailId: String, threadId: String)]
@@ -323,7 +326,11 @@ actor SyncEngine {
     private func refreshCachedLabels(_ plan: ReconcilePlan, skipping downloaded: Set<String>,
                                      progress: (@Sendable (String) -> Void)?) async {
         // Rows fetchAll just downloaded in full already carry fresh labels.
-        let ids = Array(Set(plan.metadataIds).subtracting(downloaded))
+        // Capped: at 5 units a get, 50k cached rows would hold the sync
+        // runner (and every send waiting on it) for ~20 minutes. Labels past
+        // the cap stay as cached until history next touches them.
+        let ids = Array(Set(plan.metadataIds).subtracting(downloaded)
+            .prefix(Self.maxReconcileLabelRefresh))
         guard !ids.isEmpty else { return }
         do {
             let report = try await client.getMessages(ids: ids, format: "metadata")

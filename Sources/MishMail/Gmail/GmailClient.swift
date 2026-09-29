@@ -485,6 +485,18 @@ actor GmailClient {
     /// singles. Returns successes plus notFound vs retry-exhausted ids so
     /// history sync can refuse to advance past transient failures.
     func getMessages(ids: [String], format: String = "full") async throws -> MessageFetchReport {
+        var report = try await getMessagesReport(ids: ids, format: format)
+        // One bad id is skipped so history can move on. Every id failing the
+        // same way is an account-wide problem (e.g. 400 failedPrecondition):
+        // report them unfetched so the history id stays put.
+        if ids.count >= 3, report.skippedIds.count == ids.count {
+            report.retryExhaustedIds += report.skippedIds
+            report.skippedIds = []
+        }
+        return report
+    }
+
+    private func getMessagesReport(ids: [String], format: String) async throws -> MessageFetchReport {
         guard !ids.isEmpty else {
             return MessageFetchReport()
         }

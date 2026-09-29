@@ -270,6 +270,9 @@ extension MailStore {
             syncStatus = ""
             return
         }
+        // A follow-up sync (after a send or failed edit) must not restart a
+        // pass for an account that is being removed.
+        guard isKnownAccount(accountId) else { return }
         let engine = engines[accountId] ?? SyncEngine(accountId: accountId)
         engines[accountId] = engine
         syncStatus = "Syncing \(accountId)…"

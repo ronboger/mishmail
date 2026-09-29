@@ -162,6 +162,7 @@ extension MailStore {
             }
             let gmail = client(for: row.accountId)
             var shouldDelete = false
+            var shouldRederive = false
             do {
                 try await Self.perform(change, on: gmail, gmailThreadId: row.gmailThreadId)
                 isOffline = false
@@ -180,8 +181,7 @@ extension MailStore {
                     lastError = "Couldn't sync an offline change: \(error.localizedDescription)"
                 }
                 shouldDelete = true
-                await rederiveThreadFromMessages(
-                    accountId: row.accountId, gmailThreadId: row.gmailThreadId)
+                shouldRederive = true
             }
             // Delete only if the row is still the one we replayed: a user edit
             // made during the flush folds into it (enqueue sees the row and
@@ -190,10 +190,16 @@ extension MailStore {
             // and replays next time — label edits and trash are idempotent, so
             // re-sending the already-sent part is harmless.
             if shouldDelete {
-                _ = try? await pool.write { db in
-                let current = try PendingThreadOp.filter(Column("id") == row.id).fetchOne(db)
-                guard current?.updatedAt == row.updatedAt else { return }
-                _ = try PendingThreadOp.deleteOne(db, key: row.id)
+                let deleted = (try? await pool.write { db -> Bool in
+                    let current = try PendingThreadOp.filter(Column("id") == row.id).fetchOne(db)
+                    guard current?.updatedAt == row.updatedAt else { return false }
+                    return try PendingThreadOp.deleteOne(db, key: row.id)
+                }) ?? false
+                // A row that picked up a new edit mid-flush stays queued; do
+                // not revert the thread under that edit.
+                if deleted, shouldRederive {
+                    await rederiveThreadFromMessages(
+                        accountId: row.accountId, gmailThreadId: row.gmailThreadId)
                 }
             }
         }
