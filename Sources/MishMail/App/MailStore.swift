@@ -1748,11 +1748,17 @@ struct ComposeRequest: Identifiable {
     /// legacy excludePromotions) because baseQuery does not read store.chips.
     /// Internal so PrioritySplit can suppress IMPORTANT-only Priority hoists
     /// for threads that only appear via category-hide pin-through.
+    ///
+    /// Read from ThreadListView's body and layout pass, so the saved-view
+    /// chips decode goes through `decodedSavedChips` (memoized on the JSON
+    /// bytes) instead of running a JSONDecoder on every body evaluation.
+    /// Still reads `selectedView` / `savedViews` / `chips` directly, so
+    /// Observation tracking is unchanged.
     var effectiveCategoryHide: Set<String> {
         if case .saved(let id, _) = selectedView,
            let v = savedViews.first(where: { $0.id == id }) {
             if let data = v.chipsJSON,
-               let saved = try? JSONDecoder().decode(FilterChips.self, from: data) {
+               let saved = decodedSavedChips(data) {
                 return saved.category.hide
             }
             if v.excludePromotions {
@@ -1761,6 +1767,22 @@ struct ComposeRequest: Identifiable {
             return []
         }
         return chips.category.hide
+    }
+
+    /// Last saved-view chips decode, keyed on the exact JSON bytes. One
+    /// entry is enough: only the saved view on screen is ever asked for, and
+    /// editing it produces new bytes (a miss) rather than a stale hit.
+    /// `@ObservationIgnored` — a cache fill must never publish.
+    @ObservationIgnored
+    private var savedChipsMemo: (data: Data, chips: FilterChips?)?
+
+    /// `FilterChips` decoded from a saved view's `chipsJSON`, memoized.
+    /// Comparing the bytes is a memcmp; the decode it skips is not.
+    func decodedSavedChips(_ data: Data) -> FilterChips? {
+        if let memo = savedChipsMemo, memo.data == data { return memo.chips }
+        let chips = try? JSONDecoder().decode(FilterChips.self, from: data)
+        savedChipsMemo = (data, chips)
+        return chips
     }
 
     func currentStarStickinessPolicy() -> StarStickinessPolicy {
@@ -1780,7 +1802,7 @@ struct ComposeRequest: Identifiable {
             savedStarredOnly = v.starredOnly
             savedLabelId = v.labelId
             if let data = v.chipsJSON,
-               let saved = try? JSONDecoder().decode(FilterChips.self, from: data) {
+               let saved = decodedSavedChips(data) {
                 savedHide = saved.category.hide
                 if saved.labelId == "STARRED" { savedLabelId = "STARRED" }
             } else if v.excludePromotions {
@@ -2991,11 +3013,16 @@ struct ComposeRequest: Identifiable {
                 case .ignore:
                     list = payload.threads
                 }
-                self.threads = list
+                // Every assignment below is guarded: an Observation setter
+                // publishes even when the value is equal, and a background
+                // poll that changed nothing would otherwise re-run the list's
+                // layout pass, the sidebar badges and the paging footer.
+                if list != self.threads { self.threads = list }
                 // Drop multi-select checks for rows that left the list.
                 if !self.checkedThreadIds.isEmpty {
                     let visible = Set(list.map(\.id))
-                    self.checkedThreadIds = self.checkedThreadIds.intersection(visible)
+                    let kept = self.checkedThreadIds.intersection(visible)
+                    if kept != self.checkedThreadIds { self.checkedThreadIds = kept }
                     if let last = self.lastCheckedThreadId, !visible.contains(last) {
                         self.lastCheckedThreadId = nil
                     }
@@ -3004,20 +3031,20 @@ struct ComposeRequest: Identifiable {
                     }
                 }
                 // Keep expanded window across sync/star reloads; search never pages.
+                let hasMore = search.isEmpty ? payload.hasMore : false
+                let cursor = search.isEmpty ? payload.nextCursor : nil
                 if search.isEmpty {
-                    self.listWindowLimit = max(self.listWindowLimit, list.count)
-                    self.hasMoreThreads = payload.hasMore
-                    self.listCursor = payload.nextCursor
-                } else {
-                    self.hasMoreThreads = false
-                    self.listCursor = nil
+                    let limit = max(self.listWindowLimit, list.count)
+                    if limit != self.listWindowLimit { self.listWindowLimit = limit }
                 }
-                self.vipThreadIds = payload.vipHits
+                if hasMore != self.hasMoreThreads { self.hasMoreThreads = hasMore }
+                if cursor != self.listCursor { self.listCursor = cursor }
+                if payload.vipHits != self.vipThreadIds { self.vipThreadIds = payload.vipHits }
                 // Local sidebar counts only: they use the same denorm filters as
                 // the visible lists (inbox/promotions/social exclude spam, and
                 // category tabs require inInbox). Gmail's CATEGORY_* label
                 // totals include spam + archived and would disagree with the list.
-                self.unreadCounts = payload.counts
+                if payload.counts != self.unreadCounts { self.unreadCounts = payload.counts }
                 Notifier.setBadge(payload.badge)
                 return true
             }
@@ -4126,11 +4153,19 @@ struct ComposeRequest: Identifiable {
     /// key-repeat does not scan the array on every step.
     /// Does not clear `starNavAnchor` — the re-partition is what the anchor
     /// exists to survive.
+    ///
+    /// Only writes what changed: ThreadListView calls this from every layout
+    /// pass, and an unconditional write would publish `displayOrder` (and
+    /// rebuild the index map) even when regrouping produced the same order.
     func updateDisplayOrder(_ order: [String],
                             prioritySectionIds: [String] = []) {
-        displayOrder = order
-        displayOrderIndex = ThreadListNavigation.indexMap(for: order)
-        self.prioritySectionIds = prioritySectionIds
+        if order != displayOrder {
+            displayOrder = order
+            displayOrderIndex = ThreadListNavigation.indexMap(for: order)
+        }
+        if prioritySectionIds != self.prioritySectionIds {
+            self.prioritySectionIds = prioritySectionIds
+        }
     }
 
     /// Take the pending star-scroll hold (if any). One-shot: clears store

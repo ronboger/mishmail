@@ -60,6 +60,9 @@ extension MailStore {
     private func classify(_ targets: [MailThread], quiet: Bool) {
         guard !classifying, !targets.isEmpty else { return }
         classifying = true
+        // One status write per classified thread republished the FilterBar
+        // each time; throttle like sync progress (newest count still lands).
+        let progress = makeSyncStatusSink()
         Task {
             var done = 0
             for thread in targets {
@@ -75,11 +78,12 @@ extension MailStore {
                     await MainActor.run {
                         aiCategories[thread.id] = category
                         done += 1
-                        syncStatus = "Sorting with AI… \(done)/\(targets.count)"
+                        progress.submit("Sorting with AI… \(done)/\(targets.count)")
                     }
                 } catch {
                     await MainActor.run {
                         classifying = false
+                        progress.close()
                         syncStatus = ""
                         if quiet {
                             // The old Ollama client collapsed missing-model,
@@ -97,6 +101,7 @@ extension MailStore {
             }
             await MainActor.run {
                 classifying = false
+                progress.close()
                 syncStatus = ""
                 if !quiet {
                     showNotice("Sorted \(done) thread\(done == 1 ? "" : "s") with AI.")
