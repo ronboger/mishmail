@@ -33,13 +33,10 @@ struct ContentView: View {
             set: { if !$0 { store.confirmingDraftDelete = nil } }
         )
     }
-    // No `ListFocusState` observation here. ObservableObject invalidation is
-    // per object, so observing it re-ran this whole body — the root
-    // GeometryReader, toolbar, and detail pane — on every ↓ / j. The
-    // open-policy `onChange` lives in `ListFocusObserver` (an invisible
-    // child), and the two bits of body state that depend on focus arrive as
-    // `focusFacts`, which only changes when one of those bits flips.
-    @State private var focusFacts = ListFocusFacts()
+    /// List highlight — separate ObservableObject so ↓ / j does not publish
+    /// through MailStore (and re-render detail / sidebar). ContentView must
+    /// observe it: the open-policy onChange and toolbar state depend on it.
+    @EnvironmentObject var listFocus: ListFocusState
     @Environment(\.openSettings) private var openSettings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var keyMonitor: Any?
@@ -174,49 +171,6 @@ struct ContentView: View {
         }
     }
 
-    /// List focus moved (runs from `ListFocusObserver`, not from this body —
-    /// see `focusFacts`). Consumes the one-shot selection intent and applies
-    /// the open policy.
-    private func handleListFocusChange() {
-        let intent = store.consumeSelectionIntent()
-        // Leaving a thread (or clearing selection) promotes inline compose
-        // to the floating card so the draft stays editable.
-        store.promoteInlineComposeIfNeeded(
-            selectedThreadId: store.selectedThreadId,
-            readingPaneHidden: effectivePaneHidden)
-        // Focus mode requires a conversation; drop it when selection clears.
-        if store.selectedThreadId == nil {
-            store.threadFocusMode = false
-            detailSelectionTask?.cancel()
-        }
-        guard let selectedId = store.selectedThreadId else { return }
-        // Auto-highlight of the top row (Superhuman default): selection
-        // only — never opens the conversation.
-        if intent == .quiet { return }
-        if intent == .browse {
-            // Hidden-pane browsing is highlight-only. Ask Mish is too:
-            // opening in compact width replaces the thread list, so ↓
-            // would jump to the next email instead of letting the user
-            // keep scrolling. Enter / click still open.
-            if DetailOpenPolicy.browseOpensDetail(
-                paneHidden: effectivePaneHidden,
-                askMishVisible: askMishPanelWidth > 0) {
-                if DetailOpenPolicy.opensImmediately(
-                    openedThreadId: store.openedThreadId,
-                    listedIds: store.threads.lazy.map(\.id)) {
-                    // Auto-advance after trash/archive: the opened row is
-                    // gone, so debouncing would blank and rebuild the pane.
-                    detailSelectionTask?.cancel()
-                    store.openDetail(selectedId)
-                } else {
-                    scheduleDetailSelection(selectedId)
-                }
-            }
-        } else {
-            openClickedThread(selectedId, intent: intent)
-        }
-    }
-
     private var interactionLayer: some View {
         baseLayout
         .onPreferenceChange(ReadingPaneFrameKey.self) { frame in
@@ -237,11 +191,47 @@ struct ContentView: View {
         // A clicked (not keyboard-browsed) selection reopens the reading pane.
         // Clicking a pure draft skips the pane entirely and hops straight
         // into compose at the bottom (Notion Mail-style).
-        // Selection changes publish only through ListFocusState, so the
-        // observer child is the trigger that consumes the one-shot
-        // selection intent.
-        .background {
-            ListFocusObserver(facts: $focusFacts, onFocusChange: handleListFocusChange)
+        // Observe listFocus (not MailStore) — selection changes publish only
+        // through ListFocusState, so this is the trigger that consumes the
+        // one-shot selection intent.
+        .onChange(of: listFocus.id) {
+            let intent = store.consumeSelectionIntent()
+            // Leaving a thread (or clearing selection) promotes inline compose
+            // to the floating card so the draft stays editable.
+            store.promoteInlineComposeIfNeeded(
+                selectedThreadId: store.selectedThreadId,
+                readingPaneHidden: effectivePaneHidden)
+            // Focus mode requires a conversation; drop it when selection clears.
+            if store.selectedThreadId == nil {
+                store.threadFocusMode = false
+                detailSelectionTask?.cancel()
+            }
+            guard let selectedId = store.selectedThreadId else { return }
+            // Auto-highlight of the top row (Superhuman default): selection
+            // only — never opens the conversation.
+            if intent == .quiet { return }
+            if intent == .browse {
+                // Hidden-pane browsing is highlight-only. Ask Mish is too:
+                // opening in compact width replaces the thread list, so ↓
+                // would jump to the next email instead of letting the user
+                // keep scrolling. Enter / click still open.
+                if DetailOpenPolicy.browseOpensDetail(
+                    paneHidden: effectivePaneHidden,
+                    askMishVisible: askMishPanelWidth > 0) {
+                    if DetailOpenPolicy.opensImmediately(
+                        openedThreadId: store.openedThreadId,
+                        listedIds: store.threads.lazy.map(\.id)) {
+                        // Auto-advance after trash/archive: the opened row is
+                        // gone, so debouncing would blank and rebuild the pane.
+                        detailSelectionTask?.cancel()
+                        store.openDetail(selectedId)
+                    } else {
+                        scheduleDetailSelection(selectedId)
+                    }
+                }
+            } else {
+                openClickedThread(selectedId, intent: intent)
+            }
         }
         // A click on the row that is already selected (e.g. the pre-highlighted
         // top row) produces no selection change — open it via this token.
@@ -341,7 +331,7 @@ struct ContentView: View {
                             ? "arrow.down.right.and.arrow.up.left"
                             : "arrow.up.left.and.arrow.down.right")
                 }
-                .disabled(!focusFacts.hasSelection)
+                .disabled(store.selectedThreadId == nil)
                 .help(store.threadFocusMode
                       ? "Exit full-app conversation (esc or ⌘↩)"
                       : "Open conversation full-app (⌘↩)")
@@ -787,12 +777,11 @@ struct ContentView: View {
     /// detail pane reserves bottom safe area so the scroll doesn't hide under it.
     /// Pane fill sits in an empty column and must not reserve thread scroll space.
     private var reservesInlineComposeSpace: Bool {
-        // `composeBoundToSelection` is `boundThreadId == selectedThreadId`,
-        // maintained by ListFocusObserver so this body never reads focus.
         guard let req = store.composeRequest,
               !store.composeMinimized,
-              focusFacts.composeBoundToSelection else { return false }
-        return ComposePlacement.resolvedPresentation(
+              let selected = store.selectedThreadId else { return false }
+        return req.boundThreadId == selected
+            && ComposePlacement.resolvedPresentation(
                 req.presentation,
                 paneHeight: readingPaneFrame.height,
                 readingPaneEmpty: readingPaneIsEmpty,
@@ -819,9 +808,9 @@ struct ContentView: View {
 
     @ViewBuilder
     private func detailPane(compact: Bool) -> some View {
-        // Equatable host: ContentView re-renders for many reasons (compose,
-        // toasts, layout) but must not rebuild ThreadDetailView until
-        // openedThreadId actually changes.
+        // Equatable host: list-focus key-repeat re-renders ContentView (it
+        // observes listFocus for open policy / toolbar) but must not rebuild
+        // ThreadDetailView until openedThreadId actually changes.
         DetailPaneHost(
             openedThreadId: store.openedThreadId,
             thread: store.openedThreadId.flatMap { id in
@@ -849,48 +838,6 @@ struct ContentView: View {
             }
         )
         .equatable()
-    }
-}
-
-/// The only focus-derived facts ContentView's body renders from. Held in
-/// ContentView `@State` and written only when a value flips, so a focus move
-/// between two ordinary rows re-renders nothing at the root.
-private struct ListFocusFacts: Equatable {
-    /// Something is highlighted (enables "Focus Conversation").
-    var hasSelection = false
-    /// The open compose request is bound to the highlighted thread (inline
-    /// compose reserves space in the reading pane).
-    var composeBoundToSelection = false
-}
-
-/// Invisible child that owns ContentView's list-focus observation, so the
-/// root body (GeometryReader, toolbar, detail pane) does not depend on
-/// `ListFocusState`. Its body is a zero-size clear view: re-running it per
-/// ↓ / j costs one comparison.
-private struct ListFocusObserver: View {
-    @EnvironmentObject private var listFocus: ListFocusState
-    @Environment(MailStore.self) private var store
-    @Binding var facts: ListFocusFacts
-    /// Open policy for a focus move; see `ContentView.handleListFocusChange`.
-    let onFocusChange: () -> Void
-
-    private var currentFacts: ListFocusFacts {
-        let selected = listFocus.id
-        return ListFocusFacts(
-            hasSelection: selected != nil,
-            composeBoundToSelection: selected != nil
-                && store.composeRequest?.boundThreadId == selected)
-    }
-
-    var body: some View {
-        Color.clear
-            .frame(width: 0, height: 0)
-            .accessibilityHidden(true)
-            .onChange(of: listFocus.id) { onFocusChange() }
-            // `initial: true` seeds ContentView before the first focus move.
-            .onChange(of: currentFacts, initial: true) { _, new in
-                if facts != new { facts = new }
-            }
     }
 }
 
