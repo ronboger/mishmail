@@ -70,11 +70,11 @@ crumb("start: args=\(Array(args.dropFirst())) euid=\(geteuid()) " +
 // arguments (macOS strips them silently). Argv still wins when present so the
 // helper can be exercised by hand: `MishMailRelauncher <pid> <app path>`.
 let pid: pid_t
-let target: URL
+let targetPath: URL
 let markerURL: URL?
 if args.count >= 3, let argvPid = pid_t(args[1]) {
     pid = argvPid
-    target = URL(fileURLWithPath: args[2])
+    targetPath = URL(fileURLWithPath: args[2])
     markerURL = args.count >= 4 ? URL(fileURLWithPath: args[3]) : nil
     crumb("plan from argv")
 } else {
@@ -87,13 +87,28 @@ if args.count >= 3, let argvPid = pid_t(args[1]) {
             Data("usage: MishMailRelauncher <pid> <app path>  (or a plan file)\n".utf8))
         exit(64)  // EX_USAGE
     }
+    guard Relaunch.isValidNonce(plan.nonce) else {
+        crumb("exit 64: invalid plan nonce")
+        exit(64)  // EX_USAGE
+    }
     pid = plan.pid
-    target = URL(fileURLWithPath: plan.appPath)
+    targetPath = URL(fileURLWithPath: plan.appPath)
     markerURL = Relaunch.markerURL(inTemp: temp, nonce: plan.nonce)
     // Consumed: a crashed later attempt must not replay this run's orders.
     try? FileManager.default.removeItem(at: planURL)
     crumb("plan from \(planURL.path): pid=\(plan.pid) target=\(plan.appPath)")
 }
+
+guard let resolvedTarget = Relaunch.resolvedTargetAppURL(
+    appPath: targetPath.path,
+    helperBundleURL: Bundle.main.bundleURL
+) else {
+    crumb("exit 64: plan target is not the enclosing MishMail.app")
+    exit(64)  // EX_USAGE
+}
+// Use the resolved path from this point onward, including the signature check
+// and quarantine walk, so a symlink in the plan cannot change meaning later.
+let target = resolvedTarget
 
 // Handshake, before anything else: MishMail refuses to swap until this file
 // exists, because a launch that is merely *requested* can still be destroyed
@@ -125,8 +140,15 @@ crumb("pid \(pid) gone after \(String(format: "%.1f", Date().timeIntervalSince(s
 // The whole reason this helper exists: make the new bundle launchable.
 // Harmless when the install failed and the old, untagged bundle is still in
 // place — stripping an absent attribute is a no-op.
-let stripped = Quarantine.strip(from: target)
-crumb("stripped quarantine from \(stripped) items under \(target.path)")
+// Only a bundle signed by this helper's own team loses quarantine. On a
+// mismatch the app is still reopened below, quarantined, so Gatekeeper makes
+// the call instead of the update failing silently.
+if Relaunch.hasValidTargetSignature(at: target, teamID: Relaunch.runningTeamIdentifier()) {
+    let stripped = Quarantine.strip(from: target)
+    crumb("stripped quarantine from \(stripped) items under \(target.path)")
+} else {
+    crumb("signature or Team ID check failed; quarantine kept on \(target.path)")
+}
 
 // LaunchServices needs a beat to notice the process is gone; without it the
 // open can be folded into the instance that is still shutting down.

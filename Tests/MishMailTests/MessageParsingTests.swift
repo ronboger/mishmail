@@ -2,6 +2,22 @@ import XCTest
 
 final class MessageParsingTests: XCTestCase {
 
+    func testRiskyAttachmentExtensionsIncludeLaunchersAndMacroFiles() {
+        let risky = [
+            "terminal", "fileloc", "webloc", "inetloc", "mobileconfig", "shortcut",
+            "scpt", "applescript", "scptd", "workflow", "action", "iso", "img", "dmg",
+            "html", "htm", "svg", "docm", "xlsm", "pptm", "prefpane", "saver", "kext",
+            "jar", "command", "tool", "sh", "zsh", "py",
+        ]
+        for ext in risky {
+            XCTAssertTrue(
+                MessageParser.isRiskyAttachmentFilename("report.\(ext)"),
+                "expected .\(ext) to prompt")
+        }
+        XCTAssertTrue(MessageParser.isRiskyAttachmentFilename("invoice.pdf.app"))
+        XCTAssertFalse(MessageParser.isRiskyAttachmentFilename("photo.jpg"))
+    }
+
     // MARK: - base64url
 
     func testBase64URLRoundTrip() throws {

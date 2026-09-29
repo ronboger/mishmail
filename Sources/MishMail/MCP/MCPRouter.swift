@@ -250,11 +250,13 @@ enum MCPRouter {
         return s
     }
 
-    private static func intArg(_ args: [String: JSONValue], _ key: String) -> Int? {
+    static func intArg(_ args: [String: JSONValue], _ key: String) -> Int? {
         guard let v = args[key] else { return nil }
         switch v {
         case .int(let i): return i
-        case .double(let d): return Int(d)
+        case .double(let d):
+            guard d.isFinite else { return nil }
+            return Int(exactly: d.rounded())
         case .string(let s): return Int(s)
         default: return nil
         }

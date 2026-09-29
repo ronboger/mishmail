@@ -350,8 +350,10 @@ enum MessageParser {
     /// them to Launch Services. Used to prompt before opening — not a hard
     /// block (the user may still need a `.dmg` from someone they trust).
     private static let riskyExtensions: Set<String> = [
-        "app", "command", "tool", "workflow", "action", "osax", "scptd",
-        "dmg", "pkg", "mpkg", "appimage",
+        "app", "tool", "terminal", "fileloc", "webloc", "inetloc", "mobileconfig",
+        "shortcut", "scpt", "applescript", "scptd", "workflow", "action", "osax",
+        "iso", "img", "dmg", "pkg", "mpkg", "appimage",
+        "html", "htm", "svg", "docm", "xlsm", "pptm", "prefpane", "saver", "kext",
         "sh", "bash", "zsh", "csh", "ksh", "fish",
         "command", "js", "jxa", "py", "rb", "pl", "php", "ps1",
         "exe", "msi", "com", "bat", "cmd", "scr", "jar", "bin",

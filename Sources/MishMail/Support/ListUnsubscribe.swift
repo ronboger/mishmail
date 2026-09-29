@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 
 /// RFC 2369 `List-Unsubscribe` + RFC 8058 one-click (`List-Unsubscribe-Post`).
 ///
@@ -295,42 +296,81 @@ enum ListUnsubscribe {
         return !isDisallowedHost(host)
     }
 
-    /// Loopback, link-local, and RFC 1918 / IPv6 ULA. URL.host is unbracketed.
+    /// Reject local, private, and special-use destinations. `inet_aton` is
+    /// intentional here: unlike a dotted-decimal parser it also accepts the
+    /// legacy numeric forms browsers and URL stacks may interpret, including
+    /// one-component decimal and hexadecimal/short forms.
     static func isDisallowedHost(_ host: String) -> Bool {
-        let h = host.lowercased()
-        if h == "localhost" || h.hasSuffix(".localhost") { return true }
-        if h == "0.0.0.0" || h == "::" || h == "::1" { return true }
-        if isDottedIPv4(h) { return isDisallowedIPv4(h) }
-        if h.contains(":") {
-            if h.hasPrefix("fe80:") || h.hasPrefix("fc") || h.hasPrefix("fd") {
-                return true
-            }
-            if let v4 = h.split(separator: ":").last.map(String.init),
-               isDottedIPv4(v4), isDisallowedIPv4(v4) {
-                return true
-            }
+        var h = host.lowercased()
+        if h.hasPrefix("[") && h.hasSuffix("]") {
+            h = String(h.dropFirst().dropLast())
         }
-        return false
-    }
-
-    private static func isDottedIPv4(_ host: String) -> Bool {
-        let parts = host.split(separator: ".", omittingEmptySubsequences: false)
-        guard parts.count == 4 else { return false }
-        return parts.allSatisfy { part in
-            guard let n = Int(part), (0...255).contains(n) else { return false }
+        while h.hasSuffix(".") { h.removeLast() }
+        if h == "localhost" || h.hasSuffix(".localhost") ||
+            h == "local" || h.hasSuffix(".local") {
             return true
         }
-    }
 
-    private static func isDisallowedIPv4(_ host: String) -> Bool {
-        let parts = host.split(separator: ".").compactMap { Int($0) }
-        guard parts.count == 4 else { return false }
-        if parts[0] == 0 || parts[0] == 10 || parts[0] == 127 { return true }
-        if parts[0] == 169 && parts[1] == 254 { return true }
-        if parts[0] == 192 && parts[1] == 168 { return true }
-        if parts[0] == 172 && (16...31).contains(parts[1]) { return true }
+        if let ipv4 = parseIPv4(h) {
+            return isDisallowedIPv4(ipv4)
+        }
+        guard let ipv6 = parseIPv6(h) else { return false }
+
+        // IPv6 unspecified, loopback, link-local, ULA, and multicast.
+        if ipv6.allSatisfy({ $0 == 0 }) ||
+            (ipv6.dropLast().allSatisfy({ $0 == 0 }) && ipv6.last == 1) {
+            return true
+        }
+        if (ipv6[0] & 0xfe) == 0xfc || // fc00::/7
+            (ipv6[0] == 0xfe && (ipv6[1] & 0xc0) == 0x80) || // fe80::/10
+            (ipv6[0] & 0xff) == 0xff { // ff00::/8
+            return true
+        }
+
+        // Treat both IPv4-mapped (::ffff:a.b.c.d) and deprecated
+        // IPv4-compatible (::a.b.c.d) addresses as their IPv4 destination.
+        let isMapped = ipv6.prefix(10).allSatisfy({ $0 == 0 })
+            && ipv6[10] == 0xff && ipv6[11] == 0xff
+        let isCompatible = ipv6.prefix(12).allSatisfy({ $0 == 0 })
+        if isMapped || isCompatible {
+            return isDisallowedIPv4(Array(ipv6.suffix(4)))
+        }
         return false
     }
+
+    private static func parseIPv4(_ host: String) -> [UInt8]? {
+        var address = in_addr()
+        let result = host.withCString { inet_aton($0, &address) }
+        guard result == 1 else { return nil }
+        let value = UInt32(bigEndian: address.s_addr)
+        return [
+            UInt8((value >> 24) & 0xff),
+            UInt8((value >> 16) & 0xff),
+            UInt8((value >> 8) & 0xff),
+            UInt8(value & 0xff),
+        ]
+    }
+
+    private static func parseIPv6(_ host: String) -> [UInt8]? {
+        var address = in6_addr()
+        let result = host.withCString { inet_pton(AF_INET6, $0, &address) }
+        guard result == 1 else { return nil }
+        return withUnsafeBytes(of: &address) { Array($0.prefix(16)) }
+    }
+
+    private static func isDisallowedIPv4(_ address: [UInt8]) -> Bool {
+        guard address.count == 4 else { return false }
+        let first = address[0]
+        let second = address[1]
+        if first == 0 || first == 10 || first == 127 { return true }
+        if first == 169 && second == 254 { return true }
+        if first == 192 && second == 168 { return true }
+        if first == 172 && (16...31).contains(second) { return true }
+        if first == 100 && (64...127).contains(second) { return true }
+        if (224...239).contains(first) { return true }
+        return address == [255, 255, 255, 255]
+    }
+
 }
 
 /// Rejects redirects that leave HTTPS. Shared by the one-click session.

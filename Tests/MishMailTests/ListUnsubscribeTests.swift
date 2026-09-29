@@ -123,6 +123,24 @@ final class ListUnsubscribeTests: XCTestCase {
 
     // MARK: - URL safety
 
+    func testRejectsNumericAndSpecialUseHosts() {
+        let blocked = [
+            "2130706433", "127.1", "0x7f.1", "0.0.0.0", "127.0.0.1",
+            "10.0.0.1", "172.16.0.1", "192.168.1.1", "169.254.1.1", "100.64.0.1",
+            "224.0.0.1", "255.255.255.255", "::", "::1", "0:0:0:0:0:0:0:1",
+            "::ffff:7f00:1", "::ffff:192.168.1.1", "::127.0.0.1", "fe80::1",
+            "fc00::1", "ff02::1", "localhost", "mail.localhost", "printer.local",
+        ]
+        for host in blocked {
+            XCTAssertTrue(ListUnsubscribe.isDisallowedHost(host), "expected \(host) blocked")
+        }
+
+        let allowed = ["8.8.8.8", "172.32.0.1", "100.128.0.1", "2001:4860:4860::8888", "news.example"]
+        for host in allowed {
+            XCTAssertFalse(ListUnsubscribe.isDisallowedHost(host), "expected \(host) allowed")
+        }
+    }
+
     func testRejectsLoopbackCredentialsAndNonHTTPSForOneClick() {
         XCTAssertFalse(ListUnsubscribe.isSafeOneClickURL(
             URL(string: "http://news.example/u")!))
