@@ -401,4 +401,63 @@ final class ContactMinerTests: XCTestCase {
         // Equal inputs ⇒ equal sets ⇒ no restart loop.
         XCTAssertEqual(start, finish)
     }
+
+    // MARK: - Own-address filtering at ranking time
+
+    /// Own addresses are filtered when ranking, not when merging, so an
+    /// alias that shows up after the map was built needs only a re-rank.
+    func testRankedExcludesOwnAddressesWithoutRemerge() {
+        var weights: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(
+            messages: [
+                msg(rowid: 1, from: "Me <me@x.com>", to: "Ann <ann@y.com>",
+                    labels: "SENT"),
+                msg(rowid: 2, from: "Ann <ann@y.com>",
+                    to: "Me Alias <alias@x.com>"),
+            ],
+            into: &weights, excluding: [])
+        // Unfiltered: the map carries own addresses too.
+        XCTAssertNotNil(weights["me@x.com"])
+        XCTAssertNotNil(weights["alias@x.com"])
+
+        // Before aliases arrive: only the primary is "me".
+        let beforeAliases = ContactMiner.ranked(from: weights, excluding: ["me@x.com"])
+        XCTAssertEqual(Set(beforeAliases.map(\.email)), ["ann@y.com", "alias@x.com"])
+
+        // After: same map, re-ranked — the alias drops out, weights unchanged.
+        let afterAliases = ContactMiner.ranked(
+            from: weights, excluding: ["me@x.com", "alias@x.com"])
+        XCTAssertEqual(afterAliases.map(\.email), ["ann@y.com"])
+        XCTAssertEqual(afterAliases.first?.weight, 6, "SENT +5, inbound +1")
+    }
+
+    /// Filtering must happen before the cap, or own addresses with heavy
+    /// weight would crowd real contacts out of the published list.
+    func testRankedAppliesExclusionBeforeLimit() {
+        let weights: ContactMiner.WeightMap = [
+            "me@x.com": ("Me", 100, true),
+            "ann@y.com": ("Ann", 2, true),
+            "bob@z.com": ("Bob", 1, true),
+        ]
+        let top = ContactMiner.ranked(from: weights, excluding: ["me@x.com"], limit: 2)
+        XCTAssertEqual(top.map(\.email), ["ann@y.com", "bob@z.com"])
+    }
+
+    /// Merging with no exclusion and ranking with the own set gives the same
+    /// list as the old merge-time exclusion (the published result is unchanged).
+    func testRankTimeExclusionMatchesMergeTimeExclusion() {
+        let messages = [
+            msg(rowid: 1, from: "Me <me@x.com>", to: "Ann <ann@y.com>, bob@z.com",
+                labels: "SENT"),
+            msg(rowid: 2, from: "Carol <carol@w.com>", to: "me@x.com", cc: "Ann <ann@y.com>"),
+        ]
+        var mergeTime: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(messages: messages, into: &mergeTime, excluding: ["me@x.com"])
+        var rankTime: ContactMiner.WeightMap = [:]
+        ContactMiner.merge(messages: messages, into: &rankTime, excluding: [])
+        XCTAssertEqual(
+            Set(ContactMiner.ranked(from: mergeTime)),
+            Set(ContactMiner.ranked(from: rankTime, excluding: ["me@x.com"])))
+    }
 }
+

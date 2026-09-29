@@ -498,6 +498,35 @@ final class HTMLBodyLayoutTests: XCTestCase {
                       || js.contains("base + DELTA_TOL >= window.__mmFeedbackBaseVH"))
     }
 
+    /// Image events and ResizeObserver callbacks coalesce into one layout
+    /// pass per frame instead of each running a full getComputedStyle walk.
+    func testLayoutJSCoalescesPassesAndDedupesHeightPosts() {
+        let js = HTMLBodyLayout.installLayoutAndMeasureJS
+        XCTAssertTrue(js.contains("function schedulePass("))
+        XCTAssertTrue(js.contains("requestAnimationFrame"))
+        // Timer fallback: rAF is throttled for hidden / offscreen views.
+        XCTAssertTrue(js.contains("setTimeout(fire"))
+        XCTAssertTrue(js.contains("__mmPassGen"))
+        // Image handler and RO schedule; neither walks inline.
+        XCTAssertTrue(js.contains("schedulePass(true, false)"))
+        XCTAssertTrue(js.contains("schedulePass(false, true)"))
+        // Placeholder reflow only when the viewport width moved.
+        XCTAssertTrue(js.contains("__mmReflowW"))
+        // A repeated height posts once more (host stability needs two
+        // agreeing samples), then is suppressed.
+        XCTAssertTrue(js.contains("__mmLastPostedH"))
+        XCTAssertTrue(js.contains("__mmPostRepeats >= 1"))
+        XCTAssertEqual(HTMLHeightStability().requiredStableSamples, 1,
+                       "JS forwards exactly one repeat; raise its bound if the host needs more")
+    }
+
+    func testTeardownJSDropsPendingPass() {
+        let js = HTMLBodyLayout.teardownJS
+        XCTAssertTrue(js.contains("window.__mmPass = null"))
+        XCTAssertTrue(js.contains("__mmPassGen"))
+        XCTAssertTrue(js.contains("__mmLastPostedH"))
+    }
+
     func testClippedViewportWrapperFixtureHasTallBodyAndShell() {
         // Structure-level regression for Fidelity-like cut-off: shell clips,
         // body copy must remain in the markup for measure/scrollHeight.

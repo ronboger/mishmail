@@ -27,4 +27,14 @@ final class GmailListMessagesQueryTests: XCTestCase {
             XCTAssertEqual(q["labelIds"], label)
         }
     }
+
+    /// Capped paging loops take Gmail's max page but never list past `limit`.
+    func testListPageSizeUsesMaxButNeverOvershootsLimit() {
+        XCTAssertEqual(GmailClient.maxListPageSize, 500)
+        XCTAssertEqual(SyncEngine.listPageSize(listed: 0, limit: 3_000), 500)
+        XCTAssertEqual(SyncEngine.listPageSize(listed: 2_900, limit: 3_000), 100)
+        XCTAssertEqual(SyncEngine.listPageSize(listed: 0, limit: 40), 40)
+        XCTAssertEqual(SyncEngine.listPageSize(listed: 0, limit: .max), 500)
+        XCTAssertEqual(SyncEngine.listPageSize(listed: 3_000, limit: 3_000), 1)
+    }
 }

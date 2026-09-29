@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GRDB
 
@@ -664,20 +665,28 @@ final class AppDatabase: @unchecked Sendable {
         // Real mail is encrypted with a Keychain-held key. The fictional demo
         // uses a fixed non-secret fixture key so an ad-hoc source build never
         // asks for Keychain access (and can be rebuilt freely).
-        let passphrase = try Self.databaseKey()
-        if FileManager.default.fileExists(atPath: path), Self.isPlaintext(path) {
-            try Self.encryptInPlace(path: path, passphrase: passphrase)
-        }
+        let key = try Self.databaseKey()
+        // Runs on the main thread at launch (`AppDatabase.shared`), before
+        // the pool opens and before migrations. Usually one cheap probe; the
+        // one-time plaintext or passphrase→raw-key conversion copies the whole
+        // file (a few seconds for a ~400 MB mailbox), exactly once.
+        let scheme = try Self.prepareDatabaseFile(
+            path: path, key: key,
+            allowConversion: !Self.anotherInstanceIsRunning())
         do {
-            dbPool = try Self.openAndMigrate(path: path, passphrase: passphrase)
-        } catch {
+            dbPool = try Self.openAndMigrate(path: path, key: key, scheme: scheme)
+        } catch where !Self.isTransientOpenError(error) {
             // The cache can't be opened — wrong key (keychain item lost or
             // rotated, e.g. a backup restore) or a corrupt file. Everything in
             // it resyncs from Gmail, so set it aside and start fresh instead
-            // of crashing at launch.
+            // of crashing at launch. The fresh file is always raw-keyed.
+            // Transient failures (disk full, I/O, busy) are excluded: they say
+            // nothing about the file, and wiping a healthy 400 MB cache for
+            // them would be worse than failing this launch. Everything else,
+            // including a migration that throws, still resets.
             NSLog("MishMail: mail cache unreadable (%@); resetting", "\(error)")
             try Self.setAsideUnreadable(path: path)
-            dbPool = try Self.openAndMigrate(path: path, passphrase: passphrase)
+            dbPool = try Self.openAndMigrate(path: path, key: key, scheme: .raw)
         }
     }
 
@@ -757,17 +766,32 @@ final class AppDatabase: @unchecked Sendable {
     /// is 16× the default and keeps the worst case under 200 MB.
     static let pageCacheKiB = 32_768
 
-    private static func openAndMigrate(path: String, passphrase: String) throws -> DatabasePool {
+    private static func openAndMigrate(
+        path: String, key: String, scheme: KeyScheme
+    ) throws -> DatabasePool {
+        let keyString = scheme.keyString(for: key)
         var config = Configuration()
         config.prepareDatabase { db in
-            try db.usePassphrase(passphrase)
-            // Must follow the passphrase: SQLCipher rejects most statements
+            if let keyString {
+                try db.usePassphrase(keyString)
+            }
+            // Must follow the key: SQLCipher rejects most statements
             // on an un-keyed connection.
             try db.execute(sql: "PRAGMA cache_size = -\(pageCacheKiB)")
             // Sorts and temp b-trees (ORDER BY over the thread list, FTS
             // ranking) stay in memory instead of spilling to a temp file that
             // SQLCipher would have to encrypt on the way out.
             try db.execute(sql: "PRAGMA temp_store = MEMORY")
+            // DatabasePool runs in WAL mode, where NORMAL is the documented
+            // safe setting: a commit only appends to the WAL, and the fsync
+            // moves to checkpoint time. A power loss can drop the last few
+            // commits but never corrupts the file. The default (FULL) fsyncs
+            // the WAL on every commit, which is most of the cost of the many
+            // small sync write transactions. A crash loses only a suffix of
+            // commits, in order, and SyncEngine commits historyId after the
+            // rows it covers — so a lost suffix rolls historyId back with
+            // those rows and the next pass re-fetches them from Gmail.
+            try db.execute(sql: "PRAGMA synchronous = NORMAL")
         }
         let pool = try DatabasePool(path: path, configuration: config)
         try migrator.migrate(pool)
@@ -955,26 +979,315 @@ final class AppDatabase: @unchecked Sendable {
 
     /// A plaintext SQLite file starts with the magic "SQLite format 3\0";
     /// an SQLCipher file starts with a random salt.
-    private static func isPlaintext(_ path: String) -> Bool {
+    static func isPlaintext(_ path: String) -> Bool {
         guard let handle = FileHandle(forReadingAtPath: path),
               let magic = try? handle.read(upToCount: 16) else { return false }
         try? handle.close()
         return magic.elementsEqual("SQLite format 3\u{0}".utf8)
     }
 
-    /// One-time migration: exports the plaintext database into an encrypted
-    /// copy (sqlcipher_export) and swaps it into place.
-    private static func encryptInPlace(path: String, passphrase: String) throws {
+    // MARK: - Keying
+
+    /// How a database file is keyed.
+    ///
+    /// The Keychain key is already 32 random bytes, so handing it to SQLCipher
+    /// as a *passphrase* made every connection (writer and each pool reader,
+    /// including the synchronous main-thread reads at launch) run PBKDF2-
+    /// HMAC-SHA512 with 256,000 iterations to "stretch" a key that has full
+    /// entropy already. SQLCipher's raw-key form, `x'<64 hex>'`, uses the
+    /// bytes directly as the encryption key (salt still read from the file)
+    /// and skips that derivation entirely.
+    ///
+    /// `.passphrase` survives only for files keyed before this change, and
+    /// only as a fallback when the one-time conversion fails.
+    enum KeyScheme: Equatable {
+        case raw
+        case passphrase
+        /// Pre-encryption file whose conversion was deferred this launch.
+        case plaintext
+
+        /// The string handed to `sqlite3_key` (via GRDB's `usePassphrase`),
+        /// or nil for an unencrypted file.
+        func keyString(for hexKey: String) -> String? {
+            switch self {
+            case .raw: return AppDatabase.rawKeyLiteral(hexKey)
+            case .passphrase: return hexKey
+            case .plaintext: return nil
+            }
+        }
+    }
+
+    /// SQLCipher raw-key syntax. With exactly 64 hex digits SQLCipher reads
+    /// the salt from the file header and uses these 32 bytes as the key, no
+    /// KDF. (96 digits would embed the salt too; we want the per-file one.)
+    static func rawKeyLiteral(_ hexKey: String) -> String {
+        "x'\(hexKey)'"
+    }
+
+    /// Failures of the environment, not of the file: retrying later can
+    /// succeed, so they must never route a healthy cache into set-aside.
+    static func isTransientOpenError(_ error: Error) -> Bool {
+        guard let error = error as? DatabaseError else { return false }
+        switch error.resultCode {
+        case .SQLITE_BUSY, .SQLITE_LOCKED, .SQLITE_FULL, .SQLITE_IOERR,
+             .SQLITE_NOMEM, .SQLITE_CANTOPEN, .SQLITE_READONLY, .SQLITE_PERM,
+             .SQLITE_PROTOCOL, .SQLITE_INTERRUPT:
+            return true
+        default:
+            return false
+        }
+    }
+
+    /// Another MishMail process with this bundle id (and so this container
+    /// and file) is running — e.g. the old build still open after an
+    /// install. Converting would rename a new file under its open handles,
+    /// and everything it wrote afterwards would land in an unlinked inode.
+    private static func anotherInstanceIsRunning() -> Bool {
+        guard let bundleId = Bundle.main.bundleIdentifier else { return false }
+        let me = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
+            .contains { $0.processIdentifier != me && !$0.isTerminated }
+    }
+
+    /// Brings the file at `path` to the raw-key scheme where possible and
+    /// reports how it must be opened. Must run before any pool or migrator
+    /// touches the file, and leaves no connection open behind it.
+    ///
+    /// - Missing file: nothing to do; SQLite creates it raw-keyed on open.
+    /// - Plaintext (pre-encryption builds): encrypted straight to raw key.
+    /// - Raw-keyed already: one probe, no KDF — the steady state.
+    /// - Passphrase-keyed: converted once (see `convertPassphraseToRawKey`).
+    ///   If that fails, or `allowConversion` is false (another instance holds
+    ///   the file), the original is left untouched and opened with the
+    ///   passphrase, so the app still works and the next launch retries.
+    /// - Neither key works (lost key, corrupt file): `.raw`, so the caller's
+    ///   open fails and its set-aside-and-start-fresh recovery runs.
+    /// - A transient probe error (I/O, busy, disk full) is rethrown: it says
+    ///   nothing about the key, and must not route a healthy file into the
+    ///   caller's reset path.
+    ///
+    /// Only `mail.sqlite` itself is ever passed here; the `.unreadable`
+    /// post-mortem copy and the `.encrypting` / `.rekeying` temporaries are
+    /// never probed or converted.
+    ///
+    /// - Parameter beforeSwap: Test seam, called with the verified temporary
+    ///   path right before it replaces the original. Throwing aborts the swap.
+    static func prepareDatabaseFile(
+        path: String,
+        key: String,
+        allowConversion: Bool = true,
+        beforeSwap: (String) throws -> Void = { _ in }
+    ) throws -> KeyScheme {
+        guard FileManager.default.fileExists(atPath: path) else { return .raw }
+        if isPlaintext(path) {
+            guard allowConversion else { return .plaintext }
+            do {
+                try encryptInPlace(path: path, key: key)
+            } catch RekeyError.busy {
+                NSLog("MishMail: plaintext cache busy; encryption deferred")
+                return .plaintext
+            } catch where !isTransientOpenError(error) {
+                // Damaged plaintext file: the raw open fails and resets.
+                return .raw
+            }
+            return .raw
+        }
+        do {
+            try probe(path: path, keyString: rawKeyLiteral(key))
+            return .raw
+        } catch let error as DatabaseError where error.resultCode == .SQLITE_NOTADB {
+            // Wrong key for this file: expected for a passphrase-keyed one.
+        } catch where !isTransientOpenError(error) {
+            // Raw key read page 1 but the file is damaged further in
+            // (SQLCipher reports a failed page HMAC as SQLITE_CORRUPT). Let
+            // the caller's open fail and take the reset path.
+            return .raw
+        }
+        do {
+            try probe(path: path, keyString: key)
+        } catch where !isTransientOpenError(error) {
+            return .raw
+        }
+        guard allowConversion else {
+            NSLog("MishMail: another instance is running; raw-key conversion deferred")
+            return .passphrase
+        }
+        do {
+            try convertPassphraseToRawKey(path: path, key: key, beforeSwap: beforeSwap)
+            return .raw
+        } catch {
+            NSLog("MishMail: raw-key conversion failed (%@); opening with passphrase",
+                  "\(error)")
+            return .passphrase
+        }
+    }
+
+    /// Opens `path` with `keyString`, reads the schema, and closes. SQLCipher
+    /// only decrypts (and HMAC-checks) page 1 on the first read, so a wrong
+    /// key surfaces here as `SQLITE_NOTADB`.
+    private static func probe(path: String, keyString: String) throws {
+        var config = Configuration()
+        config.prepareDatabase { db in try db.usePassphrase(keyString) }
+        let queue = try DatabaseQueue(path: path, configuration: config)
+        defer { try? queue.close() }
+        _ = try queue.read { db in
+            try Int.fetchOne(db, sql: "SELECT count(*) FROM sqlite_master")
+        }
+    }
+
+    /// One-time migration: exports the plaintext database into a raw-key
+    /// encrypted copy (sqlcipher_export) and swaps it into place.
+    private static func encryptInPlace(path: String, key: String) throws {
         let tmp = path + ".encrypting"
         try? FileManager.default.removeItem(atPath: tmp)
         let plain = try DatabaseQueue(path: path)
         try plain.inDatabase { db in
-            try db.execute(sql: "ATTACH DATABASE ? AS encrypted KEY ?", arguments: [tmp, passphrase])
+            try db.execute(sql: "ATTACH DATABASE ? AS encrypted KEY ?",
+                           arguments: [tmp, rawKeyLiteral(key)])
+            // Another connection on the WAL (a still-running old build) would
+            // keep writing to the file this swap unlinks. Retry next launch.
+            let checkpoint = try Row.fetchOne(db, sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+            if let busy: Int = checkpoint?[0], busy != 0 {
+                throw RekeyError.busy
+            }
+            // Export does not carry auto_vacuum; set it on the empty target.
+            try db.execute(sql: "PRAGMA encrypted.auto_vacuum = INCREMENTAL")
             try db.execute(sql: "SELECT sqlcipher_export('encrypted')")
             try db.execute(sql: "DETACH DATABASE encrypted")
         }
-        try FileManager.default.removeItem(atPath: path)
-        try FileManager.default.moveItem(atPath: tmp, toPath: path)
+        try plain.close()
+        for sidecar in ["-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: path + sidecar)
+        }
+        // rename(2): `path` is always either the old file or the new one.
+        guard rename(tmp, path) == 0 else {
+            throw RekeyError.swapFailed(errno)
+        }
+    }
+
+    /// One-time migration of a passphrase-keyed file to the raw key.
+    ///
+    /// SQLCipher cannot change the KDF of a file in place (`PRAGMA rekey`
+    /// keeps the passphrase semantics), so this exports into a fresh raw-key
+    /// file, verifies that copy independently, and only then swaps it in.
+    /// Every failure before the rename leaves the original exactly as it was;
+    /// the temporary is always cleaned up.
+    ///
+    /// `sqlcipher_export` copies every table — including GRDB's
+    /// `grdb_migrations`, which is what the migrator reads — plus indexes,
+    /// triggers and FTS shadow tables. The header's `user_version` is set
+    /// explicitly rather than relying on export's version-specific behavior
+    /// (unused today — GRDB tracks migrations in its table — but cheap).
+    private static func convertPassphraseToRawKey(
+        path: String,
+        key: String,
+        beforeSwap: (String) throws -> Void
+    ) throws {
+        let fm = FileManager.default
+        let tmp = path + ".rekeying"
+        func removeTemporary() {
+            for suffix in ["", "-journal", "-wal", "-shm"] {
+                try? fm.removeItem(atPath: tmp + suffix)
+            }
+        }
+        removeTemporary()
+        do {
+            var config = Configuration()
+            config.prepareDatabase { db in try db.usePassphrase(key) }
+            let old = try DatabaseQueue(path: path, configuration: config)
+            let expected: (objects: Int, migrations: Int)
+            do {
+                expected = try old.writeWithoutTransaction { db in
+                    // Fold the WAL into the main file first, so the file we
+                    // later drop holds everything and no -wal content is
+                    // stranded next to a file it no longer belongs to.
+                    // A busy checkpoint means another connection still holds
+                    // the WAL. Swapping the file under it would strand its
+                    // later writes, so give up and retry next launch.
+                    let checkpoint = try Row.fetchOne(
+                        db, sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+                    if let busy: Int = checkpoint?[0], busy != 0 {
+                        throw RekeyError.busy
+                    }
+                    let userVersion = try Int.fetchOne(db, sql: "PRAGMA main.user_version") ?? 0
+                    try db.execute(sql: "ATTACH DATABASE ? AS rawkeyed KEY ?",
+                                   arguments: [tmp, rawKeyLiteral(key)])
+                    // Export does not carry auto_vacuum. Without this the copy
+                    // is in NONE mode and reclaimSpaceIfNeeded runs a second
+                    // full VACUUM of the file right after this one.
+                    try db.execute(sql: "PRAGMA rawkeyed.auto_vacuum = INCREMENTAL")
+                    try db.execute(sql: "SELECT sqlcipher_export('rawkeyed')")
+                    try db.execute(sql: "PRAGMA rawkeyed.user_version = \(userVersion)")
+                    try db.execute(sql: "DETACH DATABASE rawkeyed")
+                    return try schemaFingerprint(db)
+                }
+            } catch {
+                try? old.close()
+                throw error
+            }
+            // Closing the last connection also removes the old -wal/-shm.
+            try old.close()
+
+            // Verify the copy on its own, with the raw key, before trusting it.
+            var rawConfig = Configuration()
+            let rawKey = rawKeyLiteral(key)
+            rawConfig.prepareDatabase { db in try db.usePassphrase(rawKey) }
+            let copy = try DatabaseQueue(path: tmp, configuration: rawConfig)
+            let actual: (objects: Int, migrations: Int)
+            do {
+                actual = try copy.read { db in
+                    let check = try String.fetchOne(db, sql: "PRAGMA quick_check")
+                    guard check == "ok" else {
+                        throw RekeyError.verificationFailed("quick_check: \(check ?? "nil")")
+                    }
+                    return try schemaFingerprint(db)
+                }
+            } catch {
+                try? copy.close()
+                throw error
+            }
+            try copy.close()
+            guard actual == expected else {
+                throw RekeyError.verificationFailed(
+                    "schema \(actual) != \(expected)")
+            }
+
+            try beforeSwap(tmp)
+            // The old file was checkpointed and closed cleanly, so any
+            // sidecars left now are stale. Drop them *before* the swap: a
+            // leftover -wal would otherwise be replayed onto the new file.
+            for sidecar in ["-wal", "-shm"] {
+                try? fm.removeItem(atPath: path + sidecar)
+            }
+            // rename(2) replaces the destination atomically: at every instant
+            // `path` is either the complete old file or the complete new one.
+            guard rename(tmp, path) == 0 else {
+                throw RekeyError.swapFailed(errno)
+            }
+        } catch {
+            removeTemporary()
+            throw error
+        }
+        removeTemporary()
+    }
+
+    /// Cheap structural comparison between the source and exported copy:
+    /// schema object count and applied GRDB migrations. Internal `sqlite_*`
+    /// objects are excluded: export does not copy e.g. `sqlite_stat1`, and a
+    /// mismatch there would fail every conversion attempt forever.
+    private static func schemaFingerprint(_ db: Database) throws -> (objects: Int, migrations: Int) {
+        let objects = try Int.fetchOne(db, sql:
+            "SELECT count(*) FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'") ?? 0
+        let migrations = try db.tableExists("grdb_migrations")
+            ? (Int.fetchOne(db, sql: "SELECT count(*) FROM grdb_migrations") ?? 0)
+            : 0
+        return (objects, migrations)
+    }
+
+    enum RekeyError: Error {
+        case busy
+        case verificationFailed(String)
+        case swapFailed(Int32)
     }
 
     /// Static so tests can migrate an in-memory database.
@@ -1741,6 +2054,55 @@ final class AppDatabase: @unchecked Sendable {
                 t.add(column: "cacheCreationTokens", .integer).notNull().defaults(to: 0)
                 t.add(column: "cacheReadTokens", .integer).notNull().defaults(to: 0)
             }
+        }
+        // v42: sort indexes for the inbox-style lists. Inbox, Promotions,
+        // Social, and the per-account inbox order by
+        // `COALESCE(lastInboundDate, lastDate) DESC, id DESC`
+        // (ThreadListQuery.orderSQL). The v18/v25 composites end in a plain
+        // column, so SQLite could use them for the WHERE but still sorted
+        // every matching row in a temp B-tree before LIMIT. An index ending
+        // in the exact same expression lets it walk rows already in order
+        // and stop after one page. The expression text must match the
+        // query's byte for byte (modulo whitespace) or SQLite ignores it —
+        // ThreadListIndexTests pins that with EXPLAIN QUERY PLAN.
+        m.registerMigration("v42") { db in
+            // Unified inbox: inInbox = 1 AND inTrash = 0 (+ snooze and
+            // category-hide residual filters, which are not indexable).
+            try db.execute(sql: """
+                CREATE INDEX thread_inbox_sort
+                ON thread(inInbox, inTrash,
+                          COALESCE(lastInboundDate, lastDate) DESC, id DESC)
+                """)
+            // Per-account inbox (and the unified inbox with an account
+            // selected): accountId leads so one account's page does not
+            // walk past every other account's rows.
+            try db.execute(sql: """
+                CREATE INDEX thread_account_inbox_sort
+                ON thread(accountId, inInbox, inTrash,
+                          COALESCE(lastInboundDate, lastDate) DESC, id DESC)
+                """)
+            // Promotions / Social tabs: four fixed equality flags.
+            try db.execute(sql: """
+                CREATE INDEX thread_promotions_sort
+                ON thread(inPromotions, inInbox, inTrash, inSpam,
+                          COALESCE(lastInboundDate, lastDate) DESC, id DESC)
+                """)
+            try db.execute(sql: """
+                CREATE INDEX thread_social_sort
+                ON thread(inSocial, inInbox, inTrash, inSpam,
+                          COALESCE(lastInboundDate, lastDate) DESC, id DESC)
+                """)
+            // Opening a thread and re-deriving it during sync both read
+            // `WHERE threadId = ? ORDER BY date`. The v1 single-column
+            // threadId index found the rows but still sorted them; this one
+            // returns them in order. It fully covers the old index's lookups
+            // (threadId is its prefix), so the old one goes — one fewer
+            // B-tree to update on every message insert.
+            try db.create(
+                index: "message_on_threadId_date",
+                on: "message",
+                columns: ["threadId", "date"])
+            try db.execute(sql: "DROP INDEX IF EXISTS message_on_threadId")
         }
         return m
     }

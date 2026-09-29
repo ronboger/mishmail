@@ -162,4 +162,108 @@ final class ChunkedUpsertTests: XCTestCase {
         }
         XCTAssertEqual(try q.read { try Message.fetchCount($0) }, 3)
     }
+
+    // MARK: - No-op writes skipped
+
+    /// Temp triggers that count row UPDATEs on `table`, and separately how
+    /// often the v40 FTS trigger's columns were in an UPDATE's SET list.
+    private func installWriteCounters(_ db: Database) throws {
+        try db.execute(sql: """
+            CREATE TEMP TABLE writeLog (kind TEXT NOT NULL);
+            CREATE TEMP TRIGGER log_message_update AFTER UPDATE ON main.message
+            BEGIN INSERT INTO writeLog(kind) VALUES('message'); END;
+            CREATE TEMP TRIGGER log_message_fts_update
+            AFTER UPDATE OF subject, fromHeader, toHeader, ccHeader ON main.message
+            BEGIN INSERT INTO writeLog(kind) VALUES('fts'); END;
+            CREATE TEMP TRIGGER log_thread_update AFTER UPDATE ON main.thread
+            BEGIN INSERT INTO writeLog(kind) VALUES('thread'); END;
+            """)
+    }
+
+    private func writes(_ db: Database, _ kind: String) throws -> Int {
+        try Int.fetchOne(db, sql: "SELECT COUNT(*) FROM writeLog WHERE kind = ?",
+                         arguments: [kind]) ?? 0
+    }
+
+    func testIdenticalReplayDoesNotRewriteMessageRow() throws {
+        let q = try migrate()
+        let item = pending(gmailId: "m1")
+        try q.write { db in
+            try SyncEngine.upsertPending(db, items: [item])
+            try self.installWriteCounters(db)
+            // Full and metadata-only replays of the same message.
+            try SyncEngine.upsertPending(db, items: [item])
+            try SyncEngine.upsertPending(db, items: [SyncEngine.PendingUpsert(
+                message: item.message, attachments: [], headersOnly: true)])
+            XCTAssertEqual(try self.writes(db, "message"), 0)
+            XCTAssertEqual(try self.writes(db, "fts"), 0)
+        }
+    }
+
+    /// A label-only change updates the row without touching the FTS columns.
+    func testLabelOnlyChangeSkipsFTSTrigger() throws {
+        let q = try migrate()
+        let item = pending(gmailId: "m1")
+        var relabeled = item.message
+        relabeled.labelIds = "INBOX STARRED"
+        relabeled.isUnread = false
+        try q.write { db in
+            try SyncEngine.upsertPending(db, items: [item])
+            try self.installWriteCounters(db)
+            try SyncEngine.upsertPending(db, items: [SyncEngine.PendingUpsert(
+                message: relabeled, attachments: [], headersOnly: true)])
+            XCTAssertEqual(try self.writes(db, "message"), 1)
+            XCTAssertEqual(try self.writes(db, "fts"), 0)
+            let stored = try Message.fetchOne(db, key: item.message.id)
+            XCTAssertEqual(stored?.labelIds, "INBOX STARRED")
+            XCTAssertEqual(stored?.isUnread, false)
+        }
+    }
+
+    /// A real header change still reaches the FTS index.
+    func testSubjectChangeStillReindexes() throws {
+        let q = try migrate()
+        let item = pending(gmailId: "m1")
+        var renamed = item.message
+        renamed.subject = "Quarterly zebra report"
+        try q.write { db in
+            try SyncEngine.upsertPending(db, items: [item])
+            try self.installWriteCounters(db)
+            try SyncEngine.upsertPending(db, items: [SyncEngine.PendingUpsert(
+                message: renamed, attachments: [])])
+            XCTAssertEqual(try self.writes(db, "fts"), 1)
+            let hits = try Int.fetchOne(db, sql: """
+                SELECT COUNT(*) FROM message_fts WHERE message_fts MATCH 'zebra'
+                """)
+            XCTAssertEqual(hits, 1)
+        }
+    }
+
+    /// Re-deriving a thread whose messages did not change skips the UPDATE.
+    func testRederiveUnchangedThreadSkipsWrite() throws {
+        let q = try migrate()
+        let key = "\(account):t1"
+        try q.write { db in
+            try SyncEngine.upsertPending(db, items: [self.pending(gmailId: "m1"),
+                                                     self.pending(gmailId: "m2")])
+            try SyncEngine.deriveThreads(db, for: [key], accountId: self.account)
+            try self.installWriteCounters(db)
+            try SyncEngine.deriveThreads(db, for: [key], accountId: self.account)
+            XCTAssertEqual(try self.writes(db, "thread"), 0)
+            // A real change still lands.
+            try db.execute(sql: "UPDATE message SET labelIds = 'INBOX STARRED' WHERE id = ?",
+                           arguments: ["\(self.account):m2"])
+            try SyncEngine.deriveThreads(db, for: [key], accountId: self.account)
+            XCTAssertEqual(try self.writes(db, "thread"), 1)
+            XCTAssertEqual(try MailThread.fetchOne(db, key: key)?.isStarred, true)
+        }
+    }
+
+    func testDeriveChunksCoverEveryKeyOnce() {
+        let keys = Set((0..<1_201).map { "a:t\($0)" })
+        let chunks = SyncEngine.deriveChunks(keys)
+        XCTAssertEqual(chunks.map(\.count), [500, 500, 201])
+        XCTAssertEqual(Set(chunks.flatMap { $0 }), keys)
+        XCTAssertTrue(SyncEngine.deriveChunks([]).isEmpty)
+    }
 }

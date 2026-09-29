@@ -108,4 +108,83 @@ final class ThreadRefreshMergeTests: XCTestCase {
             ThreadRefresh.initialBodyLoadSeedIds(in: [sent, discarded, live]),
             [sent.id, live.id])
     }
+
+    // MARK: - isDisplayEquivalent (refresh no-op check)
+
+    func testDisplayEquivalentForIdenticalThreads() {
+        let a = [msg(id: "1", bodyText: "body", bodyHTML: "<p>body</p>"), msg(id: "2")]
+        XCTAssertTrue(ThreadRefresh.isDisplayEquivalent(a, a))
+    }
+
+    func testDisplayEquivalentDetectsHeaderChanges() {
+        let current = [msg(id: "1", labels: "INBOX UNREAD", bodyText: "body")]
+        let fresh = [msg(id: "1", labels: "INBOX", bodyText: "body")]
+        XCTAssertFalse(ThreadRefresh.isDisplayEquivalent(current, fresh),
+                       "label / read-state changes must refresh the pane")
+        var unread = current[0]
+        unread.isUnread = true
+        XCTAssertFalse(ThreadRefresh.isDisplayEquivalent(current, [unread]))
+    }
+
+    func testDisplayEquivalentDetectsAddedRemovedAndReorderedMessages() {
+        let one = msg(id: "1")
+        let two = msg(id: "2")
+        XCTAssertFalse(ThreadRefresh.isDisplayEquivalent([one], [one, two]))
+        XCTAssertFalse(ThreadRefresh.isDisplayEquivalent([one, two], [two, one]))
+    }
+
+    func testDisplayEquivalentDetectsHydrationAndInlining() {
+        let empty = [msg(id: "1")]
+        let hydrated = [msg(id: "1", bodyText: "body", bodyHTML: "<p><img src=\"cid:x\"></p>")]
+        XCTAssertFalse(ThreadRefresh.isDisplayEquivalent(empty, hydrated))
+        let inlined = [msg(id: "1", bodyText: "body",
+                           bodyHTML: "<p><img src=\"data:image/png;base64,AAAA\"></p>")]
+        XCTAssertFalse(ThreadRefresh.isDisplayEquivalent(hydrated, inlined),
+                       "cid → data: rewrite changes the body length")
+    }
+
+    func testDisplayEquivalentComparesDraftBodiesInFull() {
+        // Same length, different text: only a draft body can change like this.
+        let before = [msg(id: "d1", labels: "DRAFT", bodyText: "cat")]
+        let after = [msg(id: "d1", labels: "DRAFT", bodyText: "dog")]
+        XCTAssertFalse(ThreadRefresh.isDisplayEquivalent(before, after))
+    }
+
+    func testDisplayEquivalentTreatsSameLengthSentBodyAsUnchanged() {
+        // Sent bodies are immutable per id; a same-length difference cannot
+        // come from a refresh, so the cheap length check is exact there.
+        let a = [msg(id: "1", bodyText: "cat")]
+        let b = [msg(id: "1", bodyText: "dog")]
+        XCTAssertTrue(ThreadRefresh.isDisplayEquivalent(a, b))
+    }
+
+    // MARK: - ThreadMessageRoles
+
+    func testMessageRolesSplitsDraftsAndSent() {
+        let messages = [
+            msg(id: "1"),
+            msg(id: "gone", labels: "DRAFT TRASH"),
+            msg(id: "2"),
+            msg(id: "d1", labels: "DRAFT"),
+        ]
+        let roles = ThreadMessageRoles(messages: messages)
+        XCTAssertEqual(roles.liveDraftIds, ["a:d1"])
+        XCTAssertEqual(roles.nonDraftIds, ["a:1", "a:gone", "a:2"],
+                       "discarded DRAFT+TRASH keeps ordinary card chrome")
+        XCTAssertEqual(roles.lastNonDraftId, "a:2",
+                       "discarded drafts never become the default-expanded card")
+        XCTAssertTrue(roles.isLiveDraft("a:d1"))
+        XCTAssertFalse(roles.isLiveDraft("a:gone"))
+        XCTAssertEqual(roles.liveDraftIds,
+                       messages.filter { ForwardComposer.isLiveDraft($0.labelIds) }.map(\.id))
+        XCTAssertEqual(roles.lastNonDraftId,
+                       ForwardComposer.newestSentMessage(in: messages)?.id)
+    }
+
+    func testMessageRolesEmptyThread() {
+        let roles = ThreadMessageRoles(messages: [])
+        XCTAssertEqual(roles.liveDraftIds, [])
+        XCTAssertEqual(roles.nonDraftIds, [])
+        XCTAssertNil(roles.lastNonDraftId)
+    }
 }

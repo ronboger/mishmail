@@ -349,8 +349,7 @@ enum Markdown {
     }
 
     private static func stripHeadingPrefix(_ line: String) -> String {
-        guard let re = try? NSRegularExpression(pattern: #"^#{1,6}\s+"#),
-              let m = re.firstMatch(in: line,
+        guard let m = CompiledPattern.headingPrefix.firstMatch(in: line,
                                     range: NSRange(location: 0, length: (line as NSString).length)),
               let r = Range(m.range, in: line) else { return line }
         return String(line[r.upperBound...])
@@ -713,20 +712,20 @@ enum Markdown {
         }
 
         // Inline code `...`
-        work = replaceAll(work, pattern: #"`([^`\n]+)`"#) { m in
+        work = replaceAll(work, regex: CompiledPattern.inlineCode) { m in
             protect("<code>\(escapeHTML(m[1]))</code>")
         }
         // Display-style shouldn't appear inline; still handle $$ for safety.
-        work = replaceAll(work, pattern: #"\$\$([^$]+)\$\$"#) { m in
+        work = replaceAll(work, regex: CompiledPattern.displayMath) { m in
             protect(renderDisplayMath(m[1]))
         }
         // Inline math $...$ (Pandoc rules — see `inlineMathPattern`).
-        work = replaceAll(work, pattern: inlineMathPattern) { m in
+        work = replaceAll(work, regex: CompiledPattern.inlineMath) { m in
             protect(renderInlineMath(m[1]))
         }
         // Links [text](url) — same allowlist / normalization as ComposeLinks.
         // Invalid schemes stay as raw text and are escaped in the final pass.
-        work = replaceAll(work, pattern: #"\[([^\]]*)\]\(([^)\s]+)\)"#) { m in
+        work = replaceAll(work, regex: CompiledPattern.link) { m in
             guard let href = ComposeLinks.normalizeURL(m[2]) else { return m[0] }
             return protect("<a href=\"\(ComposeLinks.escapeAttribute(href))\" dir=\"ltr\">\(escapeHTML(m[1]))</a>")
         }
@@ -742,21 +741,21 @@ enum Markdown {
                 + trailing
         }
         // Bold ** ** or __ __
-        work = replaceAll(work, pattern: #"\*\*([^*\n]+)\*\*"#) { m in
+        work = replaceAll(work, regex: CompiledPattern.boldStar) { m in
             protect("<strong>\(escapeHTML(m[1]))</strong>")
         }
-        work = replaceAll(work, pattern: #"__([^_\n]+)__"#) { m in
+        work = replaceAll(work, regex: CompiledPattern.boldUnderscore) { m in
             protect("<strong>\(escapeHTML(m[1]))</strong>")
         }
         // Strikethrough
-        work = replaceAll(work, pattern: #"~~([^~\n]+)~~"#) { m in
+        work = replaceAll(work, regex: CompiledPattern.strikethrough) { m in
             protect("<del>\(escapeHTML(m[1]))</del>")
         }
         // Italic * * or _ _
-        work = replaceAll(work, pattern: #"(?<![\w*])\*([^*\n]+)\*(?![\w*])"#) { m in
+        work = replaceAll(work, regex: CompiledPattern.italicStar) { m in
             protect("<em>\(escapeHTML(m[1]))</em>")
         }
-        work = replaceAll(work, pattern: #"(?<![\w_])_([^_\n]+)_(?![\w_])"#) { m in
+        work = replaceAll(work, regex: CompiledPattern.italicUnderscore) { m in
             protect("<em>\(escapeHTML(m[1]))</em>")
         }
 
@@ -802,13 +801,29 @@ enum Markdown {
         ComposeLinks.escapeAttribute(s)
     }
 
-    /// Regex replace with capture groups as [full, g1, g2, ...].
-    private static func replaceAll(_ input: String, pattern: String,
-                                   with transform: ([String]) -> String) -> String {
-        guard let re = try? NSRegularExpression(pattern: pattern) else { return input }
-        return replaceAll(input, regex: re, with: transform)
+    /// Patterns compiled once. `inlineHTML` runs per rendered line, so
+    /// compiling nine `NSRegularExpression`s on every call was pure repeated
+    /// work. The patterns are literals, so `try!` can only fail on a typo —
+    /// which the Markdown unit tests hit on first touch (same convention as
+    /// `TextDirection.bareURLRegex` and `ComposeBodyEditor`).
+    private enum CompiledPattern {
+        static let headingPrefix = compile(#"^#{1,6}\s+"#)
+        static let inlineCode = compile(#"`([^`\n]+)`"#)
+        static let displayMath = compile(#"\$\$([^$]+)\$\$"#)
+        static let inlineMath = compile(Markdown.inlineMathPattern)
+        static let link = compile(#"\[([^\]]*)\]\(([^)\s]+)\)"#)
+        static let boldStar = compile(#"\*\*([^*\n]+)\*\*"#)
+        static let boldUnderscore = compile(#"__([^_\n]+)__"#)
+        static let strikethrough = compile(#"~~([^~\n]+)~~"#)
+        static let italicStar = compile(#"(?<![\w*])\*([^*\n]+)\*(?![\w*])"#)
+        static let italicUnderscore = compile(#"(?<![\w_])_([^_\n]+)_(?![\w_])"#)
+
+        private static func compile(_ pattern: String) -> NSRegularExpression {
+            try! NSRegularExpression(pattern: pattern)
+        }
     }
 
+    /// Regex replace with capture groups as [full, g1, g2, ...].
     private static func replaceAll(_ input: String, regex: NSRegularExpression,
                                    with transform: ([String]) -> String) -> String {
         let ns = input as NSString
