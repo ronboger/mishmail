@@ -169,6 +169,95 @@ final class ThreadDetailCacheTests: XCTestCase {
     }
     #endif
 
+    // MARK: - Main-actor-safe lookups
+
+    /// `readyDocument` is what the card body calls on the main actor: it must
+    /// never assemble, and must return the allowed variant once built.
+    func testReadyDocumentNeverBuildsAllowedVariant() throws {
+        let html = "<p>Body <img src=\"https://t.example/p.gif\"></p>"
+        let prep = MessageHTMLPrepBuilder.prep(
+            bodyText: "Body", bodyHTML: html, fontScale: 1.0)
+        let docs = try XCTUnwrap(prep.documents)
+
+        XCTAssertEqual(docs.readyDocument(authored: false, allowRemoteImages: false),
+                       docs.fullBlocked)
+        XCTAssertNil(docs.readyDocument(authored: false, allowRemoteImages: true),
+                     "allowed variant is not ready until built off-main")
+        #if DEBUG
+        XCTAssertEqual(docs.debugAllowedBuildCount, 0)
+        #endif
+
+        // Off-main build (what HTMLBodyView does) fills the shared memo.
+        let copy = docs
+        let built = try XCTUnwrap(copy.document(authored: false, allowRemoteImages: true))
+        XCTAssertEqual(docs.readyDocument(authored: false, allowRemoteImages: true), built)
+        #if DEBUG
+        XCTAssertEqual(docs.debugAllowedBuildCount, 1)
+        #endif
+    }
+
+    func testAllowedVariantBuildsFromBackgroundTask() async throws {
+        let html = "<p>Body <img src=\"https://t.example/p.gif\"></p>"
+        let prep = MessageHTMLPrepBuilder.prep(
+            bodyText: "Body", bodyHTML: html, fontScale: 1.0)
+        let docs = try XCTUnwrap(prep.documents)
+        let built = await Task.detached {
+            docs.document(authored: false, allowRemoteImages: true)
+        }.value
+        XCTAssertNotNil(built)
+        XCTAssertEqual(docs.readyDocument(authored: false, allowRemoteImages: true), built)
+    }
+
+    // MARK: - CID-inlined prep
+
+    func testCIDInlinedPrepScansInlinedHeadAndKeepsPreInlineBytes() throws {
+        let image = "data:image/png;base64," + String(repeating: "A", count: 4_000)
+        let inlined = """
+        <div>New reply <img src="\(image)"></div>
+        <div class="gmail_quote">On Mon, Alice wrote:<br>Earlier</div>
+        """
+        let prep = MessageHTMLPrepBuilder.cidInlinedPrep(
+            inlinedHTML: inlined, preInlineBytes: 120, fontScale: 1.0)
+
+        XCTAssertTrue(prep.hasQuotedTrail)
+        let head = try XCTUnwrap(prep.htmlHead)
+        XCTAssertTrue(head.contains(image), "authored head keeps the inlined image")
+        XCTAssertFalse(head.contains("Earlier"))
+        XCTAssertNil(prep.textHead)
+        XCTAssertEqual(prep.htmlBytes, 120,
+                       "oversize gate uses the pre-inline size, not data: growth")
+        XCTAssertLessThanOrEqual(prep.htmlHeadBytes, prep.htmlBytes)
+
+        let docs = try XCTUnwrap(prep.documents)
+        XCTAssertTrue(try XCTUnwrap(docs.authoredBlocked).contains(image))
+        XCTAssertTrue(try XCTUnwrap(docs.fullBlocked).contains("Earlier"))
+        // The same scan the card used to run inline.
+        XCTAssertEqual(head, QuotedReply.authoredHTMLHead(inlined))
+    }
+
+    /// data: payload can push the inlined string past the auto-render budget
+    /// while the pre-inline body is small; documents must still be built
+    /// (the card auto-renders it) — including the allowed variant.
+    func testCIDInlinedPrepAssemblesPastBudgetWhenPreInlineIsSmall() throws {
+        let big = String(repeating: "A", count: HTMLBodyRenderPolicy.maximumAutomaticBytes + 10)
+        let inlined = "<p>Hi <img src=\"data:image/png;base64,\(big)\"></p>"
+        let prep = MessageHTMLPrepBuilder.cidInlinedPrep(
+            inlinedHTML: inlined, preInlineBytes: 200, fontScale: 1.0)
+        let docs = try XCTUnwrap(prep.documents)
+        XCTAssertNotNil(docs.fullBlocked)
+        XCTAssertNotNil(docs.document(authored: false, allowRemoteImages: true))
+    }
+
+    func testCIDInlinedPrepSkipsDocumentsWhenPreInlineIsOversized() throws {
+        let prep = MessageHTMLPrepBuilder.cidInlinedPrep(
+            inlinedHTML: "<p>Hi</p>",
+            preInlineBytes: HTMLBodyRenderPolicy.maximumAutomaticBytes + 1,
+            fontScale: 1.0)
+        XCTAssertNil(prep.documents?.fullBlocked,
+                     "explicit-approval bodies build their document on demand")
+        XCTAssertFalse(prep.hasQuotedTrail)
+    }
+
     /// Reassembling for a new font scale must not serve the old scale's
     /// memoized allowed document.
     func testReassembleDropsMemoizedAllowedVariant() throws {

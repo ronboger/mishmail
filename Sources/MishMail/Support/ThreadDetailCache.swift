@@ -13,7 +13,7 @@ import GRDB
 /// `prefers-color-scheme`, so one assembled document covers both appearances.
 /// Font scale and remote-image CSP do change the string; documents are keyed
 /// for both image policies at the scale used when the payload was built.
-struct MessageHTMLPrep: Equatable {
+struct MessageHTMLPrep: Equatable, Sendable {
     var textHead: String?
     var htmlHead: String?
     var hasQuotedTrail: Bool
@@ -32,7 +32,12 @@ struct MessageHTMLPrep: Equatable {
 /// Reference type so the assembled string survives struct copies: `document`
 /// is read from `MessageCard`'s SwiftUI body, which re-evaluates on every
 /// height change, and re-assembling a multi-hundred-KB body there would stall
-/// the main actor. Locked because payload copies cross the repository actor.
+/// the main actor. Locked because payload copies cross the repository actor
+/// and the off-main assembly in `HTMLBodyView.Coordinator`.
+///
+/// `build` runs *outside* the lock so `peek` — called from the main actor —
+/// never waits behind a background assembly. Two racing misses may both
+/// build; the first stored result wins and both callers see equal strings.
 private final class AllowedDocumentMemo: @unchecked Sendable {
     private let lock = NSLock()
     private var cached: [Bool: String?] = [:]
@@ -49,15 +54,25 @@ private final class AllowedDocumentMemo: @unchecked Sendable {
     }
     #endif
 
-    /// `build` runs at most once per key; nil results are memoized too.
-    func value(authored: Bool, build: () -> String?) -> String? {
+    /// Non-building lookup: `.some(value)` when this key was memoized
+    /// (value itself may be nil for over-budget sources), `.none` on a miss.
+    func peek(authored: Bool) -> String?? {
         lock.lock()
         defer { lock.unlock() }
-        if let hit = cached[authored] { return hit }
+        return cached[authored]
+    }
+
+    /// `build` runs once per key for sequential callers; nil results are
+    /// memoized too.
+    func value(authored: Bool, build: () -> String?) -> String? {
+        if let hit = peek(authored: authored) { return hit }
+        let made = build()
+        lock.lock()
+        defer { lock.unlock() }
+        if let raced = cached[authored] { return raced }
         #if DEBUG
         missCount += 1
         #endif
-        let made = build()
         cached[authored] = made
         return made
     }
@@ -69,30 +84,54 @@ private final class AllowedDocumentMemo: @unchecked Sendable {
 /// variants are assembled on first request and memoized, so the detail LRU
 /// does not retain four full copies of every body (~2 MB each) while a thread
 /// that does allow images still pays the assembly only once.
-struct MessageHTMLDocuments: Equatable {
+///
+/// The main actor reads through `readyDocument`, which never assembles: an
+/// allowed variant that is not memoized yet comes back nil, and
+/// `HTMLBodyView` builds it off-main via `document(authored:allowRemoteImages:)`
+/// — filling the shared memo so the next mount is a plain lookup.
+struct MessageHTMLDocuments: Equatable, Sendable {
     var fontScale: Double
     var authoredBlocked: String?
     var fullBlocked: String?
     /// Source fragments for on-demand allowed assembly (not expanded docs).
     fileprivate var authoredSource: String?
     fileprivate var fullSource: String?
+    /// Largest source the allowed variants will assemble. Repository docs use
+    /// the auto-render budget; CID-inlined docs lift it, because `data:` image
+    /// payload inflates the string without adding markup for WebKit to parse
+    /// and the card already gated on the pre-inline size.
+    fileprivate var sourceByteBudget: Int = HTMLBodyRenderPolicy.maximumAutomaticBytes
     /// Excluded from `==`: pure derived state, shared across struct copies.
     private let allowedMemo = AllowedDocumentMemo()
 
     /// Allowed variant for the authored head, assembled once on first request.
+    /// Whole-document string work — call off the main actor.
     var authoredAllowed: String? {
         allowedMemo.value(authored: true) {
             guard let source = authoredSource, !source.isEmpty else { return nil }
-            return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+            return Self.assemble(source, allowRemoteImages: true,
+                                 fontScale: fontScale, byteBudget: sourceByteBudget)
         }
     }
 
     /// Allowed variant for the full body, assembled once on first request.
+    /// Whole-document string work — call off the main actor.
     var fullAllowed: String? {
         allowedMemo.value(authored: false) {
             guard let source = fullSource, !source.isEmpty else { return nil }
-            return Self.assemble(source, allowRemoteImages: true, fontScale: fontScale)
+            return Self.assemble(source, allowRemoteImages: true,
+                                 fontScale: fontScale, byteBudget: sourceByteBudget)
         }
+    }
+
+    /// Main-actor-safe lookup: blocked variants, or an allowed variant only
+    /// when it is already memoized. Never assembles. nil means "not ready
+    /// here" — the caller hands the build to a background task.
+    func readyDocument(authored: Bool, allowRemoteImages: Bool) -> String? {
+        guard allowRemoteImages else {
+            return authored ? authoredBlocked : fullBlocked
+        }
+        return allowedMemo.peek(authored: authored) ?? nil
     }
 
     #if DEBUG
@@ -117,12 +156,12 @@ struct MessageHTMLDocuments: Equatable {
             && lhs.fullBlocked == rhs.fullBlocked
             && lhs.authoredSource == rhs.authoredSource
             && lhs.fullSource == rhs.fullSource
+            && lhs.sourceByteBudget == rhs.sourceByteBudget
     }
 
     private static func assemble(_ source: String, allowRemoteImages: Bool,
-                                 fontScale: Double) -> String? {
-        guard source.utf8.count <= HTMLBodyRenderPolicy.maximumAutomaticBytes
-        else { return nil }
+                                 fontScale: Double, byteBudget: Int) -> String? {
+        guard source.utf8.count <= byteBudget else { return nil }
         let css = HTMLBodyDarkMode.injectedCSS(fontScale: fontScale)
         let csp = HTMLBodyCSP.metaTag(allowRemoteImages: allowRemoteImages)
         let doc = HTMLBodyDocument.assemble(html: source, cspMeta: csp, styleCSS: css)
@@ -185,6 +224,75 @@ enum MessageHTMLPrepBuilder {
             htmlHead: htmlHead,
             hasQuotedTrail: hasQuotedTrail,
             htmlBytes: fullHTMLBytes,
+            htmlHeadBytes: htmlHeadBytes,
+            documents: documents)
+    }
+
+    /// Prep for a body whose `cid:` images were rewritten to `data:` URIs.
+    ///
+    /// The inlined string embeds base64 image bytes (often megabytes), so the
+    /// quote scan and document assembly here must run off the main actor —
+    /// `MessageCard.init` used to redo the scan on every parent body pass.
+    /// Mirrors that old in-card logic exactly:
+    /// - The quote-scan cap keys on the *inlined* size (that is what gets
+    ///   scanned).
+    /// - `htmlBytes` is the *pre-inline* size: data: URI growth is image
+    ///   payload WebKit handles fine, and a message that rendered
+    ///   automatically before inlining must not flip into the approval
+    ///   placeholder because its images resolved.
+    /// - No plain-text head: the CID path always renders HTML.
+    ///
+    /// Documents are assembled only for variants the card will auto-render
+    /// (rendered bytes within budget); the explicit-approval path builds its
+    /// document off-main in `HTMLBodyView` instead.
+    static func cidInlinedPrep(inlinedHTML: String, preInlineBytes: Int,
+                               fontScale: Double) -> MessageHTMLPrep {
+        guard !inlinedHTML.isEmpty else { return .empty }
+        let fullBytes = inlinedHTML.utf8.count
+        let budget = HTMLBodyRenderPolicy.maximumAutomaticBytes
+        let htmlHead: String?
+        if fullBytes <= budget {
+            htmlHead = QuotedReply.authoredHTMLHead(inlinedHTML)
+        } else {
+            htmlHead = QuotedReply.authoredHTMLHead(
+                inlinedHTML,
+                scanCharacterLimit: HTMLBodyRenderPolicy.oversizedQuoteScanCharacterLimit)
+        }
+        let htmlBytes = preInlineBytes
+        let htmlHeadBytes = min(htmlHead?.utf8.count ?? 0, htmlBytes)
+
+        let css = HTMLBodyDarkMode.injectedCSS(fontScale: fontScale)
+        let cspBlocked = HTMLBodyCSP.metaTag(allowRemoteImages: false)
+        func assembleBlocked(_ source: String) -> String? {
+            let doc = HTMLBodyDocument.assemble(
+                html: source, cspMeta: cspBlocked, styleCSS: css)
+            return doc.isEmpty ? nil : doc
+        }
+        var authoredBlocked: String?
+        var authoredSource: String?
+        if let head = htmlHead, !head.isEmpty, htmlHeadBytes <= budget {
+            authoredBlocked = assembleBlocked(head)
+            authoredSource = authoredBlocked == nil ? nil : head
+        }
+        var fullBlocked: String?
+        var fullSource: String?
+        if htmlBytes <= budget {
+            fullBlocked = assembleBlocked(inlinedHTML)
+            fullSource = fullBlocked == nil ? nil : inlinedHTML
+        }
+        let documents = MessageHTMLDocuments(
+            fontScale: fontScale,
+            authoredBlocked: authoredBlocked,
+            fullBlocked: fullBlocked,
+            authoredSource: authoredSource,
+            fullSource: fullSource,
+            sourceByteBudget: .max)
+
+        return MessageHTMLPrep(
+            textHead: nil,
+            htmlHead: htmlHead,
+            hasQuotedTrail: htmlHead != nil,
+            htmlBytes: htmlBytes,
             htmlHeadBytes: htmlHeadBytes,
             documents: documents)
     }

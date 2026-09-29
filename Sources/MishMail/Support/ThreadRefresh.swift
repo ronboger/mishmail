@@ -27,6 +27,47 @@ enum ThreadRefresh {
         }
     }
 
+    /// True when `lhs` and `rhs` would render the same reading pane, so a
+    /// refresh can skip reassigning `messages`.
+    ///
+    /// Replaces a synthesized `!=` over whole `Message` values, which walked
+    /// every hydrated body — multi-MB HTML — on the main actor on each sync
+    /// refresh. Headers (ids, labels, read state, dates, addresses, auth,
+    /// List-Unsubscribe …) are still compared in full: they are small, and
+    /// comparing them via `Message ==` with bodies blanked keeps any field
+    /// added later covered automatically.
+    ///
+    /// Bodies compare by UTF-8 length (O(1) for native strings). That is
+    /// exact for what a refresh can change on a sent message — Gmail message
+    /// bodies are immutable per id, so the only transitions are hydrate
+    /// (empty ↔ full) and `cid:` → `data:` inlining, both of which change the
+    /// length. Draft bodies are the exception (an edit can keep the length),
+    /// so a message labelled DRAFT on either side still compares its bodies
+    /// in full; those are small.
+    static func isDisplayEquivalent(_ lhs: [Message], _ rhs: [Message]) -> Bool {
+        guard lhs.count == rhs.count else { return false }
+        for (a, b) in zip(lhs, rhs) where !isDisplayEquivalent(a, b) {
+            return false
+        }
+        return true
+    }
+
+    static func isDisplayEquivalent(_ a: Message, _ b: Message) -> Bool {
+        var headerA = a
+        var headerB = b
+        headerA.bodyText = ""
+        headerA.bodyHTML = nil
+        headerB.bodyText = ""
+        headerB.bodyHTML = nil
+        guard headerA == headerB else { return false }
+        if ForwardComposer.hasDraftLabel(a.labelIds)
+            || ForwardComposer.hasDraftLabel(b.labelIds) {
+            return a.bodyText == b.bodyText && a.bodyHTML == b.bodyHTML
+        }
+        return a.bodyText.utf8.count == b.bodyText.utf8.count
+            && a.bodyHTML?.utf8.count == b.bodyHTML?.utf8.count
+    }
+
     /// Initial reading-pane scroll id: newest sent when multi-message; nil for
     /// a single card (default top). Draft-only multi falls back to last row.
     static func initialScrolledMessageId(in messages: [Message]) -> String? {
@@ -59,5 +100,40 @@ enum ThreadRefresh {
             ids.append(draft.id)
         }
         return ids
+    }
+}
+
+/// Draft vs sent split of an open thread's messages, computed once per
+/// `messages` change. The reading pane reads these on every body pass (card
+/// chrome choice, draft banner, expand seed); recomputing them there split
+/// each message's `labelIds` into a `Set` several times per pass.
+struct ThreadMessageRoles: Equatable {
+    /// Live (unsent, not trashed) drafts, in display order.
+    let liveDraftIds: [String]
+    /// Everything else (sent mail + discarded DRAFT+TRASH rows), in display
+    /// order — these render as `MessageCard`.
+    let nonDraftIds: [String]
+    /// Newest message without a DRAFT label — the default expanded card.
+    let lastNonDraftId: String?
+    private let liveDraftIdSet: Set<String>
+
+    init(messages: [Message]) {
+        var live: [String] = []
+        var nonDraft: [String] = []
+        for message in messages {
+            if ForwardComposer.isLiveDraft(message.labelIds) {
+                live.append(message.id)
+            } else {
+                nonDraft.append(message.id)
+            }
+        }
+        liveDraftIds = live
+        nonDraftIds = nonDraft
+        liveDraftIdSet = Set(live)
+        lastNonDraftId = ForwardComposer.newestSentMessage(in: messages)?.id
+    }
+
+    func isLiveDraft(_ id: String) -> Bool {
+        liveDraftIdSet.contains(id)
     }
 }

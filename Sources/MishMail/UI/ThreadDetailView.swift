@@ -72,7 +72,15 @@ struct ThreadDetailView: View {
     let onBack: () -> Void
     let onReply: (Message) -> Void
 
-    @State private var messages: [Message] = []
+    @State private var messages: [Message] = [] {
+        // Every mutation (assign, subscript write, animated merge) lands here,
+        // so the draft/sent split below can never go stale.
+        didSet { messageRoles = ThreadMessageRoles(messages: messages) }
+    }
+    /// Draft vs sent split of `messages`, derived once per change instead of
+    /// re-splitting every message's `labelIds` on each body pass (the ForEach,
+    /// the banner, and the expand seed all read it).
+    @State private var messageRoles = ThreadMessageRoles(messages: [])
     @State private var attachmentsByMessageId: [String: [AttachmentRow]] = [:]
     /// Off-main quote-trail + assembled HTML from `ThreadDetailRepository`.
     @State private var bodyPrepByMessageId: [String: MessageHTMLPrep] = [:]
@@ -94,11 +102,13 @@ struct ThreadDetailView: View {
     @State private var bodyLoadAttempted: Set<String> = []
     /// Session-only HTML with `cid:` rewritten to `data:` (not persisted).
     @State private var cidInlinedHTMLById: [String: String] = [:]
-    /// Byte count of the body *before* `cid:` → `data:` rewrite, for the
-    /// oversized-HTML gate. The resolve handler overwrites the in-memory
-    /// `bodyHTML` with the inlined string, so the card can't recover the
-    /// pre-inline size from the message itself.
-    @State private var cidPreInlineBytesById: [String: Int] = [:]
+    /// Quote trail + assembled documents for `cidInlinedHTMLById`, built off
+    /// the main actor. Always written in the same main-actor turn as the
+    /// inlined HTML, so a card never sees one without the other. Kept apart
+    /// from `bodyPrepByMessageId` because refresh / hydration overwrite that
+    /// map with DB-HTML prep that still carries unresolved `cid:` refs.
+    /// `htmlBytes` here is the *pre-inline* size (see `cidInlinedPrep`).
+    @State private var cidPrepByMessageId: [String: MessageHTMLPrep] = [:]
     /// Avoid re-fetching the same message for Content-ID recovery every expand.
     @State private var cidResolveAttempted: Set<String> = []
     /// Avoid re-fetching the same message for missing-attachment recovery every expand.
@@ -152,6 +162,8 @@ struct ThreadDetailView: View {
         self.onReply = onReply
         guard let initialPayload else { return }
         _messages = State(initialValue: initialPayload.messages)
+        _messageRoles = State(
+            initialValue: ThreadMessageRoles(messages: initialPayload.messages))
         _attachmentsByMessageId = State(
             initialValue: initialPayload.attachmentsByMessageId)
         _bodyPrepByMessageId = State(
@@ -229,7 +241,7 @@ struct ThreadDetailView: View {
                     }
 
                     ForEach(messages) { message in
-                        if ForwardComposer.isLiveDraft(message.labelIds) {
+                        if messageRoles.isLiveDraft(message.id) {
                             // Live unsent drafts only — DRAFT+TRASH (discarded)
                             // keeps ordinary MessageCard chrome so Trash still
                             // shows content for discarded-compose threads.
@@ -246,7 +258,8 @@ struct ThreadDetailView: View {
                                     .background { messageHeightReader(id: message.id) }
                             }
                         } else {
-                            messageCard(for: message, lastNonDraftId: lastNonDraftId)
+                            messageCard(for: message,
+                                        lastNonDraftId: messageRoles.lastNonDraftId)
                                 .background { messageHeightReader(id: message.id) }
                         }
                     }
@@ -507,7 +520,7 @@ struct ThreadDetailView: View {
                 seenContentRevision = store.contentRevision(of: thread.id)
                 bodyLoadAttempted = []
                 cidInlinedHTMLById = [:]
-                cidPreInlineBytesById = [:]
+                cidPrepByMessageId = [:]
                 cidResolveAttempted = []
                 loadRemoteImagesForThread = false
                 expandedMessageIds = []
@@ -740,7 +753,7 @@ struct ThreadDetailView: View {
                     attachments: attachmentsByMessageId[message.id] ?? [],
                     bodyPrep: bodyPrepByMessageId[message.id],
                     cidInlinedHTML: cidInlinedHTMLById[message.id],
-                    cidPreInlineBytes: cidPreInlineBytesById[message.id],
+                    cidPrep: cidPrepByMessageId[message.id],
                     expandPolicy: messageExpandPolicy,
                     expandedMessageIds: $expandedMessageIds,
                     loadImagesForThread: $loadRemoteImagesForThread,
@@ -913,7 +926,9 @@ struct ThreadDetailView: View {
                     (message: msg, attachment: $0)
                 }
             }
-            guard merged != messages else { return }
+            // Cheap display comparison: a full `!=` walked every hydrated
+            // body (multi-MB HTML) on the main actor per sync refresh.
+            guard !ThreadRefresh.isDisplayEquivalent(merged, messages) else { return }
             withAnimation(PMMotion.interactive) {
                 messages = merged
             }
@@ -929,7 +944,7 @@ struct ThreadDetailView: View {
                 seedExpandedMessagesIfNeeded()
             } else {
                 // Drop ids that left the thread (send/discard renumber).
-                let live = Set(nonDraftMessageIds)
+                let live = Set(messageRoles.nonDraftIds)
                 expandedMessageIds = expandedMessageIds.intersection(live)
                 // Side-by-side: open only messages that arrived this refresh.
                 // Diff against prior message ids so a manual collapse survives
@@ -950,38 +965,19 @@ struct ThreadDetailView: View {
         ThreadRefresh.needsBodyLoad(message)
     }
 
-    /// Live (unsent, not trashed) drafts currently in the open thread.
-    private var liveDraftIds: [String] {
-        messages.filter { ForwardComposer.isLiveDraft($0.labelIds) }.map(\.id)
-    }
-
     /// Banner only when the draft card is likely below the first viewport
     /// (≥4 messages) and that draft isn't already open in compose. Shorter
     /// threads already show the draft card on screen.
     private var showDraftBanner: Bool {
         ComposingDraftVisibility.showsDraftBanner(
-            liveDraftIds: liveDraftIds,
+            liveDraftIds: messageRoles.liveDraftIds,
             messageCount: messages.count,
             composingDraftIds: store.composingDraftMessageIds)
-    }
-
-    /// Expand the newest *sent* message by default — drafts get their own card
-    /// and must not steal the "last card is expanded" affordance from the
-    /// conversation the user is reading.
-    private var lastNonDraftId: String? {
-        ForwardComposer.newestSentMessage(in: messages)?.id
     }
 
     /// Side-by-side opens every sent card; the reading pane stays single-active.
     private var messageExpandPolicy: MessageExpandPolicy {
         splitMode ? .multiple : .single
-    }
-
-    /// Non-draft message ids in display order (drafts render as `DraftMessageCard`).
-    private var nonDraftMessageIds: [String] {
-        messages
-            .filter { !ForwardComposer.isLiveDraft($0.labelIds) }
-            .map(\.id)
     }
 
     /// Seed open cards for the active policy and hydrate each body.
@@ -992,8 +988,8 @@ struct ThreadDetailView: View {
     private func seedExpandedMessagesIfNeeded() {
         let seed = MessageExpandPolicy.initialExpandedIds(
             policy: messageExpandPolicy,
-            nonDraftIds: nonDraftMessageIds,
-            lastNonDraftId: lastNonDraftId)
+            nonDraftIds: messageRoles.nonDraftIds,
+            lastNonDraftId: messageRoles.lastNonDraftId)
         switch messageExpandPolicy {
         case .multiple:
             expandedMessageIds = seed
@@ -1043,10 +1039,21 @@ struct ThreadDetailView: View {
                 accountId: msg.accountId)
         ) else { return }
         attachmentRecoverAttempted.insert(id)
+        let scale = fontScale
         Task {
             guard let result = await store.recoverAttachmentsIfNeeded(
                 message: msg, localAttachmentCount: localCount)
             else { return }
+            // Quote scan + document assembly off the main actor. Built from
+            // the re-fetched DB body; only used when no CID-inlined body is
+            // active (checked again below, after the hop).
+            let refetched = result.message
+            let prep = await Task.detached(priority: .userInitiated) {
+                MessageHTMLPrepBuilder.prep(
+                    bodyText: refetched.bodyText,
+                    bodyHTML: refetched.bodyHTML,
+                    fontScale: scale)
+            }.value
             await MainActor.run {
                 guard splitMode || store.openedThreadId == thread.id else { return }
                 if let idx = messages.firstIndex(where: { $0.id == id }) {
@@ -1057,10 +1064,7 @@ struct ThreadDetailView: View {
                     }
                     messages[idx] = merged
                     if cidInlinedHTMLById[id] == nil {
-                        bodyPrepByMessageId[id] = MessageHTMLPrepBuilder.prep(
-                            bodyText: merged.bodyText,
-                            bodyHTML: merged.bodyHTML,
-                            fontScale: fontScale)
+                        bodyPrepByMessageId[id] = prep
                     }
                 }
                 attachmentsByMessageId[id] = result.attachments
@@ -1083,35 +1087,44 @@ struct ThreadDetailView: View {
         else { return }
         cidResolveAttempted.insert(id)
         let atts = attachmentsByMessageId[id] ?? []
+        // Pre-inline size gates the oversized-HTML placeholder (see
+        // `MessageHTMLPrepBuilder.cidInlinedPrep`).
+        let preInlineBytes = html.utf8.count
+        let scale = fontScale
         Task {
             guard let result = await store.inlineCIDImages(
                 message: msg, attachments: atts, html: html)
             else { return }
+            // The inlined body embeds base64 image bytes (often MBs). Scan
+            // its quote trail and assemble its documents off the main actor,
+            // once, so `MessageCard.init` / body only do lookups.
+            let inlinedHTML = result.html
+            let cidPrep = await Task.detached(priority: .userInitiated) {
+                MessageHTMLPrepBuilder.cidInlinedPrep(
+                    inlinedHTML: inlinedHTML,
+                    preInlineBytes: preInlineBytes,
+                    fontScale: scale)
+            }.value
             await MainActor.run {
                 guard splitMode || store.openedThreadId == thread.id else { return }
+                // Same turn: a card must never see the inlined HTML without
+                // its prep (it would fall back to the DB prep's `cid:` head).
                 cidInlinedHTMLById[id] = result.html
-                cidPreInlineBytesById[id] = html.utf8.count
+                cidPrepByMessageId[id] = cidPrep
                 attachmentsByMessageId[id] = result.attachments
+                // `bodyPrepByMessageId[id]` keeps the DB-HTML prep: cards
+                // prefer `cidPrepByMessageId` while an inlined body exists.
                 if let refreshed = result.refreshedMessage,
                    let idx = messages.firstIndex(where: { $0.id == id }) {
                     // Keep session-inlined HTML on the card via cidInlinedHTMLById;
-                    // update headers/snippet from the re-fetch but leave the
-                    // stored body prep pointing at DB HTML until rebuild below.
+                    // update headers/snippet from the re-fetch.
                     var merged = refreshed
                     merged.bodyHTML = result.html
                     messages[idx] = merged
-                    bodyPrepByMessageId[id] = MessageHTMLPrepBuilder.prep(
-                        bodyText: merged.bodyText,
-                        bodyHTML: result.html,
-                        fontScale: fontScale)
                 } else if let idx = messages.firstIndex(where: { $0.id == id }) {
                     var copy = messages[idx]
                     copy.bodyHTML = result.html
                     messages[idx] = copy
-                    bodyPrepByMessageId[id] = MessageHTMLPrepBuilder.prep(
-                        bodyText: copy.bodyText,
-                        bodyHTML: result.html,
-                        fontScale: fontScale)
                 }
                 threadAttachments = messages.flatMap { m in
                     (attachmentsByMessageId[m.id] ?? []).map {
@@ -1621,9 +1634,11 @@ struct MessageCard: View {
     /// Off-main precomputed trail + assembled documents from the repository.
     let bodyPrep: MessageHTMLPrep?
     /// Session-only body with `cid:` images rewritten to `data:` URIs.
-    /// When set, preferred over `message.bodyHTML` / preassembled docs.
+    /// When set, preferred over `message.bodyHTML` / repository docs.
     let cidInlinedHTML: String?
-    let cidPreInlineBytes: Int?
+    /// Off-main prep for `cidInlinedHTML` (trail, pre-inline byte gate,
+    /// documents). Set together with `cidInlinedHTML` by the parent.
+    let cidPrep: MessageHTMLPrep?
     /// Single-active reading pane vs multi-open side-by-side compose.
     let expandPolicy: MessageExpandPolicy
     @Binding var expandedMessageIds: Set<String>
@@ -1711,7 +1726,7 @@ struct MessageCard: View {
          attachments: [AttachmentRow] = [],
          bodyPrep: MessageHTMLPrep? = nil,
          cidInlinedHTML: String? = nil,
-         cidPreInlineBytes: Int? = nil,
+         cidPrep: MessageHTMLPrep? = nil,
          expandPolicy: MessageExpandPolicy = .single,
          expandedMessageIds: Binding<Set<String>>,
          loadImagesForThread: Binding<Bool> = .constant(false),
@@ -1726,7 +1741,7 @@ struct MessageCard: View {
         self.attachments = attachments
         self.bodyPrep = bodyPrep
         self.cidInlinedHTML = cidInlinedHTML
-        self.cidPreInlineBytes = cidPreInlineBytes
+        self.cidPrep = cidPrep
         self.expandPolicy = expandPolicy
         self._expandedMessageIds = expandedMessageIds
         self._loadImagesForThread = loadImagesForThread
@@ -1737,36 +1752,19 @@ struct MessageCard: View {
         self.onUnsubscribe = onUnsubscribe
         self.onNeedUnsubscribeHeaders = onNeedUnsubscribeHeaders
         let hasBody = !ThreadDetailView.needsBodyLoad(message)
-        // CID-inlined HTML already embeds image bytes; prefer it over the
-        // repository prep (which still has unresolved `cid:`).
+        // CID-inlined HTML already embeds image bytes; prefer its prep over
+        // the repository prep (which still has unresolved `cid:`). The parent
+        // built it off-main — init runs on every parent body pass, so the
+        // multi-MB quote scan that used to live here must not.
         if hasBody, let inlined = cidInlinedHTML, !inlined.isEmpty {
-            let fullBytes = inlined.utf8.count
-            let detectedHead: String? = {
-                if fullBytes <= HTMLBodyRenderPolicy.maximumAutomaticBytes {
-                    return QuotedReply.authoredHTMLHead(inlined)
-                }
-                return QuotedReply.authoredHTMLHead(
-                    inlined,
-                    scanCharacterLimit: HTMLBodyRenderPolicy.oversizedQuoteScanCharacterLimit)
-            }()
-            if let head = detectedHead {
-                textHead = nil
-                htmlHead = head
-                hasQuotedTrail = true
-            } else {
-                textHead = nil
-                htmlHead = nil
-                hasQuotedTrail = false
-            }
-            // Gate the oversized-HTML placeholder on the pre-inline body:
-            // data: URI growth is image payload WebKit handles fine, and a
-            // message that rendered automatically before inlining must not
-            // flip into the approval placeholder because its images resolved.
-            // (Can't measure message.bodyHTML — the resolve handler overwrote
-            // it with the inlined string; the caller stashes the true size.)
-            htmlBytes = cidPreInlineBytes ?? fullBytes
-            htmlHeadBytes = min(htmlHead?.utf8.count ?? 0, htmlBytes)
-            htmlDocuments = nil
+            let prep = cidPrep ?? .empty
+            textHead = nil
+            htmlHead = prep.htmlHead
+            hasQuotedTrail = prep.hasQuotedTrail
+            // Pre-inline size (see `MessageHTMLPrepBuilder.cidInlinedPrep`).
+            htmlBytes = prep.htmlBytes
+            htmlHeadBytes = prep.htmlHeadBytes
+            htmlDocuments = prep.documents
         } else if hasBody, let prep = bodyPrep {
             textHead = prep.textHead
             htmlHead = prep.htmlHead
@@ -2008,18 +2006,22 @@ struct MessageCard: View {
                         userApproved: approvedOversizedHTML) {
                         oversizedHTMLPlaceholder(byteCount: renderedBytes)
                     } else {
-                        // CID-inlined bodies skip preassembled docs (those still
-                        // carry unresolved `cid:` + blocked/allowed CSP variants
-                        // built from the DB HTML).
-                        let preassembled: String? = {
-                            guard cidInlinedHTML == nil,
-                                  let docs = htmlDocuments,
+                        // `htmlDocuments` matches the HTML on screen: CID
+                        // prep for inlined bodies, repository prep otherwise.
+                        // Font-scale mismatch → no docs; HTMLBodyView then
+                        // assembles off-main from `html`.
+                        let docsForScale: MessageHTMLDocuments? = {
+                            guard let docs = htmlDocuments,
                                   abs(docs.fontScale - fontScale) < 0.001
                             else { return nil }
-                            return docs.document(
-                                authored: useAuthoredHTML,
-                                allowRemoteImages: allowRemoteImages)
+                            return docs
                         }()
+                        // Lookup only — an allowed variant that is not built
+                        // yet comes back nil and is built off-main by the
+                        // view (which also fills the shared memo).
+                        let preassembled = docsForScale?.readyDocument(
+                            authored: useAuthoredHTML,
+                            allowRemoteImages: allowRemoteImages)
                         let bodyContentID = message.id
                             + (useAuthoredHTML ? ":authored" : ":full")
                             + (cidInlinedHTML != nil ? ":cid" : "")
@@ -2027,6 +2029,8 @@ struct MessageCard: View {
                             contentID: bodyContentID,
                             html: renderedHTML,
                             preassembledDocument: preassembled,
+                            documents: docsForScale,
+                            documentIsAuthored: useAuthoredHTML,
                             allowRemoteImages: allowRemoteImages,
                             fontScale: fontScale,
                             height: $htmlHeight,
@@ -2704,8 +2708,15 @@ struct HTMLBodyView: NSViewRepresentable {
     let contentID: String
     let html: String
     /// Pre-assembled document from `ThreadDetailRepository` (CSP + CSS already
-    /// injected). When present, main-thread render skips `HTMLBodyDocument.assemble`.
+    /// injected). When present, render skips `HTMLBodyDocument.assemble`.
     var preassembledDocument: String? = nil
+    /// Prep documents for `html` at this font scale, when the card has them.
+    /// With no `preassembledDocument` (allowed variant not memoized yet), the
+    /// coordinator builds through these off-main so the memo fills for the
+    /// next mount. Never read on the main actor beyond passing it along.
+    var documents: MessageHTMLDocuments? = nil
+    /// Which variant of `documents` `html` is (authored head vs full body).
+    var documentIsAuthored: Bool = false
     let allowRemoteImages: Bool
     var fontScale: Double = 1.0
     @Binding var height: CGFloat
@@ -2766,6 +2777,7 @@ struct HTMLBodyView: NSViewRepresentable {
                 prerenderHit: false)
             context.coordinator.loadDocument(
                 html: html, preassembled: preassembledDocument,
+                documents: documents, authored: documentIsAuthored,
                 allowRemoteImages: allowRemoteImages,
                 fontScale: fontScale, in: webView)
         }
@@ -2813,12 +2825,14 @@ struct HTMLBodyView: NSViewRepresentable {
             context.coordinator.swap(
                 to: ready, alreadyPainted: true, html: html,
                 preassembled: preassembledDocument,
+                documents: documents, authored: documentIsAuthored,
                 allowRemoteImages: allowRemoteImages, fontScale: fontScale)
         } else {
             let incoming = HTMLWebViewPool.dequeue()
             context.coordinator.swap(
                 to: incoming, alreadyPainted: false, html: html,
                 preassembled: preassembledDocument,
+                documents: documents, authored: documentIsAuthored,
                 allowRemoteImages: allowRemoteImages, fontScale: fontScale)
         }
     }
@@ -2851,6 +2865,9 @@ struct HTMLBodyView: NSViewRepresentable {
         /// Bumped on every swap/dismantle so an in-flight fade completion
         /// from a superseded swap cannot recycle views or promote `current`.
         private var swapGeneration = 0
+        /// Bumped per `loadDocument` / dismantle so an off-main assembly that
+        /// finishes after the card moved on never navigates a reused view.
+        private var assembleGeneration = 0
 
         func attach(_ webView: PassthroughWebView, in container: NSView,
                     alreadyPainted: Bool, fade: Bool) {
@@ -2889,6 +2906,7 @@ struct HTMLBodyView: NSViewRepresentable {
 
         func swap(to next: PassthroughWebView, alreadyPainted: Bool,
                   html: String, preassembled: String? = nil,
+                  documents: MessageHTMLDocuments? = nil, authored: Bool = false,
                   allowRemoteImages: Bool, fontScale: Double) {
             swapGeneration &+= 1
             guard let container else {
@@ -2920,6 +2938,7 @@ struct HTMLBodyView: NSViewRepresentable {
             } else {
                 loadDocument(
                     html: html, preassembled: preassembled,
+                    documents: documents, authored: authored,
                     allowRemoteImages: allowRemoteImages,
                     fontScale: fontScale, in: next)
             }
@@ -2951,24 +2970,48 @@ struct HTMLBodyView: NSViewRepresentable {
         }
 
         func loadDocument(html: String, preassembled: String? = nil,
+                          documents: MessageHTMLDocuments? = nil,
+                          authored: Bool = false,
                           allowRemoteImages: Bool,
                           fontScale: Double, in webView: WKWebView) {
+            assembleGeneration &+= 1
             let csp = HTMLBodyCSP.metaTag(allowRemoteImages: allowRemoteImages)
             let css = HTMLBodyDarkMode.injectedCSS(fontScale: fontScale)
-            // Prefer the off-main preassembled document; fall back to
-            // main-thread assembly only when prep is missing (font-scale
-            // mismatch, oversized after explicit approve, or legacy paths
-            // without a repository prep).
-            let document = preassembled ?? HTMLBodyDocument.assemble(
-                html: html, cspMeta: csp, styleCSS: css)
-            load(
-                document: document,
-                trustedFallback: {
-                    HTMLBodyDocument.trustedWrapper(
+            let trustedFallback = {
+                HTMLBodyDocument.trustedWrapper(
+                    html: html, cspMeta: csp, styleCSS: css)
+            }
+            // Common path: the repository (or CID prep) already assembled it.
+            if let preassembled {
+                load(document: preassembled, trustedFallback: trustedFallback,
+                     allowRemoteImages: allowRemoteImages, in: webView)
+                return
+            }
+            // Fallback (allowed variant not memoized yet, font-scale
+            // mismatch, oversized after explicit approve, no prep): assemble
+            // off the main actor — this is whole-body string work, MBs for
+            // CID-inlined mail. Prefer the prep's memo so the next mount of
+            // this card is a lookup. The view stays hidden until its first
+            // height report, so the extra hop shows no blank frame.
+            let generation = assembleGeneration
+            let docs = documents
+            Task { @MainActor [weak self, weak webView] in
+                let document = await Task.detached(priority: .userInitiated) {
+                    () -> String in
+                    if let docs, let built = docs.document(
+                        authored: authored, allowRemoteImages: allowRemoteImages) {
+                        return built
+                    }
+                    return HTMLBodyDocument.assemble(
                         html: html, cspMeta: csp, styleCSS: css)
-                },
-                allowRemoteImages: allowRemoteImages,
-                in: webView)
+                }.value
+                guard let self, let webView,
+                      self.assembleGeneration == generation,
+                      webView === self.incoming || webView === self.current
+                else { return }
+                self.load(document: document, trustedFallback: trustedFallback,
+                          allowRemoteImages: allowRemoteImages, in: webView)
+            }
         }
 
         /// Apply/remove the network-level remote-image rule before navigating.
@@ -3020,6 +3063,7 @@ struct HTMLBodyView: NSViewRepresentable {
         /// leaves the hierarchy.
         func dismantle() {
             swapGeneration &+= 1
+            assembleGeneration &+= 1
             loadToken = UUID()
             loadedKey = nil
             setHeight = nil
