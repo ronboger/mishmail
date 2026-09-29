@@ -49,21 +49,21 @@ struct ThreadListView: View {
         grouped.reduce(0) { $0 + $1.1.count }
     }
 
+    /// Compared with the view's opening chips (which include a saved
+    /// category pick), not the bare defaults, so a saved pick is not a filter.
     private var filtersAreActive: Bool {
-        store.chips != FilterChips.defaults(for: store.selectedView)
+        store.chips != FilterChips.initial(for: store.selectedView)
+    }
+
+    /// Only the very first sync shows a spinner. Background passes run every
+    /// minute and must not flicker an empty Trash or hide search actions.
+    private var isFirstSyncRunning: Bool {
+        !store.syncStatus.isEmpty && store.accounts.contains { $0.historyId == nil }
     }
 
     @ViewBuilder
     private var emptyState: some View {
-        if !store.accounts.isEmpty, !store.syncStatus.isEmpty,
-           !store.classifying, !store.serverSearching {
-            VStack(spacing: 10) {
-                ProgressView()
-                Text("Syncing \(store.selectedView.title)…")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-            }
-        } else if !store.committedSearch.trimmingCharacters(in: .whitespaces).isEmpty {
+        if !store.committedSearch.trimmingCharacters(in: .whitespaces).isEmpty {
             ContentUnavailableView {
                 Label("No local matches", systemImage: "magnifyingglass")
             } description: {
@@ -80,9 +80,7 @@ struct ThreadListView: View {
             ContentUnavailableView {
                 Label("No conversations match these filters", systemImage: "line.3.horizontal.decrease.circle")
             } actions: {
-                Button("Clear filters") {
-                    store.chips = FilterChips.defaults(for: store.selectedView)
-                }
+                Button("Clear filters") { store.resetChips() }
                 .buttonStyle(.borderedProminent)
             }
         } else if store.accounts.isEmpty {
@@ -91,6 +89,13 @@ struct ThreadListView: View {
                 systemImage: "person.crop.circle.badge.plus",
                 description: Text("Add a Google account from the account menu to get started.")
             )
+        } else if isFirstSyncRunning {
+            VStack(spacing: 10) {
+                ProgressView()
+                Text("Syncing \(store.selectedView.title)…")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
         } else {
             let title = emptyViewTitle
             ContentUnavailableView(

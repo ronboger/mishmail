@@ -10,6 +10,8 @@ struct CommandPalette: View {
     @EnvironmentObject var listFocus: ListFocusState
     @State private var query = ""
     @State private var highlighted = 0
+    /// Bumped by arrow keys only, so hover never scrolls the list.
+    @State private var keyboardHighlight = 0
     @FocusState private var focused: Bool
 
     struct Command: Identifiable {
@@ -77,9 +79,11 @@ struct CommandPalette: View {
                         .padding(6)
                     }
                     .frame(maxHeight: 280)
-                    .onChange(of: highlighted) { _, index in
-                        guard let id = filtered[safe: index]?.id else { return }
-                        proxy.scrollTo(id, anchor: .center)
+                    // Scroll only for arrow keys. Following hover would scroll
+                    // a new row under a still pointer and walk the list.
+                    .onChange(of: keyboardHighlight) { _, _ in
+                        guard let id = filtered[safe: highlighted]?.id else { return }
+                        proxy.scrollTo(id)
                     }
                 }
             }
@@ -92,8 +96,16 @@ struct CommandPalette: View {
                 focused = true
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.08) { focused = true }
             }
-            .onKeyPress(.downArrow) { highlighted = min(highlighted + 1, filtered.count - 1); return .handled }
-            .onKeyPress(.upArrow) { highlighted = max(highlighted - 1, 0); return .handled }
+            .onKeyPress(.downArrow) {
+                highlighted = min(highlighted + 1, filtered.count - 1)
+                keyboardHighlight &+= 1
+                return .handled
+            }
+            .onKeyPress(.upArrow) {
+                highlighted = max(highlighted - 1, 0)
+                keyboardHighlight &+= 1
+                return .handled
+            }
         }
     }
 
@@ -122,15 +134,15 @@ struct CommandPalette: View {
         // keyboard-first flow end to end (Notion Mail-style).
         if let thread = store.selectedThread {
             cmds.append(contentsOf: [
-                Command(id: "act.archive", title: "Archive Conversation", icon: "archivebox", shortcut: .archive) { $0.perform(.archive) },
-                Command(id: "act.trash", title: "Trash Conversation", icon: "trash", shortcut: .trash) { $0.perform(.trash) },
+                Command(id: "act.archive", title: "Archive Conversation", icon: "archivebox", shortcut: .archive) { $0.archive(thread) },
+                Command(id: "act.trash", title: "Trash Conversation", icon: "trash", shortcut: .trash) { $0.trash(thread) },
                 Command(id: "act.star", title: thread.isStarred ? "Unstar Conversation" : "Star Conversation",
-                        icon: thread.isStarred ? "star.slash" : "star", shortcut: .toggleStar) { $0.perform(.toggleStar) },
+                        icon: thread.isStarred ? "star.slash" : "star", shortcut: .toggleStar) { $0.toggleStar(thread) },
                 Command(id: "act.read", title: thread.isUnread ? "Mark Read" : "Mark Unread",
                         icon: thread.isUnread ? "envelope.open" : "envelope", shortcut: .toggleRead) {
-                    $0.perform(.toggleRead)
+                    $0.setRead(thread, read: thread.isUnread)
                 },
-                Command(id: "act.snooze", title: "Snooze Until Tomorrow", icon: "clock", shortcut: .snooze) {
+                Command(id: "act.snooze", title: "Snooze Until Tomorrow", icon: "clock") {
                     $0.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 1))
                 },
                 Command(id: "act.snoozeCustom", title: "Snooze Until…", icon: "calendar.badge.clock") {

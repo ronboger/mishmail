@@ -167,36 +167,31 @@ struct MishMailApp: App {
                 Button("Sync All") { Task { await store.syncAll() } }
                     .keyboardShortcut("r", modifiers: [.command, .shift])
             }
+            // No key equivalents here on purpose: menu chords reach AppKit
+            // even while a text field is typing (⌘⌫ would trash a thread from
+            // inside compose). The single-key shortcuts in ContentView's key
+            // monitor already carry the typing and focus gates.
             CommandMenu("Message") {
                 Button("Reply") { store.perform(.reply) }
-                    .keyboardShortcut("r", modifiers: .command)
                     .disabled(!hasSingleThreadSelection)
                 Button("Reply All") { store.perform(.replyAll) }
-                    .keyboardShortcut("r", modifiers: [.command, .option])
                     .disabled(!hasSingleThreadSelection)
                 Button("Forward") { store.perform(.forward) }
-                    .keyboardShortcut("f", modifiers: [.command, .option])
                     .disabled(!hasSingleThreadSelection)
                 Divider()
                 Button("Archive") { store.perform(.archive) }
-                    .keyboardShortcut("a", modifiers: [.command, .control])
                     .disabled(!hasMessageSelection)
                 Button("Trash") { store.perform(.trash) }
-                    .keyboardShortcut(.delete, modifiers: .command)
                     .disabled(!hasMessageSelection)
-                Button(store.selectedThread?.isStarred == true ? "Unstar" : "Star") {
+                Button("Star/Unstar") {
                     store.perform(.toggleStar)
                 }
-                .keyboardShortcut("s", modifiers: [.command, .option])
                 .disabled(!hasMessageSelection)
                 Button("Mark Read/Unread") { store.perform(.toggleRead) }
-                    .keyboardShortcut("u", modifiers: [.command, .option])
                     .disabled(!hasMessageSelection)
                 Button("Snooze…") { store.perform(.snooze) }
-                    .keyboardShortcut("b", modifiers: [.command, .option])
                     .disabled(!hasMessageSelection)
                 Button("Label…") { store.perform(.label) }
-                    .keyboardShortcut("l", modifiers: [.command, .option])
                     .disabled(!hasSingleThreadSelection)
             }
             CommandMenu("Go") {
