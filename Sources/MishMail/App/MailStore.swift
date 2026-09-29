@@ -479,13 +479,13 @@ final class MailStore {
     var activeAccountId: String?   // nil = all accounts (unified)
     var syncStatus: String = ""
     var presentedError: PresentedError?
-    /// Existing callers can continue assigning plain messages; they safely
-    /// default to retry. Errors that require another action set a structured
-    /// presentation instead of relying on wording inspection in the UI.
+    /// Existing callers can continue assigning plain messages; they show an
+    /// informational banner. Sync failures use `setSyncFailureError` so only
+    /// those banners offer a retry action.
     var lastError: String? {
         get { presentedError?.message }
         set {
-            presentedError = newValue.map(ErrorRecovery.retry)
+            presentedError = newValue.map(ErrorRecovery.none)
             // Direct assignments (send, draft, …) are not tracked sync failures.
             // `setSyncFailureError` re-stamps `lastErrorSyncAccountId` after set.
             lastErrorSyncAccountId = nil
@@ -493,9 +493,20 @@ final class MailStore {
     }
     /// Account id whose sync failure is currently shown in `lastError`, if any.
     /// Success for that account clears the banner; other errors leave it alone.
-    @ObservationIgnored var lastErrorSyncAccountId: String?
+    @ObservationIgnored var lastErrorSyncAccountId: String? {
+        didSet {
+            // `setSyncFailureError` stamps the account immediately after the
+            // plain-message setter. Promote that structured path back to a
+            // retry action without making ordinary errors retryable.
+            if let accountId = lastErrorSyncAccountId,
+               let message = presentedError?.message,
+               accountId != oldValue {
+                presentedError = ErrorRecovery.retry(message)
+            }
+        }
+    }
     var lastErrorRecovery: ErrorRecoveryAction {
-        presentedError?.recovery ?? .retrySync
+        presentedError?.recovery ?? .none
     }
     private(set) var demoMode = DemoSeed.isActive
     /// Account ids whose saved sign-in Google has rejected (expired/revoked
@@ -2478,7 +2489,7 @@ struct ComposeRequest: Identifiable {
 
     func client(for accountId: String) -> GmailClient {
         if let c = clients[accountId] { return c }
-        let c = GmailClient(accountEmail: accountId)
+        let c = GmailClient.shared(accountEmail: accountId)
         clients[accountId] = c
         return c
     }

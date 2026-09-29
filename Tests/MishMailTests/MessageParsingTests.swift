@@ -2,6 +2,22 @@ import XCTest
 
 final class MessageParsingTests: XCTestCase {
 
+    func testRiskyAttachmentExtensionsIncludeLaunchersAndMacroFiles() {
+        let risky = [
+            "terminal", "fileloc", "webloc", "inetloc", "mobileconfig", "shortcut",
+            "scpt", "applescript", "scptd", "workflow", "action", "iso", "img", "dmg",
+            "html", "htm", "svg", "docm", "xlsm", "pptm", "prefpane", "saver", "kext",
+            "jar", "command", "tool", "sh", "zsh", "py",
+        ]
+        for ext in risky {
+            XCTAssertTrue(
+                MessageParser.isRiskyAttachmentFilename("report.\(ext)"),
+                "expected .\(ext) to prompt")
+        }
+        XCTAssertTrue(MessageParser.isRiskyAttachmentFilename("invoice.pdf.app"))
+        XCTAssertFalse(MessageParser.isRiskyAttachmentFilename("photo.jpg"))
+    }
+
     // MARK: - base64url
 
     func testBase64URLRoundTrip() throws {
@@ -23,6 +39,42 @@ final class MessageParsingTests: XCTestCase {
 
     func testDecodeBase64URLGarbage() {
         XCTAssertNil(MessageParser.decodeBase64URLData("!!not base64!!"))
+    }
+
+    func testDecodeDeclaredLegacyCharsets() {
+        let latin1 = Data([0x63, 0x61, 0x66, 0xe9]).base64URLEncoded()
+        XCTAssertEqual(
+            MessageParser.decodeBase64URL(latin1, contentType: "text/plain; charset=iso-8859-1"),
+            "café")
+
+        let windows = Data([0x80]).base64URLEncoded()
+        XCTAssertEqual(
+            MessageParser.decodeBase64URL(windows, contentType: "text/plain; charset=windows-1252"),
+            "€")
+
+        let shiftJIS = Data([0x82, 0xa0]).base64URLEncoded()
+        XCTAssertEqual(
+            MessageParser.decodeBase64URL(shiftJIS, contentType: "text/plain; charset=shift_jis"),
+            "あ")
+    }
+
+    /// ISO-2022-JP is 7-bit, so its bytes are also valid UTF-8. The declared
+    /// charset must win, or the body shows raw escape sequences.
+    func testDecodeDeclaredISO2022JPBeforeUTF8() {
+        // ESC $ B 0x24 0x22 ESC ( B  ==  "あ"
+        let bytes = Data([0x1b, 0x24, 0x42, 0x24, 0x22, 0x1b, 0x28, 0x42]).base64URLEncoded()
+        XCTAssertEqual(
+            MessageParser.decodeBase64URL(bytes, contentType: "text/plain; charset=\"ISO-2022-JP\""),
+            "あ")
+        // Declared UTF-8 / US-ASCII and undeclared bodies still decode as UTF-8.
+        let utf8 = Data("café".utf8).base64URLEncoded()
+        XCTAssertEqual(MessageParser.decodeBase64URL(utf8, contentType: "text/plain; charset=utf-8"), "café")
+        XCTAssertEqual(MessageParser.decodeBase64URL(utf8, contentType: "text/plain; charset=us-ascii"), "café")
+        XCTAssertEqual(MessageParser.decodeBase64URL(utf8, contentType: nil), "café")
+        // An unknown charset name falls back to UTF-8, then Windows-1252.
+        XCTAssertEqual(MessageParser.decodeBase64URL(utf8, contentType: "text/plain; charset=x-bogus"), "café")
+        let cp1252 = Data([0x80]).base64URLEncoded()
+        XCTAssertEqual(MessageParser.decodeBase64URL(cp1252, contentType: "text/plain; charset=x-bogus"), "€")
     }
 
     // MARK: - Header helpers
@@ -681,5 +733,13 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertEqual(
             attachments.first { $0.filename == "retro.ics" }?.gmailAttachmentId,
             "att-retro")
+    }
+
+    func testUTF8MislabeledAsLatin1StillDecodesAsUTF8() {
+        let data = Data("café — naïve".utf8)
+        let b64 = data.base64URLEncoded()
+        XCTAssertEqual(
+            MessageParser.decodeBase64URL(b64, contentType: "text/plain; charset=iso-8859-1"),
+            "café — naïve")
     }
 }

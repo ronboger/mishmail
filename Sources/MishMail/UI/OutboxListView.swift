@@ -111,10 +111,8 @@ private struct OutboxRow: View {
                     in: RoundedRectangle(cornerRadius: 6))
         .contentShape(Rectangle())
         .onTapGesture(count: 2) { store.editLocalDraft(draft) }
-        .onHover { inside in
-            hovering = inside
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .onHover { hovering = $0 }
+        .pmPointingHandCursor()
         .contextMenu {
             Button("Edit in Compose") { store.editLocalDraft(draft) }
             Divider()

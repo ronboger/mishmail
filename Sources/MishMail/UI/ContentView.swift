@@ -178,9 +178,6 @@ struct ContentView: View {
             // Pathological short panes: float compose instead of a 0-height dock.
             store.demoteInlineComposeIfPaneTooShort(paneHeight: frame.height)
         }
-        // One app-level Reduce Motion gate covers legacy and new transitions.
-        // Triage/navigation already use no animation even when motion is on.
-        .transaction { if reduceMotion { $0.disablesAnimations = true } }
         .onPreferenceChange(ComposeHostFrameKey.self) { composeHostFrame = $0 }
         // Search lives in the sidebar (Notion Mail-style), not the toolbar.
         // Typing only feeds the dropdown preview; the list follows
@@ -521,7 +518,7 @@ struct ContentView: View {
                             Task { await store.syncAll() }
                         }
                         .buttonStyle(.borderless)
-                    } else {
+                    } else if store.lastErrorRecovery == .reauthorize {
                         Button("Reauthorize") {
                             UserDefaults.standard.set(SettingsView.Pane.accounts.rawValue,
                                                       forKey: "settingsPane")
@@ -539,6 +536,7 @@ struct ContentView: View {
                     .buttonStyle(PressScaleButtonStyle())
                     .foregroundStyle(.secondary)
                     .help("Dismiss")
+                    .accessibilityLabel("Dismiss")
                 }
                 .padding(.horizontal, 18).padding(.vertical, 12)
                 .background(.regularMaterial, in: RoundedRectangle(cornerRadius: PMRadius.md + 2))
@@ -557,6 +555,23 @@ struct ContentView: View {
                 OnboardingView()
             }
         }
+        .onChange(of: store.undoAction?.id) {
+            guard let undo = store.undoAction else { return }
+            postAccessibilityAnnouncement("\(undo.label). Undo is available.")
+        }
+        .onChange(of: store.notice) {
+            if let notice = store.notice { postAccessibilityAnnouncement(notice) }
+        }
+        .onChange(of: store.lastError) {
+            if let error = store.lastError { postAccessibilityAnnouncement(error) }
+        }
+        // One app-level Reduce Motion gate covers the entire rendered body,
+        // including compose, toast, search, and error-banner overlays.
+        .transaction { if reduceMotion { $0.disablesAnimations = true } }
+    }
+
+    private func postAccessibilityAnnouncement(_ text: String) {
+        AccessibilityNotification.Announcement(text).post()
     }
 
     @ViewBuilder
@@ -1593,6 +1608,14 @@ struct Sidebar: View {
     @ObservedObject private var updates = UpdateChecker.shared
     // Driven by `/` (Gmail-style) via store.searchFocusToken.
     @FocusState private var searchFocused: Bool
+    @State private var viewToDelete: SavedView?
+
+    private var confirmingViewDeleteShown: Binding<Bool> {
+        Binding(
+            get: { viewToDelete != nil },
+            set: { if !$0 { viewToDelete = nil } }
+        )
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -1642,7 +1665,9 @@ struct Sidebar: View {
                         sidebarItem(.saved(view.id ?? -1, view.name))
                             .contextMenu {
                                 Button("Edit View…") { store.editingView = view }
-                                Button("Delete View", role: .destructive) { store.deleteView(view) }
+                                Button("Delete View", role: .destructive) {
+                                    viewToDelete = view
+                                }
                             }
                     }
                     Button {
@@ -1728,6 +1753,19 @@ struct Sidebar: View {
             .help("Settings (⌘,)")
         }
         .background(Color.notionSidebar)
+        .confirmationDialog(
+            "Delete saved view?",
+            isPresented: confirmingViewDeleteShown,
+            presenting: viewToDelete
+        ) { view in
+            Button("Delete View", role: .destructive) {
+                store.deleteView(view)
+                viewToDelete = nil
+            }
+            Button("Cancel", role: .cancel) { viewToDelete = nil }
+        } message: { view in
+            Text("Delete \(view.name)? Its saved filters will be removed from this Mac.")
+        }
     }
 
 

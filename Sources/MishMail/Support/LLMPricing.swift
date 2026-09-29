@@ -22,6 +22,12 @@ enum LLMPricing {
         [
             "claude-fable-5": LLMPrice(inputPerMTok: 10, outputPerMTok: 50),
             "claude-opus-5": LLMPrice(inputPerMTok: 5, outputPerMTok: 25),
+            // Dated Opus 4 ids are the newer $15/$75 tier. Keep the broad
+            // Opus 4 row for older ids; longest-prefix matching selects these
+            // more specific entries first.
+            "claude-opus-4-2025": LLMPrice(inputPerMTok: 15, outputPerMTok: 75),
+            "claude-opus-4-1": LLMPrice(inputPerMTok: 15, outputPerMTok: 75),
+            "claude-opus-4-0": LLMPrice(inputPerMTok: 15, outputPerMTok: 75),
             "claude-opus-4": LLMPrice(inputPerMTok: 5, outputPerMTok: 25),
             "claude-sonnet-5": LLMPrice(inputPerMTok: 3, outputPerMTok: 15),
             "claude-sonnet-4": LLMPrice(inputPerMTok: 3, outputPerMTok: 15),
@@ -82,7 +88,10 @@ enum LLMPricing {
     }
 
     static func cost(usage: LLMUsage, price: LLMPrice) -> Double {
-        Double(usage.promptTokens) / 1_000_000 * price.inputPerMTok
+        let input = Double(usage.promptTokens) * price.inputPerMTok
+            + Double(usage.cacheCreationInputTokens) * price.inputPerMTok * 1.25
+            + Double(usage.cacheReadInputTokens) * price.inputPerMTok * 0.1
+        return input / 1_000_000
             + Double(usage.completionTokens) / 1_000_000 * price.outputPerMTok
     }
 

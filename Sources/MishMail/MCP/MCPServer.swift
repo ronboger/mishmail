@@ -8,11 +8,17 @@ import Network
 final class MCPServer: @unchecked Sendable {
     /// Max request size (headers + body). Over this → close without reply.
     static let maxRequestBytes = 2 * 1024 * 1024
+    /// A client must finish one request promptly; incomplete connections do
+    /// not get to occupy a listener slot indefinitely.
+    static let readDeadline: TimeInterval = 10
+    /// Keep a slow or abusive client burst from consuming unbounded resources.
+    static let maxConcurrentConnections = 16
 
     private let tools: any MCPToolProvider
     private let serverVersion: String
     private var listener: NWListener?
     private var token: String = ""
+    private var activeConnections = 0
     private let queue = DispatchQueue(label: "dev.ronboger.MishMail.mcp", qos: .userInitiated)
     private let lock = NSLock()
 
@@ -38,7 +44,11 @@ final class MCPServer: @unchecked Sendable {
         params.requiredLocalEndpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: nwPort)
         let listener = try NWListener(using: params)
         listener.newConnectionHandler = { [weak self] conn in
-            self?.handleConnection(conn)
+            guard let self, self.reserveConnection() else {
+                conn.cancel()
+                return
+            }
+            self.handleConnection(conn)
         }
         // With a fixed port, address-in-use surfaces as .failed (not a thrown
         // init error) and `listener.port` can still echo the requested value,
@@ -83,15 +93,47 @@ final class MCPServer: @unchecked Sendable {
 
     // MARK: - Connection handling
 
-    private func handleConnection(_ conn: NWConnection) {
-        conn.start(queue: queue)
-        accumulate(on: conn, into: Data())
+    private func reserveConnection() -> Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        guard activeConnections < Self.maxConcurrentConnections else { return false }
+        activeConnections += 1
+        return true
     }
 
-    private func accumulate(on conn: NWConnection, into buffer: Data) {
+    private func releaseConnection() {
+        lock.lock()
+        activeConnections = max(0, activeConnections - 1)
+        lock.unlock()
+    }
+
+    private func handleConnection(_ conn: NWConnection) {
+        let state = MCPConnectionState { [weak self] in
+            self?.releaseConnection()
+        }
+        conn.start(queue: queue)
+        let deadline = DispatchWorkItem { [weak state] in
+            guard state?.finish() == true else { return }
+            conn.cancel()
+        }
+        state.installReadDeadline(deadline)
+        queue.asyncAfter(deadline: .now() + Self.readDeadline, execute: deadline)
+        accumulate(on: conn, into: Data(), state: state)
+    }
+
+    private func accumulate(
+        on conn: NWConnection,
+        into buffer: Data,
+        state: MCPConnectionState
+    ) {
         conn.receive(minimumIncompleteLength: 1, maximumLength: Self.maxRequestBytes) {
             [weak self] data, _, isComplete, error in
             guard let self else {
+                state.finish()
+                conn.cancel()
+                return
+            }
+            guard !state.isFinished else {
                 conn.cancel()
                 return
             }
@@ -99,39 +141,48 @@ final class MCPServer: @unchecked Sendable {
             if let data { buffer.append(data) }
 
             if buffer.count > Self.maxRequestBytes {
+                state.finish()
                 conn.cancel()
                 return
             }
 
             if let request = MCPHTTP.parse(buffer) {
-                self.serve(request, on: conn)
+                state.cancelReadDeadline()
+                self.serve(request, on: conn, state: state)
                 return
             }
 
             if error != nil || isComplete {
+                state.finish()
                 conn.cancel()
                 return
             }
-            self.accumulate(on: conn, into: buffer)
+            self.accumulate(on: conn, into: buffer, state: state)
         }
     }
 
-    private func serve(_ request: MCPHTTPRequest, on conn: NWConnection) {
+    private func serve(
+        _ request: MCPHTTPRequest,
+        on conn: NWConnection,
+        state: MCPConnectionState
+    ) {
         // Path / method gates before auth so probes don't need the token shape.
         guard request.path == "/mcp" else {
-            reply(MCPHTTP.response(status: 404, reason: "Not Found"), on: conn)
+            reply(MCPHTTP.response(status: 404, reason: "Not Found"), on: conn, state: state)
             return
         }
         guard request.method.uppercased() == "POST" else {
             // GET /mcp and any other method → 405.
-            reply(MCPHTTP.response(status: 405, reason: "Method Not Allowed"), on: conn)
+            reply(MCPHTTP.response(status: 405, reason: "Method Not Allowed"), on: conn, state: state)
             return
         }
 
+        lock.lock()
         let expected = token
+        lock.unlock()
         guard let presented = MCPHTTP.bearerToken(from: request.headers),
-              presented == expected, !expected.isEmpty else {
-            reply(MCPHTTP.response(status: 401, reason: "Unauthorized"), on: conn)
+              MCPServerSecurity.constantTimeEqual(presented, expected), !expected.isEmpty else {
+            reply(MCPHTTP.response(status: 401, reason: "Unauthorized"), on: conn, state: state)
             return
         }
 
@@ -150,14 +201,62 @@ final class MCPServer: @unchecked Sendable {
             let contentType = json == nil ? nil : "application/json"
             let response = MCPHTTP.response(
                 status: status, reason: reason, contentType: contentType, body: body)
-            self.reply(response, on: conn)
+            self.reply(response, on: conn, state: state)
         }
     }
 
-    private func reply(_ data: Data, on conn: NWConnection) {
+    private func reply(_ data: Data, on conn: NWConnection, state: MCPConnectionState) {
         conn.send(content: data, completion: .contentProcessed { _ in
+            state.finish()
             conn.cancel()
         })
+    }
+}
+
+private final class MCPConnectionState: @unchecked Sendable {
+    private let onFinish: () -> Void
+    private let lock = NSLock()
+    private var finished = false
+    private var readDeadline: DispatchWorkItem?
+
+    init(onFinish: @escaping () -> Void) {
+        self.onFinish = onFinish
+    }
+
+    var isFinished: Bool {
+        lock.lock()
+        defer { lock.unlock() }
+        return finished
+    }
+
+    func installReadDeadline(_ workItem: DispatchWorkItem) {
+        lock.lock()
+        readDeadline = workItem
+        lock.unlock()
+    }
+
+    func cancelReadDeadline() {
+        lock.lock()
+        let workItem = readDeadline
+        readDeadline = nil
+        lock.unlock()
+        workItem?.cancel()
+    }
+
+    @discardableResult
+    func finish() -> Bool {
+        lock.lock()
+        guard !finished else {
+            lock.unlock()
+            return false
+        }
+        finished = true
+        let workItem = readDeadline
+        readDeadline = nil
+        lock.unlock()
+        workItem?.cancel()
+        onFinish()
+        return true
     }
 }
 

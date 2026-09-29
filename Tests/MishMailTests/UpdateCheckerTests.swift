@@ -1,6 +1,12 @@
 import XCTest
 
 final class UpdateCheckerTests: XCTestCase {
+    func testTeamRequirementStringAnchorsAppleCertificateTeam() {
+        XCTAssertEqual(
+            UpdateChecker.teamRequirementString(for: "ABCDE12345"),
+            #"anchor apple generic and certificate leaf[subject.OU] = "ABCDE12345""#)
+    }
+
     func testNewerVersionsDetected() {
         XCTAssertTrue(UpdateChecker.isNewer("0.2.0", than: "0.1.0"))
         XCTAssertTrue(UpdateChecker.isNewer("0.1.1", than: "0.1.0"))

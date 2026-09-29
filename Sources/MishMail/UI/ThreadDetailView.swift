@@ -79,6 +79,9 @@ struct ThreadDetailView: View {
     @State private var threadAttachments: [(message: Message, attachment: AttachmentRow)] = []
     @State private var scrollAnchor = ThreadScrollAnchor()
     @State private var aiSummary: String?
+    /// Identifies the running summary so a late stream cannot write into
+    /// the next thread after the user moves on.
+    @State private var summaryRequestId: UUID?
     @State private var summarizing = false
     @State private var summaryError: String?
     /// Persisted MCP / agent summary (`threadSummary` row). Shown only when no
@@ -122,6 +125,10 @@ struct ThreadDetailView: View {
     @State private var neighborPrerenderArmed = false
     /// Message whose Gmail-style Unsubscribe confirm is showing.
     @State private var unsubscribeTarget: Message?
+    /// Sender block confirmation target; blocking moves matching threads to
+    /// Spam, so it should never be a one-click destructive menu item.
+    @State private var blockConfirmationEmail: String?
+    @State private var blockConfirmationThread: MailThread?
     /// Message ids we already tried to backfill List-Unsubscribe for.
     @State private var unsubscribeRefreshAttempted: Set<String> = []
 
@@ -239,24 +246,7 @@ struct ThreadDetailView: View {
                                     .background { messageHeightReader(id: message.id) }
                             }
                         } else {
-                            MessageCard(message: message,
-                                        isLast: message.id == lastNonDraftId,
-                                        attachments: attachmentsByMessageId[message.id] ?? [],
-                                        bodyPrep: bodyPrepByMessageId[message.id],
-                                        cidInlinedHTML: cidInlinedHTMLById[message.id],
-                                        cidPreInlineBytes: cidPreInlineBytesById[message.id],
-                                        expandPolicy: messageExpandPolicy,
-                                        expandedMessageIds: $expandedMessageIds,
-                                        loadImagesForThread: $loadRemoteImagesForThread,
-                                        onReply: { onReply(message) },
-                                        onNeedBody: { loadBodyIfNeeded(id: message.id) },
-                                        onBodySettled: { armNeighborPrerenderIfNeeded() },
-                                        onUnsubscribe: { unsubscribeTarget = message },
-                                        onNeedUnsubscribeHeaders: {
-                                            Task { await refreshUnsubscribeHeaders(message) }
-                                        })
-                                .padding(.horizontal)
-                                .id(message.id)
+                            messageCard(for: message, lastNonDraftId: lastNonDraftId)
                                 .background { messageHeightReader(id: message.id) }
                         }
                     }
@@ -481,7 +471,8 @@ struct ThreadDetailView: View {
                             }
                         } else {
                             Button(role: .destructive) {
-                                store.blockThreadSender(thread)
+                                blockConfirmationEmail = blockEmail
+                                blockConfirmationThread = thread
                             } label: {
                                 Label("Block sender",
                                       systemImage: "person.crop.circle.badge.xmark")
@@ -657,6 +648,28 @@ struct ThreadDetailView: View {
                     Text(ListUnsubscribe.confirmationDetail(for: action))
                 }
             }
+            .confirmationDialog(
+                "Block sender?",
+                isPresented: Binding(
+                    get: { blockConfirmationEmail != nil },
+                    set: { if !$0 { blockConfirmationEmail = nil; blockConfirmationThread = nil } })
+            ) {
+                Button("Block Sender", role: .destructive) {
+                    if let thread = blockConfirmationThread {
+                        store.blockThreadSender(thread)
+                    } else if let email = blockConfirmationEmail {
+                        store.blockSender(email)
+                    }
+                    blockConfirmationEmail = nil
+                    blockConfirmationThread = nil
+                }
+                Button("Cancel", role: .cancel) {
+                    blockConfirmationEmail = nil
+                    blockConfirmationThread = nil
+                }
+            } message: {
+                Text("New threads from \(blockConfirmationEmail ?? "this sender") will move to Spam.")
+            }
         }
     }
 
@@ -716,6 +729,34 @@ struct ThreadDetailView: View {
                 content
             }
         }
+    }
+
+
+    /// Split out of `body`: the full MessageCard initializer inside the
+    /// thread ForEach is too much for the type checker in one expression.
+    private func messageCard(for message: Message, lastNonDraftId: String?) -> some View {
+        MessageCard(message: message,
+                    isLast: message.id == lastNonDraftId,
+                    attachments: attachmentsByMessageId[message.id] ?? [],
+                    bodyPrep: bodyPrepByMessageId[message.id],
+                    cidInlinedHTML: cidInlinedHTMLById[message.id],
+                    cidPreInlineBytes: cidPreInlineBytesById[message.id],
+                    expandPolicy: messageExpandPolicy,
+                    expandedMessageIds: $expandedMessageIds,
+                    loadImagesForThread: $loadRemoteImagesForThread,
+                    onReply: { onReply(message) },
+                    onBlockSender: { email in
+                        blockConfirmationEmail = email
+                        blockConfirmationThread = nil
+                    },
+                    onNeedBody: { loadBodyIfNeeded(id: message.id) },
+                    onBodySettled: { armNeighborPrerenderIfNeeded() },
+                    onUnsubscribe: { unsubscribeTarget = message },
+                    onNeedUnsubscribeHeaders: {
+                        Task { await refreshUnsubscribeHeaders(message) }
+                    })
+            .padding(.horizontal)
+            .id(message.id)
     }
 
     private func messageHeightReader(id: String) -> some View {
@@ -1101,7 +1142,7 @@ struct ThreadDetailView: View {
         if inlineComposeActive {
             beginInlineComposeScroll(proxy: proxy)
         }
-        aiSummary = nil; summaryError = nil; summarizing = false
+        aiSummary = nil; summaryError = nil; summarizing = false; summaryRequestId = nil
         // Open the policy's default card set (newest only, or every sent card
         // in side-by-side) and hydrate bodies + CID/attachment recovery.
         seedExpandedMessagesIfNeeded()
@@ -1331,26 +1372,36 @@ struct ThreadDetailView: View {
         let ids = messages.map(\.id)
         let fullById = Dictionary(uniqueKeysWithValues:
             store.messagesWithBodies(ids: ids).map { ($0.id, $0) })
-        let body = messages.map { fullById[$0.id]?.bodyText ?? $0.bodyText }
-            .joined(separator: "\n\n---\n\n")
+        let fullMessages = messages.map { fullById[$0.id] ?? $0 }
+        let budget = LLMTaskRunner.resolve(.summaries)?.config.kind == .ollama
+            ? LLMPrompts.localThreadContextBudget
+            : LLMPrompts.hostedThreadContextBudget
+        let body = LLMPrompts.threadContext(
+            subject: thread.subject, messages: fullMessages, characterBudget: budget)
         let prompt = LLMPrompts.summarize(subject: thread.subject, body: body)
-        Task {
+        let requestId = UUID()
+        summaryRequestId = requestId
+        Task { @MainActor in
+            var accumulated = ""
             do {
-                var accumulated = ""
-                for try await piece in LLMTaskRunner.stream(task: .summaries, prompt: prompt) {
+                for try await piece in LLMTaskRunner.stream(
+                    task: .summaries, prompt: prompt,
+                    onNotice: { notice in
+                        if summaryRequestId == requestId { summaryError = notice }
+                    }) {
+                    guard summaryRequestId == requestId else { return }
                     accumulated += piece
-                    let snapshot = accumulated
-                    await MainActor.run { aiSummary = snapshot }
+                    aiSummary = accumulated
                 }
-                if accumulated.isEmpty {
-                    await MainActor.run { summaryError = "No summary was produced." }
+                guard summaryRequestId == requestId else { return }
+                if accumulated.isEmpty, summaryError == nil {
+                    summaryError = "No summary was produced."
                 }
             } catch {
-                await MainActor.run {
-                    summaryError = LLMTaskRunner.errorMessage(error, task: .summaries)
-                }
+                guard summaryRequestId == requestId else { return }
+                summaryError = LLMTaskRunner.errorMessage(error, task: .summaries)
             }
-            await MainActor.run { summarizing = false }
+            summarizing = false
         }
     }
 
@@ -1433,7 +1484,6 @@ struct DraftMessageCard: View {
     @AppStorage("fontScale") private var fontScale = 1.0
     let message: Message
     let onNeedBody: () -> Void
-    @State private var cursorPushed = false
 
     private var preview: String {
         QuotedReply.authoredPreview(text: message.bodyText, html: message.bodyHTML)
@@ -1553,18 +1603,7 @@ struct DraftMessageCard: View {
                 .strokeBorder(Color.orange.opacity(0.35), lineWidth: 1)
         }
         .pmCardElevation(cornerRadius: PMRadius.md)
-        .onHover { inside in
-            if inside {
-                if !cursorPushed { NSCursor.pointingHand.push(); cursorPushed = true }
-            } else if cursorPushed {
-                NSCursor.pop(); cursorPushed = false
-            }
-        }
-        .onDisappear {
-            // Discard-under-cursor removes the card while still hovered;
-            // without this the pointingHand stays pushed on the stack.
-            if cursorPushed { NSCursor.pop(); cursorPushed = false }
-        }
+        .pmPointingHandCursor()
         .onAppear { onNeedBody() }
         .help("Continue editing this draft")
     }
@@ -1591,6 +1630,8 @@ struct MessageCard: View {
     /// Session-wide opt-in shared by every card in the open thread.
     @Binding var loadImagesForThread: Bool
     let onReply: () -> Void
+    /// Parent owns the confirmation dialog for sender blocking.
+    let onBlockSender: (String) -> Void
     /// Parent loads the body when a collapsed header-only card expands.
     let onNeedBody: () -> Void
     /// Parent arms neighbor HTML pre-render after this card's body settles.
@@ -1611,7 +1652,6 @@ struct MessageCard: View {
     /// Giant HTML bodies require an explicit click before WebKit receives the
     /// full document. This stays scoped to the card/session.
     @State private var approvedOversizedHTML = false
-    @State private var cardCursorPushed = false
     // The quoted reply trail below the new text stays collapsed behind a "…"
     // pill (Gmail-style) on every message — threads repeat their history in
     // each body, so showing it all drowns the actual message.
@@ -1676,6 +1716,7 @@ struct MessageCard: View {
          expandedMessageIds: Binding<Set<String>>,
          loadImagesForThread: Binding<Bool> = .constant(false),
          onReply: @escaping () -> Void,
+         onBlockSender: @escaping (String) -> Void = { _ in },
          onNeedBody: @escaping () -> Void = {},
          onBodySettled: @escaping () -> Void = {},
          onUnsubscribe: @escaping () -> Void = {},
@@ -1690,6 +1731,7 @@ struct MessageCard: View {
         self._expandedMessageIds = expandedMessageIds
         self._loadImagesForThread = loadImagesForThread
         self.onReply = onReply
+        self.onBlockSender = onBlockSender
         self.onNeedBody = onNeedBody
         self.onBodySettled = onBodySettled
         self.onUnsubscribe = onUnsubscribe
@@ -1895,6 +1937,7 @@ struct MessageCard: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help("Reply (\(store.keyBindings.key(for: .reply)))")
+                    .accessibilityLabel("Reply")
                     if ReplyComposer.hasAdditionalReplyAllRecipients(
                         message, ownAddresses: store.ownEmailAddresses) {
                         Button {
@@ -1905,6 +1948,7 @@ struct MessageCard: View {
                         }
                         .buttonStyle(.plain).foregroundStyle(.secondary)
                         .help("Reply all (\(store.keyBindings.key(for: .replyAll)))")
+                        .accessibilityLabel("Reply all")
                     }
                     Button {
                         store.openCompose(.init(replyTo: message, forward: true))
@@ -1914,6 +1958,7 @@ struct MessageCard: View {
                     }
                     .buttonStyle(.plain).foregroundStyle(.secondary)
                     .help("Forward this message (\(store.keyBindings.key(for: .forward))) · starts a new conversation")
+                    .accessibilityLabel("Forward this message")
                 }
                 Text(message.date, format: message.date.messageHeaderFormat)
                     .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -1924,14 +1969,13 @@ struct MessageCard: View {
                 }
                 .buttonStyle(.plain).foregroundStyle(.secondary)
                 .help(expanded ? "Collapse" : "Expand")
+                .accessibilityLabel(expanded ? "Collapse" : "Expand")
             }
             .contentShape(Rectangle())
             .onTapGesture {
                 toggleExpanded()
             }
-            .onHover { inside in
-                if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-            }
+            .pmPointingHandCursor()
 
             if expanded {
                 // Collapsed cards never mount HTMLBodyView (gated on expanded).
@@ -2035,6 +2079,7 @@ struct MessageCard: View {
                     }
                     .buttonStyle(.plain)
                     .help(showQuoted ? "Hide quoted text" : "Show quoted text")
+                    .accessibilityLabel(showQuoted ? "Hide quoted text" : "Show quoted text")
                 }
                 // Calendar invites get a Gmail/Notion-style Accept card; the
                 // .ics itself is hidden from the generic attachment chips so
@@ -2143,18 +2188,11 @@ struct MessageCard: View {
         .onTapGesture {
             if !expanded {
                 expandCard()
-                if cardCursorPushed { NSCursor.pop(); cardCursorPushed = false }
             }
         }
         // Collapsed cards are clickable everywhere, so show the pointing hand
         // over the whole card (the header row handles its own cursor when expanded).
-        .onHover { inside in
-            if inside, !expanded {
-                if !cardCursorPushed { NSCursor.pointingHand.push(); cardCursorPushed = true }
-            } else if cardCursorPushed {
-                NSCursor.pop(); cardCursorPushed = false
-            }
-        }
+        .pmPointingHandCursor(enabled: !expanded)
         .onAppear {
             // Parent seeds the open set on payload apply. Cards that land
             // already expanded (or the single last-card default before seed)
@@ -2396,7 +2434,7 @@ struct MessageCard: View {
                     }
                 } else {
                     Button(role: .destructive) {
-                        store.blockSender(email)
+                        onBlockSender(email)
                     } label: {
                         Label("Block \(email)", systemImage: "person.crop.circle.badge.xmark")
                     }

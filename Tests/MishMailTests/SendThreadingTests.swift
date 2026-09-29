@@ -71,4 +71,19 @@ final class SendThreadingTests: XCTestCase {
         XCTAssertFalse(SendThreading.isNotFound(GmailError.historyExpired))
         XCTAssertFalse(SendThreading.isNotFound(URLError(.notConnectedToInternet)))
     }
+
+    /// Gmail matches `rfc822msgid:` against `local@domain`; the header's angle
+    /// brackets make the dedupe search miss a message Gmail already accepted.
+    func testRFC822MessageIdQueryDropsAngleBrackets() {
+        XCTAssertEqual(
+            SendThreading.rfc822MessageIdQuery("<abc-123@mishmail.local>"),
+            "rfc822msgid:abc-123@mishmail.local")
+        XCTAssertEqual(
+            SendThreading.rfc822MessageIdQuery("abc@x.com"), "rfc822msgid:abc@x.com")
+        XCTAssertEqual(
+            SendThreading.rfc822MessageIdQuery(MIMEBuilder.makeMessageID(domain: "d.com"))?
+                .contains("<"), false)
+        XCTAssertNil(SendThreading.rfc822MessageIdQuery(""))
+        XCTAssertNil(SendThreading.rfc822MessageIdQuery(" <> "))
+    }
 }

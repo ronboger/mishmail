@@ -302,6 +302,14 @@ struct UpdatesSettings: View {
 
 struct AccountsSettings: View {
     @Environment(MailStore.self) var store
+    @State private var accountToRemove: Account?
+
+    private var confirmingAccountRemoval: Binding<Bool> {
+        Binding(
+            get: { accountToRemove != nil },
+            set: { if !$0 { accountToRemove = nil } }
+        )
+    }
 
     var body: some View {
         PaneScaffold(title: "Accounts") {
@@ -331,7 +339,7 @@ struct AccountsSettings: View {
                                 Button("Exit Demo") { store.exitDemoMode() }
                             } else {
                                 Button("Remove Account", role: .destructive) {
-                                    store.removeAccount(account.id)
+                                    accountToRemove = account
                                 }
                             }
                         }
@@ -351,6 +359,19 @@ struct AccountsSettings: View {
                 }
             }
             .formStyle(.grouped)
+            .confirmationDialog(
+                "Remove account?",
+                isPresented: confirmingAccountRemoval,
+                presenting: accountToRemove
+            ) { account in
+                Button("Remove \(account.id)", role: .destructive) {
+                    store.removeAccount(account.id)
+                    accountToRemove = nil
+                }
+                Button("Cancel", role: .cancel) { accountToRemove = nil }
+            } message: { _ in
+                Text("This removes cached mail and the saved sign-in from this Mac. Gmail mail on the server is not deleted.")
+            }
         }
     }
 }
@@ -1059,11 +1080,10 @@ struct AppearanceSettings: View {
                 }
 
                 Section {
-                    Picker("Text size", selection: $fontScale) {
-                        Text("Small").tag(0.9)
-                        Text("Default").tag(1.0)
-                        Text("Large").tag(1.15)
-                        Text("Extra Large").tag(1.3)
+                    Picker("Text size", selection: fontScaleSelection) {
+                        ForEach(AppFontScale.options) { option in
+                            Text(option.title).tag(option.value)
+                        }
                     }
                     .pickerStyle(.segmented)
                 } footer: {
@@ -1132,7 +1152,15 @@ struct AppearanceSettings: View {
             }
             .formStyle(.grouped)
         }
+        .onAppear { fontScale = AppFontScale.closest(fontScale) }
         .sheet(isPresented: $showVIPManager) { VIPManager() }
+    }
+
+    private var fontScaleSelection: Binding<Double> {
+        Binding(
+            get: { AppFontScale.closest(fontScale) },
+            set: { fontScale = AppFontScale.closest($0) }
+        )
     }
 }
 
@@ -1563,6 +1591,14 @@ struct AISettings: View {
     /// Per-vendor sign-in progress line ("Waiting for browser…", errors).
     @State private var vendorStatus: [LLMOAuthVendor: String] = [:]
     @State private var connectingVendor: LLMOAuthVendor?
+    @State private var providerToRemove: LLMProviderConfig?
+
+    private var confirmingProviderRemoval: Binding<Bool> {
+        Binding(
+            get: { providerToRemove != nil },
+            set: { if !$0 { providerToRemove = nil } }
+        )
+    }
 
     private var endpointIsRemote: Bool {
         guard let host = URL(string: url)?.host?.lowercased() else { return false }
@@ -1668,11 +1704,13 @@ struct AISettings: View {
                             if provider.id != LLMProviderStore.builtInOllamaID {
                                 Button("Edit") { editingProvider = provider }
                                     .buttonStyle(.borderless)
-                                Button(role: .destructive) { remove(provider) } label: {
+                                Button(role: .destructive) { providerToRemove = provider } label: {
                                     Image(systemName: "xmark.circle.fill")
                                         .foregroundStyle(.secondary)
                                 }
                                 .buttonStyle(.plain)
+                                .help("Remove provider and its API key")
+                                .accessibilityLabel("Remove provider and its API key")
                             }
                         }
                     }
@@ -1769,6 +1807,19 @@ struct AISettings: View {
                 Button("Cancel", role: .cancel) { }
             } message: {
                 Text("This removes all saved model usage data.")
+            }
+            .confirmationDialog(
+                "Remove provider?",
+                isPresented: confirmingProviderRemoval,
+                presenting: providerToRemove
+            ) { provider in
+                Button("Remove \(provider.label)", role: .destructive) {
+                    remove(provider)
+                    providerToRemove = nil
+                }
+                Button("Cancel", role: .cancel) { providerToRemove = nil }
+            } message: { _ in
+                Text("This removes the provider's API key or OAuth token and resets tasks assigned to it to Ollama.")
             }
         }
     }

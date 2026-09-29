@@ -345,6 +345,9 @@ struct ScheduledSend: Codable, Identifiable, Hashable, FetchableRecord, Persista
     var replacingDraftId: String?   // Message.id of the Gmail draft this replaces
     var attachmentsJSON: Data       // JSON-encoded [MIMEBuilder.Attachment]
     var createdAt: Date
+    /// Stable RFC 2822 id used to deduplicate a replay after an ambiguous
+    /// network timeout. Empty only for rows created before v40.
+    var messageId: String = ""
     mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 
     /// Effective From address for MIME (send-as or the mailbox primary).
@@ -536,6 +539,9 @@ struct ChatMessageRow: Codable, Identifiable, Hashable, FetchableRecord, Persist
     var thinkingBlocksJSON: String = "[]"
     var promptTokens: Int?        // usage, assistant rows only
     var completionTokens: Int?
+    /// Anthropic prompt-cache usage (v41). Nil on older rows.
+    var cacheCreationTokens: Int? = nil
+    var cacheReadTokens: Int? = nil
     var createdAt: Date
 }
 
@@ -547,6 +553,9 @@ struct LLMUsageRow: Codable, Identifiable, Hashable, FetchableRecord, Persistabl
     var model: String
     var promptTokens: Int
     var completionTokens: Int
+    /// Anthropic prompt-cache usage (v41). Zero on older rows.
+    var cacheCreationTokens: Int = 0
+    var cacheReadTokens: Int = 0
     var createdAt: Date
 }
 
@@ -1693,6 +1702,44 @@ final class AppDatabase: @unchecked Sendable {
                 t.column("attachmentsJSON", .blob).notNull()
                 t.column("createdAt", .datetime).notNull()
                 t.column("updatedAt", .datetime).notNull().indexed()
+            }
+        }
+        // v40: stable outgoing Message-ID for scheduled/offline sends, plus a
+        // narrower FTS update trigger. Label-only message updates no longer
+        // rewrite the subject/recipient index under SQLCipher.
+        m.registerMigration("v40") { db in
+            try db.alter(table: "scheduledSend") { t in
+                t.add(column: "messageId", .text).notNull().defaults(to: "")
+            }
+            try db.execute(sql: "DROP TRIGGER IF EXISTS __message_fts_au")
+            try db.execute(sql: """
+                CREATE TRIGGER __message_fts_au
+                AFTER UPDATE OF subject, fromHeader, toHeader, ccHeader ON message
+                BEGIN
+                    INSERT INTO message_fts(
+                        message_fts, rowid, subject, fromHeader, toHeader, ccHeader)
+                    VALUES(
+                        'delete', old.rowid, old.subject, old.fromHeader,
+                        old.toHeader, old.ccHeader);
+                    INSERT INTO message_fts(
+                        rowid, subject, fromHeader, toHeader, ccHeader)
+                    VALUES(
+                        new.rowid, new.subject, new.fromHeader,
+                        new.toHeader, new.ccHeader);
+                END
+                """)
+        }
+
+        // v41: prompt-cache token counts. Cache reads and writes are priced
+        // apart from plain input, so totals and spend need them stored.
+        m.registerMigration("v41") { db in
+            try db.alter(table: "chatMessage") { t in
+                t.add(column: "cacheCreationTokens", .integer)
+                t.add(column: "cacheReadTokens", .integer)
+            }
+            try db.alter(table: "llmUsage") { t in
+                t.add(column: "cacheCreationTokens", .integer).notNull().defaults(to: 0)
+                t.add(column: "cacheReadTokens", .integer).notNull().defaults(to: 0)
             }
         }
         return m

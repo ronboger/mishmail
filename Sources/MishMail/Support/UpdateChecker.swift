@@ -582,11 +582,36 @@ final class UpdateChecker: ObservableObject {
         guard create == errSecSuccess, let staticCode else {
             throw UpdateError.invalidSignature(create)
         }
-        let flags = SecCSFlags(rawValue: kSecCSCheckNestedCode | kSecCSCheckAllArchitectures)
+        let flags = strictSignatureFlags
         let check = SecStaticCodeCheckValidity(staticCode, flags, nil)
         guard check == errSecSuccess else {
             throw UpdateError.invalidSignature(check)
         }
+    }
+
+    /// Requirement used for Team ID continuity. Keep this as a pure builder so
+    /// the trust anchor is visible and testable independently of Code Signing.
+    nonisolated static func teamRequirementString(for teamID: String) -> String {
+        Relaunch.teamRequirementString(for: teamID)
+    }
+
+    private nonisolated static let strictSignatureFlags = SecCSFlags(
+        rawValue: kSecCSCheckNestedCode | kSecCSCheckAllArchitectures | kSecCSStrictValidate)
+
+    /// CodeDirectory metadata is useful for diagnostics, but the certificate
+    /// requirement is the identity anchor. A downloaded bundle must satisfy
+    /// both before it can inherit the running app's trust.
+    nonisolated static func satisfiesTeamRequirement(of appURL: URL, teamID: String) -> Bool {
+        var staticCode: SecStaticCode?
+        guard SecStaticCodeCreateWithPath(appURL as CFURL, [], &staticCode) == errSecSuccess,
+              let staticCode else { return false }
+        var requirement: SecRequirement?
+        let requirementString = teamRequirementString(for: teamID)
+        guard SecRequirementCreateWithString(
+            requirementString as CFString, [], &requirement) == errSecSuccess,
+            let requirement else { return false }
+        return SecStaticCodeCheckValidity(staticCode, strictSignatureFlags, requirement)
+            == errSecSuccess
     }
 
     /// Team ID from a bundle's code signature (`nil` = ad-hoc / unsigned team).
@@ -660,6 +685,9 @@ final class UpdateChecker: ObservableObject {
         if let runningTeam {
             guard let updateTeam else { throw UpdateError.adHocDowngrade }
             guard updateTeam == runningTeam else {
+                throw UpdateError.teamMismatch(expected: runningTeam, found: updateTeam)
+            }
+            guard satisfiesTeamRequirement(of: updateApp, teamID: runningTeam) else {
                 throw UpdateError.teamMismatch(expected: runningTeam, found: updateTeam)
             }
         } else {

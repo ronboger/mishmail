@@ -39,4 +39,22 @@ final class RelaunchProtocolTests: XCTestCase {
         XCTAssertEqual(decoded.appPath, "/Applications/MishMail.app")
         XCTAssertEqual(decoded.nonce, "n")
     }
+
+    func testPlanNonceMustBeAUUID() {
+        XCTAssertTrue(Relaunch.isValidNonce(UUID().uuidString))
+        XCTAssertFalse(Relaunch.isValidNonce("n"))
+        XCTAssertFalse(Relaunch.isValidNonce("../../relauncher-ready"))
+    }
+
+    func testTargetMustBeTheEnclosingInstalledAppBundle() {
+        let app = URL(fileURLWithPath: "/Applications/MishMail.app", isDirectory: true)
+        let helper = app.appendingPathComponent(
+            "Contents/Library/MishMailRelauncher.app", isDirectory: true)
+        XCTAssertEqual(Relaunch.enclosingAppBundle(forHelperBundle: helper), app)
+        XCTAssertEqual(
+            Relaunch.resolvedTargetAppURL(appPath: app.path, helperBundleURL: helper),
+            app)
+        XCTAssertNil(Relaunch.resolvedTargetAppURL(
+            appPath: "/Applications/Other.app", helperBundleURL: helper))
+    }
 }

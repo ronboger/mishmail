@@ -45,6 +45,84 @@ struct ThreadListView: View {
 
     private var groupBy: GroupBy { GroupBy(rawValue: groupByRaw) ?? .date }
 
+    private var groupedThreadCount: Int {
+        grouped.reduce(0) { $0 + $1.1.count }
+    }
+
+    /// Compared with the view's opening chips (which include a saved
+    /// category pick), not the bare defaults, so a saved pick is not a filter.
+    private var filtersAreActive: Bool {
+        store.chips != FilterChips.initial(for: store.selectedView)
+    }
+
+    /// Only the very first sync shows a spinner. Background passes run every
+    /// minute and must not flicker an empty Trash or hide search actions.
+    private var isFirstSyncRunning: Bool {
+        !store.syncStatus.isEmpty && store.accounts.contains { $0.historyId == nil }
+    }
+
+    @ViewBuilder
+    private var emptyState: some View {
+        if !store.committedSearch.trimmingCharacters(in: .whitespaces).isEmpty {
+            ContentUnavailableView {
+                Label("No local matches", systemImage: "magnifyingglass")
+            } description: {
+                Text("Nothing cached matches “\(store.committedSearch)”. Older mail may still be on Gmail.")
+            } actions: {
+                Button { store.searchAllGmail() } label: {
+                    Label(store.serverSearching ? "Searching…" : "Search all of Gmail",
+                          systemImage: "arrow.down.circle")
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(store.serverSearching)
+            }
+        } else if filtersAreActive {
+            ContentUnavailableView {
+                Label("No conversations match these filters", systemImage: "line.3.horizontal.decrease.circle")
+            } actions: {
+                Button("Clear filters") { store.resetChips() }
+                .buttonStyle(.borderedProminent)
+            }
+        } else if store.accounts.isEmpty {
+            ContentUnavailableView(
+                "No accounts connected",
+                systemImage: "person.crop.circle.badge.plus",
+                description: Text("Add a Google account from the account menu to get started.")
+            )
+        } else if isFirstSyncRunning {
+            VStack(spacing: 10) {
+                ProgressView()
+                Text("Syncing \(store.selectedView.title)…")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+            }
+        } else {
+            let title = emptyViewTitle
+            ContentUnavailableView(
+                title.0,
+                systemImage: title.1,
+                description: Text(title.2)
+            )
+        }
+    }
+
+    private var emptyViewTitle: (String, String, String) {
+        switch store.selectedView {
+        case .trash:
+            return ("Trash is empty", "trash", "Deleted conversations will appear here.")
+        case .sent:
+            return ("No sent conversations", "paperplane", "Messages you send will appear here.")
+        case .drafts:
+            return ("No drafts", "doc", "Unsent messages will appear here.")
+        case .starred:
+            return ("No starred conversations", "star", "Star a conversation to keep it here.")
+        case .snoozed:
+            return ("Nothing snoozed", "clock", "Snoozed conversations will return here later.")
+        default:
+            return ("Nothing in \(store.selectedView.title)", "tray", "You're all caught up.")
+        }
+    }
+
     /// Cached grouping — rebuilt only when inputs change, not every body pass.
     @State private var grouped: [(String, [MailThread])] = []
     @State private var flatDisplayOrder: [String] = []
@@ -444,30 +522,8 @@ struct ThreadListView: View {
             }
         }
         .overlay {
-            if store.threads.isEmpty {
-                if !store.accounts.isEmpty, !store.committedSearch.trimmingCharacters(in: .whitespaces).isEmpty {
-                    // Local search only covers cached mail — offer the server.
-                    ContentUnavailableView {
-                        Label("No local matches", systemImage: "magnifyingglass")
-                    } description: {
-                        Text("Nothing cached matches “\(store.committedSearch)”. Older mail may still be on Gmail.")
-                    } actions: {
-                        Button { store.searchAllGmail() } label: {
-                            Label(store.serverSearching ? "Searching…" : "Search all of Gmail",
-                                  systemImage: "arrow.down.circle")
-                        }
-                        .buttonStyle(.borderedProminent)
-                        .disabled(store.serverSearching)
-                    }
-                } else {
-                    ContentUnavailableView(
-                        store.accounts.isEmpty ? "No accounts connected" : "Nothing here",
-                        systemImage: store.accounts.isEmpty ? "person.crop.circle.badge.plus" : "tray",
-                        description: Text(store.accounts.isEmpty
-                            ? "Add a Google account from the account menu to get started."
-                            : "You're all caught up.")
-                    )
-                }
+            if groupedThreadCount == 0 {
+                emptyState
             }
         }
         // Undo toast and notice toast (both bottom-leading) live in ContentView.
@@ -501,6 +557,7 @@ struct ThreadListView: View {
             }
             .buttonStyle(.plain)
             .help("Clear selection (Esc)")
+            .accessibilityLabel("Clear selection")
         }
         .font(.system(size: 12 * fontScale))
         .padding(.horizontal, 12).padding(.vertical, 6)
@@ -1386,26 +1443,23 @@ struct FilterMenuRow: View {
     }
 }
 
-/// Sender favicon for filter suggestions: the domain's favicon, falling back
-/// to a generic person glyph.
+/// Local sender avatar for filter suggestions. Keep contact domains off the
+/// network: sender suggestions should not silently query a third-party
+/// favicon service.
 struct FaviconView: View {
     let email: String
 
     var body: some View {
-        AsyncImage(url: faviconURL) { image in
-            image.resizable()
-        } placeholder: {
-            Image(systemName: "person.crop.circle")
-                .font(.system(size: 13)).foregroundStyle(.secondary)
-        }
-        .frame(width: 16, height: 16)
-        .clipShape(RoundedRectangle(cornerRadius: 3))
-        .pmImageOutline(cornerRadius: 3)
+        Text(letter)
+            .font(.system(size: 9, weight: .semibold))
+            .foregroundStyle(Color.notionAccent)
+            .frame(width: 16, height: 16)
+            .background(Color.notionAccent.opacity(0.12), in: Circle())
     }
 
-    private var faviconURL: URL? {
-        guard let domain = email.split(separator: "@").last, !domain.isEmpty else { return nil }
-        return URL(string: "https://www.google.com/s2/favicons?domain=\(domain)&sz=64")
+    private var letter: String {
+        let local = email.split(separator: "@").first.map(String.init) ?? email
+        return String(local.first ?? "?").uppercased()
     }
 }
 
@@ -1586,14 +1640,30 @@ struct ThreadRow: View, Equatable {
         .padding(.horizontal, -6)
         // No contentShape here: it hijacks the List row's click handling on
         // macOS, so clicking a thread would no longer select/open it.
-        .onHover { inside in
-            hovering = inside
-            if inside { NSCursor.pointingHand.push() } else { NSCursor.pop() }
-        }
+        .onHover { hovering = $0 }
+        .pmPointingHandCursor()
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel(rowAccessibilityLabel)
+        .accessibilityAction(named: "Archive", onArchive)
+        .accessibilityAction(named: "Trash", onTrash)
+        .accessibilityAction(named: thread.isStarred ? "Unstar" : "Star", onStar)
+        .accessibilityAction(named: "Snooze", onSnooze)
     }
 
     private var participantsDisplay: String {
         thread.participants.isEmpty ? thread.fromDisplay : thread.participants
+    }
+
+    private var rowAccessibilityLabel: String {
+        var parts = [thread.isUnread ? "Unread" : "Read", participantsDisplay,
+                     thread.subject.isEmpty ? "No subject" : thread.subject]
+        let count = thread.messageCount == 1
+            ? "1 message" : "\(thread.messageCount) messages"
+        parts.append(count)
+        if thread.hasAttachment { parts.append("Has attachment") }
+        if thread.isStarred { parts.append("Starred") }
+        parts.append(thread.lastDate.formatted(relativeFormat))
+        return parts.joined(separator: ", ")
     }
 
     /// Gmail/Notion Mail draft cue in the sender column: an orange "Draft"
@@ -1655,6 +1725,10 @@ struct ThreadRow: View, Equatable {
               : icon == "archivebox" ? "Archive"
               : icon == "clock" ? "Snooze"
               : "Trash")
+        .accessibilityLabel(icon == "star" ? (filled ? "Unstar" : "Star")
+                            : icon == "archivebox" ? "Archive"
+                            : icon == "clock" ? "Snooze"
+                            : "Trash")
     }
 
     private var relativeFormat: Date.FormatStyle {

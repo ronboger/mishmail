@@ -60,6 +60,7 @@ struct ComposeView: View {
     /// before SwiftUI's onKeyPress ever sees them.
     @State private var slashKeyMonitor: Any?
     @State private var showScheduleSheet = false
+    @State private var showingDiscardConfirmation = false
     /// ⌘K link sheet — UTF-16 offsets into `body_` captured when the sheet opens.
     @State private var showLinkSheet = false
     @State private var linkSelLocation = 0
@@ -94,6 +95,7 @@ struct ComposeView: View {
     /// Comma-separated raw values of footer / format buttons the user hid
     /// (Settings → Appearance → Compose toolbar). Empty = show all.
     @AppStorage(ComposeToolbarVisibility.storageKey) private var composeToolbarHidden = ""
+    @AppStorage("fontScale") private var fontScale = 1.0
 
     @State private var initialBody = ""
     @State private var initialSubject = ""
@@ -566,6 +568,14 @@ struct ComposeView: View {
 
     /// Discard without keeping a Gmail draft — deletes the live autosave chain.
     private func discardAndClose() {
+        guard hasContent else {
+            discardAndCloseImmediately()
+            return
+        }
+        showingDiscardConfirmation = true
+    }
+
+    private func discardAndCloseImmediately() {
         guard beginFinish() else { return }
         Task { @MainActor in
             // Finish any in-flight createDraft so we delete the real server draft.
@@ -608,6 +618,17 @@ struct ComposeView: View {
                              : EdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14))
         .accessibilityIdentifier(isSplit ? "composeSplit"
                                  : isInline ? "composeInline" : "composeCard")
+        .confirmationDialog(
+            "Discard this draft?",
+            isPresented: $showingDiscardConfirmation
+        ) {
+            Button("Discard Draft", role: .destructive) {
+                discardAndCloseImmediately()
+            }
+            Button("Cancel", role: .cancel) { }
+        } message: {
+            Text("This deletes the saved draft from Gmail and closes compose.")
+        }
         .onAppear {
             store.composeMinimized = false
             isMinimized = false
@@ -824,7 +845,9 @@ struct ComposeView: View {
                     .foregroundStyle(.secondary)
             }
             .buttonStyle(.plain)
+            .pmHitTarget()
             .help("Expand compose")
+            .accessibilityLabel("Expand compose")
             closeButton
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -858,11 +881,13 @@ struct ComposeView: View {
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
+                .pmHitTarget()
                 // Esc ladder lives in ContentView via ComposeEsc (works while
                 // NSText has focus). Shortcut is a backup when focus is elsewhere.
                 .keyboardShortcut(isSplit ? .cancelAction : nil)
                 .help(isSplit ? "Exit side by side (esc or ⇧⌘↩)"
                               : "View side by side with the conversation (⇧⌘↩)")
+                .accessibilityLabel(isSplit ? "Exit side by side" : "View side by side")
             }
             if isSplit {
                 // Split owns the full window; exit is the button above. The
@@ -879,6 +904,8 @@ struct ComposeView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Minimize")
+                .pmHitTarget()
+                .accessibilityLabel("Minimize")
             } else if isInline {
                 Button {
                     store.popOutCompose()
@@ -891,6 +918,8 @@ struct ComposeView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Pop out to floating compose")
+                .pmHitTarget()
+                .accessibilityLabel("Pop out to floating compose")
             } else {
                 Button {
                     setMinimized(true)
@@ -903,6 +932,8 @@ struct ComposeView: View {
                 }
                 .buttonStyle(.plain)
                 .help("Minimize")
+                .pmHitTarget()
+                .accessibilityLabel("Minimize")
             }
             closeButton
         }
@@ -925,6 +956,8 @@ struct ComposeView: View {
             }
             .buttonStyle(.plain)
             .help(hasContent ? "Save draft & close" : "Close")
+            .pmHitTarget()
+            .accessibilityLabel(hasContent ? "Save draft and close" : "Close")
         } else {
             Button(action: saveAndClose) {
                 closeGlyph
@@ -932,6 +965,8 @@ struct ComposeView: View {
             .buttonStyle(.plain)
             .keyboardShortcut(.cancelAction)
             .help(hasContent ? "Save draft & close" : "Close")
+            .pmHitTarget()
+            .accessibilityLabel(hasContent ? "Save draft and close" : "Close")
         }
     }
 
@@ -1081,7 +1116,7 @@ struct ComposeView: View {
                               caretUTF16: $bodyCaretUTF16,
                               selection: $bodySelection,
                               ghostText: greetingGhostText,
-                              formatTarget: formatTarget, fontSize: 14,
+                              formatTarget: formatTarget, fontSize: 14 * fontScale,
                               onFilesDropped: { ingestDroppedFiles($0) })
                 .padding(.top, 10)
                 .padding(.bottom, 6)
@@ -1169,6 +1204,7 @@ struct ComposeView: View {
                 }
                 .buttonStyle(.plain)
                 .help(request.forward ? "Show forwarded message" : "Show quoted text")
+                .accessibilityLabel(request.forward ? "Show forwarded message" : "Show quoted text")
                 .padding(.bottom, 8)
             } else if quoteStartInBody != nil {
                 // The quote has been inlined; let the user tuck it back
@@ -1186,6 +1222,7 @@ struct ComposeView: View {
                 }
                 .buttonStyle(.plain)
                 .help(request.forward ? "Hide forwarded message" : "Hide quoted text")
+                .accessibilityLabel(request.forward ? "Hide forwarded message" : "Hide quoted text")
                 .padding(.bottom, 8)
             }
 
@@ -1218,6 +1255,9 @@ struct ComposeView: View {
                                     restoredAttachments.remove(at: idx)
                                 } label: { Image(systemName: "xmark.circle.fill").font(.caption2) }
                                     .buttonStyle(.plain)
+                                    .pmHitTarget()
+                                    .help("Remove attachment")
+                                    .accessibilityLabel("Remove \(att.filename)")
                             }
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .background(Color.secondary.opacity(0.12), in: Capsule())
@@ -1230,6 +1270,9 @@ struct ComposeView: View {
                                     attachmentURLs.removeAll { $0 == url }
                                 } label: { Image(systemName: "xmark.circle.fill").font(.caption2) }
                                     .buttonStyle(.plain)
+                                    .pmHitTarget()
+                                    .help("Remove attachment")
+                                    .accessibilityLabel("Remove \(url.lastPathComponent)")
                             }
                             .padding(.horizontal, 8).padding(.vertical, 4)
                             .background(Color.secondary.opacity(0.12), in: Capsule())
@@ -1396,6 +1439,7 @@ struct ComposeView: View {
                     }
                     .buttonStyle(.plain)
                     .help(liveDraft != nil ? "Discard (deletes this draft)" : "Discard without saving")
+                    .accessibilityLabel(liveDraft != nil ? "Discard draft" : "Discard without saving")
 
                     // Split send button: Send now | schedule menu. Drawn by hand
                     // so both halves match; the presets are a native menu (a
@@ -1978,7 +2022,10 @@ struct ComposeView: View {
                 originalBody: MessageParser.replyQuotableText(
                     text: original.bodyText, html: original.bodyHTML),
                 intent: intent,
-                userEmail: fromEmail)
+                userEmail: fromEmail,
+                characterBudget: LLMTaskRunner.resolve(.drafts)?.config.kind == .ollama
+                    ? LLMPrompts.localDraftOriginalBudget
+                    : LLMPrompts.hostedDraftOriginalBudget)
         } else {
             prompt = LLMPrompts.draftNew(intent: intent, userEmail: fromEmail)
         }
@@ -1987,7 +2034,9 @@ struct ComposeView: View {
             do {
                 // Stream tokens in as the local model produces them.
                 var accumulated = ""
-                for try await piece in LLMTaskRunner.stream(task: .drafts, prompt: prompt) {
+                for try await piece in LLMTaskRunner.stream(
+                    task: .drafts, prompt: prompt,
+                    onNotice: { notice in self.error = notice }) {
                     accumulated += piece
                     let snapshot = accumulated
                     await MainActor.run {
@@ -2046,7 +2095,9 @@ struct ComposeView: View {
         Task {
             var accumulated = ""
             do {
-                for try await piece in LLMTaskRunner.stream(task: .drafts, prompt: prompt) {
+                for try await piece in LLMTaskRunner.stream(
+                    task: .drafts, prompt: prompt,
+                    onNotice: { notice in self.error = notice }) {
                     accumulated += piece
                     let snapshot = accumulated
                     await MainActor.run {
@@ -2059,7 +2110,7 @@ struct ComposeView: View {
                         // Empty successful streams are failures too: do not
                         // leave the user's selection deleted without undo.
                         setBody(originalBody, caretUTF16: originalCaret)
-                        self.error = "The model returned no replacement."
+                        if self.error == nil { self.error = "The model returned no replacement." }
                     }
                 } else {
                     await MainActor.run {

@@ -11,7 +11,8 @@ enum OllamaChatWire {
                             keepAliveSeconds: Int? = nil,
                             contextTokens: Int? = nil,
                             thinking: LLMThinking = .modelDefault,
-                            maxOutputTokens: Int? = nil) throws -> Data {
+                            maxOutputTokens: Int? = nil,
+                            toolChoiceNone: Bool = false) throws -> Data {
         var wireMessages: [[String: Any]] = []
         for message in messages {
             switch message.role {
@@ -35,6 +36,11 @@ enum OllamaChatWire {
                     wireMessages.append(["role": "tool", "content": result.content])
                 }
             }
+        }
+        // Ollama has no tool_choice. Keep the tools (the history holds tool
+        // messages) and tell the model to answer instead.
+        if toolChoiceNone, !tools.isEmpty {
+            wireMessages.append(["role": "system", "content": answerNowNudge])
         }
         var body: [String: Any] = ["model": model, "messages": wireMessages, "stream": true]
         // Ollama defaults hold the weights in memory for five minutes and size
@@ -63,6 +69,9 @@ enum OllamaChatWire {
         return try JSONSerialization.data(withJSONObject: body)
     }
 
+    static let answerNowNudge =
+        "Answer now without calling tools. Use the tool results you already have."
+
     /// Body that drops a model from memory now: an empty chat with keep_alive 0.
     /// Ollama answers immediately and frees the weights.
     static func unloadBody(model: String) throws -> Data {
@@ -72,12 +81,16 @@ enum OllamaChatWire {
     }
 
     struct StreamState {
-        private var callCount = 0
-
         mutating func consume(line: String) -> [LLMEvent] {
             guard let data = line.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return [] }
+            if let message = object["error"] as? String {
+                return [.error(message)]
+            }
+            if let message = object["error"] as? [String: Any] {
+                return [.error(message["message"] as? String ?? "Ollama stream failed")]
+            }
             var events: [LLMEvent] = []
             if let message = object["message"] as? [String: Any] {
                 if let text = message["content"] as? String, !text.isEmpty {
@@ -92,9 +105,8 @@ enum OllamaChatWire {
                     let arguments = function["arguments"] ?? [String: Any]()
                     let argsData = (try? JSONSerialization.data(withJSONObject: arguments)) ?? Data("{}".utf8)
                     events.append(.toolCall(LLMToolCall(
-                        id: "call_\(callCount)", name: name,
+                        id: "call_\(UUID().uuidString)", name: name,
                         argumentsJSON: String(decoding: argsData, as: UTF8.self))))
-                    callCount += 1
                 }
             }
             if object["done"] as? Bool == true {

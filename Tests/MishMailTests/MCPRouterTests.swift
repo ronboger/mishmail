@@ -58,6 +58,14 @@ private final class StubTools: MCPToolProvider, @unchecked Sendable {
 
 final class MCPRouterTests: XCTestCase {
 
+    func testIntegerArgumentSafelyRoundsFiniteDoubles() {
+        XCTAssertEqual(MCPRouter.intArg(["value": .double(3.7)], "value"), 4)
+        XCTAssertNil(MCPRouter.intArg(["value": .double(1e300)], "value"))
+        XCTAssertNil(MCPRouter.intArg(["value": .double(-1e300)], "value"))
+        XCTAssertNil(MCPRouter.intArg(["value": .double(.nan)], "value"))
+        XCTAssertNil(MCPRouter.intArg(["value": .double(.infinity)], "value"))
+    }
+
     private func rpc(_ method: String, id: Any = 1, params: [String: Any]? = nil) -> Data {
         var obj: [String: Any] = ["jsonrpc": "2.0", "method": method, "id": id]
         if let params { obj["params"] = params }
