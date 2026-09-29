@@ -426,6 +426,12 @@ actor ThreadDetailRepository {
         cache.removeValue(for: threadId)
     }
 
+    /// Drop every cached payload (system memory pressure). Each entry holds
+    /// a whole conversation's decoded bodies and assembled HTML documents.
+    func removeAll() {
+        cache.removeAll()
+    }
+
     /// Fetch messages, hydrated bodies, and attachments only. Callers must run
     /// `buildBodyPrep` after the read transaction returns.
     nonisolated static func fetchPayload(threadId: String,

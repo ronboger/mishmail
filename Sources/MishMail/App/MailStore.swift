@@ -3631,6 +3631,22 @@ struct ComposeRequest: Identifiable {
     /// next, plus the one they just left (a `k` straight back).
     private var payloadMirror = ThreadDetailMirror(capacity: 4)
 
+    /// System memory-pressure response (warning or critical), called from
+    /// the app delegate's dispatch source alongside the WebView pool drain.
+    /// Everything dropped here is a cache that refills on demand: the
+    /// reading-pane payloads (both the repository's LRU and this main-side
+    /// mirror) and SQLite's per-connection page caches, which on a large
+    /// SQLCipher mailbox are the biggest resident allocation after WebKit.
+    func releaseMemoryUnderPressure() {
+        payloadMirror.removeAll()
+        let repository = threadDetailRepository
+        Task { await repository.removeAll() }
+        // Never touch a pool that termination is closing. The "eventually"
+        // variant does not block the main thread waiting for busy readers.
+        guard !isShuttingDown else { return }
+        db.releaseMemoryEventually()
+    }
+
     /// Synchronous reading-pane payload, or nil when the caller must await.
     ///
     /// The reading pane paints from this on the advance path. Going to the
