@@ -57,8 +57,8 @@ final class LLMUsageLogTests: XCTestCase {
         try AppDatabase.migrator.migrate(q)
         try q.read { db in
             let usageCols = try db.columns(in: "llmUsage").map(\.name)
-            XCTAssertTrue(usageCols.contains("cacheCreationTokens"), "v40 must add cacheCreationTokens")
-            XCTAssertTrue(usageCols.contains("cacheReadTokens"), "v40 must add cacheReadTokens")
+            XCTAssertTrue(usageCols.contains("cacheCreationTokens"), "v41 must add cacheCreationTokens")
+            XCTAssertTrue(usageCols.contains("cacheReadTokens"), "v41 must add cacheReadTokens")
             let chatCols = try db.columns(in: "chatMessage").map(\.name)
             XCTAssertTrue(chatCols.contains("cacheCreationTokens"))
             XCTAssertTrue(chatCols.contains("cacheReadTokens"))

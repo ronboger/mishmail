@@ -1702,9 +1702,9 @@ final class AppDatabase: @unchecked Sendable {
             }
         }
 
-        // v40: prompt-cache token counts. Cache reads and writes are priced
+        // v41: prompt-cache token counts. Cache reads and writes are priced
         // apart from plain input, so totals and spend need them stored.
-        m.registerMigration("v40") { db in
+        m.registerMigration("v41") { db in
             try db.alter(table: "chatMessage") { t in
                 t.add(column: "cacheCreationTokens", .integer)
                 t.add(column: "cacheReadTokens", .integer)
