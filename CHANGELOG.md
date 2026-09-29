@@ -11,6 +11,24 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Changed
+- **Faster everywhere.** A performance pass across launch, the thread list,
+  the reading pane and sync:
+  - The mail cache now uses its encryption key directly instead of running
+    a 256,000-round key derivation on every database connection (about
+    75 ms each). The first launch after updating converts the file once,
+    which takes a few seconds on a large mailbox.
+  - Inbox, Promotions, Social and per-account lists sort from an index
+    instead of sorting every row on each reload. Search no longer fails
+    silently on very broad queries.
+  - Arrow and j/k browsing no longer re-renders the whole list and window
+    on each key press.
+  - Inline-image mail, remote-image mail and height measurement no longer
+    do heavy HTML work on the main thread.
+  - Contact mining runs off the main thread. Background polling no longer
+    re-fetches send-as identities or rewrites every label each minute, and
+    unchanged messages and threads are no longer rewritten during sync.
+
 ## [0.5.0] - 2026-09-29
 
 ### Added
