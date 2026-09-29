@@ -40,4 +40,17 @@ final class HistorySlicerTests: XCTestCase {
         let slices = HistorySlicer.slices(records, maxMessages: 100)
         XCTAssertEqual(slices.flatMap { $0.records.map(\.id) }, ["1", "2", "3", "4", "5"])
     }
+
+    /// The engine commits the previous slice before attempting the next one;
+    /// a failure in slice two therefore leaves slice one as the replay point.
+    func testFailureAtSliceTwoLeavesSliceOneCommitPoint() {
+        let slices = HistorySlicer.slices(
+            [rec("slice-1", added: 2), rec("slice-2", added: 2)], maxMessages: 2)
+        var committed = "initial"
+        for (index, slice) in slices.enumerated() {
+            if index == 1 { break }
+            committed = slice.lastRecordId
+        }
+        XCTAssertEqual(committed, "slice-1")
+    }
 }

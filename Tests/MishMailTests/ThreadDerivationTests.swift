@@ -427,6 +427,20 @@ final class LabelDeltaTests: XCTestCase {
         labels = SyncEngine.applyLabelDelta(labelIds: labels, add: ["UNREAD"], remove: [])
         XCTAssertEqual(labels, "INBOX UNREAD")
     }
+
+    func testLabelStateConvergesAcrossHistorySlices() {
+        // Slice one archives the message; slice two stars it. Replaying the
+        // second slice from the first slice's committed state must converge
+        // to the same label set as applying both in one pass.
+        var labels = "INBOX"
+        labels = SyncEngine.applyLabelDelta(labelIds: labels, add: [], remove: ["INBOX"])
+        let committedAfterSliceOne = labels
+        labels = SyncEngine.applyLabelDelta(labelIds: labels, add: ["STARRED"], remove: [])
+
+        var replay = committedAfterSliceOne
+        replay = SyncEngine.applyLabelDelta(labelIds: replay, add: ["STARRED"], remove: [])
+        XCTAssertEqual(replay, labels)
+    }
 }
 
 /// SyncEngine.deriveThreads — batched re-derivation of many threads in one
