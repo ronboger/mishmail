@@ -3,6 +3,15 @@ import Foundation
 /// Gmail HTTP batch (`batch/gmail/v1`) request/response helpers.
 /// Kept free of network so unit tests can parse fixtures.
 enum GmailBatch {
+    struct PartResult {
+        let id: String
+        let statusCode: Int
+        let message: GMessage?
+        let body: String
+
+        var isSuccess: Bool { (200..<300).contains(statusCode) && message != nil }
+    }
+
     /// Build a multipart/mixed body of GET message parts.
     static func buildRequestBody(ids: [String], format: String, boundary: String) -> Data {
         var s = ""
@@ -18,36 +27,58 @@ enum GmailBatch {
         return Data(s.utf8)
     }
 
-    /// Parse a multipart batch response into successful `GMessage`s.
-    /// Failed parts (non-2xx) are skipped.
-    static func parseResponse(data: Data, contentType: String) throws -> [GMessage] {
+    /// Parse every multipart response part, retaining non-2xx status and the
+    /// request id from `Content-ID: <itemN>`. Gmail returns HTTP 200 for the
+    /// outer batch even when an individual part is rate-limited.
+    static func parseResults(data: Data, contentType: String,
+                             ids: [String]) throws -> [PartResult] {
         guard let boundary = multipartBoundary(from: contentType) else {
-            // Some gateways return a single JSON error — treat as empty so
-            // the caller can fall back to concurrent gets.
             return []
         }
         guard let text = String(data: data, encoding: .utf8) else { return [] }
         let parts = text.components(separatedBy: "--\(boundary)")
-        var messages: [GMessage] = []
+        var results: [PartResult] = []
         let decoder = JSONDecoder()
         for part in parts {
             // Skip preamble / epilogue / empty.
             guard part.contains("HTTP/") || part.contains("{") else { continue }
             // Status line: "HTTP/1.1 200 OK"
-            if let statusRange = part.range(of: #"HTTP/\d\.\d\s+(\d{3})"#, options: .regularExpression) {
+            let code: Int = {
+                guard let statusRange = part.range(
+                    of: #"HTTP/\d\.\d\s+(\d{3})"#, options: .regularExpression)
+                else { return 0 }
                 let statusLine = part[statusRange]
-                let code = statusLine.split(separator: " ").dropFirst().first.flatMap { Int($0) } ?? 0
-                guard (200..<300).contains(code) else { continue }
+                return statusLine.split(separator: " ").dropFirst().first.flatMap { Int($0) } ?? 0
+            }()
+            let itemIndex = part.firstMatch(
+                of: #"Content-ID:\s*<(?:(?:response-)?item)(\d+)>"#)
+                .flatMap { Int($0) }
+            let id = itemIndex.flatMap { ids.indices.contains($0) ? ids[$0] : nil } ?? ""
+            let json: String
+            let message: GMessage?
+            if let jsonStart = part.range(of: "{"),
+               let jsonEnd = part.range(of: "}", options: .backwards) {
+                json = String(part[jsonStart.lowerBound...jsonEnd.upperBound])
+                message = json.data(using: .utf8).flatMap {
+                    try? decoder.decode(GMessage.self, from: $0)
+                }
+            } else {
+                // Error parts are allowed to have an empty body. Retain the
+                // status and Content-ID rather than losing the id entirely.
+                json = ""
+                message = nil
             }
-            guard let jsonStart = part.range(of: "{"),
-                  let jsonEnd = part.range(of: "}", options: .backwards) else { continue }
-            let json = String(part[jsonStart.lowerBound...jsonEnd.upperBound])
-            guard let jsonData = json.data(using: .utf8) else { continue }
-            if let msg = try? decoder.decode(GMessage.self, from: jsonData) {
-                messages.append(msg)
-            }
+            results.append(PartResult(id: id, statusCode: code, message: message, body: json))
         }
-        return messages
+        return results
+    }
+
+    /// Compatibility helper for callers that only need successful messages.
+    /// Failed parts are intentionally omitted here; network code uses
+    /// `parseResults` so it cannot lose per-id quota failures.
+    static func parseResponse(data: Data, contentType: String) throws -> [GMessage] {
+        try parseResults(data: data, contentType: contentType, ids: [])
+            .compactMap(\.message)
     }
 
     /// Extract boundary token from a Content-Type header value.
@@ -69,5 +100,16 @@ enum GmailBatch {
         }
         let token = rest.trimmingCharacters(in: .whitespacesAndNewlines)
         return token.isEmpty ? nil : token
+    }
+}
+
+private extension String {
+    func firstMatch(of pattern: String) -> String? {
+        guard let range = range(of: pattern, options: .regularExpression) else { return nil }
+        let match = String(self[range])
+        guard let digits = match.range(of: #"\d+"#, options: .regularExpression) else {
+            return nil
+        }
+        return String(match[digits])
     }
 }

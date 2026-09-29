@@ -25,6 +25,23 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertNil(MessageParser.decodeBase64URLData("!!not base64!!"))
     }
 
+    func testDecodeDeclaredLegacyCharsets() {
+        let latin1 = Data([0x63, 0x61, 0x66, 0xe9]).base64URLEncoded()
+        XCTAssertEqual(
+            MessageParser.decodeBase64URL(latin1, contentType: "text/plain; charset=iso-8859-1"),
+            "café")
+
+        let windows = Data([0x80]).base64URLEncoded()
+        XCTAssertEqual(
+            MessageParser.decodeBase64URL(windows, contentType: "text/plain; charset=windows-1252"),
+            "€")
+
+        let shiftJIS = Data([0x82, 0xa0]).base64URLEncoded()
+        XCTAssertEqual(
+            MessageParser.decodeBase64URL(shiftJIS, contentType: "text/plain; charset=shift_jis"),
+            "あ")
+    }
+
     // MARK: - Header helpers
 
     func testDisplayName() {

@@ -147,6 +147,13 @@ enum MessageFetchFailureKind: Equatable {
     }
 
     static func classify(_ error: Error) -> MessageFetchFailureKind {
+        let nsError = error as NSError
+        if error is CancellationError
+            || (error as? URLError)?.code == .cancelled
+            || (nsError.domain == NSURLErrorDomain
+                && nsError.code == URLError.Code.cancelled.rawValue) {
+            return .fatal
+        }
         if let g = error as? GmailError {
             switch g {
             case .http(let code, let body):
@@ -159,7 +166,8 @@ enum MessageFetchFailureKind: Equatable {
                 return .fatal
             }
         }
-        // URLSession / decoding / cancellation-as-error → retry next sync.
+        // URLSession / decoding errors retry next sync. Cancellation is fatal
+        // above so a cancelled sync cannot turn into a background retry.
         return .retryable
     }
 
@@ -172,11 +180,22 @@ enum MessageFetchFailureKind: Equatable {
 
 /// Result of multi-get with permanent vs retryable misses separated.
 struct MessageFetchReport: Sendable {
+    init(messages: [GMessage] = [], notFoundIds: [String] = [],
+         retryExhaustedIds: [String] = [], skippedIds: [String] = []) {
+        self.messages = messages
+        self.notFoundIds = notFoundIds
+        self.retryExhaustedIds = retryExhaustedIds
+        self.skippedIds = skippedIds
+    }
+
     var messages: [GMessage]
     /// 404 — do not retry; treat as deleted for this cycle.
     var notFoundIds: [String]
     /// Still failing after retries — do not advance historyId.
     var retryExhaustedIds: [String]
+    /// Permanent per-message failures (400/403 non-quota, etc.). These are
+    /// omitted deliberately so one bad message cannot pin the whole history.
+    var skippedIds: [String]
 
     var hasRetryExhausted: Bool { !retryExhaustedIds.isEmpty }
 }
@@ -189,9 +208,18 @@ actor GmailClient {
     private let accountEmail: String
     private var accessToken: String?
     private var tokenExpiry: Date = .distantPast
+    private var tokenRefreshTask: Task<(String, Int), Error>?
 
     init(accountEmail: String) {
         self.accountEmail = accountEmail
+    }
+
+    /// One client per mailbox. SyncEngine and MailStore both use this entry
+    /// point so quota state, access tokens, and penalty windows are shared.
+    private static let registry = ClientRegistry()
+
+    static func shared(accountEmail: String) -> GmailClient {
+        registry.client(accountEmail: accountEmail)
     }
 
     private var base: String { "https://gmail.googleapis.com/gmail/v1/users/me" }
@@ -207,7 +235,19 @@ actor GmailClient {
         case .unavailable(let status):
             throw GmailError.keychainUnavailable(accountEmail, status)
         }
-        let (token, expiresIn) = try await OAuthService.refreshAccessToken(refreshToken: refresh)
+        if let task = tokenRefreshTask {
+            let (token, expiresIn) = try await task.value
+            accessToken = token
+            tokenExpiry = Date().addingTimeInterval(TimeInterval(expiresIn))
+            return token
+        }
+        let task: Task<(String, Int), Error> = Task {
+            let result = try await OAuthService.refreshAccessToken(refreshToken: refresh)
+            return (result.token, result.expiresIn)
+        }
+        tokenRefreshTask = task
+        defer { tokenRefreshTask = nil }
+        let (token, expiresIn) = try await task.value
         accessToken = token
         tokenExpiry = Date().addingTimeInterval(TimeInterval(expiresIn))
         return token
@@ -216,33 +256,61 @@ actor GmailClient {
     private func request<T: Decodable>(_ method: String, _ path: String,
                                        query: [String: String] = [:],
                                        jsonBody: [String: Any]? = nil) async throws -> T {
-        var comps = URLComponents(string: base + path)!
-        if !query.isEmpty { comps.queryItems = query.map { .init(name: $0.key, value: $0.value) } }
-        var req = URLRequest(url: comps.url!)
-        req.httpMethod = method
-        req.setValue("Bearer \(try await validToken())", forHTTPHeaderField: "Authorization")
-        if let jsonBody {
-            req.setValue("application/json", forHTTPHeaderField: "Content-Type")
-            req.httpBody = try JSONSerialization.data(withJSONObject: jsonBody)
-        }
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(code) else {
-            if code == 404, path.hasPrefix("/history") { throw GmailError.historyExpired }
-            throw GmailError.http(code, String(data: data, encoding: .utf8) ?? "")
-        }
+        let data = try await requestData(method, path, query: query, jsonBody: jsonBody)
         return try JSONDecoder().decode(T.self, from: data)
     }
 
     /// For endpoints with empty responses (DELETE).
     private func requestVoid(_ method: String, _ path: String) async throws {
-        var req = URLRequest(url: URL(string: base + path)!)
-        req.httpMethod = method
-        req.setValue("Bearer \(try await validToken())", forHTTPHeaderField: "Authorization")
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(code) else {
-            throw GmailError.http(code, String(data: data, encoding: .utf8) ?? "")
+        _ = try await requestData(method, path)
+    }
+
+    private func requestData(_ method: String, _ path: String,
+                             query: [String: String] = [:],
+                             jsonBody: [String: Any]? = nil) async throws -> Data {
+        let cost = Self.quotaCost(method: method, path: path)
+        var didRefreshAfter401 = false
+        var rateAttempt = 0
+        while true {
+            try await pace(units: cost)
+            var comps = URLComponents(string: base + path)!
+            if !query.isEmpty {
+                comps.queryItems = query.map { .init(name: $0.key, value: $0.value) }
+            }
+            var req = URLRequest(url: comps.url!)
+            req.httpMethod = method
+            req.setValue("Bearer \(try await validToken())", forHTTPHeaderField: "Authorization")
+            if let jsonBody {
+                req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+                req.httpBody = try JSONSerialization.data(withJSONObject: jsonBody)
+            }
+            let (data, response) = try await URLSession.shared.data(for: req)
+            let http = response as? HTTPURLResponse
+            let code = http?.statusCode ?? 0
+            guard !(code == 401 && !didRefreshAfter401) else {
+                accessToken = nil
+                tokenExpiry = .distantPast
+                didRefreshAfter401 = true
+                continue
+            }
+            guard (200..<300).contains(code) else {
+                let body = String(data: data, encoding: .utf8) ?? ""
+                if method == "GET",
+                   MessageFetchFailureKind.classify(GmailError.http(code, body)) == .rateLimited,
+                   rateAttempt + 1 < Self.requestRetryAttempts {
+                    let retryAfter = Self.retryAfter(body: body, response: http)
+                    let delay = GmailRetryBackoff.delay(
+                        attempt: rateAttempt, kind: .rateLimited,
+                        retryAfter: retryAfter, jitter: GmailRetryBackoff.jitter())
+                    quota.block(until: Date().addingTimeInterval(delay))
+                    rateAttempt += 1
+                    try await Self.sleep(delay)
+                    continue
+                }
+                if code == 404, path.hasPrefix("/history") { throw GmailError.historyExpired }
+                throw GmailError.http(code, body)
+            }
+            return data
         }
     }
 
@@ -295,11 +363,25 @@ actor GmailClient {
 
     /// The account's display name from the Google profile.
     func userName() async throws -> String? {
-        var req = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!)
-        req.setValue("Bearer \(try await validToken())", forHTTPHeaderField: "Authorization")
         struct Info: Decodable { let name: String? }
-        let (data, _) = try await URLSession.shared.data(for: req)
-        return try JSONDecoder().decode(Info.self, from: data).name
+        var didRefreshAfter401 = false
+        while true {
+            var req = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!)
+            try await pace(units: 1)
+            req.setValue("Bearer \(try await validToken())", forHTTPHeaderField: "Authorization")
+            let (data, response) = try await URLSession.shared.data(for: req)
+            let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401, !didRefreshAfter401 {
+                accessToken = nil
+                tokenExpiry = .distantPast
+                didRefreshAfter401 = true
+                continue
+            }
+            guard (200..<300).contains(code) else {
+                throw GmailError.http(code, String(data: data, encoding: .utf8) ?? "")
+            }
+            return try JSONDecoder().decode(Info.self, from: data).name
+        }
     }
 
     func listMessages(query: String? = nil, labelIds: [String] = [],
@@ -325,32 +407,50 @@ actor GmailClient {
 
     /// Max messages per `batch/gmail/v1` request (Gmail allows up to 100).
     /// A batch is charged all at once — 5 units per message — against a
-    /// 250 units/s moving average, so 25 keeps one batch at half the ceiling.
+    /// 250 units/s moving average, so 25 keeps one batch within the burst cap.
     nonisolated static let batchGetChunkSize = 25
 
     /// Max attempts for a single get on retryable errors (429/5xx/network).
     nonisolated static let getRetryAttempts = 3
+    nonisolated static let requestRetryAttempts = 3
+
+    nonisolated static func quotaCost(method: String, path: String) -> Int {
+        if path == "/profile" { return 1 }
+        if path == "/labels" { return 1 }
+        if path == "/history" { return 2 }
+        if path == "/messages" { return 5 }
+        if path == "/messages/send" { return 100 }
+        if path.contains("/attachments/") { return 5 }
+        if path.hasPrefix("/messages/") && path.hasSuffix("/modify") { return 10 }
+        if path.hasPrefix("/messages/") { return 5 }
+        if path.hasPrefix("/threads/") { return 10 }
+        if path == "/drafts" || path.hasPrefix("/drafts/") {
+            return method == "GET" ? 1 : 10
+        }
+        return 1
+    }
 
     /// Fetch many messages. Batch when enabled; gaps filled with concurrent
     /// singles. Returns successes plus notFound vs retry-exhausted ids so
     /// history sync can refuse to advance past transient failures.
     func getMessages(ids: [String], format: String = "full") async throws -> MessageFetchReport {
         guard !ids.isEmpty else {
-            return MessageFetchReport(messages: [], notFoundIds: [], retryExhaustedIds: [])
+            return MessageFetchReport()
         }
         if !Self.batchGetEnabled || ids.count == 1 {
             return try await getMessagesConcurrent(ids: ids, format: format)
         }
-        var report = MessageFetchReport(messages: [], notFoundIds: [], retryExhaustedIds: [])
+        var report = MessageFetchReport()
         report.messages.reserveCapacity(ids.count)
         var i = ids.startIndex
         while i < ids.endIndex {
             let end = ids.index(i, offsetBy: Self.batchGetChunkSize, limitedBy: ids.endIndex) ?? ids.endIndex
             let chunk = Array(ids[i..<end])
-            let part: [GMessage]
+            let part: MessageFetchReport
             do {
                 part = try await batchWithRateLimitRetry(ids: chunk, format: format)
             } catch {
+                if Self.isCancellation(error) { throw error }
                 if MessageFetchFailureKind.classify(error) == .rateLimited {
                     // Still limited after backing off: stop spending. Every
                     // remaining id is reported unfetched so the engine keeps
@@ -364,17 +464,33 @@ actor GmailClient {
                 report.messages += sub.messages
                 report.notFoundIds += sub.notFoundIds
                 report.retryExhaustedIds += sub.retryExhaustedIds
+                report.skippedIds += sub.skippedIds
                 i = end
                 continue
             }
-            let got = Set(part.map(\.id))
-            report.messages += part
-            let missing = chunk.filter { !got.contains($0) }
+            report.messages += part.messages
+            report.notFoundIds += part.notFoundIds
+            report.retryExhaustedIds += part.retryExhaustedIds
+            report.skippedIds += part.skippedIds
+            let handled = Set(part.messages.map(\.id))
+                .union(part.notFoundIds)
+                .union(part.retryExhaustedIds)
+                .union(part.skippedIds)
+            let missing = chunk.filter { !handled.contains($0) }
+            if part.hasRetryExhausted {
+                // A per-part quota failure means the remaining chunks would
+                // spend into the same penalty window. Leave them unfetched
+                // and let the engine stop before advancing history.
+                report.retryExhaustedIds += missing
+                report.retryExhaustedIds += Array(ids[end...])
+                return report
+            }
             if !missing.isEmpty {
                 let sub = try await getMessagesConcurrent(ids: missing, format: format)
                 report.messages += sub.messages
                 report.notFoundIds += sub.notFoundIds
                 report.retryExhaustedIds += sub.retryExhaustedIds
+                report.skippedIds += sub.skippedIds
             }
             i = end
         }
@@ -385,6 +501,7 @@ actor GmailClient {
         case ok(GMessage)
         case notFound(String)
         case exhausted(String)
+        case skipped(String)
     }
 
     /// Bounded concurrent singles with per-id retry. 404 → notFound (skip).
@@ -394,7 +511,7 @@ actor GmailClient {
         try await withThrowingTaskGroup(of: ConcurrentItem.self) { group in
             var iterator = ids.makeIterator()
             var pending = 0
-            var report = MessageFetchReport(messages: [], notFoundIds: [], retryExhaustedIds: [])
+            var report = MessageFetchReport()
             report.messages.reserveCapacity(ids.count)
             func addNext() {
                 if let id = iterator.next() {
@@ -410,6 +527,7 @@ actor GmailClient {
                 case .ok(let msg): report.messages.append(msg)
                 case .notFound(let id): report.notFoundIds.append(id)
                 case .exhausted(let id): report.retryExhaustedIds.append(id)
+                case .skipped(let id): report.skippedIds.append(id)
                 }
                 addNext()
             }
@@ -419,7 +537,6 @@ actor GmailClient {
 
     private func fetchOneClassified(id: String, format: String) async throws -> ConcurrentItem {
         for attempt in 0..<Self.getRetryAttempts {
-            await pace(units: GmailQuotaBucket.units(forMessageGets: 1))
             do {
                 let msg = try await getMessage(id: id, format: format)
                 if attempt > 0 {
@@ -432,11 +549,20 @@ actor GmailClient {
                 case .notFound:
                     return .notFound(id)
                 case .fatal:
-                    throw error
+                    if Self.isCancellation(error) { throw error }
+                    PerfMetrics.measure(
+                        .syncGetRetry,
+                        meta: "id=\(id) error=\(error.localizedDescription)") { () }
+                    return .skipped(id)
                 case .retryable, .rateLimited:
                     if attempt + 1 < Self.getRetryAttempts {
-                        await Self.sleep(GmailRetryBackoff.delay(
-                            attempt: attempt, kind: kind, retryAfter: Self.retryAfter(error)))
+                        let delay = GmailRetryBackoff.delay(
+                            attempt: attempt, kind: kind, retryAfter: Self.retryAfter(error),
+                            jitter: GmailRetryBackoff.jitter())
+                        if kind == .rateLimited {
+                            quota.block(until: Date().addingTimeInterval(delay))
+                        }
+                        try await Self.sleep(delay)
                     }
                 }
             }
@@ -452,58 +578,131 @@ actor GmailClient {
     private var quota = GmailQuotaBucket()
 
     /// Reserve `units` and wait until the bucket allows the spend.
-    private func pace(units: Int) async {
+    private func pace(units: Int) async throws {
         let delay = quota.delayBeforeSpending(units: units, now: Date())
-        if delay > 0 { await Self.sleep(delay) }
+        if delay > 0 { try await Self.sleep(delay) }
     }
 
-    private static func sleep(_ seconds: TimeInterval) async {
+    private static func sleep(_ seconds: TimeInterval) async throws {
         guard seconds > 0 else { return }
-        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+        try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
     /// A batch is charged 5 units per id, all at once, so pace before sending.
     /// A rate-limited batch is retried after a whole-second backoff rather
     /// than exploded into singles on a connection Gmail has just dropped —
     /// those singles only fail again and pin the history id for the pass.
-    private func batchWithRateLimitRetry(ids: [String], format: String) async throws -> [GMessage] {
+    private func batchWithRateLimitRetry(ids: [String], format: String) async throws -> MessageFetchReport {
+        var pending = ids
+        var report = MessageFetchReport()
         for attempt in 0..<Self.getRetryAttempts {
-            await pace(units: GmailQuotaBucket.units(forMessageGets: ids.count))
             do {
-                return try await getMessagesBatch(ids: ids, format: format)
+                let results = try await getMessagesBatch(ids: pending, format: format)
+                var rateLimited: [String] = []
+                for result in results {
+                    guard !result.id.isEmpty else { continue }
+                    if let message = result.message, result.isSuccess {
+                        report.messages.append(message)
+                        continue
+                    }
+                    let error = GmailError.http(result.statusCode, result.body)
+                    switch MessageFetchFailureKind.classify(error) {
+                    case .notFound:
+                        report.notFoundIds.append(result.id)
+                    case .rateLimited, .retryable:
+                        rateLimited.append(result.id)
+                    case .fatal:
+                        report.skippedIds.append(result.id)
+                        PerfMetrics.measure(
+                            .syncGetRetry,
+                            meta: "id=\(result.id) status=\(result.statusCode)") { () }
+                    }
+                }
+                guard !rateLimited.isEmpty else { return report }
+                pending = rateLimited
+                guard attempt + 1 < Self.getRetryAttempts else {
+                    report.retryExhaustedIds += rateLimited
+                    return report
+                }
+                let body = results.first { rateLimited.contains($0.id) }?.body ?? ""
+                let delay = GmailRetryBackoff.delay(
+                    attempt: attempt, kind: .rateLimited,
+                    retryAfter: GmailRateLimit.retryAfter(body: body),
+                    jitter: GmailRetryBackoff.jitter())
+                quota.block(until: Date().addingTimeInterval(delay))
+                try await Self.sleep(delay)
             } catch {
                 let kind = MessageFetchFailureKind.classify(error)
                 guard kind == .rateLimited, attempt + 1 < Self.getRetryAttempts else { throw error }
                 PerfMetrics.measure(.syncGetRetry, meta: "batch rateLimited attempt=\(attempt + 1)") { () }
-                await Self.sleep(GmailRetryBackoff.delay(
-                    attempt: attempt, kind: kind, retryAfter: Self.retryAfter(error)))
+                let delay = GmailRetryBackoff.delay(
+                    attempt: attempt, kind: kind, retryAfter: Self.retryAfter(error),
+                    jitter: GmailRetryBackoff.jitter())
+                quota.block(until: Date().addingTimeInterval(delay))
+                try await Self.sleep(delay)
             }
         }
-        throw GmailError.http(429, "batch rate limited")
+        return report
     }
 
     private static func retryAfter(_ error: Error) -> TimeInterval? {
         guard case GmailError.http(_, let body) = error else { return nil }
+        if let range = body.range(of: #"Retry-After:\s*([0-9.]+)"#, options: .regularExpression) {
+            let match = String(body[range])
+            if let seconds = match.split(separator: ":").last.flatMap({ TimeInterval($0.trimmingCharacters(in: .whitespaces)) }) {
+                return min(max(0, seconds), GmailRateLimit.maxWait)
+            }
+        }
         return GmailRateLimit.retryAfter(body: body)
+    }
+
+    private static func retryAfter(body: String, response: HTTPURLResponse?) -> TimeInterval? {
+        if let retryAfter = response?.value(forHTTPHeaderField: "Retry-After"),
+           let seconds = TimeInterval(retryAfter) {
+            return min(max(0, seconds), GmailRateLimit.maxWait)
+        }
+        return GmailRateLimit.retryAfter(body: body)
+    }
+
+    private static func isCancellation(_ error: Error) -> Bool {
+        MessageFetchFailureKind.classify(error) == .fatal
+            && (error is CancellationError
+                || (error as? URLError)?.code == .cancelled
+                || ((error as NSError).domain == NSURLErrorDomain
+                    && (error as NSError).code == URLError.Code.cancelled.rawValue))
     }
 
     /// One multipart batch request. Pure parse of the response body is in
     /// `GmailBatch.parseResponse` for unit tests.
-    private func getMessagesBatch(ids: [String], format: String) async throws -> [GMessage] {
+    private func getMessagesBatch(ids: [String], format: String) async throws -> [GmailBatch.PartResult] {
         let boundary = "batch_\(UUID().uuidString.replacingOccurrences(of: "-", with: ""))"
         let body = GmailBatch.buildRequestBody(ids: ids, format: format, boundary: boundary)
-        var req = URLRequest(url: URL(string: "https://www.googleapis.com/batch/gmail/v1")!)
-        req.httpMethod = "POST"
-        req.setValue("Bearer \(try await validToken())", forHTTPHeaderField: "Authorization")
-        req.setValue("multipart/mixed; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
-        req.httpBody = body
-        let (data, resp) = try await URLSession.shared.data(for: req)
-        let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
-        guard (200..<300).contains(code) else {
-            throw GmailError.http(code, String(data: data, encoding: .utf8) ?? "")
+        var didRefreshAfter401 = false
+        while true {
+            try await pace(units: GmailQuotaBucket.units(forMessageGets: ids.count))
+            var req = URLRequest(url: URL(string: "https://www.googleapis.com/batch/gmail/v1")!)
+            req.httpMethod = "POST"
+            req.setValue("Bearer \(try await validToken())", forHTTPHeaderField: "Authorization")
+            req.setValue("multipart/mixed; boundary=\(boundary)", forHTTPHeaderField: "Content-Type")
+            req.httpBody = body
+            let (data, resp) = try await URLSession.shared.data(for: req)
+            let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
+            if code == 401, !didRefreshAfter401 {
+                accessToken = nil
+                tokenExpiry = .distantPast
+                didRefreshAfter401 = true
+                continue
+            }
+            guard (200..<300).contains(code) else {
+                var body = String(data: data, encoding: .utf8) ?? ""
+                if let retryAfter = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After") {
+                    body += "\nRetry-After: \(retryAfter)"
+                }
+                throw GmailError.http(code, body)
+            }
+            let contentType = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? ""
+            return try GmailBatch.parseResults(data: data, contentType: contentType, ids: ids)
         }
-        let contentType = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? ""
-        return try GmailBatch.parseResponse(data: data, contentType: contentType)
     }
 
     func modifyMessage(id: String, add: [String] = [], remove: [String] = []) async throws {
@@ -587,5 +786,19 @@ actor GmailClient {
             throw GmailError.http(0, "attachment payload missing")
         }
         return data
+    }
+}
+
+private final class ClientRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var clients: [String: GmailClient] = [:]
+
+    func client(accountEmail: String) -> GmailClient {
+        lock.lock()
+        defer { lock.unlock() }
+        if let client = clients[accountEmail] { return client }
+        let client = GmailClient(accountEmail: accountEmail)
+        clients[accountEmail] = client
+        return client
     }
 }

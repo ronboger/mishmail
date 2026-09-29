@@ -52,8 +52,22 @@ final class MessageFetchFailureTests: XCTestCase {
         XCTAssertEqual(MessageFetchFailureKind.classify(err), .retryable)
     }
 
+    func testCancellationIsFatal() {
+        XCTAssertEqual(MessageFetchFailureKind.classify(CancellationError()), .fatal)
+        XCTAssertEqual(MessageFetchFailureKind.classify(URLError(.cancelled)), .fatal)
+    }
+
     func testPartialFetchErrorMessage() {
         let e = GmailError.partialFetch(failedCount: 3)
         XCTAssertTrue(e.localizedDescription.contains("3"))
+    }
+
+    func testFetchReportCountsExhaustedIds() {
+        let report = MessageFetchReport(
+            messages: [], notFoundIds: ["gone"],
+            retryExhaustedIds: ["limited-1", "limited-2"], skippedIds: ["bad"])
+        XCTAssertTrue(report.hasRetryExhausted)
+        XCTAssertEqual(report.retryExhaustedIds.count, 2)
+        XCTAssertEqual(report.skippedIds, ["bad"])
     }
 }

@@ -48,7 +48,7 @@ final class GmailQuotaBucketTests: XCTestCase {
     /// batches, keeps a full pass under the average.
     func testDefaultsStayUnderGmailsMovingAverage() {
         let bucket = GmailQuotaBucket()
-        XCTAssertEqual(bucket.capacity, 250)
+        XCTAssertEqual(bucket.capacity, 125)
         XCTAssertEqual(bucket.refillPerSecond, 200)
         XCTAssertLessThanOrEqual(GmailQuotaBucket.units(forMessageGets: GmailClient.batchGetChunkSize), 125)
     }
@@ -56,5 +56,25 @@ final class GmailQuotaBucketTests: XCTestCase {
     func testMessageGetCosts() {
         XCTAssertEqual(GmailQuotaBucket.units(forMessageGets: 1), 5)
         XCTAssertEqual(GmailQuotaBucket.units(forMessageGets: 50), 250)
+    }
+
+    func testEndpointCosts() {
+        XCTAssertEqual(GmailClient.quotaCost(method: "GET", path: "/profile"), 1)
+        XCTAssertEqual(GmailClient.quotaCost(method: "GET", path: "/history"), 2)
+        XCTAssertEqual(GmailClient.quotaCost(method: "GET", path: "/messages"), 5)
+        XCTAssertEqual(GmailClient.quotaCost(method: "GET", path: "/messages/m1"), 5)
+        XCTAssertEqual(GmailClient.quotaCost(method: "POST", path: "/threads/t1/modify"), 10)
+        XCTAssertEqual(GmailClient.quotaCost(method: "POST", path: "/messages/send"), 100)
+        XCTAssertEqual(GmailClient.quotaCost(method: "POST", path: "/drafts"), 10)
+        XCTAssertEqual(GmailClient.quotaCost(method: "GET", path: "/messages/m1/attachments/a1"), 5)
+    }
+
+    func testPenaltyBlocksAllCallersUntilItExpires() {
+        var bucket = GmailQuotaBucket(capacity: 125, refillPerSecond: 250)
+        let t0 = Date(timeIntervalSince1970: 1_000)
+        bucket.block(until: t0.addingTimeInterval(4))
+        XCTAssertEqual(bucket.delayBeforeSpending(units: 5, now: t0), 4, accuracy: 0.001)
+        XCTAssertEqual(bucket.delayBeforeSpending(units: 5, now: t0.addingTimeInterval(4)),
+                       0, accuracy: 0.001)
     }
 }

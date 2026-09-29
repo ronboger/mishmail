@@ -16,7 +16,10 @@ import Foundation
 struct GmailQuotaBucket {
     /// `messages.get` costs 5 units regardless of format.
     static let messageGetUnits = 5
-    static let defaultCapacity = 250
+    /// Keep a half-second of burst capacity. Gmail's 250 units/s limit is a
+    /// moving average, so a 125-unit burst leaves room for refill while the
+    /// next request is in flight.
+    static let defaultCapacity = 125
     /// Below Gmail's 250/s so the moving average never touches the ceiling.
     static let defaultRefillPerSecond = 200
 
@@ -26,11 +29,13 @@ struct GmailQuotaBucket {
     /// had to wait is charged at the time it was told to wait until.
     private var tokens: Double
     private var lastRefill: Date?
+    private var blockedUntil: Date?
 
     init(capacity: Int = defaultCapacity, refillPerSecond: Int = defaultRefillPerSecond) {
         self.capacity = capacity
         self.refillPerSecond = refillPerSecond
         self.tokens = Double(capacity)
+        self.blockedUntil = nil
     }
 
     static func units(forMessageGets count: Int) -> Int {
@@ -40,6 +45,12 @@ struct GmailQuotaBucket {
     /// Reserves `units` and returns how long the caller must wait before
     /// sending. Zero when the bucket has room now.
     mutating func delayBeforeSpending(units: Int, now: Date) -> TimeInterval {
+        if let blockedUntil, blockedUntil > now {
+            return blockedUntil.timeIntervalSince(now)
+        }
+        if let blockedUntil, blockedUntil <= now {
+            self.blockedUntil = nil
+        }
         if let last = lastRefill {
             let elapsed = max(0, now.timeIntervalSince(last))
             tokens = min(Double(capacity), tokens + elapsed * Double(refillPerSecond))
@@ -49,6 +60,15 @@ struct GmailQuotaBucket {
         guard tokens < 0 else { return 0 }
         // Deficit refills at `refillPerSecond`; the caller sleeps that long.
         return -tokens / Double(refillPerSecond)
+    }
+
+    /// Blocks every caller until Gmail's penalty window or the local retry
+    /// backoff expires. The client owns this bucket, so unrelated requests for
+    /// the same account observe the same penalty.
+    mutating func block(until: Date) {
+        if self.blockedUntil == nil || until > self.blockedUntil! {
+            self.blockedUntil = until
+        }
     }
 }
 
@@ -86,14 +106,23 @@ enum GmailRateLimit {
 /// none. Sub-second retries only burn the attempts and the whole pass.
 enum GmailRetryBackoff {
     static func delay(attempt: Int, kind: MessageFetchFailureKind,
-                      retryAfter: TimeInterval? = nil) -> TimeInterval {
+                      retryAfter: TimeInterval? = nil,
+                      jitter: TimeInterval = 0) -> TimeInterval {
+        let base: TimeInterval
         switch kind {
         case .rateLimited:
             let scheduled = 2.0 * Double(1 << attempt)   // 2s, 4s, 8s
-            return max(scheduled, retryAfter ?? 0)
+            base = max(scheduled, retryAfter ?? 0)
         default:
-            return 0.2 * Double(1 << attempt)   // 0.2s, 0.4s
+            base = 0.2 * Double(1 << attempt)   // 0.2s, 0.4s
         }
+        return base + max(0, jitter)
+    }
+
+    /// Small decorrelation jitter prevents several callers released by the
+    /// same quota penalty from forming another synchronized burst.
+    static func jitter() -> TimeInterval {
+        Double.random(in: 0...0.25)
     }
 }
 

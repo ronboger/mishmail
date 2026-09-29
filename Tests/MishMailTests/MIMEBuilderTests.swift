@@ -31,6 +31,12 @@ final class MIMEBuilderTests: XCTestCase {
         XCTAssertEqual(decodedBody(of: raw), "The body.\nLine two.")
     }
 
+    func testStableMessageIDHeaderIsIncluded() {
+        let raw = MIMEBuilder.build(from: "a@b.com", to: "c@d.com", subject: "s",
+                                    bodyText: "b", messageId: "<fixed@mishmail.local>")
+        XCTAssertTrue(lines(of: raw).contains("Message-ID: <fixed@mishmail.local>"))
+    }
+
     func testCcAndBccHeaders() {
         let raw = MIMEBuilder.build(from: "ron@x.com", to: "jane@y.com",
                                     cc: "cc@y.com", bcc: "secret@z.com, two@z.com",
