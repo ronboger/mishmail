@@ -768,6 +768,16 @@ final class AppDatabase: @unchecked Sendable {
             // ranking) stay in memory instead of spilling to a temp file that
             // SQLCipher would have to encrypt on the way out.
             try db.execute(sql: "PRAGMA temp_store = MEMORY")
+            // DatabasePool runs in WAL mode, where NORMAL is the documented
+            // safe setting: a commit only appends to the WAL, and the fsync
+            // moves to checkpoint time. A power loss can drop the last few
+            // commits but never corrupts the file. The default (FULL) fsyncs
+            // the WAL on every commit, which is most of the cost of the many
+            // small sync write transactions. A crash loses only a suffix of
+            // commits, in order, and SyncEngine commits historyId after the
+            // rows it covers — so a lost suffix rolls historyId back with
+            // those rows and the next pass re-fetches them from Gmail.
+            try db.execute(sql: "PRAGMA synchronous = NORMAL")
         }
         let pool = try DatabasePool(path: path, configuration: config)
         try migrator.migrate(pool)
