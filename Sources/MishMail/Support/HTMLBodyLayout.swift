@@ -373,7 +373,20 @@ enum HTMLBodyLayout {
     ///
     /// Safe to re-run: disconnects any prior observer and rebinds listeners.
     /// Idempotent class/style updates.
-    static var installLayoutAndMeasureJS: String {
+    ///
+    /// Image load/error events and ResizeObserver callbacks never do layout
+    /// work inline. They mark what the next pass needs (neutralize re-walk,
+    /// placeholder reflow) and schedule one pass per frame: an email with 60
+    /// images used to run 60 full `getComputedStyle` walks as they resolved.
+    /// Reflow only runs when the viewport width moved (the only input to
+    /// `fitViewport` a resize can change), so the RO no longer re-triggers
+    /// itself via placeholder style writes. Duplicate heights post at most
+    /// twice in a row — the second copy is what lets `HTMLHeightStability`
+    /// declare the body settled; later copies are pure bridge traffic.
+    ///
+    /// `static let`: every input is a constant, so the ~15 KB script is built
+    /// once instead of on every install (each open, swap, and pre-render).
+    static let installLayoutAndMeasureJS: String = {
         let layout = layoutImageClass
         let failed = failedImageClass
         let neutral = heightNeutralizedClass
@@ -629,8 +642,18 @@ enum HTMLBodyLayout {
             return Math.ceil(Math.max(Math.min(content, MAX_CONTENT_H), MIN_H));
           }
 
+          /* Post a height to the host. A repeat of the last posted value is
+             sent once (the host needs two agreeing samples to call the body
+             stable) and then suppressed until the height changes. */
           function postHeight(h){
             h = Math.min(Math.max(h, MIN_H), MAX_CONTENT_H);
+            if (h === window.__mmLastPostedH) {
+              if (window.__mmPostRepeats >= 1) return h;
+              window.__mmPostRepeats += 1;
+            } else {
+              window.__mmLastPostedH = h;
+              window.__mmPostRepeats = 0;
+            }
             try {
               if (window.webkit && webkit.messageHandlers && webkit.messageHandlers[HANDLER]) {
                 webkit.messageHandlers[HANDLER].postMessage(h);
@@ -733,8 +756,55 @@ enum HTMLBodyLayout {
             return postHeight(h);
           }
 
+          /* One coalesced layout pass. `rewalk` forces the neutralize walk
+             even when the viewport height is unchanged; `reflow` re-fits
+             placeholders, but only when the viewport width actually moved. */
+          function runPass(){
+            var p = window.__mmPass;
+            window.__mmPass = null;
+            if (!p) return;
+            if (p.rewalk) window.__mmLastNeutralVH = 0;
+            neutralizeViewportHeights();
+            if (p.reflow) {
+              var w = viewportWidth();
+              if (w !== window.__mmReflowW) {
+                window.__mmReflowW = w;
+                reflowPlaceholders();
+              }
+            }
+            report();
+          }
+
+          /* Merge a request into the pending pass, or start one. rAF batches
+             to one pass per frame; the timer is a fallback because WebKit
+             throttles rAF for hidden views (pre-renders, the alpha-0 incoming
+             view), and heights must still arrive there. Whichever fires first
+             runs the pass; the other finds nothing pending. */
+          function schedulePass(rewalk, reflow){
+            var p = window.__mmPass;
+            if (p) {
+              p.rewalk = p.rewalk || rewalk;
+              p.reflow = p.reflow || reflow;
+              return;
+            }
+            window.__mmPass = { rewalk: !!rewalk, reflow: !!reflow };
+            var gen = window.__mmPassGen;
+            var fire = function(){
+              if (window.__mmPassGen !== gen) return;
+              runPass();
+            };
+            try {
+              if (typeof window.requestAnimationFrame === 'function') {
+                window.requestAnimationFrame(fire);
+              }
+            } catch (e) {}
+            setTimeout(fire, 50);
+          }
+
           function onImgEvent(ev){
             var img = ev.target;
+            /* Per-image placeholder state is cheap and must track this image
+               immediately; the document-wide work is deferred to the pass. */
             applyImage(img);
             /* Only real geometry changes should unfreeze. Blocked/error images
                already have placeholders applied — clearing freeze on every
@@ -748,9 +818,7 @@ enum HTMLBodyLayout {
             }
             /* Placeholders can establish viewport-tied heights after first
                neutralize pass; force a re-walk (VH may be unchanged). */
-            window.__mmLastNeutralVH = 0;
-            neutralizeViewportHeights();
-            report();
+            schedulePass(true, false);
           }
 
           /* Fresh install: clear freeze from a previous document on this view. */
@@ -763,6 +831,12 @@ enum HTMLBodyLayout {
           window.__mmFeedbackBaseVH = 0;
           window.__mmFreezeStableVH = 0;
           window.__mmFreezeAdoptions = 0;
+          window.__mmLastPostedH = -1;
+          window.__mmPostRepeats = 0;
+          /* Orphan any pass a previous install scheduled on this view. */
+          window.__mmPass = null;
+          window.__mmPassGen = (window.__mmPassGen || 0) + 1;
+          window.__mmReflowW = viewportWidth();
 
           neutralizeViewportHeights();
 
@@ -782,10 +856,9 @@ enum HTMLBodyLayout {
           if (typeof ResizeObserver !== 'undefined' && document.body) {
             window.__mmRO = new ResizeObserver(function(){
               /* Re-check after host frame changes — new viewport px can make
-                 previously sub-threshold min-heights match 100vh. */
-              neutralizeViewportHeights();
-              reflowPlaceholders();
-              report();
+                 previously sub-threshold min-heights match 100vh. Coalesced:
+                 a resize drag delivers many callbacks per frame. */
+              schedulePass(false, true);
             });
             window.__mmRO.observe(document.body);
             try {
@@ -798,11 +871,11 @@ enum HTMLBodyLayout {
           return report();
         })();
         """
-    }
+    }()
 
     /// Disconnect ResizeObserver and clear freeze/feedback globals. Called on
     /// every recycle path so parked views never keep prior callbacks/state.
-    static var teardownJS: String {
+    static let teardownJS: String = {
         """
         (function(){
           try {
@@ -818,8 +891,14 @@ enum HTMLBodyLayout {
             window.__mmFeedbackBaseVH = 0;
             window.__mmFreezeStableVH = 0;
             window.__mmFreezeAdoptions = 0;
+            window.__mmLastPostedH = -1;
+            window.__mmPostRepeats = 0;
+            /* Drop any pending coalesced pass so it cannot report into the
+               next document's host. */
+            window.__mmPass = null;
+            window.__mmPassGen = (window.__mmPassGen || 0) + 1;
           } catch (e) {}
         })();
         """
-    }
+    }()
 }
