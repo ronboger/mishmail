@@ -7,12 +7,16 @@ enum LLMUsageLog {
         var promptTokens: Int
         var completionTokens: Int
         var estimatedUSD: Double?   // nil when any row's model has no price
+        var cacheCreationTokens = 0
+        var cacheReadTokens = 0
     }
 
     private struct Aggregate {
         var task: LLMTask
         var promptTokens = 0
         var completionTokens = 0
+        var cacheCreationTokens = 0
+        var cacheReadTokens = 0
         var estimatedUSD = 0.0
         var hasUnknownPrice = false
     }
@@ -26,10 +30,14 @@ enum LLMUsageLog {
             var aggregate = aggregates[task.rawValue] ?? Aggregate(task: task)
             aggregate.promptTokens += row.promptTokens
             aggregate.completionTokens += row.completionTokens
+            aggregate.cacheCreationTokens += row.cacheCreationTokens
+            aggregate.cacheReadTokens += row.cacheReadTokens
             if let price = LLMPricing.price(model: row.model, overrides: overrides) {
                 aggregate.estimatedUSD += LLMPricing.cost(
                     usage: LLMUsage(promptTokens: row.promptTokens,
-                                    completionTokens: row.completionTokens),
+                                    completionTokens: row.completionTokens,
+                                    cacheCreationInputTokens: row.cacheCreationTokens,
+                                    cacheReadInputTokens: row.cacheReadTokens),
                     price: price)
             } else {
                 aggregate.hasUnknownPrice = true
@@ -43,7 +51,9 @@ enum LLMUsageLog {
                              promptTokens: aggregate.promptTokens,
                              completionTokens: aggregate.completionTokens,
                              estimatedUSD: aggregate.hasUnknownPrice
-                                ? nil : aggregate.estimatedUSD)
+                                ? nil : aggregate.estimatedUSD,
+                             cacheCreationTokens: aggregate.cacheCreationTokens,
+                             cacheReadTokens: aggregate.cacheReadTokens)
         }
     }
 
@@ -52,6 +62,9 @@ enum LLMUsageLog {
         LLMUsageRow(id: UUID().uuidString, task: task.rawValue,
                     providerID: config.id.uuidString, model: model,
                     promptTokens: usage.promptTokens,
-                    completionTokens: usage.completionTokens, createdAt: now)
+                    completionTokens: usage.completionTokens,
+                    cacheCreationTokens: usage.cacheCreationInputTokens,
+                    cacheReadTokens: usage.cacheReadInputTokens,
+                    createdAt: now)
     }
 }

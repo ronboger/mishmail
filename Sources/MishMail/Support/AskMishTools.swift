@@ -352,20 +352,108 @@ enum AskMishTools {
 
     /// Replaces runs of blank lines with an explicit marker in bounded UI.
     /// The original body remains unchanged for compose and send.
+    ///
+    /// A line counts as blank when it holds only whitespace, separators
+    /// (`\p{Z}`: NBSP, U+3000, …) or invisible format characters
+    /// (`\p{Cf}`: U+200B, U+FEFF, …). Every line-break form is normalized
+    /// first, so CRLF, U+2028 or a form feed cannot sneak a run past the
+    /// check.
     static func collapsedBlankLines(_ text: String) -> String {
-        guard let regex = try? NSRegularExpression(pattern: #"(?:\n[ \t]*){3,}"#)
-        else { return text }
-        let range = NSRange(text.startIndex..., in: text)
-        var output = text
-        var matches = regex.matches(in: text, range: range).reversed()
-        for match in matches {
-            guard let matchRange = Range(match.range, in: text) else { continue }
-            let run = String(text[matchRange])
-            let blankLines = max(0, run.components(separatedBy: "\n").count - 2)
-            let replacement = "\n[\(blankLines) blank lines]\n"
-            output.replaceSubrange(matchRange, with: replacement)
+        let lines = normalizedLineBreaks(text)
+            .split(separator: "\n", omittingEmptySubsequences: false)
+        var output: [String] = []
+        var run = 0
+        func flushRun() {
+            if run >= 2 {
+                output.append("[\(run) blank lines]")
+            } else if run == 1 {
+                output.append("")
+            }
+            run = 0
         }
-        return output
+        for line in lines {
+            if isBlankLine(line) {
+                run += 1
+            } else {
+                flushRun()
+                output.append(String(line))
+            }
+        }
+        flushRun()
+        return output.joined(separator: "\n")
+    }
+
+    /// CRLF, CR, NEL, U+2028, U+2029, VT and FF all become `\n`.
+    static func normalizedLineBreaks(_ text: String) -> String {
+        var out = String.UnicodeScalarView()
+        var previousWasCR = false
+        for scalar in text.unicodeScalars {
+            switch scalar.value {
+            case 0x0D:
+                out.append("\n")
+                previousWasCR = true
+                continue
+            case 0x0A:
+                if !previousWasCR { out.append("\n") }
+            case 0x0B, 0x0C, 0x85, 0x2028, 0x2029:
+                out.append("\n")
+            default:
+                out.append(scalar)
+            }
+            previousWasCR = false
+        }
+        return String(out)
+    }
+
+    /// Hangul and Braille fillers render as nothing but are letters or
+    /// symbols, so `\p{Z}` misses them.
+    private static let invisibleFillers: Set<UInt32> = [0x115F, 0x1160, 0x3164, 0xFFA0, 0x2800]
+
+    static func isBlankLine<S: StringProtocol>(_ line: S) -> Bool {
+        line.unicodeScalars.allSatisfy { scalar in
+            scalar.properties.isWhitespace
+                || scalar.properties.generalCategory == .spaceSeparator
+                || scalar.properties.generalCategory == .lineSeparator
+                || scalar.properties.generalCategory == .paragraphSeparator
+                || scalar.properties.generalCategory == .format
+                || invisibleFillers.contains(scalar.value)
+        }
+    }
+
+    /// Zero-width and bidi control characters that can hide or reorder
+    /// text. The preview shows each one as a visible `⟨U+XXXX⟩` marker.
+    static func isRevealedFormatCharacter(_ value: UInt32) -> Bool {
+        (0x200B...0x200F).contains(value)
+            || (0x202A...0x202E).contains(value)
+            || (0x2060...0x2064).contains(value)
+            || (0x2066...0x2069).contains(value)
+            || value == 0xFEFF
+    }
+
+    static func revealedInvisibleCharacters(_ text: String) -> String {
+        var out = ""
+        for scalar in text.unicodeScalars {
+            if isRevealedFormatCharacter(scalar.value) {
+                out += String(format: "⟨U+%04X⟩", scalar.value)
+            } else {
+                out.unicodeScalars.append(scalar)
+            }
+        }
+        return out
+    }
+
+    /// Confirm-card text: line breaks normalized, blank runs collapsed to
+    /// a counted marker, then invisible format characters made visible.
+    static func confirmPreviewText(_ body: String) -> String {
+        revealedInvisibleCharacters(collapsedBlankLines(body))
+    }
+
+    /// Line count for the card header. Empty lines count: a run of blank
+    /// lines is exactly how a body hides text below the fold.
+    static func confirmPreviewLineCount(_ body: String) -> Int {
+        guard !body.isEmpty else { return 0 }
+        return normalizedLineBreaks(body)
+            .split(separator: "\n", omittingEmptySubsequences: false).count
     }
 
     // MARK: - Argument readers

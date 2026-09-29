@@ -53,4 +53,31 @@ final class ChatStoreTests: XCTestCase {
             XCTAssertEqual(try ChatMessageRow.fetchCount(db), 0)
         }
     }
+
+
+    func testCacheTokensRoundTripAndReloadIntoTotals() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try ChatConversationRow(id: "c1", title: "t", providerID: "p", modelID: "m",
+                                    createdAt: Date(), updatedAt: Date()).save(db)
+            try ChatMessageRow(id: "m1", conversationId: "c1", role: "assistant", text: "a",
+                               toolCallsJSON: "[]", toolResultsJSON: "[]",
+                               promptTokens: 10, completionTokens: 2,
+                               cacheCreationTokens: 500, cacheReadTokens: 7_000,
+                               createdAt: Date(timeIntervalSince1970: 1)).save(db)
+            try ChatMessageRow(id: "m2", conversationId: "c1", role: "assistant", text: "b",
+                               toolCallsJSON: "[]", toolResultsJSON: "[]",
+                               promptTokens: 20, completionTokens: 3,
+                               cacheCreationTokens: nil, cacheReadTokens: 9_000,
+                               createdAt: Date(timeIntervalSince1970: 2)).save(db)
+        }
+        let rows = try q.read { db in
+            try ChatMessageRow.order(Column("createdAt")).fetchAll(db)
+        }
+        XCTAssertEqual(rows.first?.cacheCreationTokens, 500)
+        let totals = AskMishContext.usageTotals(rows: rows)
+        XCTAssertEqual(totals, LLMUsage(promptTokens: 30, completionTokens: 5,
+                                        cacheCreationInputTokens: 500,
+                                        cacheReadInputTokens: 16_000))
+    }
 }

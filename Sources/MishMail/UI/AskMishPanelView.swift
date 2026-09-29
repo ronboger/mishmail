@@ -33,7 +33,10 @@ struct AskMishPanelView: View {
     @State private var revealedBubbleIDs: Set<UUID> = []
     @State private var providerConfig: LLMProviderConfig?
     @State private var transcriptNearBottom = true
-    @State private var parsedBubbleText: [UUID: AttributedString] = [:]
+    /// Parsed markdown per bubble, with the text it came from. A bubble's
+    /// text can change after it stops streaming ("_Stopped._", an error
+    /// line), so a hit only counts when the source text still matches.
+    @State private var parsedBubbleText: [UUID: ParsedBubbleText] = [:]
     @State private var expandedDraftIDs: Set<UUID> = []
 
     var body: some View {
@@ -43,7 +46,17 @@ struct AskMishPanelView: View {
             transcript
             if let pending = controller.pendingConfirmation {
                 Divider()
-                confirmCard(pending)
+                if expandedDraftIDs.contains(pending.id) {
+                    // The full draft has no height cap, so the card scrolls
+                    // as one unit. The buttons sit below the body, so the
+                    // user passes the whole draft on the way to them.
+                    ScrollView(.vertical) {
+                        confirmCard(pending)
+                    }
+                    .scrollIndicators(.visible)
+                } else {
+                    confirmCard(pending)
+                }
             }
             Divider()
             composer
@@ -266,16 +279,16 @@ struct AskMishPanelView: View {
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             .onChange(of: controller.bubbles.count) {
+                // A new user turn always follows the tail again, however
+                // far up the user had scrolled.
+                if controller.bubbles.last?.role == .user { transcriptNearBottom = true }
                 if transcriptNearBottom { scrollToTail(scroller) }
             }
             // Streaming appends to the last bubble without changing the count.
             .onChange(of: controller.bubbles.last?.text) {
                 if transcriptNearBottom { scrollToTail(scroller) }
             }
-            .simultaneousGesture(DragGesture(minimumDistance: 4).onChanged { value in
-                if value.translation.height < -8 { transcriptNearBottom = false }
-                if value.translation.height > 8 { transcriptNearBottom = true }
-            })
+            .modifier(TranscriptNearBottomTracker(nearBottom: $transcriptNearBottom))
             .onAppear {
                 if revealedBubbleIDs.isEmpty {
                     revealedBubbleIDs = Set(controller.bubbles.map(\.id))
@@ -345,10 +358,13 @@ struct AskMishPanelView: View {
                                 Text(bubble.text)
                             } else {
                                 Text(parsedBubbleText[bubble.id]
+                                        .flatMap { $0.source == bubble.text ? $0.parsed : nil }
                                      ?? AttributedString(bubble.text))
-                                    .task(id: bubble.id) {
-                                        if parsedBubbleText[bubble.id] == nil {
-                                            parsedBubbleText[bubble.id] = AskMishContext.displayedText(bubble.text)
+                                    .task(id: bubble.text) {
+                                        if parsedBubbleText[bubble.id]?.source != bubble.text {
+                                            parsedBubbleText[bubble.id] = ParsedBubbleText(
+                                                source: bubble.text,
+                                                parsed: AskMishContext.displayedText(bubble.text))
                                         }
                                     }
                             }
@@ -620,8 +636,7 @@ struct AskMishPanelView: View {
         }
         .buttonStyle(.link)
         .font(.caption)
-        .disabled(controller.isRunning
-                  || !controller.bubbles.contains { $0.role == .user })
+        .disabled(!controller.canRetry)
     }
 
     // MARK: - Confirm card
@@ -647,33 +662,35 @@ struct AskMishPanelView: View {
                 .font(.system(size: 13))
                 .fixedSize(horizontal: false, vertical: true)
             if let body, !body.isEmpty {
-                let lineCount = body.split(whereSeparator: { $0.isNewline }).count
+                let lineCount = AskMishTools.confirmPreviewLineCount(body)
+                let preview = AskMishTools.confirmPreviewText(body)
                 Text("Draft body · \(body.count) characters · \(lineCount) lines")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
-                ScrollView(.vertical) {
-                    Text(AskMishTools.collapsedBlankLines(body))
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                        .padding(8)
+                if expanded {
+                    // Expanded means the whole body, with no height cap and
+                    // no scroll region whose hidden scrollbar could keep a
+                    // tail out of sight.
+                    draftPreviewText(preview)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .background(Color.primary.opacity(0.04),
+                                    in: RoundedRectangle(cornerRadius: PMRadius.sm))
+                } else {
+                    ScrollView(.vertical) {
+                        draftPreviewText(preview)
+                    }
+                    .frame(maxHeight: 240)
+                    .background(Color.primary.opacity(0.04),
+                                in: RoundedRectangle(cornerRadius: PMRadius.sm))
                 }
-                .frame(maxHeight: 240)
-                .background(Color.primary.opacity(0.04),
-                            in: RoundedRectangle(cornerRadius: PMRadius.sm))
                 if bodyNeedsReview && !expanded {
                     Button("Show full draft") {
                         expandedDraftIDs.insert(pending.id)
                     }
                     .buttonStyle(.borderless)
-                    Text("Show full draft before confirming. Scroll to review the full draft.")
+                    Text("Show full draft before confirming.")
                         .font(.caption2)
                         .foregroundStyle(.orange)
-                } else {
-                    Text("Scroll to review the full draft before confirming.")
-                        .font(.caption2)
-                        .foregroundStyle(.secondary)
                 }
             }
             if isSend {
@@ -708,6 +725,15 @@ struct AskMishPanelView: View {
         .background(Color.notionContent,
                     in: RoundedRectangle(cornerRadius: PMRadius.outer(
                         inner: PMRadius.sm, padding: 12)))
+    }
+
+    private func draftPreviewText(_ text: String) -> some View {
+        Text(text)
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .textSelection(.enabled)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(8)
     }
 
     // MARK: - Composer
@@ -1287,6 +1313,40 @@ private struct ModelPickerPopover: View {
                                  isPinned: (provider.pinnedModels ?? []).contains(hit.model))
                 }
             }
+        }
+    }
+}
+
+/// Cached markdown for one finished bubble, keyed by the text it parsed.
+private struct ParsedBubbleText {
+    let source: String
+    let parsed: AttributedString
+}
+
+/// Keeps "follow the tail" in sync with wheel, trackpad, scrollbar and
+/// keyboard scrolling. Only an offset change counts: content growing under
+/// a streaming answer must not read as the user scrolling away.
+private struct TranscriptNearBottomTracker: ViewModifier {
+    @Binding var nearBottom: Bool
+
+    func body(content: Content) -> some View {
+        if #available(macOS 15.0, *) {
+            content.onScrollGeometryChange(for: AskMishLayout.ScrollMetrics.self) { geometry in
+                AskMishLayout.ScrollMetrics(
+                    offsetY: geometry.contentOffset.y,
+                    containerHeight: geometry.containerSize.height,
+                    contentHeight: geometry.contentSize.height)
+            } action: { old, new in
+                if let near = AskMishLayout.nearBottomAfterScroll(from: old, to: new) {
+                    nearBottom = near
+                }
+            }
+        } else {
+            // macOS 14 has no scroll geometry; a drag is the best signal.
+            content.simultaneousGesture(DragGesture(minimumDistance: 4).onChanged { value in
+                if value.translation.height < -8 { nearBottom = false }
+                if value.translation.height > 8 { nearBottom = true }
+            })
         }
     }
 }

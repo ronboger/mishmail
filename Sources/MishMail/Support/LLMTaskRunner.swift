@@ -44,8 +44,15 @@ enum LLMTaskRunner {
     /// this one request: nil keeps the per-task default, 0 lifts the cap.
     /// Quick-reply suggestions share the triage task assignment but must not
     /// inherit triage's one-word 32-token cap.
+    ///
+    /// The stream carries model text only: it lands in drafts, inline edits
+    /// and reply chips. A stop notice (length cut, refusal) goes to
+    /// `onNotice` instead, or to the log when the caller has no place to
+    /// show it.
     static func stream(task: LLMTask, prompt: String,
-                       maxOutputTokens: Int? = nil) -> AsyncThrowingStream<String, Error> {
+                       maxOutputTokens: Int? = nil,
+                       onNotice: (@MainActor @Sendable (String) -> Void)? = nil)
+        -> AsyncThrowingStream<String, Error> {
         guard let resolved = resolve(task) else {
             return AsyncThrowingStream { continuation in
                 continuation.finish()
@@ -69,7 +76,11 @@ enum LLMTaskRunner {
                             break
                         case .done(let stopReason, let usage):
                             if let notice = LLMStopReason.notice(for: stopReason) {
-                                continuation.yield("\n\n[\(notice)]")
+                                if let onNotice {
+                                    onNotice(notice)
+                                } else {
+                                    NSLog("MishMail AI %@: %@", task.rawValue, notice)
+                                }
                             }
                             if let usage {
                                 await recordUsage(task: task, resolved: resolved, usage: usage)

@@ -4,7 +4,8 @@ import Foundation
 enum AnthropicWire {
     static func requestBody(model: String, messages: [LLMMessage],
                             tools: [LLMToolSpec], maxTokens: Int,
-                            thinking: LLMThinking = .modelDefault) throws -> Data {
+                            thinking: LLMThinking = .modelDefault,
+                            toolChoiceNone: Bool = false) throws -> Data {
         var system = ""
         var wireMessages: [[String: Any]] = []
         for message in messages {
@@ -73,6 +74,9 @@ enum AnthropicWire {
                  "input_schema": try JSONSerialization.jsonObject(
                     with: Data(tool.inputSchemaJSON.utf8))]
             }
+            // History with tool_use/tool_result blocks needs `tools` defined,
+            // so an answer-only request keeps them and forbids calls instead.
+            if toolChoiceNone { body["tool_choice"] = ["type": "none"] }
         }
         return try JSONSerialization.data(withJSONObject: body)
     }
@@ -99,15 +103,29 @@ enum AnthropicWire {
                     "effort": LLMHostedThinking.anthropicEffort(level, model: model)
                 ]
             } else {
-                var budget = LLMHostedThinking.budgetTokens(level)
-                if maxTokens <= budget {
-                    maxTokens = min(budget + 8_192,
-                                    LLMHostedThinking.anthropicOutputCap(model))
-                }
-                if maxTokens <= budget { budget = max(1, maxTokens - 1) }
-                body["thinking"] = ["type": "enabled", "budget_tokens": budget]
+                let plan = budgetPlan(level: level, maxTokens: maxTokens,
+                                      cap: LLMHostedThinking.anthropicOutputCap(model))
+                maxTokens = plan.maxTokens
+                body["thinking"] = ["type": "enabled", "budget_tokens": plan.budget]
             }
         }
+    }
+
+    /// Answer room kept beside a thinking budget. A budget of `cap - 1`
+    /// left one token for the answer, so every reply came back cut off.
+    static let answerReserveTokens = 8_192
+    static let minimumThinkingBudget = 1_024
+
+    /// Budget-thinking models: keep `answerReserveTokens` of the output cap
+    /// for the answer, never go under the API's 1024 floor, and size
+    /// `max_tokens` to budget plus that reserve within the cap.
+    static func budgetPlan(level: String, maxTokens: Int,
+                           cap: Int) -> (budget: Int, maxTokens: Int) {
+        let budget = max(minimumThinkingBudget,
+                         min(LLMHostedThinking.budgetTokens(level),
+                             cap - answerReserveTokens))
+        let resolved = min(cap, max(maxTokens, budget + answerReserveTokens))
+        return (budget, resolved)
     }
 
     private static func isDefaultThinking(_ thinking: LLMThinking) -> Bool {

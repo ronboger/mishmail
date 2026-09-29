@@ -26,13 +26,23 @@ enum LLMPrompts {
         "<untrusted-mail>\n\(AskMishContext.sanitizeUntrusted(contents))\n</untrusted-mail>"
     }
 
+    /// Most characters of the original message a reply draft sends. The
+    /// compose view passes the whole quotable text, which can be a very long
+    /// newsletter or an entire forwarded chain.
+    static let hostedDraftOriginalBudget = 24_000
+    static let localDraftOriginalBudget = 8_000
+
     static func draftReply(originalFrom: String, originalBody: String,
-                           intent: String, userEmail: String) -> String {
-        """
+                           intent: String, userEmail: String,
+                           characterBudget: Int = hostedDraftOriginalBudget) -> String {
+        let body = originalBody.count > characterBudget
+            ? String(originalBody.prefix(max(0, characterBudget))) + "\n[… rest of message omitted …]"
+            : originalBody
+        return """
         Account: \(userEmail)
         Requested intent: \(intent.isEmpty ? "a brief, appropriate response" : intent)
         Original message:
-        \(untrustedMail("From: \(originalFrom)\nBody:\n\(originalBody)"))
+        \(untrustedMail("From: \(originalFrom)\nBody:\n\(body)"))
         """
     }
 
@@ -52,12 +62,15 @@ enum LLMPrompts {
         """
     }
 
+    /// Classification only needs the opening of the preview.
+    static let classifySnippetLimit = 500
+
     static func classify(subject: String, from: String, snippet: String,
                          categories: [String]) -> String {
         """
         Categories: \(categories.joined(separator: ", ")).
         Mail to classify:
-        \(untrustedMail("From: \(from)\nSubject: \(subject)\nPreview: \(snippet)"))
+        \(untrustedMail("From: \(from)\nSubject: \(subject)\nPreview: \(String(snippet.prefix(classifySnippetLimit)))"))
         """
     }
 
@@ -86,6 +99,9 @@ enum LLMPrompts {
 
     static let hostedThreadContextBudget = 60_000
     static let localThreadContextBudget = 24_000
+    /// `get_thread` tool results on a local model. A small context window
+    /// cannot hold several 24k results next to the conversation.
+    static let localToolThreadBudget = 12_000
 
     /// Renders message bodies newest-first under a character budget, then
     /// restores chronological order for the model. Quoted reply trails are
@@ -134,35 +150,44 @@ enum LLMPrompts {
                               characterBudget: characterBudget)
     }
 
-    private static func fillNewestFirst(header: String, blocks: [String],
-                                        characterBudget: Int) -> String {
+    private static func omittedMarker(_ omitted: Int) -> String {
+        "[… \(omitted) older message\(omitted == 1 ? "" : "s") omitted …]"
+    }
+
+    private static let truncatedSuffix = "\n[… message truncated …]"
+
+    /// Joins `header`, an omitted marker, and the newest blocks with blank
+    /// lines, within `characterBudget`. The marker and the truncation
+    /// suffix count against the budget too.
+    static func fillNewestFirst(header: String, blocks: [String],
+                                characterBudget: Int) -> String {
         guard !blocks.isEmpty else { return header }
         let budget = max(0, characterBudget)
+        func markerCost(omitted: Int) -> Int {
+            omitted > 0 ? omittedMarker(omitted).count + 2 : 0
+        }
         // Newest messages win. Stop at the first one that does not fit so the
         // kept run is contiguous and "older messages omitted" stays true.
         var kept: [String] = []
         var used = header.count
         for block in blocks.reversed() {
             let extra = block.count + 2
-            if used + extra <= budget {
-                kept.append(block)
-                used += extra
-            } else {
-                if kept.isEmpty {
-                    // The newest message alone is over budget: keep its start
-                    // rather than blowing the model's context.
-                    let room = max(0, budget - used - 2)
-                    kept.append(String(block.prefix(room)) + "\n[… message truncated …]")
-                }
-                break
-            }
+            let omittedAfter = blocks.count - kept.count - 1
+            guard used + extra + markerCost(omitted: omittedAfter) <= budget else { break }
+            kept.append(block)
+            used += extra
+        }
+        if kept.isEmpty, let newest = blocks.last {
+            // The newest message alone is over budget: keep its start rather
+            // than blowing the model's context.
+            let room = budget - used - 2 - markerCost(omitted: blocks.count - 1)
+                - truncatedSuffix.count
+            kept.append(String(newest.prefix(max(0, room))) + truncatedSuffix)
         }
         kept.reverse()
         let omitted = blocks.count - kept.count
         var parts = [header]
-        if omitted > 0 {
-            parts.append("[… \(omitted) older message\(omitted == 1 ? "" : "s") omitted …]")
-        }
+        if omitted > 0 { parts.append(omittedMarker(omitted)) }
         parts.append(contentsOf: kept)
         return parts.joined(separator: "\n\n")
     }

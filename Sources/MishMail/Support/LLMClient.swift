@@ -70,16 +70,19 @@ actor LLMClient {
     private var refreshTasks: [UUID: Task<Void, Error>] = [:]
 
     /// `task` selects the stored thinking effort (every provider) and, for
-    /// local models, the output cap.
+    /// local models, the output cap. `toolChoiceNone` keeps `tools` on the
+    /// wire (history may hold tool blocks) but asks for a plain answer.
     func stream(messages: [LLMMessage], tools: [LLMToolSpec],
                 config: LLMProviderConfig, model: String,
-                task: LLMTask, maxOutputTokens: Int? = nil) -> AsyncThrowingStream<LLMEvent, Error> {
+                task: LLMTask, maxOutputTokens: Int? = nil,
+                toolChoiceNone: Bool = false) -> AsyncThrowingStream<LLMEvent, Error> {
         AsyncThrowingStream { continuation in
             let streamTask = Task {
                 do {
                     try await self.run(messages: messages, tools: tools, config: config,
                                        model: model, task: task,
                                        maxOutputTokens: maxOutputTokens,
+                                       toolChoiceNone: toolChoiceNone,
                                        allowRefresh: true) { event in
                         continuation.yield(event)
                     }
@@ -95,6 +98,7 @@ actor LLMClient {
     private func run(messages: [LLMMessage], tools: [LLMToolSpec],
                      config: LLMProviderConfig, model: String, task: LLMTask,
                      maxOutputTokens: Int?,
+                     toolChoiceNone: Bool,
                      allowRefresh: Bool,
                      yield: @Sendable (LLMEvent) -> Void) async throws {
         // Refresh up front when the stored token already expired, so the common
@@ -109,7 +113,8 @@ actor LLMClient {
             try Task.checkCancellation()
             let request = try await buildRequest(messages: messages, tools: tools,
                                                 config: config, model: model, task: task,
-                                                maxOutputTokens: maxOutputTokens)
+                                                maxOutputTokens: maxOutputTokens,
+                                                toolChoiceNone: toolChoiceNone)
             let pair: (URLSession.AsyncBytes, URLResponse)
             do {
                 pair = try await URLSession.shared.bytes(for: request)
@@ -128,6 +133,7 @@ actor LLMClient {
                 return try await run(messages: messages, tools: tools, config: config,
                                      model: model, task: task,
                                      maxOutputTokens: maxOutputTokens,
+                                     toolChoiceNone: toolChoiceNone,
                                      allowRefresh: false, yield: yield)
             }
             guard (200..<300).contains(status) else {
@@ -235,7 +241,8 @@ actor LLMClient {
     private func buildRequest(messages: [LLMMessage], tools: [LLMToolSpec],
                               config: LLMProviderConfig, model: String,
                               task: LLMTask,
-                              maxOutputTokens: Int?) async throws -> URLRequest {
+                              maxOutputTokens: Int?,
+                              toolChoiceNone: Bool) async throws -> URLRequest {
         let path = LLMEndpoint.chatPath(kind: config.kind, base: config.baseURL)
         let body: Data
         let thinking = Ollama.thinking(for: task)
@@ -245,13 +252,15 @@ actor LLMClient {
         case .openAICompatible:
             let openRouter = LLMRemotePolicy.host(of: config.baseURL) == "openrouter.ai"
             body = try OpenAIWire.requestBody(model: model, messages: messages, tools: tools,
-                                              thinking: hosted, openRouter: openRouter)
+                                              thinking: hosted, openRouter: openRouter,
+                                              toolChoiceNone: toolChoiceNone)
         case .anthropic:
             let anthropicMaxTokens = LLMHostedThinking.anthropicMaxTokens(
                 model: model, thinking: hosted)
             body = try AnthropicWire.requestBody(model: model, messages: messages,
                                                  tools: tools, maxTokens: anthropicMaxTokens,
-                                                 thinking: hosted)
+                                                 thinking: hosted,
+                                                 toolChoiceNone: toolChoiceNone)
         case .ollama:
             // A thinking *level* on a model without the capability fails the
             // request, so fall back to the model's own default there. `off` is
@@ -265,7 +274,8 @@ actor LLMClient {
                 keepAliveSeconds: Ollama.keepAliveSeconds,
                 contextTokens: Ollama.contextTokens,
                 thinking: localThinking,
-                maxOutputTokens: maxOutputTokens ?? Ollama.maxOutputTokens(for: task))
+                maxOutputTokens: maxOutputTokens ?? Ollama.maxOutputTokens(for: task),
+                toolChoiceNone: toolChoiceNone)
             await Ollama.LoadedModels.shared.note(model)
         }
         guard let url = URL(string: path) else { throw LLMClientError.http(0) }

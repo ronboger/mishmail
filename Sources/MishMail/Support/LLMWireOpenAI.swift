@@ -6,7 +6,8 @@ enum OpenAIWire {
     static func requestBody(model: String, messages: [LLMMessage],
                             tools: [LLMToolSpec],
                             thinking: LLMThinking = .modelDefault,
-                            openRouter: Bool = false) throws -> Data {
+                            openRouter: Bool = false,
+                            toolChoiceNone: Bool = false) throws -> Data {
         var wireMessages: [[String: Any]] = []
         for message in messages {
             switch message.role {
@@ -46,6 +47,9 @@ enum OpenAIWire {
                                      "description": tool.description,
                                      "parameters": schema]]
             }
+            // Keep the tools so the history's tool calls stay valid, but
+            // forbid new calls for an answer-only request.
+            if toolChoiceNone { body["tool_choice"] = "none" }
         }
         applyThinking(model: model, thinking: thinking, openRouter: openRouter, to: &body)
         return try JSONSerialization.data(withJSONObject: body)

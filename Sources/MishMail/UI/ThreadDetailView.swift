@@ -1341,7 +1341,9 @@ struct ThreadDetailView: View {
         Task {
             do {
                 var accumulated = ""
-                for try await piece in LLMTaskRunner.stream(task: .summaries, prompt: prompt) {
+                for try await piece in LLMTaskRunner.stream(
+                    task: .summaries, prompt: prompt,
+                    onNotice: { notice in summaryError = notice }) {
                     accumulated += piece
                     let snapshot = accumulated
                     await MainActor.run { aiSummary = snapshot }

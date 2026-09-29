@@ -111,6 +111,8 @@ final class AskMishController {
     @ObservationIgnored private var totalCompletionTokens = 0
     @ObservationIgnored private var totalCacheCreationInputTokens = 0
     @ObservationIgnored private var totalCacheReadInputTokens = 0
+    /// Text of a turn that failed before `appendUser` ran. Retry sends it.
+    @ObservationIgnored private var unsentUserText: String?
     @ObservationIgnored private var bufferedBubbleID: UUID?
     @ObservationIgnored private var bufferedBubbleText = ""
     @ObservationIgnored private var bubbleFlushTask: Task<Void, Never>?
@@ -159,15 +161,38 @@ final class AskMishController {
 
     /// Re-runs the last turn against the already persisted history. The user
     /// bubble and database row are intentionally not appended a second time.
+    ///
+    /// A re-run is only valid when the history ends on a user turn or tool
+    /// results. A turn that failed before its text reached the history ("No
+    /// model is set up"), or one that ended on an assistant message, is sent
+    /// again as a new turn instead. `AskMishContext.retryPlan` decides.
     func retryLastTurn() {
-        guard !isRunning,
-              let text = bubbles.last(where: { $0.role == .user })?.text,
-              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
-        isRunning = true
-        turnTask = Task { [weak self] in
-            await self?.runTurn(userText: text, shouldAppendUser: false)
-            self?.isRunning = false
+        guard !isRunning else { return }
+        switch retryPlan {
+        case .rerun:
+            guard let text = bubbles.last(where: { $0.role == .user })?.text
+                    ?? history.last(where: { $0.role == .user })?.text else { return }
+            isRunning = true
+            turnTask = Task { [weak self] in
+                await self?.runTurn(userText: text, shouldAppendUser: false)
+                self?.isRunning = false
+            }
+        case .resend(let text):
+            send(text)
+        case .nothing:
+            return
         }
+    }
+
+    var canRetry: Bool {
+        !isRunning && retryPlan != .nothing
+    }
+
+    private var retryPlan: AskMishContext.RetryPlan {
+        AskMishContext.retryPlan(
+            lastRole: history.last?.role,
+            unsentUserText: unsentUserText,
+            lastUserBubbleText: bubbles.last(where: { $0.role == .user })?.text)
     }
 
     /// Cancels the in-flight turn. A parked confirm card counts as declined,
@@ -238,6 +263,7 @@ final class AskMishController {
         history = []
         injectedThreadIDs = []
         attachedThreads = []
+        unsentUserText = nil
         totalPromptTokens = 0
         totalCompletionTokens = 0
         totalCacheCreationInputTokens = 0
@@ -289,10 +315,12 @@ final class AskMishController {
         history = AskMishContext.llmMessages(history: rows)
         injectedThreadIDs = []
         attachedThreads = []
-        totalPromptTokens = rows.reduce(0) { $0 + ($1.promptTokens ?? 0) }
-        totalCompletionTokens = rows.reduce(0) { $0 + ($1.completionTokens ?? 0) }
-        totalCacheCreationInputTokens = 0
-        totalCacheReadInputTokens = 0
+        unsentUserText = nil
+        let totals = AskMishContext.usageTotals(rows: rows)
+        totalPromptTokens = totals.promptTokens
+        totalCompletionTokens = totals.completionTokens
+        totalCacheCreationInputTokens = totals.cacheCreationInputTokens
+        totalCacheReadInputTokens = totals.cacheReadInputTokens
         bubbles = reloadedBubbles(from: rows)
         conversationCostLabel = totalCostLabel()
     }
@@ -352,7 +380,9 @@ final class AskMishController {
             var label: String?
             if let config, let prompt = row.promptTokens, let completion = row.completionTokens {
                 label = LLMPricing.costLabel(
-                    usage: LLMUsage(promptTokens: prompt, completionTokens: completion),
+                    usage: LLMUsage(promptTokens: prompt, completionTokens: completion,
+                                    cacheCreationInputTokens: row.cacheCreationTokens ?? 0,
+                                    cacheReadInputTokens: row.cacheReadTokens ?? 0),
                     config: config, model: resolvedModelID(for: config), overrides: overrides)
             }
             let traces = AskMishTrace.traces(calls: calls, results: results)
@@ -371,22 +401,31 @@ final class AskMishController {
 
     private func runTurn(userText: String, shouldAppendUser: Bool) async {
         guard let config = currentProviderConfig() else {
+            if shouldAppendUser { unsentUserText = userText }
             appendError("No model is set up. Pick one in Settings → AI.")
             return
         }
         let overrides = LLMPricing.loadOverrides()
         let wireModel = resolvedModelID(for: config)
         if shouldAppendUser {
+            unsentUserText = nil
             await ensureConversation(firstUserText: userText)
             await appendUser(userText)
         }
         let tools = AskMishTools.llmToolSpecs()
-        let threadCharacterBudget = config.kind == .ollama
-            ? LLMPrompts.localThreadContextBudget
+        let isLocal = config.kind == .ollama
+        // Budget for `get_thread` tool results. Local context windows are
+        // small, so a local model gets a tighter one than the injected thread.
+        let threadCharacterBudget = isLocal
+            ? LLMPrompts.localToolThreadBudget
             : LLMPrompts.hostedThreadContextBudget
+        let toolResultLimit = isLocal
+            ? AskMishContext.localToolResultCharacterLimit
+            : AskMishContext.hostedToolResultCharacterLimit
         // The set is captured once for this user turn. Newly returned tool
-        // messages are wrapped in full, but the cached prefix never changes.
-        let compactToolMessages = AskMishContext.compactionIndices(for: history)
+        // messages are wrapped in full, so the cached prefix does not change
+        // unless the total cap below forces the oldest ones to compact.
+        var compactToolMessages = AskMishContext.compactionIndices(for: history)
         var turnUsage: LLMUsage?
 
         for _ in 0..<AskMishContext.maxToolTurnsPerUserTurn {
@@ -396,6 +435,10 @@ final class AskMishController {
             var usage: LLMUsage?
             var stopNotice: String?
             let bubbleID = beginAssistantBubble()
+            compactToolMessages = AskMishContext.cappedCompactionIndices(
+                for: history, stable: compactToolMessages,
+                characterLimit: toolResultLimit,
+                threadCharacterBudget: threadCharacterBudget)
             let request = [systemMessage()] + AskMishContext.prepareForModel(
                 history, compactToolMessageIndices: compactToolMessages,
                 threadCharacterBudget: threadCharacterBudget)
@@ -507,17 +550,24 @@ final class AskMishController {
             }
             finishTurnChrome(bubbleID, moreComing: true)
         }
+        compactToolMessages = AskMishContext.cappedCompactionIndices(
+            for: history, stable: compactToolMessages,
+            characterLimit: toolResultLimit,
+            threadCharacterBudget: threadCharacterBudget)
         await runFinalAnswer(config: config, model: wireModel, overrides: overrides,
+                             tools: tools,
                              threadCharacterBudget: threadCharacterBudget,
                              compactToolMessages: compactToolMessages,
                              turnUsage: turnUsage)
     }
 
-    /// One last answer-only request after the tool cap. It receives the tool
-    /// results already in history but no write/read tools, so it must explain
-    /// what it found instead of starting another loop.
+    /// One last answer-only request after the tool cap. The tools stay on the
+    /// wire, because Anthropic rejects tool_use/tool_result blocks in a
+    /// request that defines no tools; `toolChoiceNone` forbids new calls, so
+    /// the model must explain what it found instead of starting another loop.
     private func runFinalAnswer(config: LLMProviderConfig, model: String,
                                 overrides: [String: LLMPrice],
+                                tools: [LLMToolSpec],
                                 threadCharacterBudget: Int,
                                 compactToolMessages: Set<Int>,
                                 turnUsage: LLMUsage?) async {
@@ -532,7 +582,8 @@ final class AskMishController {
             threadCharacterBudget: threadCharacterBudget)
         do {
             for try await event in await LLMClient.shared.stream(
-                messages: request, tools: [], config: config, model: model, task: activeTask) {
+                messages: request, tools: tools, config: config, model: model,
+                task: activeTask, toolChoiceNone: true) {
                 switch event {
                 case .token(let token):
                     text += token
@@ -542,7 +593,7 @@ final class AskMishController {
                 case .thinkingBlock(let block):
                     thinkingBlocks.append(block)
                 case .toolCall:
-                    // Providers should not emit calls when tools are absent.
+                    // tool_choice none forbids calls; ignore a stray one.
                     break
                 case .done(let reason, let reported):
                     usage = reported
@@ -766,12 +817,14 @@ final class AskMishController {
             let budget = currentProviderConfig()?.kind == .ollama
                 ? LLMPrompts.localThreadContextBudget
                 : LLMPrompts.hostedThreadContextBudget
+            // Budgeted once here. `contextMessage` must not budget again: its
+            // markdown pass would re-split the text and cut the newest message.
             messages.append(AskMishContext.contextMessage(
                 threadId: id,
                 threadMarkdown: LLMPrompts.threadContext(
                     subject: subjects[id] ?? "", messages: bodies,
                     characterBudget: budget),
-                characterBudget: budget))
+                characterBudget: nil))
         }
         return messages
     }
@@ -1067,6 +1120,8 @@ final class AskMishController {
             toolCallsJSON: Self.encode(calls), toolResultsJSON: "[]",
             thinkingBlocksJSON: Self.encode(thinkingBlocks),
             promptTokens: usage?.promptTokens, completionTokens: usage?.completionTokens,
+            cacheCreationTokens: usage?.cacheCreationInputTokens,
+            cacheReadTokens: usage?.cacheReadInputTokens,
             createdAt: now)]
         if let results, !results.isEmpty {
             rows.append(ChatMessageRow(

@@ -11,7 +11,8 @@ enum OllamaChatWire {
                             keepAliveSeconds: Int? = nil,
                             contextTokens: Int? = nil,
                             thinking: LLMThinking = .modelDefault,
-                            maxOutputTokens: Int? = nil) throws -> Data {
+                            maxOutputTokens: Int? = nil,
+                            toolChoiceNone: Bool = false) throws -> Data {
         var wireMessages: [[String: Any]] = []
         for message in messages {
             switch message.role {
@@ -35,6 +36,11 @@ enum OllamaChatWire {
                     wireMessages.append(["role": "tool", "content": result.content])
                 }
             }
+        }
+        // Ollama has no tool_choice. Keep the tools (the history holds tool
+        // messages) and tell the model to answer instead.
+        if toolChoiceNone, !tools.isEmpty {
+            wireMessages.append(["role": "system", "content": answerNowNudge])
         }
         var body: [String: Any] = ["model": model, "messages": wireMessages, "stream": true]
         // Ollama defaults hold the weights in memory for five minutes and size
@@ -62,6 +68,9 @@ enum OllamaChatWire {
         }
         return try JSONSerialization.data(withJSONObject: body)
     }
+
+    static let answerNowNudge =
+        "Answer now without calling tools. Use the tool results you already have."
 
     /// Body that drops a model from memory now: an empty chat with keep_alive 0.
     /// Ollama answers immediately and frees the weights.

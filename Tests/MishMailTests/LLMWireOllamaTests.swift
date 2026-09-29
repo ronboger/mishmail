@@ -151,4 +151,27 @@ final class LLMWireOllamaTests: XCTestCase {
         XCTAssertNotEqual(a.id, b.id)
     }
 
+
+    func testToolChoiceNoneKeepsToolsAndAppendsAnswerNudge() throws {
+        let messages = [
+            LLMMessage(role: .user, text: "find acme"),
+            LLMMessage(role: .assistant, text: "", toolCalls: [
+                LLMToolCall(id: "c1", name: "search_threads", argumentsJSON: "{}")]),
+            LLMMessage(role: .tool, text: "", toolResults: [
+                LLMToolResult(callID: "c1", content: "[]", isError: false)]),
+        ]
+        let tools = [LLMToolSpec(name: "search_threads", description: "Search",
+                                 inputSchemaJSON: #"{"type":"object"}"#)]
+        let body = try JSONSerialization.jsonObject(with: try OllamaChatWire.requestBody(
+            model: "llama3.2", messages: messages, tools: tools,
+            toolChoiceNone: true)) as! [String: Any]
+        XCTAssertEqual((body["tools"] as? [[String: Any]])?.count, 1)
+        let wire = body["messages"] as! [[String: Any]]
+        XCTAssertEqual(wire.last?["role"] as? String, "system")
+        XCTAssertEqual(wire.last?["content"] as? String, OllamaChatWire.answerNowNudge)
+
+        let plain = try JSONSerialization.jsonObject(with: try OllamaChatWire.requestBody(
+            model: "llama3.2", messages: messages, tools: tools)) as! [String: Any]
+        XCTAssertEqual((plain["messages"] as! [[String: Any]]).last?["role"] as? String, "tool")
+    }
 }

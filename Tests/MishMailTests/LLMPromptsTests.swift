@@ -134,4 +134,46 @@ final class LLMPromptsTests: XCTestCase {
         XCTAssertTrue(context.contains("older message"))
         XCTAssertNil(context.range(of: "old@example.com"))
     }
+
+
+    func testFillNewestFirstCountsOmittedMarkerAgainstBudget() {
+        let blocks = (0..<20).map { "block \($0) " + String(repeating: "x", count: 40) }
+        for budget in [120, 200, 333, 500, 900] {
+            let text = LLMPrompts.fillNewestFirst(header: "Subject: S", blocks: blocks,
+                                                  characterBudget: budget)
+            XCTAssertLessThanOrEqual(text.count, budget, "budget \(budget)")
+            XCTAssertTrue(text.contains("block 19"), "newest kept at budget \(budget)")
+        }
+    }
+
+    func testFillNewestFirstTruncatedNewestStaysWithinBudget() {
+        let blocks = ["old", String(repeating: "n", count: 5_000)]
+        let text = LLMPrompts.fillNewestFirst(header: "Subject: S", blocks: blocks,
+                                              characterBudget: 400)
+        XCTAssertLessThanOrEqual(text.count, 400)
+        XCTAssertTrue(text.contains("message truncated"))
+        XCTAssertTrue(text.contains("1 older message omitted"))
+    }
+
+    func testDraftReplyCapsOriginalBody() {
+        let long = String(repeating: "a", count: 50_000)
+        let hosted = LLMPrompts.draftReply(originalFrom: "x@y.com", originalBody: long,
+                                           intent: "", userEmail: "me@y.com")
+        XCTAssertLessThan(hosted.count, LLMPrompts.hostedDraftOriginalBudget + 1_000)
+        XCTAssertTrue(hosted.contains("omitted"))
+        let local = LLMPrompts.draftReply(originalFrom: "x@y.com", originalBody: long,
+                                          intent: "", userEmail: "me@y.com",
+                                          characterBudget: LLMPrompts.localDraftOriginalBudget)
+        XCTAssertLessThan(local.count, LLMPrompts.localDraftOriginalBudget + 1_000)
+        let short = LLMPrompts.draftReply(originalFrom: "x@y.com", originalBody: "hello",
+                                          intent: "", userEmail: "me@y.com")
+        XCTAssertFalse(short.contains("omitted"))
+    }
+
+    func testClassifyCapsSnippet() {
+        let prompt = LLMPrompts.classify(subject: "s", from: "f",
+                                         snippet: String(repeating: "z", count: 5_000),
+                                         categories: ["FYI"])
+        XCTAssertEqual(prompt.filter { $0 == "z" }.count, LLMPrompts.classifySnippetLimit)
+    }
 }

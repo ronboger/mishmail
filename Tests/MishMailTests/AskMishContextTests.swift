@@ -411,4 +411,109 @@ final class AskMishContextTests: XCTestCase {
             AskMishContext.title(fromFirstUserText: String(repeating: "x", count: 200)).count, 48)
         XCTAssertEqual(AskMishContext.title(fromFirstUserText: "   "), "New chat")
     }
+
+
+    // MARK: - Tool-result total cap
+
+    private func toolTurn(_ id: String, name: String, content: String) -> [LLMMessage] {
+        [LLMMessage(role: .assistant, text: "", toolCalls: [
+            LLMToolCall(id: id, name: name, argumentsJSON: "{}")]),
+         LLMMessage(role: .tool, text: "", toolResults: [
+            LLMToolResult(callID: id, content: content, isError: false)])]
+    }
+
+    func testCappedCompactionLeavesSmallHistoryAlone() {
+        let history = [LLMMessage(role: .user, text: "q")]
+            + toolTurn("a", name: "get_message", content: String(repeating: "x", count: 100))
+            + toolTurn("b", name: "get_message", content: String(repeating: "y", count: 100))
+        let capped = AskMishContext.cappedCompactionIndices(
+            for: history, stable: [], characterLimit: 10_000, threadCharacterBudget: 60_000)
+        XCTAssertEqual(capped, [])
+    }
+
+    func testCappedCompactionCompactsOldestUntilUnderLimit() {
+        var history = [LLMMessage(role: .user, text: "q")]
+        for index in 0..<6 {
+            history += toolTurn("c\(index)", name: "get_message",
+                                content: String(repeating: "x", count: 10_000))
+        }
+        // Tool messages sit at indices 2, 4, 6, 8, 10, 12.
+        let capped = AskMishContext.cappedCompactionIndices(
+            for: history, stable: [2], characterLimit: 25_000, threadCharacterBudget: 60_000)
+        XCTAssertTrue(capped.isSuperset(of: [2]), "stable indices stay compacted")
+        XCTAssertEqual(capped, [2, 4, 6, 8])
+        let prepared = AskMishContext.prepareForModel(
+            history, compactToolMessageIndices: capped)
+        let full = prepared.filter { $0.role == .tool }
+            .map { $0.toolResults[0].content }
+            .filter { !$0.contains("omitted") }
+            .reduce(0) { $0 + $1.count }
+        XCTAssertLessThanOrEqual(full, 25_000)
+    }
+
+    func testCappedCompactionNeverCompactsNewestToolMessage() {
+        let history = [LLMMessage(role: .user, text: "q")]
+            + toolTurn("a", name: "get_message", content: String(repeating: "x", count: 50_000))
+        let capped = AskMishContext.cappedCompactionIndices(
+            for: history, stable: [], characterLimit: 1_000, threadCharacterBudget: 60_000)
+        XCTAssertEqual(capped, [])
+    }
+
+    func testCappedCompactionIsStableAcrossRounds() {
+        var history = [LLMMessage(role: .user, text: "q")]
+        for index in 0..<4 {
+            history += toolTurn("c\(index)", name: "get_message",
+                                content: String(repeating: "x", count: 10_000))
+        }
+        let first = AskMishContext.cappedCompactionIndices(
+            for: history, stable: [], characterLimit: 25_000, threadCharacterBudget: 60_000)
+        history += toolTurn("c9", name: "get_message", content: "small")
+        let second = AskMishContext.cappedCompactionIndices(
+            for: history, stable: first, characterLimit: 25_000, threadCharacterBudget: 60_000)
+        XCTAssertTrue(second.isSuperset(of: first))
+    }
+
+    // MARK: - Retry plan
+
+    func testRetryRerunsWhenHistoryEndsOnUserOrTool() {
+        XCTAssertEqual(AskMishContext.retryPlan(lastRole: .user, unsentUserText: nil,
+                                                lastUserBubbleText: "hi"), .rerun)
+        XCTAssertEqual(AskMishContext.retryPlan(lastRole: .tool, unsentUserText: nil,
+                                                lastUserBubbleText: "hi"), .rerun)
+    }
+
+    func testRetryResendsWhenHistoryEndsOnAssistant() {
+        XCTAssertEqual(AskMishContext.retryPlan(lastRole: .assistant, unsentUserText: nil,
+                                                lastUserBubbleText: "hi"), .resend("hi"))
+    }
+
+    func testRetryPrefersTextThatNeverReachedHistory() {
+        // "No model is set up": the new question never made it into history.
+        XCTAssertEqual(AskMishContext.retryPlan(lastRole: .assistant,
+                                                unsentUserText: "new question",
+                                                lastUserBubbleText: "old question"),
+                       .resend("new question"))
+        XCTAssertEqual(AskMishContext.retryPlan(lastRole: nil, unsentUserText: "first",
+                                                lastUserBubbleText: nil),
+                       .resend("first"))
+    }
+
+    func testRetryDoesNothingWithoutText() {
+        XCTAssertEqual(AskMishContext.retryPlan(lastRole: nil, unsentUserText: nil,
+                                                lastUserBubbleText: "  "), .nothing)
+    }
+
+    // MARK: - Context budgeting
+
+    func testContextMessageSkipsSecondBudgetPass() {
+        // Pre-budgeted text whose newest body holds a markdown rule. A second
+        // markdown pass would split there and cut the newest message.
+        let newest = "From: Ann · Date: today\n" + String(repeating: "n", count: 300)
+            + "\n---\n" + String(repeating: "m", count: 300)
+        let budgeted = "Subject: S\n\n" + newest
+        let message = AskMishContext.contextMessage(
+            threadId: "t", threadMarkdown: budgeted, characterBudget: nil)
+        XCTAssertTrue(message.text.contains(newest))
+        XCTAssertFalse(message.text.contains("truncated"))
+    }
 }

@@ -243,4 +243,62 @@ final class LLMWireAnthropicTests: XCTestCase {
                                                       cacheReadInputTokens: 7))])
     }
 
+
+    // MARK: - Budget thinking answer room
+
+    func testBudgetThinkingAtXhighLeavesAnswerRoomUnderCap() throws {
+        // Opus 4.1: 32k cap. The old code sent budget = cap - 1.
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-opus-4-1", messages: [LLMMessage(role: .user, text: "hi")],
+            tools: [], maxTokens: 8192, thinking: .level("xhigh")))
+        let budget = (body["thinking"] as! [String: Any])["budget_tokens"] as! Int
+        let maxTokens = body["max_tokens"] as! Int
+        XCTAssertEqual(budget, 32_000 - 8_192)
+        XCTAssertEqual(maxTokens, 32_000)
+        XCTAssertGreaterThanOrEqual(maxTokens - budget, AnthropicWire.answerReserveTokens)
+    }
+
+    func testBudgetPlanKeepsFloorAndCapsMaxTokens() {
+        let tiny = AnthropicWire.budgetPlan(level: "xhigh", maxTokens: 4_096, cap: 8_192)
+        XCTAssertEqual(tiny.budget, 1_024)
+        XCTAssertEqual(tiny.maxTokens, 8_192)
+        let roomy = AnthropicWire.budgetPlan(level: "medium", maxTokens: 4_096, cap: 64_000)
+        XCTAssertEqual(roomy.budget, 8_192)
+        XCTAssertEqual(roomy.maxTokens, 16_384)
+        let big = AnthropicWire.budgetPlan(level: "high", maxTokens: 32_768, cap: 64_000)
+        XCTAssertEqual(big.budget, 16_384)
+        XCTAssertEqual(big.maxTokens, 32_768)
+    }
+
+    // MARK: - tool_choice none
+
+    private var toolHistory: [LLMMessage] {
+        [
+            LLMMessage(role: .user, text: "find acme"),
+            LLMMessage(role: .assistant, text: "", toolCalls: [
+                LLMToolCall(id: "tu1", name: "search_threads", argumentsJSON: "{}")]),
+            LLMMessage(role: .tool, text: "", toolResults: [
+                LLMToolResult(callID: "tu1", content: "[]", isError: false)]),
+        ]
+    }
+
+    private var toolSpecs: [LLMToolSpec] {
+        [LLMToolSpec(name: "search_threads", description: "Search",
+                     inputSchemaJSON: #"{"type":"object"}"#)]
+    }
+
+    func testToolChoiceNoneKeepsToolsAndForbidsCalls() throws {
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-sonnet-5", messages: toolHistory, tools: toolSpecs,
+            maxTokens: 4096, toolChoiceNone: true))
+        XCTAssertEqual((body["tools"] as? [[String: Any]])?.count, 1)
+        XCTAssertEqual((body["tool_choice"] as? [String: Any])?["type"] as? String, "none")
+    }
+
+    func testToolChoiceOmittedByDefault() throws {
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-sonnet-5", messages: toolHistory, tools: toolSpecs,
+            maxTokens: 4096))
+        XCTAssertNil(body["tool_choice"])
+    }
 }
