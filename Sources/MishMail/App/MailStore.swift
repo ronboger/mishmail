@@ -2478,7 +2478,7 @@ struct ComposeRequest: Identifiable {
 
     func client(for accountId: String) -> GmailClient {
         if let c = clients[accountId] { return c }
-        let c = GmailClient(accountEmail: accountId)
+        let c = GmailClient.shared(accountEmail: accountId)
         clients[accountId] = c
         return c
     }

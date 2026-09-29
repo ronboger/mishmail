@@ -58,18 +58,22 @@ extension MailStore {
             return
         }
         Keychain.delete("refreshToken.\(id)")
-        try? db.write { db in _ = try Account.deleteOne(db, key: id) }
-        // The account's mail cascades away with it; any payload cached for one
-        // of its conversations must not outlive the rows behind it.
-        applyThreadContentChange(.everything)
-        engines[id] = nil
-        clients[id] = nil
-        accountsNeedingReauth.remove(id)
-        reloadAccounts()
-        sendIdentities.removeAll { $0.accountId == id }
-        reloadThreads()
-        // Own-address set changed — drop the weight map and re-mine.
-        rebuildContacts(forceFull: true)
+        let pool = db
+        Task { @MainActor [weak self] in
+            _ = try? await pool.write { db in _ = try Account.deleteOne(db, key: id) }
+            guard let self, !self.isShuttingDown else { return }
+            // The account's mail cascades away with it; any payload cached for
+            // one of its conversations must not outlive the rows behind it.
+            self.applyThreadContentChange(.everything)
+            self.engines[id] = nil
+            self.clients[id] = nil
+            self.accountsNeedingReauth.remove(id)
+            self.reloadAccounts()
+            self.sendIdentities.removeAll { $0.accountId == id }
+            self.reloadThreads()
+            // Own-address set changed — drop the weight map and re-mine.
+            self.rebuildContacts(forceFull: true)
+        }
     }
 
     func requireReauthorization(for accountID: String) {

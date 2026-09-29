@@ -31,7 +31,8 @@ extension MailStore {
             scheduleThreadMutationReconciliation()
         }
 
-        let persistence = enqueueThreadPersistence(updated)
+        let persistence = enqueueThreadPersistence(
+            from: thread, to: updated, remote: remote)
         let client = client(for: thread.accountId)
         let gmailThreadId = thread.gmailThreadId
         let isDemo = demoMode
@@ -53,9 +54,9 @@ extension MailStore {
             // Demo interactions are intentionally local. They should feel real
             // without attempting Gmail calls for the fictional account.
             guard !isDemo else { return }
-            await self.applyRemoteThreadChange(remote, client: client,
-                                               accountId: thread.accountId,
-                                               gmailThreadId: gmailThreadId)
+            await self.applyRemoteThreadChange(
+                remote, client: client, accountId: thread.accountId,
+                gmailThreadId: gmailThreadId, original: thread)
         }
     }
 
@@ -69,7 +70,8 @@ extension MailStore {
     private func applyRemoteThreadChange(_ change: RemoteThreadChange,
                                          client: GmailClient,
                                          accountId: String,
-                                         gmailThreadId: String) async {
+                                         gmailThreadId: String,
+                                         original: MailThread? = nil) async {
         let pool = db
         let alreadyQueued = (try? await pool.read { db in
             try PendingThreadOp
@@ -90,6 +92,9 @@ extension MailStore {
                 await queueThreadChange(change, accountId: accountId, gmailThreadId: gmailThreadId)
             } else {
                 lastError = error.localizedDescription
+                await revertOptimisticThreadChange(
+                    change, accountId: accountId, gmailThreadId: gmailThreadId,
+                    original: original)
                 await sync(accountId: accountId)
             }
         }
@@ -126,6 +131,113 @@ extension MailStore {
         }) ?? 0
     }
 
+    /// Keep message rows authoritative for the next `deriveThreads` pass while
+    /// an optimistic thread edit is waiting for Gmail.
+    private static func mirrorRemoteLabelChange(
+        _ db: Database, threadId: String, change: RemoteThreadChange
+    ) throws {
+        let labels: (add: [String], remove: [String]) = {
+            switch change {
+            case .modify(let add, let remove): return (add, remove)
+            case .trash: return (["TRASH"], ["INBOX"])
+            }
+        }()
+        let messages = try Message
+            .filter(Column("threadId") == threadId)
+            .fetchAll(db)
+        for var message in messages {
+            message.labelIds = SyncEngine.applyLabelDelta(
+                labelIds: message.labelIds,
+                add: labels.add,
+                remove: labels.remove)
+            message.isUnread = message.labelIds.split(separator: " ").contains("UNREAD")
+            try message.save(db)
+        }
+    }
+
+    /// Persist only columns changed by this user action. A whole-row save can
+    /// overwrite a newer sync-derived subject, participant set, or reminder.
+    private static func updateChangedThreadColumns(
+        _ db: Database, from old: MailThread, to updated: MailThread
+    ) throws {
+        func update(_ column: String, _ value: Any) throws {
+            try db.execute(
+                sql: "UPDATE thread SET \(column) = ? WHERE id = ?",
+                arguments: [value, updated.id])
+        }
+        if old.subject != updated.subject { try update("subject", updated.subject) }
+        if old.snippet != updated.snippet { try update("snippet", updated.snippet) }
+        if old.fromDisplay != updated.fromDisplay { try update("fromDisplay", updated.fromDisplay) }
+        if old.lastDate != updated.lastDate { try update("lastDate", updated.lastDate) }
+        if old.isUnread != updated.isUnread { try update("isUnread", updated.isUnread) }
+        if old.isStarred != updated.isStarred { try update("isStarred", updated.isStarred) }
+        if old.inInbox != updated.inInbox { try update("inInbox", updated.inInbox) }
+        if old.inTrash != updated.inTrash { try update("inTrash", updated.inTrash) }
+        if old.labelIds != updated.labelIds {
+            try update("labelIds", updated.labelIds)
+            try ThreadLabels.rewrite(db, threadId: updated.id, labelIds: updated.labelIds)
+        }
+        if old.snoozeUntil != updated.snoozeUntil { try update("snoozeUntil", updated.snoozeUntil as Any) }
+        if old.participants != updated.participants { try update("participants", updated.participants) }
+        if old.messageCount != updated.messageCount { try update("messageCount", updated.messageCount) }
+        if old.hasAttachment != updated.hasAttachment { try update("hasAttachment", updated.hasAttachment) }
+        if old.reminderAt != updated.reminderAt { try update("reminderAt", updated.reminderAt as Any) }
+        if old.reminderSetAt != updated.reminderSetAt { try update("reminderSetAt", updated.reminderSetAt as Any) }
+        if old.inSent != updated.inSent { try update("inSent", updated.inSent) }
+        if old.inDrafts != updated.inDrafts { try update("inDrafts", updated.inDrafts) }
+        if old.inPromotions != updated.inPromotions { try update("inPromotions", updated.inPromotions) }
+        if old.inSocial != updated.inSocial { try update("inSocial", updated.inSocial) }
+        if old.inSpam != updated.inSpam { try update("inSpam", updated.inSpam) }
+        if old.fromEmail != updated.fromEmail { try update("fromEmail", updated.fromEmail) }
+        if old.allFromEmails != updated.allFromEmails { try update("allFromEmails", updated.allFromEmails) }
+        if old.lastInboundDate != updated.lastInboundDate {
+            try update("lastInboundDate", updated.lastInboundDate as Any)
+        }
+    }
+
+    private func revertOptimisticThreadChange(
+        _ change: RemoteThreadChange, accountId: String, gmailThreadId: String,
+        original: MailThread?
+    ) async {
+        let threadId = "\(accountId):\(gmailThreadId)"
+        let inverse: RemoteThreadChange = {
+            switch change {
+            case .modify(let add, let remove):
+                return .modify(add: remove, remove: add)
+            case .trash:
+                return .modify(add: ["INBOX"], remove: ["TRASH"])
+            }
+        }()
+        _ = try? await db.write { db in
+            try Self.mirrorRemoteLabelChange(db, threadId: threadId, change: inverse)
+            try Self.rederiveOrDeleteThread(db, threadId: threadId, accountId: accountId)
+        }
+        _ = original
+        scheduleThreadMutationReconciliation()
+    }
+
+    private static func rederiveOrDeleteThread(
+        _ db: Database, threadId: String, accountId: String
+    ) throws {
+        let hasMessages = try Message
+            .filter(Column("threadId") == threadId)
+            .fetchCount(db) > 0
+        if hasMessages {
+            try SyncEngine.deriveThreads(db, for: [threadId], accountId: accountId)
+        } else {
+            _ = try MailThread.deleteOne(db, key: threadId)
+            try ThreadLabels.rewrite(db, threadId: threadId, labelIds: "")
+        }
+    }
+
+    private func rederiveThreadFromMessages(accountId: String, gmailThreadId: String) async {
+        let threadId = "\(accountId):\(gmailThreadId)"
+        _ = try? await db.write { db in
+            try Self.rederiveOrDeleteThread(db, threadId: threadId, accountId: accountId)
+        }
+        scheduleThreadMutationReconciliation()
+    }
+
     /// Replay queued thread edits, oldest first. Runs ahead of every sync so
     /// Gmail's history reflects the user's offline work before it is read
     /// back. Stops at the first connectivity failure (still offline); drops
@@ -145,13 +257,17 @@ extension MailStore {
         for row in rows {
             guard !isShuttingDown else { break }
             guard let change = row.change, !change.isEmpty else {
+                await rederiveThreadFromMessages(
+                    accountId: row.accountId, gmailThreadId: row.gmailThreadId)
                 _ = try? await pool.write { db in try PendingThreadOp.deleteOne(db, key: row.id) }
                 continue
             }
             let gmail = client(for: row.accountId)
+            var shouldDelete = false
             do {
                 try await Self.perform(change, on: gmail, gmailThreadId: row.gmailThreadId)
                 isOffline = false
+                shouldDelete = true
             } catch {
                 if OfflinePolicy.shouldDefer(error) {
                     isOffline = true
@@ -165,6 +281,10 @@ extension MailStore {
                 if !SendThreading.isNotFound(error) {
                     lastError = "Couldn't sync an offline change: \(error.localizedDescription)"
                 }
+                shouldDelete = true
+                await revertOptimisticThreadChange(
+                    change, accountId: row.accountId,
+                    gmailThreadId: row.gmailThreadId, original: nil)
             }
             // Delete only if the row is still the one we replayed: a user edit
             // made during the flush folds into it (enqueue sees the row and
@@ -172,17 +292,20 @@ extension MailStore {
             // would drop that edit on the floor. A row that did change stays
             // and replays next time — label edits and trash are idempotent, so
             // re-sending the already-sent part is harmless.
-            _ = try? await pool.write { db in
+            if shouldDelete {
+                _ = try? await pool.write { db in
                 let current = try PendingThreadOp.filter(Column("id") == row.id).fetchOne(db)
                 guard current?.updatedAt == row.updatedAt else { return }
                 _ = try PendingThreadOp.deleteOne(db, key: row.id)
+                }
             }
         }
         await reloadPendingThreadOpCount()
     }
 
     private func enqueueThreadPersistence(
-        _ updated: MailThread
+        from original: MailThread, to updated: MailThread,
+        remote: RemoteThreadChange
     ) -> Task<Result<Void, Error>, Never> {
         let predecessor = threadMutationPersistenceTask
         let pool = db
@@ -191,9 +314,8 @@ extension MailStore {
             _ = await predecessor?.value
             do {
                 try await pool.write { db in
-                    try updated.save(db)
-                    try ThreadLabels.rewrite(
-                        db, threadId: updated.id, labelIds: updated.labelIds)
+                    try Self.mirrorRemoteLabelChange(db, threadId: updated.id, change: remote)
+                    try Self.updateChangedThreadColumns(db, from: original, to: updated)
                 }
                 return .success(())
             } catch {

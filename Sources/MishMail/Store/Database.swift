@@ -345,6 +345,9 @@ struct ScheduledSend: Codable, Identifiable, Hashable, FetchableRecord, Persista
     var replacingDraftId: String?   // Message.id of the Gmail draft this replaces
     var attachmentsJSON: Data       // JSON-encoded [MIMEBuilder.Attachment]
     var createdAt: Date
+    /// Stable RFC 2822 id used to deduplicate a replay after an ambiguous
+    /// network timeout. Empty only for rows created before v40.
+    var messageId: String = ""
     mutating func didInsert(_ inserted: InsertionSuccess) { id = inserted.rowID }
 
     /// Effective From address for MIME (send-as or the mailbox primary).
@@ -1694,6 +1697,31 @@ final class AppDatabase: @unchecked Sendable {
                 t.column("createdAt", .datetime).notNull()
                 t.column("updatedAt", .datetime).notNull().indexed()
             }
+        }
+        // v40: stable outgoing Message-ID for scheduled/offline sends, plus a
+        // narrower FTS update trigger. Label-only message updates no longer
+        // rewrite the subject/recipient index under SQLCipher.
+        m.registerMigration("v40") { db in
+            try db.alter(table: "scheduledSend") { t in
+                t.add(column: "messageId", .text).notNull().defaults(to: "")
+            }
+            try db.execute(sql: "DROP TRIGGER IF EXISTS __message_fts_au")
+            try db.execute(sql: """
+                CREATE TRIGGER __message_fts_au
+                AFTER UPDATE OF subject, fromHeader, toHeader, ccHeader ON message
+                BEGIN
+                    INSERT INTO message_fts(
+                        message_fts, rowid, subject, fromHeader, toHeader, ccHeader)
+                    VALUES(
+                        'delete', old.rowid, old.subject, old.fromHeader,
+                        old.toHeader, old.ccHeader);
+                    INSERT INTO message_fts(
+                        rowid, subject, fromHeader, toHeader, ccHeader)
+                    VALUES(
+                        new.rowid, new.subject, new.fromHeader,
+                        new.toHeader, new.ccHeader);
+                END
+                """)
         }
         return m
     }

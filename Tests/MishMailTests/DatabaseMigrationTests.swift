@@ -63,6 +63,12 @@ final class DatabaseMigrationTests: XCTestCase {
             let scheduledCols = try db.columns(in: "scheduledSend").map(\.name)
             XCTAssertTrue(scheduledCols.contains("fromEmail"),
                           "v20 must add fromEmail on scheduledSend")
+            XCTAssertTrue(scheduledCols.contains("messageId"),
+                          "v40 must add stable messageId on scheduledSend")
+            let updateTriggerSQL = try String.fetchOne(db, sql:
+                "SELECT sql FROM sqlite_master WHERE type = 'trigger' AND name = '__message_fts_au'") ?? ""
+            XCTAssertTrue(updateTriggerSQL.contains("AFTER UPDATE OF subject, fromHeader, toHeader, ccHeader"),
+                          "v40 must limit FTS updates to indexed columns")
             // v21 partial indexes for SidebarCounts COUNT(*) paths.
             for name in [
                 "thread_unread_primary_inbox",
@@ -201,16 +207,18 @@ final class DatabaseMigrationTests: XCTestCase {
             sendAt: Date(timeIntervalSince1970: 1_800_000_000),
             replyToMessageId: nil, forward: false, replacingDraftId: "ron@x.com:d1",
             attachmentsJSON: ScheduledSend.encodeAttachments(attachments),
-            createdAt: Date(timeIntervalSince1970: 1_751_500_000))
+            createdAt: Date(timeIntervalSince1970: 1_751_500_000),
+            messageId: "<fixed@mishmail.local>")
         try q.write { db in try row.insert(db) }
 
         let fetched = try q.read { db in try ScheduledSend.fetchOne(db) }
         XCTAssertNotNil(fetched?.id)
         XCTAssertEqual(fetched?.subject, "Later")
         XCTAssertEqual(fetched?.replacingDraftId, "ron@x.com:d1")
-        XCTAssertEqual(fetched?.attachments.count, 1)
-        XCTAssertEqual(fetched?.attachments.first?.filename, "a.pdf")
-        XCTAssertEqual(fetched?.attachments.first?.data, Data([1, 2, 3]))
+            XCTAssertEqual(fetched?.attachments.count, 1)
+            XCTAssertEqual(fetched?.attachments.first?.filename, "a.pdf")
+            XCTAssertEqual(fetched?.attachments.first?.data, Data([1, 2, 3]))
+        XCTAssertEqual(fetched?.messageId, "<fixed@mishmail.local>")
     }
 
     /// Records round-trip through the schema (catches record/column drift).
@@ -263,6 +271,43 @@ final class DatabaseMigrationTests: XCTestCase {
             try Int.fetchOne(db, sql: "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'zebra'") ?? 0
         }
         XCTAssertEqual(after, 0)
+    }
+
+    /// Label-only message updates must not rebuild the external-content FTS
+    /// row; indexed-column updates still replace the searchable text.
+    func testFTSUpdateTriggerIgnoresLabelOnlyChanges() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q)
+        try q.write { db in
+            try Account(id: "ron@x.com", displayName: "P", historyId: nil,
+                        lastSyncAt: nil, senderName: "").save(db)
+            try Message(
+                id: "ron@x.com:m1", accountId: "ron@x.com", gmailId: "m1",
+                threadId: "ron@x.com:t1", fromHeader: "jane@y.com", toHeader: "",
+                ccHeader: "", bccHeader: "", subject: "Original subject",
+                date: Date(), snippet: "", bodyText: "", bodyHTML: nil,
+                messageIdHeader: "", referencesHeader: "", labelIds: "INBOX",
+                isUnread: false, hasAttachment: false).save(db)
+            try db.execute(sql: "UPDATE message SET labelIds = 'TRASH' WHERE id = ?",
+                           arguments: ["ron@x.com:m1"])
+        }
+        try q.read { db in
+            let oldHit = try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'original'") ?? 0
+            XCTAssertEqual(oldHit, 1)
+        }
+        try q.write { db in
+            try db.execute(sql: "UPDATE message SET subject = 'Replacement subject' WHERE id = ?",
+                           arguments: ["ron@x.com:m1"])
+        }
+        try q.read { db in
+            let oldHit = try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'original'") ?? 0
+            let newHit = try Int.fetchOne(db, sql:
+                "SELECT count(*) FROM message_fts WHERE message_fts MATCH 'replacement'") ?? 0
+            XCTAssertEqual(oldHit, 0)
+            XCTAssertEqual(newHit, 1)
+        }
     }
 
     /// Deleting an account cascades to its threads, messages and attachments.
