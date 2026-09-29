@@ -14,7 +14,11 @@ extension MailStore {
         // itself if a newer message arrives ("remind if no reply").
         copy.reminderSetAt = when == nil ? nil : Date()
         let updated = copy
-        try? db.write { db in try updated.save(db) }
+        try? db.write { db in
+            try db.execute(
+                sql: "UPDATE thread SET reminderAt = ?, reminderSetAt = ? WHERE id = ?",
+                arguments: [updated.reminderAt, updated.reminderSetAt, updated.id])
+        }
         reloadThreads()
     }
 

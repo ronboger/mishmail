@@ -1,4 +1,5 @@
 import Foundation
+import CoreFoundation
 
 /// Converts a Gmail API `GMessage` (format=full) into our local rows.
 enum MessageParser {
@@ -153,7 +154,8 @@ enum MessageParser {
             // time via getAttachment, session-only. Persisting their bytes as
             // data: URIs in message_body would bloat SQLCipher.
         } else if let data = part.body?.data {
-            if let decoded = decodeBase64URL(data) {
+            if let decoded = decodeBase64URL(
+                data, contentType: partHeader(part, "Content-Type")) {
                 switch part.mimeType {
                 case "text/plain" where text.isEmpty: text = decoded
                 case "text/html" where html == nil: html = decoded
@@ -201,8 +203,58 @@ enum MessageParser {
         }
     }
 
-    static func decodeBase64URL(_ s: String) -> String? {
-        decodeBase64URLData(s).flatMap { String(data: $0, encoding: .utf8) }
+    static func decodeBase64URL(_ s: String, contentType: String? = nil) -> String? {
+        decodeBase64URLData(s).flatMap {
+            decodeText($0, contentType: contentType)
+        }
+    }
+
+    /// Gmail's part `mimeType` omits the charset parameter; the MIME header
+    /// is authoritative for legacy mail. Order: a 7-bit stateful label
+    /// (ISO-2022-JP, UTF-7), then UTF-8, then any other declared charset,
+    /// then Windows-1252 / ISO-8859-1 for malformed headers.
+    private static func decodeText(_ data: Data, contentType: String?) -> String? {
+        let charset = contentType.flatMap(declaredCharset)?.lowercased()
+        let declared: String.Encoding? = charset.flatMap { name in
+            ["utf-8", "utf8", "us-ascii", "ascii"].contains(name)
+                ? nil : stringEncoding(forIANAName: name)
+        }
+        // 7-bit stateful charsets are always valid UTF-8, so only the label
+        // can pick them. Any other label loses to bytes that are valid UTF-8:
+        // UTF-8 mail labelled ISO-8859-1 is common, while real Latin-1 or
+        // Shift_JIS text with non-ASCII bytes is almost never valid UTF-8.
+        if let charset, let declared, isSevenBitStateful(charset),
+           let decoded = String(data: data, encoding: declared) {
+            return decoded
+        }
+        if let utf8 = String(data: data, encoding: .utf8) { return utf8 }
+        if let declared, let decoded = String(data: data, encoding: declared) {
+            return decoded
+        }
+        return String(data: data, encoding: .windowsCP1252)
+            ?? String(data: data, encoding: .isoLatin1)
+    }
+
+    private static func isSevenBitStateful(_ charset: String) -> Bool {
+        charset.hasPrefix("iso-2022") || charset == "utf-7" || charset == "hz-gb-2312"
+    }
+
+    /// The `charset` parameter of a Content-Type value, unquoted.
+    private static func declaredCharset(_ contentType: String) -> String? {
+        guard let range = contentType.range(
+            of: #"charset\s*=\s*[\"']?([^;\"'\s]+)"#,
+            options: [.regularExpression, .caseInsensitive]) else { return nil }
+        let match = String(contentType[range])
+        guard let equals = match.firstIndex(of: "=") else { return nil }
+        let value = match[match.index(after: equals)...]
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \t\"'"))
+        return value.isEmpty ? nil : value
+    }
+
+    private static func stringEncoding(forIANAName name: String) -> String.Encoding? {
+        let encoding = CFStringConvertIANACharSetNameToEncoding(name as CFString)
+        guard encoding != kCFStringEncodingInvalidId else { return nil }
+        return String.Encoding(rawValue: CFStringConvertEncodingToNSStringEncoding(encoding))
     }
 
     static func decodeBase64URLData(_ s: String) -> Data? {
@@ -1120,9 +1172,16 @@ enum MIMEBuilder {
         let data: Data
     }
 
+    /// Generates once per logical send; callers persist/pass the result across
+    /// retries so Gmail can identify a message that may already have landed.
+    static func makeMessageID(domain: String = "mishmail.local") -> String {
+        "<\(UUID().uuidString.lowercased())@\(domain)>"
+    }
+
     static func build(from: String, to: String, cc: String = "", bcc: String = "",
                       subject: String, bodyText: String, bodyHTML: String? = nil,
                       inReplyTo: String? = nil, references: String? = nil,
+                      messageId: String? = nil,
                       attachments: [Attachment] = []) -> Data {
         var lines: [String] = []
         lines.append("From: \(clean(from))")
@@ -1130,6 +1189,9 @@ enum MIMEBuilder {
         if !cc.isEmpty { lines.append("Cc: \(clean(cc))") }
         if !bcc.isEmpty { lines.append("Bcc: \(clean(bcc))") }
         lines.append("Subject: \(encodeHeader(clean(subject)))")
+        if let messageId, !messageId.isEmpty {
+            lines.append("Message-ID: \(clean(messageId))")
+        }
         if let inReplyTo, !inReplyTo.isEmpty {
             lines.append("In-Reply-To: \(clean(inReplyTo))")
             let refs = [references, inReplyTo].compactMap { $0 }.filter { !$0.isEmpty }.joined(separator: " ")

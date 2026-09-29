@@ -31,7 +31,7 @@ extension MailStore {
             scheduleThreadMutationReconciliation()
         }
 
-        let persistence = enqueueThreadPersistence(updated)
+        let persistence = enqueueThreadPersistence(from: thread, to: updated)
         let client = client(for: thread.accountId)
         let gmailThreadId = thread.gmailThreadId
         let isDemo = demoMode
@@ -53,9 +53,9 @@ extension MailStore {
             // Demo interactions are intentionally local. They should feel real
             // without attempting Gmail calls for the fictional account.
             guard !isDemo else { return }
-            await self.applyRemoteThreadChange(remote, client: client,
-                                               accountId: thread.accountId,
-                                               gmailThreadId: gmailThreadId)
+            await self.applyRemoteThreadChange(
+                remote, client: client, accountId: thread.accountId,
+                gmailThreadId: gmailThreadId)
         }
     }
 
@@ -90,6 +90,8 @@ extension MailStore {
                 await queueThreadChange(change, accountId: accountId, gmailThreadId: gmailThreadId)
             } else {
                 lastError = error.localizedDescription
+                await rederiveThreadFromMessages(
+                    accountId: accountId, gmailThreadId: gmailThreadId)
                 await sync(accountId: accountId)
             }
         }
@@ -126,6 +128,14 @@ extension MailStore {
         }) ?? 0
     }
 
+    private func rederiveThreadFromMessages(accountId: String, gmailThreadId: String) async {
+        let threadId = "\(accountId):\(gmailThreadId)"
+        _ = try? await db.write { db in
+            try OptimisticThreadWrite.rederiveOrDelete(db, threadId: threadId, accountId: accountId)
+        }
+        scheduleThreadMutationReconciliation()
+    }
+
     /// Replay queued thread edits, oldest first. Runs ahead of every sync so
     /// Gmail's history reflects the user's offline work before it is read
     /// back. Stops at the first connectivity failure (still offline); drops
@@ -145,13 +155,17 @@ extension MailStore {
         for row in rows {
             guard !isShuttingDown else { break }
             guard let change = row.change, !change.isEmpty else {
+                await rederiveThreadFromMessages(
+                    accountId: row.accountId, gmailThreadId: row.gmailThreadId)
                 _ = try? await pool.write { db in try PendingThreadOp.deleteOne(db, key: row.id) }
                 continue
             }
             let gmail = client(for: row.accountId)
+            var shouldDelete = false
             do {
                 try await Self.perform(change, on: gmail, gmailThreadId: row.gmailThreadId)
                 isOffline = false
+                shouldDelete = true
             } catch {
                 if OfflinePolicy.shouldDefer(error) {
                     isOffline = true
@@ -165,6 +179,9 @@ extension MailStore {
                 if !SendThreading.isNotFound(error) {
                     lastError = "Couldn't sync an offline change: \(error.localizedDescription)"
                 }
+                shouldDelete = true
+                await rederiveThreadFromMessages(
+                    accountId: row.accountId, gmailThreadId: row.gmailThreadId)
             }
             // Delete only if the row is still the one we replayed: a user edit
             // made during the flush folds into it (enqueue sees the row and
@@ -172,17 +189,22 @@ extension MailStore {
             // would drop that edit on the floor. A row that did change stays
             // and replays next time — label edits and trash are idempotent, so
             // re-sending the already-sent part is harmless.
-            _ = try? await pool.write { db in
+            if shouldDelete {
+                _ = try? await pool.write { db in
                 let current = try PendingThreadOp.filter(Column("id") == row.id).fetchOne(db)
                 guard current?.updatedAt == row.updatedAt else { return }
                 _ = try PendingThreadOp.deleteOne(db, key: row.id)
+                }
             }
         }
         await reloadPendingThreadOpCount()
     }
 
+    /// Writes the optimistic result to the thread row only. Message rows are
+    /// left alone: they change when Gmail's history reports the edit, and
+    /// until then they are the revert source if Gmail rejects it.
     private func enqueueThreadPersistence(
-        _ updated: MailThread
+        from original: MailThread, to updated: MailThread
     ) -> Task<Result<Void, Error>, Never> {
         let predecessor = threadMutationPersistenceTask
         let pool = db
@@ -191,9 +213,7 @@ extension MailStore {
             _ = await predecessor?.value
             do {
                 try await pool.write { db in
-                    try updated.save(db)
-                    try ThreadLabels.rewrite(
-                        db, threadId: updated.id, labelIds: updated.labelIds)
+                    try OptimisticThreadWrite.updateChangedColumns(db, from: original, to: updated)
                 }
                 return .success(())
             } catch {

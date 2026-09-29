@@ -25,6 +25,10 @@ final class TransientNetworkErrorTests: XCTestCase {
         XCTAssertFalse(TransientNetworkError.isTransient(URLError(.userAuthenticationRequired)))
     }
 
+    func testCancellationIsNeverTransient() {
+        XCTAssertFalse(TransientNetworkError.isTransient(CancellationError()))
+    }
+
     func testWrappedNSUnderlyingURLErrorIsTransient() {
         let underlying = URLError(.notConnectedToInternet)
         let wrapped = NSError(

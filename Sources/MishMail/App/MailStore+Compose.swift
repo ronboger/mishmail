@@ -25,6 +25,8 @@ extension MailStore {
         var forwardAll: Bool = false
         let attachments: [MIMEBuilder.Attachment]
         let replacingDraft: Message?
+        /// Stable across the undo window and any offline/scheduled replay.
+        var messageId: String = MIMEBuilder.makeMessageID()
 
         /// Effective From identity email.
         var effectiveFromEmail: String {
@@ -102,7 +104,8 @@ extension MailStore {
                            to: p.to, cc: p.cc, bcc: p.bcc,
                            subject: p.subject, body: p.body, replyTo: p.replyTo,
                            forward: p.forward,
-                           attachments: p.attachments, replacingDraft: p.replacingDraft)
+                           attachments: p.attachments, replacingDraft: p.replacingDraft,
+                           messageId: p.messageId)
             isOffline = false
             setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
             showNotice("Sent")
@@ -132,7 +135,7 @@ extension MailStore {
             replyToMessageId: p.replyTo?.id, forward: p.forward,
             replacingDraftId: p.replacingDraft?.id,
             attachmentsJSON: ScheduledSend.encodeAttachments(p.attachments),
-            createdAt: Date())
+            createdAt: Date(), messageId: p.messageId)
         do {
             try db.write { db in try row.insert(db) }
         } catch {
@@ -221,7 +224,7 @@ extension MailStore {
             replyToMessageId: p.replyTo?.id, forward: p.forward,
             replacingDraftId: p.replacingDraft?.id,
             attachmentsJSON: ScheduledSend.encodeAttachments(p.attachments),
-            createdAt: Date())
+            createdAt: Date(), messageId: p.messageId)
         try? db.write { db in try row.insert(db) }
         reloadScheduledSends()
         showNotice("Scheduled — sends \(SendSchedule.describe(date))")
@@ -258,11 +261,20 @@ extension MailStore {
         // quote and emit Gmail-style HTML.
         let replyTo = s.replyToMessageId.flatMap { messageBody(id: $0) }
         let draft = s.replacingDraftId.flatMap { messageBody(id: $0) }
+        let messageId = s.messageId.isEmpty ? MIMEBuilder.makeMessageID() : s.messageId
+        if s.messageId.isEmpty, let id = s.id {
+            try? db.write { db in
+                try db.execute(
+                    sql: "UPDATE scheduledSend SET messageId = ? WHERE id = ?",
+                    arguments: [messageId, id])
+            }
+        }
         return PendingSend(accountId: s.accountId, fromEmail: s.effectiveFromEmail,
                            to: s.toHeader, cc: s.ccHeader,
                            bcc: s.bccHeader, subject: s.subject, body: s.body,
                            replyTo: replyTo, forward: s.forward,
-                           attachments: s.attachments, replacingDraft: draft)
+                           attachments: s.attachments, replacingDraft: draft,
+                           messageId: messageId)
     }
 
     private func armScheduledSendTimer() {
@@ -290,6 +302,10 @@ extension MailStore {
         for s in due {
             guard !isShuttingDown else { break }
             let p = pendingSend(from: s)
+            if await alreadySent(p) {
+                _ = try? await db.write { db in try ScheduledSend.deleteOne(db, key: s.id) }
+                continue
+            }
             let outcome = await attemptSend(p)
             if outcome == .deferredOffline { break }
             _ = try? await db.write { db in try ScheduledSend.deleteOne(db, key: s.id) }
@@ -305,7 +321,8 @@ extension MailStore {
               to: String, cc: String, bcc: String = "", subject: String,
               body: String, replyTo message: Message? = nil, forward: Bool = false,
               attachments: [MIMEBuilder.Attachment] = [],
-              replacingDraft draft: Message? = nil) async throws {
+              replacingDraft draft: Message? = nil,
+              messageId: String? = nil) async throws {
         // For a forward, `message` is the forwarded original: it supplies the
         // HTML body below, but must not thread the send into its conversation.
         let threadParent = forward ? nil : message
@@ -329,6 +346,7 @@ extension MailStore {
             bodyText: body, bodyHTML: bodyHTML,
             inReplyTo: threadParent?.messageIdHeader,
             references: threadParent?.referencesHeader ?? draft?.referencesHeader,
+            messageId: messageId ?? MIMEBuilder.makeMessageID(),
             attachments: attachments
         )
         // A reply keeps its thread; so does a draft that lives in one — but
@@ -351,6 +369,22 @@ extension MailStore {
         }
         if let draft { await deleteUnderlyingDraft(draft, silent: true) }
         await sync(accountId: apiAccountId)
+    }
+
+    /// A send timeout is ambiguous: Gmail may have accepted the message while
+    /// the client saw a dropped connection. Search by the stable RFC id before
+    /// replaying a persisted send.
+    private func alreadySent(_ pending: PendingSend) async -> Bool {
+        guard let query = SendThreading.rfc822MessageIdQuery(pending.messageId) else {
+            return false
+        }
+        do {
+            let page = try await client(for: pending.accountId).listMessages(
+                query: query, maxResults: 1)
+            return !(page.messages ?? []).isEmpty
+        } catch {
+            return false
+        }
     }
 
     /// HTML alternative for an outgoing message:

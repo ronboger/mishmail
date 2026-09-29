@@ -7,6 +7,10 @@ actor SyncEngine {
     private let client: GmailClient
     private let accountId: String
     private let db = AppDatabase.shared.dbPool
+    /// Serializes passes. A caller that arrives mid-pass waits for one
+    /// shared follow-up pass, so its own change is never answered by a pass
+    /// that started before it.
+    private let passes = CoalescingRunner<ThreadContentChange>()
 
     /// Sentinel for "keep no mail on this Mac" (0 already means "everything").
     static let windowNothing = -1
@@ -32,7 +36,7 @@ actor SyncEngine {
 
     init(accountId: String) {
         self.accountId = accountId
-        self.client = GmailClient(accountEmail: accountId)
+        self.client = GmailClient.shared(accountEmail: accountId)
     }
 
     // MARK: - Reading-pane cache invalidation
@@ -61,12 +65,30 @@ actor SyncEngine {
 
     /// Returns which threads' reading-pane content this pass changed, so the
     /// caller can invalidate exactly those cached payloads.
+    ///
+    /// A call made while a pass is running waits for the next pass (shared by
+    /// every caller that arrives meanwhile) instead of joining the running
+    /// one, whose result may predate the caller's change.
     func syncNow(progress: (@Sendable (String) -> Void)? = nil) async throws
+        -> ThreadContentChange {
+        try await passes.run { [weak self] in
+            guard let self else { return .none }
+            return try await self.performSyncNow(progress: progress)
+        }
+    }
+
+    /// Cancels the running pass and any queued follow-up, and returns once
+    /// both have ended. Used before the account's rows are deleted.
+    func cancelSync() async {
+        await passes.cancelAll()
+    }
+
+    private func performSyncNow(progress: (@Sendable (String) -> Void)? = nil) async throws
         -> ThreadContentChange {
         let account = try await db.read { [accountId] db in
             try Account.fetchOne(db, key: accountId)
         }
-        guard var account else { return .none }
+        guard let account else { return .none }
 
         try await syncLabels()
 
@@ -81,21 +103,26 @@ actor SyncEngine {
                 UserDefaults.standard.set(Self.windowNothing, forKey: windowKey)
                 UserDefaults.standard.set(false, forKey: "backfill.starred.\(accountId)")
             }
-            account.historyId = nil  // full backfill if a window is chosen again
-            account.lastSyncAt = Date()
-            let updated = account
-            try await db.write { db in try updated.update(db) }
+            try await db.write { [accountId] db in
+                try db.execute(
+                    sql: "UPDATE account SET historyId = NULL, lastSyncAt = ? WHERE id = ?",
+                    arguments: [Date(), accountId])
+            }
             return drainContentChange()
         }
 
         if let historyId = account.historyId {
             do {
-                account.historyId = try await incrementalSync(since: historyId, progress: progress)
+                let latest = try await incrementalSync(since: historyId, progress: progress)
+                try await commitHistoryId(latest)
             } catch GmailError.historyExpired {
-                account.historyId = try await fullBackfill(progress: progress)
+                let latest = try await fullBackfill(
+                    reconcileCached: true, progress: progress)
+                try await commitHistoryId(latest)
             }
         } else {
-            account.historyId = try await fullBackfill(progress: progress)
+            let latest = try await fullBackfill(progress: progress)
+            try await commitHistoryId(latest)
         }
 
         // When the configured window changed: backfill anything newly inside
@@ -135,9 +162,7 @@ actor SyncEngine {
             }
         }
 
-        account.lastSyncAt = Date()
-        let updated = account
-        try await db.write { db in try updated.update(db) }
+        try await commitAccountState(lastSyncAt: Date())
         return drainContentChange()
     }
 
@@ -199,12 +224,236 @@ actor SyncEngine {
 
     // MARK: - Backfill
 
-    private func fullBackfill(progress: (@Sendable (String) -> Void)?) async throws -> String {
+    private func fullBackfill(reconcileCached: Bool = false,
+                              progress: (@Sendable (String) -> Void)?) async throws -> String {
+        // Read before listing: history from this id onward replays anything
+        // that changes while the backfill runs.
         let profile = try await client.profile()
         let batch = try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
         try await deriveThreads(for: batch.touchedKeys)
         UserDefaults.standard.set(syncWindowDays, forKey: "backfill.window.\(accountId)")
+        if reconcileCached {
+            let plan = try await removeStaleCachedMessages(
+                listedGmailIds: batch.listedGmailIds,
+                listingComplete: batch.listingComplete)
+            // History expired, the snapshot is downloaded and rows Gmail no
+            // longer lists are gone. Commit the new history id NOW, before
+            // the label refresh below. Rationale: history from
+            // `profile.historyId` onward still delivers every later change,
+            // so the next pass is incremental. If this commit waited for the
+            // refresh and the refresh hit the quota, the id would stay
+            // expired and every pass would restart the full reconcile and
+            // lose its work — an infinite loop. Stale labels on a few cached
+            // rows (until they next change) are the lesser evil.
+            try await commitHistoryId(profile.historyId)
+            await refreshCachedLabels(
+                plan, skipping: batch.downloadedGmailIds, progress: progress)
+        }
         return profile.historyId
+    }
+
+    /// Cached rows the history-expired reconcile must re-read by id.
+    private struct ReconcilePlan: Sendable {
+        /// Every cached row inside the window: (local id, gmail id, thread key).
+        var rows: [(id: String, gmailId: String, threadId: String)]
+        /// Gmail ids whose labels need a metadata refresh.
+        var metadataIds: [String]
+    }
+
+    /// History expiration makes the mailbox snapshot authoritative again. In
+    /// addition to downloading missing rows, re-list system-label views so an
+    /// already-cached message can lose INBOX/UNREAD/STARRED/TRASH/SPAM labels.
+    ///
+    /// A cached row missing from the listings is deleted only when every
+    /// listing ran to its last page. A listing cut off by `windowLimit` says
+    /// nothing about the rows past the cap, so those rows are re-read by id
+    /// instead (a 404 then deletes them).
+    ///
+    /// Deletes the stale rows and settles their threads right away, then
+    /// returns the rows whose labels still need a refresh.
+    private func removeStaleCachedMessages(listedGmailIds initialIds: Set<String>,
+                                           listingComplete initialComplete: Bool) async throws
+        -> ReconcilePlan {
+        var listed = initialIds
+        var listingComplete = initialComplete
+        for label in ["INBOX", "UNREAD", "STARRED", "TRASH", "SPAM"] {
+            let query = label == "STARRED" ? nil : windowQuery
+            let page = try await listAllGmailIds(
+                query: query, labelIds: [label], limit: windowLimit,
+                includeSpamTrash: label == "TRASH" || label == "SPAM")
+            listed.formUnion(page.ids)
+            listingComplete = listingComplete && page.complete
+        }
+
+        let days = syncWindowDays
+        let rows = try await db.read { [accountId, days] db -> [(id: String, gmailId: String, threadId: String)] in
+            let predicate = days == 0
+                ? ""
+                : "AND (date >= ? OR (' ' || labelIds || ' ') LIKE '% STARRED %')"
+            var args: [Any] = [accountId]
+            if days != 0 {
+                args.append(Date().addingTimeInterval(-Double(days) * 86_400))
+            }
+            return try Row.fetchAll(db, sql: """
+                SELECT id, gmailId, threadId FROM message
+                WHERE accountId = ? \(predicate)
+                """, arguments: StatementArguments(args) ?? StatementArguments()).map { row in
+                    (id: row["id"] as String,
+                     gmailId: row["gmailId"] as String,
+                     threadId: row["threadId"] as String)
+                }
+        }
+        let stale = listingComplete ? rows.filter { !listed.contains($0.gmailId) } : []
+        let metadataIds = listingComplete
+            ? rows.filter { listed.contains($0.gmailId) }.map { $0.gmailId }
+            : rows.map { $0.gmailId }
+
+        if !stale.isEmpty {
+            let staleKeys = Set(stale.map { $0.threadId })
+            try await deleteMessages(localIds: stale.map { $0.id })
+            try await settleThreads(staleKeys)
+        }
+        return ReconcilePlan(rows: rows, metadataIds: metadataIds)
+    }
+
+    /// Best-effort label refresh for cached rows after a history-expired
+    /// reconcile. The history id is already committed, so this never throws:
+    /// whatever lands is written, a rate-limited remainder is logged and left
+    /// for later history to correct, and a failed request is logged too.
+    private func refreshCachedLabels(_ plan: ReconcilePlan, skipping downloaded: Set<String>,
+                                     progress: (@Sendable (String) -> Void)?) async {
+        // Rows fetchAll just downloaded in full already carry fresh labels.
+        let ids = Array(Set(plan.metadataIds).subtracting(downloaded))
+        guard !ids.isEmpty else { return }
+        do {
+            let report = try await client.getMessages(ids: ids, format: "metadata")
+            var touchedKeys = Set<String>()
+            let pending = report.messages.map { message in
+                let (parsed, _) = MessageParser.parse(message, accountId: accountId)
+                return PendingUpsert(message: parsed, attachments: [], headersOnly: true)
+            }
+            if !pending.isEmpty {
+                let keys = try await db.write { db in
+                    try Self.upsertPending(db, items: pending)
+                }
+                touchedKeys.formUnion(keys)
+            }
+            let missing = Set(report.notFoundIds)
+            if !missing.isEmpty {
+                let missingRows = plan.rows.filter { missing.contains($0.gmailId) }
+                touchedKeys.formUnion(missingRows.map { $0.threadId })
+                try await deleteMessages(localIds: missingRows.map { $0.id })
+            }
+            try await settleThreads(touchedKeys)
+            if report.hasRetryExhausted {
+                PerfMetrics.measure(
+                    .syncReconcilePartial,
+                    meta: "labels pending=\(report.retryExhaustedIds.count) of=\(ids.count)") { () }
+                progress?("Some labels will refresh later…")
+            }
+        } catch {
+            PerfMetrics.measure(
+                .syncReconcilePartial,
+                meta: "labels failed=\(ids.count) error=\(error.localizedDescription)") { () }
+        }
+    }
+
+    /// Re-derives `keys` and drops any of them left without messages.
+    private func settleThreads(_ keys: Set<String>) async throws {
+        guard !keys.isEmpty else { return }
+        try await deriveThreads(for: keys)
+        try await removeOrphanedThreads(for: keys)
+    }
+
+    private func listAllGmailIds(query: String?, labelIds: [String], limit: Int,
+                                 includeSpamTrash: Bool = false) async throws
+        -> (ids: Set<String>, complete: Bool) {
+        var result = Set<String>()
+        var pageToken: String?
+        var listed = 0
+        repeat {
+            let page = try await client.listMessages(
+                query: query, labelIds: labelIds, pageToken: pageToken, maxResults: 100,
+                includeSpamTrash: includeSpamTrash)
+            let ids = (page.messages ?? []).map(\.id)
+            result.formUnion(ids)
+            listed += ids.count
+            pageToken = page.nextPageToken
+        } while pageToken != nil && listed < limit
+        return (result, pageToken == nil)
+    }
+
+    /// Deletes message rows by local id in bounded statements (SQLite caps
+    /// the number of bound variables per statement).
+    private func deleteMessages(localIds: [String]) async throws {
+        guard !localIds.isEmpty else { return }
+        try await db.write { db in
+            _ = try Self.deleteMessages(db, localIds: localIds)
+        }
+    }
+
+    // MARK: - Bounded SQL
+
+    /// Most `?` placeholders one statement binds. SQLite rejects a statement
+    /// past its variable limit (32766), and a large Gmail-side delete or a
+    /// full reconcile can name far more ids than that.
+    static let sqlBindChunkSize = 500
+
+    /// Splits `items` into runs of at most `sqlBindChunkSize`.
+    static func sqlChunks<T>(_ items: [T]) -> [ArraySlice<T>] {
+        stride(from: 0, to: items.count, by: sqlBindChunkSize).map {
+            items[$0..<min($0 + sqlBindChunkSize, items.count)]
+        }
+    }
+
+    private static func placeholders(_ count: Int) -> String {
+        Array(repeating: "?", count: count).joined(separator: ",")
+    }
+
+    /// Local message ids from `localIds` that exist. Chunked.
+    static func existingMessageIds(_ db: Database, localIds: [String]) throws -> Set<String> {
+        var found = Set<String>()
+        for chunk in sqlChunks(localIds) {
+            found.formUnion(try String.fetchAll(
+                db,
+                sql: "SELECT id FROM message WHERE id IN (\(placeholders(chunk.count)))",
+                arguments: StatementArguments(Array(chunk))))
+        }
+        return found
+    }
+
+    /// Deletes message rows by local id in chunks and returns the distinct
+    /// thread keys the deleted rows belonged to.
+    @discardableResult
+    static func deleteMessages(_ db: Database, localIds: [String]) throws -> Set<String> {
+        var keys = Set<String>()
+        for chunk in sqlChunks(localIds) {
+            let ids = Array(chunk)
+            let marks = placeholders(ids.count)
+            keys.formUnion(try String.fetchAll(
+                db,
+                sql: "SELECT DISTINCT threadId FROM message WHERE id IN (\(marks))",
+                arguments: StatementArguments(ids)))
+            try db.execute(sql: "DELETE FROM message WHERE id IN (\(marks))",
+                           arguments: StatementArguments(ids))
+        }
+        return keys
+    }
+
+    /// Deletes this account's thread rows named in `keys` that no longer
+    /// have any message. Chunked.
+    static func removeOrphanedThreads(_ db: Database, accountId: String,
+                                      keys: Set<String>) throws {
+        for chunk in sqlChunks(Array(keys)) {
+            try db.execute(sql: """
+                DELETE FROM thread
+                WHERE accountId = ? AND id IN (\(placeholders(chunk.count)))
+                  AND NOT EXISTS (
+                      SELECT 1 FROM message
+                      WHERE message.threadId = thread.id
+                  )
+                """, arguments: StatementArguments([accountId] + Array(chunk)))
+        }
     }
 
     // MARK: - Local removal
@@ -303,6 +552,11 @@ actor SyncEngine {
     private struct FetchAllBatch: Sendable {
         var touchedKeys: Set<String>
         var matchedThreadIds: [String]
+        var listedGmailIds: Set<String>
+        /// The listing reached its last page (not cut off by `limit`).
+        var listingComplete: Bool
+        /// Gmail ids downloaded in full by this call (fresh labels).
+        var downloadedGmailIds: Set<String>
     }
 
     @discardableResult
@@ -315,12 +569,17 @@ actor SyncEngine {
             var pageToken: String?
             var listed = 0
             var fetched = 0
+            var retryExhausted = 0
+            var listedGmailIds = Set<String>()
+            var reachedLastPage = false
             var matchedGmailThreadIds: [String] = []
             var seenGmailThreads = Set<String>()
+            var downloadedGmailIds = Set<String>()
             repeat {
                 let page = try await client.listMessages(query: query, pageToken: pageToken, maxResults: 100)
                 let refs = page.messages ?? []
                 let listedIds = refs.map(\.id)
+                listedGmailIds.formUnion(listedIds)
                 listed += listedIds.count
                 // Preserve Gmail rank across pages; cap at `limit` unique threads.
                 Self.appendUniqueGmailThreadIds(
@@ -337,6 +596,7 @@ actor SyncEngine {
                 // Batch HTTP when enabled; retry-exhausted ids retry next window pass.
                 let report = try await client.getMessages(ids: missingGmailIds)
                 for msg in report.messages {
+                    downloadedGmailIds.insert(msg.id)
                     let (message, attachments) = MessageParser.parse(msg, accountId: accountId)
                     writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
                     if writeBuffer.count >= Self.writeChunkSize {
@@ -344,15 +604,34 @@ actor SyncEngine {
                     }
                 }
                 fetched += report.messages.count
+                retryExhausted += report.retryExhaustedIds.count
                 // "Fetched" not "Downloaded": up to writeChunkSize-1 may still be
                 // buffered uncommitted; a failed final flush rolls those back.
                 if fetched > 0 { progress?("Fetched \(fetched) messages…") }
-                pageToken = page.nextPageToken
+                if report.hasRetryExhausted {
+                    // A rate-limited batch reports the remaining ids instead
+                    // of fanning them out as singles. Do not list later pages:
+                    // advancing through them would strand this page forever.
+                    pageToken = nil
+                } else {
+                    pageToken = page.nextPageToken
+                    reachedLastPage = page.nextPageToken == nil
+                }
             } while pageToken != nil && listed < limit
             try await flushUpserts(&writeBuffer, into: &touchedKeys)
+            if retryExhausted > 0 {
+                // Settle the threads of what landed before throwing: the next
+                // pass skips these now-cached ids, so nothing else would
+                // derive their thread rows.
+                try await deriveThreads(for: touchedKeys)
+                throw GmailError.partialFetch(failedCount: retryExhausted)
+            }
             let localThreadIds = Self.localThreadIds(
                 accountId: accountId, gmailThreadIds: matchedGmailThreadIds)
-            return FetchAllBatch(touchedKeys: touchedKeys, matchedThreadIds: localThreadIds)
+            return FetchAllBatch(
+                touchedKeys: touchedKeys, matchedThreadIds: localThreadIds,
+                listedGmailIds: listedGmailIds, listingComplete: reachedLastPage,
+                downloadedGmailIds: downloadedGmailIds)
         }
     }
 
@@ -402,12 +681,8 @@ actor SyncEngine {
         guard !listed.isEmpty else { return [] }
         var seen = Set<String>()
         let unique = listed.filter { seen.insert($0).inserted }
-        let localIds = unique.map { "\(accountId):\($0)" }
-        let placeholders = localIds.map { _ in "?" }.joined(separator: ",")
-        let existingLocal = try Set(String.fetchAll(
-            db,
-            sql: "SELECT id FROM message WHERE id IN (\(placeholders))",
-            arguments: StatementArguments(localIds)))
+        let existingLocal = try existingMessageIds(
+            db, localIds: unique.map { "\(accountId):\($0)" })
         return unique.filter { !existingLocal.contains("\(accountId):\($0)") }
     }
 
@@ -420,15 +695,16 @@ actor SyncEngine {
         guard !listed.isEmpty else { return [] }
         var seen = Set<String>()
         let unique = listed.filter { seen.insert($0).inserted }
-        let localIds = unique.map { "\(accountId):\($0)" }
-        let placeholders = localIds.map { _ in "?" }.joined(separator: ",")
-        let needsRepair = try Set(String.fetchAll(
-            db,
-            sql: """
-                SELECT id FROM message
-                WHERE id IN (\(placeholders)) AND hasAttachment = 0
-                """,
-            arguments: StatementArguments(localIds)))
+        var needsRepair = Set<String>()
+        for chunk in sqlChunks(unique.map { "\(accountId):\($0)" }) {
+            needsRepair.formUnion(try String.fetchAll(
+                db,
+                sql: """
+                    SELECT id FROM message
+                    WHERE id IN (\(placeholders(chunk.count))) AND hasAttachment = 0
+                    """,
+                arguments: StatementArguments(Array(chunk))))
+        }
         return unique.filter { needsRepair.contains("\(accountId):\($0)") }
     }
 
@@ -540,6 +816,7 @@ actor SyncEngine {
                 id: item.id,
                 addedIds: (item.messagesAdded ?? []).map(\.message.id),
                 labelChangedIds: ((item.labelsAdded ?? []) + (item.labelsRemoved ?? [])).map(\.message.id),
+                deletedIds: (item.messagesDeleted ?? []).map(\.message.id),
                 index: index)
         }
         let slices = HistorySlicer.slices(records, maxMessages: Self.historySliceMessages)
@@ -563,9 +840,21 @@ actor SyncEngine {
     /// Durable progress marker for a partially completed catch-up.
     private func commitHistoryId(_ id: String) async throws {
         try await db.write { [accountId] db in
-            if var account = try Account.fetchOne(db, key: accountId) {
-                account.historyId = id
-                try account.update(db)
+            try db.execute(sql: "UPDATE account SET historyId = ? WHERE id = ?",
+                           arguments: [id, accountId])
+        }
+    }
+
+    private func commitAccountState(historyId: String? = nil,
+                                    lastSyncAt: Date? = nil) async throws {
+        try await db.write { [accountId] db in
+            if let historyId {
+                try db.execute(sql: "UPDATE account SET historyId = ? WHERE id = ?",
+                               arguments: [historyId, accountId])
+            }
+            if let lastSyncAt {
+                try db.execute(sql: "UPDATE account SET lastSyncAt = ? WHERE id = ?",
+                               arguments: [lastSyncAt, accountId])
             }
         }
     }
@@ -606,16 +895,12 @@ actor SyncEngine {
         // deletes for the batch are applied (rather than once per message).
         var touchedKeys = Set<String>()
 
-        for id in deleted {
-            let key = "\(accountId):\(id)"
-            if let threadKey = try await db.write({ db -> String? in
-                let threadKey = try String.fetchOne(db, sql:
-                    "SELECT threadId FROM message WHERE id = ?", arguments: [key])
-                _ = try Message.deleteOne(db, key: key)
-                return threadKey
-            }) {
-                touchedKeys.insert(threadKey)
+        if !deleted.isEmpty {
+            let ids = deleted.map { "\(accountId):\($0)" }
+            let keys = try await db.write { db in
+                try Self.deleteMessages(db, localIds: ids)
             }
+            touchedKeys.formUnion(keys)
         }
 
         // Label-only history: patch labelIds/isUnread in place when the
@@ -630,16 +915,19 @@ actor SyncEngine {
                 var missing: [String] = []
                 for (gmailId, ops) in opsSnapshot {
                     let key = "\(account):\(gmailId)"
-                    guard var msg = try Message.fetchOne(db, key: key) else {
+                    guard let msg = try Message.fetchOne(db, key: key) else {
                         missing.append(gmailId)
                         continue
                     }
+                    var labelIds = msg.labelIds
                     for op in ops {
-                        msg.labelIds = Self.applyLabelDelta(labelIds: msg.labelIds,
-                                                            add: op.add, remove: op.remove)
+                        labelIds = Self.applyLabelDelta(labelIds: labelIds,
+                                                        add: op.add, remove: op.remove)
                     }
-                    msg.isUnread = msg.labelIds.split(separator: " ").contains("UNREAD")
-                    try msg.save(db)
+                    let isUnread = labelIds.split(separator: " ").contains("UNREAD")
+                    try db.execute(
+                        sql: "UPDATE message SET labelIds = ?, isUnread = ? WHERE id = ?",
+                        arguments: [labelIds, isUnread, msg.id])
                     keys.insert(msg.threadId)
                 }
                 return (keys, missing)
@@ -661,13 +949,8 @@ actor SyncEngine {
             let account = accountId
             // One read for local existence (same shape as filterMissingGmailIds).
             let existingLocal = try await db.read { db -> Set<String> in
-                guard !fullIds.isEmpty else { return [] }
-                let localIds = fullIds.map { "\(account):\($0)" }
-                let placeholders = localIds.map { _ in "?" }.joined(separator: ",")
-                return Set(try String.fetchAll(
-                    db,
-                    sql: "SELECT id FROM message WHERE id IN (\(placeholders))",
-                    arguments: StatementArguments(localIds)))
+                try Self.existingMessageIds(
+                    db, localIds: fullIds.map { "\(account):\($0)" })
             }
             var needFull: [String] = []
             var needMeta: [String] = []
@@ -702,6 +985,13 @@ actor SyncEngine {
                         try await flushUpserts(&writeBuffer, into: &touchedKeys)
                     }
                 }
+                if report.hasRetryExhausted {
+                    // A quota penalty on full bodies means the metadata pass
+                    // would only spend more units and still cannot complete
+                    // this slice. Leave all metadata ids pending for replay.
+                    retryExhausted += needMeta.count
+                    needMeta.removeAll(keepingCapacity: true)
+                }
             }
             if !needMeta.isEmpty {
                 let report = try await client.getMessages(ids: needMeta, format: "metadata")
@@ -725,7 +1015,7 @@ actor SyncEngine {
                 progress?("Updated \(fullFetch.count + labelOnlyCount) messages")
             }
             if !deleted.isEmpty {
-                try await removeOrphanedThreads()
+                try await removeOrphanedThreads(for: touchedKeys)
             }
             return retryExhausted
         }
@@ -739,7 +1029,7 @@ actor SyncEngine {
         // A thread can lose all its messages (e.g. every message deleted);
         // drop those rows rather than leaving a stale thread behind.
         if !deleted.isEmpty {
-            try await removeOrphanedThreads()
+            try await removeOrphanedThreads(for: touchedKeys)
         }
         return 0
     }
@@ -1114,12 +1404,16 @@ actor SyncEngine {
     }
 
     /// Deletes thread rows whose messages are all gone.
-    private func removeOrphanedThreads() async throws {
+    private func removeOrphanedThreads(for keys: Set<String>? = nil) async throws {
         try await db.write { [accountId] db in
-            try db.execute(sql: """
-                DELETE FROM thread WHERE accountId = ?
-                AND id NOT IN (SELECT DISTINCT threadId FROM message WHERE accountId = ?)
-                """, arguments: [accountId, accountId])
+            if let keys {
+                try Self.removeOrphanedThreads(db, accountId: accountId, keys: keys)
+            } else {
+                try db.execute(sql: """
+                    DELETE FROM thread WHERE accountId = ?
+                    AND id NOT IN (SELECT DISTINCT threadId FROM message WHERE accountId = ?)
+                    """, arguments: [accountId, accountId])
+            }
         }
     }
 }

@@ -67,6 +67,8 @@ enum PerfMetrics {
         case syncGetRetry = "sync.getRetry"
         /// History sync refused to advance historyId (retry-exhausted ids).
         case syncHistoryPartial = "sync.historyPartial"
+        /// History-expired reconcile left some cached labels unrefreshed.
+        case syncReconcilePartial = "sync.reconcilePartial"
         /// ThreadListView regroup / displayOrder rebuild.
         case listGroup = "list.group"
         /// Load-older page fetch.
@@ -181,6 +183,7 @@ enum PerfMetrics {
         case .syncBlocklist: return signposter.beginInterval("sync.blocklist")
         case .syncGetRetry: return signposter.beginInterval("sync.getRetry")
         case .syncHistoryPartial: return signposter.beginInterval("sync.historyPartial")
+        case .syncReconcilePartial: return signposter.beginInterval("sync.reconcilePartial")
         case .listGroup: return signposter.beginInterval("list.group")
         case .pageLoadMore: return signposter.beginInterval("page.loadMore")
         case .selectionFocus: return signposter.beginInterval("selection.focus")
@@ -207,6 +210,7 @@ enum PerfMetrics {
         case .syncBlocklist: signposter.endInterval("sync.blocklist", state)
         case .syncGetRetry: signposter.endInterval("sync.getRetry", state)
         case .syncHistoryPartial: signposter.endInterval("sync.historyPartial", state)
+        case .syncReconcilePartial: signposter.endInterval("sync.reconcilePartial", state)
         case .listGroup: signposter.endInterval("list.group", state)
         case .pageLoadMore: signposter.endInterval("page.loadMore", state)
         case .selectionFocus: signposter.endInterval("selection.focus", state)

@@ -16,7 +16,10 @@ import Foundation
 struct GmailQuotaBucket {
     /// `messages.get` costs 5 units regardless of format.
     static let messageGetUnits = 5
-    static let defaultCapacity = 250
+    /// Keep a half-second of burst capacity. Gmail's 250 units/s limit is a
+    /// moving average, so a 125-unit burst leaves room for refill while the
+    /// next request is in flight.
+    static let defaultCapacity = 125
     /// Below Gmail's 250/s so the moving average never touches the ceiling.
     static let defaultRefillPerSecond = 200
 
@@ -26,29 +29,76 @@ struct GmailQuotaBucket {
     /// had to wait is charged at the time it was told to wait until.
     private var tokens: Double
     private var lastRefill: Date?
+    private var blockedUntil: Date?
 
     init(capacity: Int = defaultCapacity, refillPerSecond: Int = defaultRefillPerSecond) {
         self.capacity = capacity
         self.refillPerSecond = refillPerSecond
         self.tokens = Double(capacity)
+        self.blockedUntil = nil
     }
 
     static func units(forMessageGets count: Int) -> Int {
         count * messageGetUnits
     }
 
+    /// Longest penalty the bucket keeps: the longest wait honored from a
+    /// Gmail body plus the retry jitter. A clock jump or a bad stamp can then
+    /// never park the account for longer.
+    static let maxPenalty: TimeInterval = GmailRateLimit.maxWait + 1
+
+    /// Seconds left in the current penalty, or zero when none is active.
+    /// Clears an expired penalty and clamps one that lies further ahead than
+    /// `maxPenalty` (the clock jumped back, or a bad stamp got through).
+    mutating func penaltyRemaining(now: Date) -> TimeInterval {
+        guard let until = blockedUntil else { return 0 }
+        if until <= now {
+            blockedUntil = nil
+            return 0
+        }
+        let limit = now.addingTimeInterval(Self.maxPenalty)
+        if until > limit {
+            blockedUntil = limit
+            if let last = lastRefill, last > limit { lastRefill = limit }
+        }
+        return blockedUntil!.timeIntervalSince(now)
+    }
+
     /// Reserves `units` and returns how long the caller must wait before
     /// sending. Zero when the bucket has room now.
+    ///
+    /// Under a penalty the spend is reserved at the moment the penalty ends,
+    /// so callers parked behind it are released one refill apart instead of
+    /// all together. A single delay never exceeds `GmailRateLimit.maxWait`.
     mutating func delayBeforeSpending(units: Int, now: Date) -> TimeInterval {
+        let penalty = penaltyRemaining(now: now)
+        let start = now.addingTimeInterval(penalty)
         if let last = lastRefill {
-            let elapsed = max(0, now.timeIntervalSince(last))
+            let elapsed = max(0, start.timeIntervalSince(last))
             tokens = min(Double(capacity), tokens + elapsed * Double(refillPerSecond))
+            // A clock that jumped back must not stretch the next refill.
+            lastRefill = min(max(last, start), now.addingTimeInterval(Self.maxPenalty))
+        } else {
+            lastRefill = start
         }
-        lastRefill = now
         tokens -= Double(units)
-        guard tokens < 0 else { return 0 }
         // Deficit refills at `refillPerSecond`; the caller sleeps that long.
-        return -tokens / Double(refillPerSecond)
+        let deficit = tokens < 0 ? -tokens / Double(refillPerSecond) : 0
+        return min(penalty + deficit, GmailRateLimit.maxWait)
+    }
+
+    /// Blocks every caller until Gmail's penalty window or the local retry
+    /// backoff expires. The client owns this bucket, so unrelated requests for
+    /// the same account observe the same penalty. Gmail refused the last
+    /// spend, so the bucket restarts empty when the penalty ends.
+    mutating func block(until: Date) {
+        if self.blockedUntil == nil || until > self.blockedUntil! {
+            self.blockedUntil = until
+        }
+        tokens = min(tokens, 0)
+        if lastRefill == nil || until > lastRefill! {
+            lastRefill = until
+        }
     }
 }
 
@@ -86,14 +136,23 @@ enum GmailRateLimit {
 /// none. Sub-second retries only burn the attempts and the whole pass.
 enum GmailRetryBackoff {
     static func delay(attempt: Int, kind: MessageFetchFailureKind,
-                      retryAfter: TimeInterval? = nil) -> TimeInterval {
+                      retryAfter: TimeInterval? = nil,
+                      jitter: TimeInterval = 0) -> TimeInterval {
+        let base: TimeInterval
         switch kind {
         case .rateLimited:
             let scheduled = 2.0 * Double(1 << attempt)   // 2s, 4s, 8s
-            return max(scheduled, retryAfter ?? 0)
+            base = max(scheduled, retryAfter ?? 0)
         default:
-            return 0.2 * Double(1 << attempt)   // 0.2s, 0.4s
+            base = 0.2 * Double(1 << attempt)   // 0.2s, 0.4s
         }
+        return base + max(0, jitter)
+    }
+
+    /// Small decorrelation jitter prevents several callers released by the
+    /// same quota penalty from forming another synchronized burst.
+    static func jitter() -> TimeInterval {
+        Double.random(in: 0...0.25)
     }
 }
 
@@ -112,10 +171,14 @@ enum HistorySlicer {
         let addedIds: [String]
         /// Messages whose labels the record changes (fetch when not cached).
         let labelChangedIds: [String]
+        /// Messages the record deletes. They cost no API call, but each one is
+        /// a bound SQL variable and a row write, so they count toward the
+        /// budget: one slice must not carry an unbounded delete.
+        var deletedIds: [String] = []
         /// Position in the caller's array, so the engine can map back.
         var index: Int = 0
 
-        var messageCount: Int { addedIds.count + labelChangedIds.count }
+        var messageCount: Int { addedIds.count + labelChangedIds.count + deletedIds.count }
     }
 
     struct Slice: Equatable {

@@ -213,6 +213,8 @@ extension MailStore {
             for await (id, error, change) in group {
                 applyThreadContentChange(change)
                 if change != .none { anyThreadsChanged = true }
+                // Removed while this pass ran: its outcome is moot.
+                guard isKnownAccount(id) else { continue }
                 if let error {
                     if AccountLifecycle.isReauthRequired(error) {
                         requireReauthorization(for: id)
@@ -286,6 +288,9 @@ extension MailStore {
             reloadThreads()
         } catch {
             syncStatus = ""
+            // Removed while this pass ran: ignore its failure (the refresh
+            // token is gone and the pass was cancelled on purpose).
+            guard isKnownAccount(accountId) else { return }
             if AccountLifecycle.isReauthRequired(error) {
                 requireReauthorization(for: accountId)
             } else if case GmailError.partialFetch = error {

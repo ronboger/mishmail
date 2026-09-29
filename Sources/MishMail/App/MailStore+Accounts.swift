@@ -57,22 +57,36 @@ extension MailStore {
             _ = exitDemoMode()
             return
         }
-        Keychain.delete("refreshToken.\(id)")
-        try? db.write { db in _ = try Account.deleteOne(db, key: id) }
-        // The account's mail cascades away with it; any payload cached for one
-        // of its conversations must not outlive the rows behind it.
-        applyThreadContentChange(.everything)
-        engines[id] = nil
-        clients[id] = nil
-        accountsNeedingReauth.remove(id)
-        reloadAccounts()
-        sendIdentities.removeAll { $0.accountId == id }
-        reloadThreads()
-        // Own-address set changed — drop the weight map and re-mine.
-        rebuildContacts(forceFull: true)
+        let pool = db
+        // Stop the account's sync first: a pass still running would write
+        // rows for an account that is being deleted. Drop the account from
+        // `accounts` now so late sync errors and reauth requests for it are
+        // ignored (see `isKnownAccount`).
+        let engine = engines[id]
+        accounts.removeAll { $0.id == id }
+        Task { @MainActor [weak self] in
+            await engine?.cancelSync()
+            Keychain.delete("refreshToken.\(id)")
+            _ = try? await pool.write { db in _ = try Account.deleteOne(db, key: id) }
+            guard let self, !self.isShuttingDown else { return }
+            // The account's mail cascades away with it; any payload cached for
+            // one of its conversations must not outlive the rows behind it.
+            self.applyThreadContentChange(.everything)
+            self.engines[id] = nil
+            self.clients[id] = nil
+            self.accountsNeedingReauth.remove(id)
+            self.reloadAccounts()
+            self.sendIdentities.removeAll { $0.accountId == id }
+            self.reloadThreads()
+            // Own-address set changed — drop the weight map and re-mine.
+            self.rebuildContacts(forceFull: true)
+        }
     }
 
     func requireReauthorization(for accountID: String) {
+        // A sync that ends after its account was removed must not bring the
+        // account back as a reauthorization request.
+        guard isKnownAccount(accountID) else { return }
         accountsNeedingReauth.insert(accountID)
         lastErrorSyncAccountId = nil
         presentedError = ErrorRecovery.reauthorizationRequired(for: accountID)
@@ -81,8 +95,15 @@ extension MailStore {
     /// Record a sync failure banner and remember which account set it so a
     /// later success for that account can clear it without wiping send errors.
     func setSyncFailureError(_ message: String, accountId: String) {
+        guard isKnownAccount(accountId) else { return }
         lastError = message
         lastErrorSyncAccountId = accountId
+    }
+
+    /// True while `accountId` is still in `accounts`. Late results for a
+    /// removed account are ignored.
+    func isKnownAccount(_ accountId: String) -> Bool {
+        accounts.contains { $0.id == accountId }
     }
 
     func clearSyncFailureErrorIfNeeded(for accountId: String) {
