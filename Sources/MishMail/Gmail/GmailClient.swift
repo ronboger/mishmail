@@ -480,9 +480,6 @@ actor GmailClient {
         if path == "/history" { return 2 }
         if path == "/messages" { return 5 }
         if path == "/messages/send" { return 100 }
-        // One call relabels up to 1000 messages. It must match before the
-        // generic `/messages/` prefix below, which would bill it at 5.
-        if path == "/messages/batchModify" { return 50 }
         if path.contains("/attachments/") { return 5 }
         if path.hasPrefix("/messages/") && path.hasSuffix("/modify") { return 10 }
         if path.hasPrefix("/messages/") { return 5 }
@@ -835,20 +832,6 @@ actor GmailClient {
         if !add.isEmpty { body["addLabelIds"] = add }
         if !remove.isEmpty { body["removeLabelIds"] = remove }
         let _: ThreadResp = try await request("POST", "/threads/\(id)/modify", jsonBody: body)
-    }
-
-    /// Gmail's cap on ids in one `messages.batchModify` call.
-    nonisolated static let batchModifyMaxIds = 1000
-
-    /// Relabel many messages in one call (50 quota units, versus 10 per
-    /// `threads.modify`). Gmail answers 204 with an empty body, so there is
-    /// nothing to decode. Callers chunk to `batchModifyMaxIds`.
-    func batchModifyMessages(ids: [String], add: [String] = [], remove: [String] = []) async throws {
-        guard !ids.isEmpty else { return }
-        var body: [String: Any] = ["ids": ids]
-        if !add.isEmpty { body["addLabelIds"] = add }
-        if !remove.isEmpty { body["removeLabelIds"] = remove }
-        _ = try await requestData("POST", "/messages/batchModify", jsonBody: body)
     }
 
     func trashThread(id: String) async throws {

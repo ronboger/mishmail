@@ -1711,6 +1711,10 @@ struct ComposeRequest: Identifiable {
     /// tail preserves mutation order and is awaited before database shutdown.
     @ObservationIgnored
     var threadMutationPersistenceTask: Task<Result<Void, Error>, Never>?
+    /// Serial tail for bulk Gmail pushes (`mutateThreads`), so one bulk
+    /// action's bounded calls finish before the next bulk action's start.
+    @ObservationIgnored
+    var bulkRemoteTail: Task<Void, Never>?
     /// Rapid triage reconciles once after the user pauses instead of launching
     /// a full list/count query for every key press.
     @ObservationIgnored

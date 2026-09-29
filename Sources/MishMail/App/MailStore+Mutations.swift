@@ -35,7 +35,12 @@ extension MailStore {
         let client = client(for: thread.accountId)
         let gmailThreadId = thread.gmailThreadId
         let isDemo = demoMode
-        Task {
+        // Bulk remote runs are chained: the calls inside one run are
+        // bounded, so without the chain a quick bulk undo could reach Gmail
+        // before the tail of the bulk action it undoes.
+        let predecessor = bulkRemoteTail
+        bulkRemoteTail = Task {
+            _ = await predecessor?.value
             switch await persistence.value {
             case .failure(let error):
                 await MainActor.run {
@@ -267,10 +272,10 @@ extension MailStore {
     ///
     /// Two or more rows take the bulk path: one optimistic pass over the
     /// in-memory list, one write transaction for every thread row (instead of
-    /// one chained transaction each), and one planned remote step that sends
-    /// plain label edits as `messages.batchModify` calls (see
-    /// `BulkThreadModify`). A single row keeps the per-thread path: its
-    /// `threads.modify` costs 10 quota units, a batch call 50.
+    /// one chained transaction each), then the usual per-thread Gmail calls
+    /// (`threads.modify` / `threads.trash`) run a few at a time per account.
+    /// Per-thread calls stay on purpose: `threads.modify` also covers messages
+    /// not synced yet, which an id-based `messages.batchModify` would miss.
     func mutateThreads(_ targets: [MailThread],
                        autoAdvanceAction: String? = nil,
                        remote: RemoteThreadChange,
@@ -361,95 +366,29 @@ extension MailStore {
         return task
     }
 
-    /// Push one bulk edit to Gmail. Plain label edits on locally complete
-    /// threads go out as `messages.batchModify` calls; everything else —
-    /// trash (its own `threads.trash` endpoint, not a label edit, so nothing
-    /// guarantees adding TRASH by id lands the same result), offline,
-    /// already-queued threads, and threads whose local rows may be partial —
-    /// takes `applyRemoteThreadChange` per thread, exactly as before.
+    /// Gmail calls in flight at once per account for one bulk edit. The
+    /// client's quota bucket already paces spend; the cap keeps a 500-row
+    /// select-all from opening 500 requests while still overlapping round
+    /// trips (the old path launched one unbounded task per thread).
+    nonisolated static let bulkRemoteMaxInFlight = 4
+
+    /// Push one bulk edit to Gmail through the per-thread path, bounded per
+    /// account. Each thread keeps its own offline queueing, queued-edit
+    /// folding, rollback, banner, and resync in `applyRemoteThreadChange`.
     private func applyRemoteBulkThreadChange(_ change: RemoteThreadChange,
                                              threads: [MailThread]) async {
-        guard case .modify(let add, let remove) = change, !isOffline else {
-            fanOutRemoteThreadChange(change, threads: threads)
-            return
-        }
-        let pool = db
-        let ids = threads.map(\.id)
-        let snapshot = try? await pool.read { db in
-            (queued: try BulkThreadModify.queuedThreadIds(db),
-             facts: try BulkThreadModify.messageFacts(db, threadIds: ids))
-        }
-        guard let snapshot else {
-            fanOutRemoteThreadChange(change, threads: threads)
-            return
-        }
-        var byId: [String: MailThread] = [:]
-        var perThread: [MailThread] = []
-        var targets: [BulkThreadModify.Target] = []
-        var coverage: [String: BulkThreadModify.Coverage] = [:]
-        for thread in threads {
-            byId[thread.id] = thread
-            // A queued edit must stay ahead of this one: fold, don't send.
-            if snapshot.queued.contains(thread.id) {
-                perThread.append(thread)
-                continue
-            }
-            if coverage[thread.accountId] == nil {
-                coverage[thread.accountId] = BulkThreadModify.coverage(for: thread.accountId)
-            }
-            targets.append(.init(threadId: thread.id, accountId: thread.accountId,
-                                 add: add, remove: remove,
-                                 messages: snapshot.facts[thread.id] ?? []))
-        }
-        let plan = BulkThreadModify.plan(targets, coverage: coverage)
-        perThread += plan.fallbackThreadIds.compactMap { byId[$0] }
-        fanOutRemoteThreadChange(change, threads: perThread)
-
-        for batch in plan.batches {
-            guard !isShuttingDown else { return }
-            let members = batch.threadIds.compactMap { byId[$0] }
-            // Went offline on an earlier batch: park the rest the same way
-            // the per-thread path parks each thread.
-            if isOffline {
-                for thread in members {
-                    await queueThreadChange(change, accountId: thread.accountId,
-                                            gmailThreadId: thread.gmailThreadId)
-                }
-                continue
-            }
-            do {
-                try await client(for: batch.accountId).batchModifyMessages(
-                    ids: batch.messageIds, add: batch.add, remove: batch.remove)
-                isOffline = false
-            } catch {
-                if OfflinePolicy.shouldDefer(error) {
-                    isOffline = true
-                    for thread in members {
-                        await queueThreadChange(change, accountId: thread.accountId,
-                                                gmailThreadId: thread.gmailThreadId)
-                    }
-                } else {
-                    // Rejected as a batch (a message deleted meanwhile, a
-                    // quirk of the batch endpoint, auth). Retry each thread
-                    // on the old path so failures get the same per-thread
-                    // rollback, banner, and resync they always had.
-                    fanOutRemoteThreadChange(change, threads: members)
-                }
-            }
+        await BoundedLanes.run(threads, maxInFlight: Self.bulkRemoteMaxInFlight,
+                               lane: { $0.accountId }) { thread in
+            await self.applyRemoteBulkThreadMember(change, thread: thread)
         }
     }
 
-    /// The pre-batch remote step: one concurrent task per thread.
-    private func fanOutRemoteThreadChange(_ change: RemoteThreadChange,
-                                          threads: [MailThread]) {
-        for thread in threads {
-            let client = client(for: thread.accountId)
-            Task {
-                await self.applyRemoteThreadChange(
-                    change, client: client, accountId: thread.accountId,
-                    gmailThreadId: thread.gmailThreadId)
-            }
-        }
+    private func applyRemoteBulkThreadMember(_ change: RemoteThreadChange,
+                                             thread: MailThread) async {
+        guard !isShuttingDown else { return }
+        await applyRemoteThreadChange(
+            change, client: client(for: thread.accountId),
+            accountId: thread.accountId, gmailThreadId: thread.gmailThreadId)
     }
 
     /// Re-pin threads under an active unread/read filter so a previously

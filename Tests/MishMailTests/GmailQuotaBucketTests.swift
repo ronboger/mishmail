@@ -65,7 +65,6 @@ final class GmailQuotaBucketTests: XCTestCase {
         XCTAssertEqual(GmailClient.quotaCost(method: "GET", path: "/messages/m1"), 5)
         XCTAssertEqual(GmailClient.quotaCost(method: "POST", path: "/threads/t1/modify"), 10)
         XCTAssertEqual(GmailClient.quotaCost(method: "POST", path: "/messages/send"), 100)
-        XCTAssertEqual(GmailClient.quotaCost(method: "POST", path: "/messages/batchModify"), 50)
         XCTAssertEqual(GmailClient.quotaCost(method: "POST", path: "/drafts"), 10)
         XCTAssertEqual(GmailClient.quotaCost(method: "GET", path: "/messages/m1/attachments/a1"), 5)
     }
