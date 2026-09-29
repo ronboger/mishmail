@@ -658,13 +658,13 @@ struct AskMishPanelView: View {
             .foregroundStyle(.secondary)
             // Always the controller's summary: for send_draft it names the
             // resolved recipients and the hidden Bcc count.
-            Text(pending.summary)
+            Text(AskMishTools.revealedInvisibleCharacters(pending.summary))
                 .font(.system(size: 13))
                 .fixedSize(horizontal: false, vertical: true)
             if let body, !body.isEmpty {
                 let lineCount = AskMishTools.confirmPreviewLineCount(body)
                 let preview = AskMishTools.confirmPreviewText(body)
-                Text("Draft body · \(body.count) characters · \(lineCount) lines")
+                Text("Draft body · \(body.unicodeScalars.count) characters · \(lineCount) lines")
                     .font(.caption2)
                     .foregroundStyle(.secondary)
                 if expanded {

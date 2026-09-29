@@ -2110,7 +2110,7 @@ struct ComposeView: View {
                         // Empty successful streams are failures too: do not
                         // leave the user's selection deleted without undo.
                         setBody(originalBody, caretUTF16: originalCaret)
-                        self.error = "The model returned no replacement."
+                        if self.error == nil { self.error = "The model returned no replacement." }
                     }
                 } else {
                     await MainActor.run {

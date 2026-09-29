@@ -79,6 +79,9 @@ struct ThreadDetailView: View {
     @State private var threadAttachments: [(message: Message, attachment: AttachmentRow)] = []
     @State private var scrollAnchor = ThreadScrollAnchor()
     @State private var aiSummary: String?
+    /// Identifies the running summary so a late stream cannot write into
+    /// the next thread after the user moves on.
+    @State private var summaryRequestId: UUID?
     @State private var summarizing = false
     @State private var summaryError: String?
     /// Persisted MCP / agent summary (`threadSummary` row). Shown only when no
@@ -1139,7 +1142,7 @@ struct ThreadDetailView: View {
         if inlineComposeActive {
             beginInlineComposeScroll(proxy: proxy)
         }
-        aiSummary = nil; summaryError = nil; summarizing = false
+        aiSummary = nil; summaryError = nil; summarizing = false; summaryRequestId = nil
         // Open the policy's default card set (newest only, or every sent card
         // in side-by-side) and hydrate bodies + CID/attachment recovery.
         seedExpandedMessagesIfNeeded()
@@ -1376,25 +1379,29 @@ struct ThreadDetailView: View {
         let body = LLMPrompts.threadContext(
             subject: thread.subject, messages: fullMessages, characterBudget: budget)
         let prompt = LLMPrompts.summarize(subject: thread.subject, body: body)
-        Task {
+        let requestId = UUID()
+        summaryRequestId = requestId
+        Task { @MainActor in
+            var accumulated = ""
             do {
-                var accumulated = ""
                 for try await piece in LLMTaskRunner.stream(
                     task: .summaries, prompt: prompt,
-                    onNotice: { notice in summaryError = notice }) {
+                    onNotice: { notice in
+                        if summaryRequestId == requestId { summaryError = notice }
+                    }) {
+                    guard summaryRequestId == requestId else { return }
                     accumulated += piece
-                    let snapshot = accumulated
-                    await MainActor.run { aiSummary = snapshot }
+                    aiSummary = accumulated
                 }
-                if accumulated.isEmpty {
-                    await MainActor.run { summaryError = "No summary was produced." }
+                guard summaryRequestId == requestId else { return }
+                if accumulated.isEmpty, summaryError == nil {
+                    summaryError = "No summary was produced."
                 }
             } catch {
-                await MainActor.run {
-                    summaryError = LLMTaskRunner.errorMessage(error, task: .summaries)
-                }
+                guard summaryRequestId == requestId else { return }
+                summaryError = LLMTaskRunner.errorMessage(error, task: .summaries)
             }
-            await MainActor.run { summarizing = false }
+            summarizing = false
         }
     }
 

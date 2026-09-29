@@ -372,3 +372,45 @@ private struct StubToolProvider: MCPToolProvider {
         XCTAssertEqual(AskMishTools.confirmPreviewLineCount("one"), 1)
     }
 }
+
+extension AskMishToolsTests {
+    // MARK: - Confirm preview: more hiding tricks
+
+    func testTagCharactersAreRevealed() {
+        let hidden = "secret".unicodeScalars.map { Unicode.Scalar(0xE0000 + $0.value)! }
+        var body = "OK"
+        body.unicodeScalars.append(contentsOf: hidden)
+        let preview = AskMishTools.confirmPreviewText(body)
+        XCTAssertTrue(preview.contains("⟨U+E0073⟩"), preview)
+    }
+
+    func testVariationSelectorsAndSoftHyphenAreRevealed() {
+        let preview = AskMishTools.confirmPreviewText("a\u{FE0F}b\u{00AD}c\u{061C}d")
+        XCTAssertTrue(preview.contains("⟨U+FE0F⟩"))
+        XCTAssertTrue(preview.contains("⟨U+00AD⟩"))
+        XCTAssertTrue(preview.contains("⟨U+061C⟩"))
+    }
+
+    func testNonBreakingSpaceRunCollapses() {
+        let gap = String(repeating: "\u{00A0}", count: 5000)
+        let preview = AskMishTools.confirmPreviewText("Thanks!\(gap)PS: hidden")
+        XCTAssertTrue(preview.contains("⟨5000 spaces⟩"), preview)
+        XCTAssertTrue(preview.contains("PS: hidden"))
+        XCTAssertLessThan(preview.count, 100)
+    }
+
+    func testShortSpaceRunsStay() {
+        XCTAssertEqual(AskMishTools.confirmPreviewText("a  b"), "a  b")
+    }
+
+    func testCombiningMarkFloodIsCapped() {
+        let flood = "e" + String(repeating: "\u{0301}", count: 500)
+        let preview = AskMishTools.confirmPreviewText(flood)
+        XCTAssertTrue(preview.contains("⟨+497 marks⟩"), preview)
+        XCTAssertLessThan(preview.unicodeScalars.count, 30)
+    }
+
+    func testOrdinaryAccentsSurvive() {
+        XCTAssertEqual(AskMishTools.confirmPreviewText("café naïve"), "café naïve")
+    }
+}

@@ -420,14 +420,20 @@ enum AskMishTools {
         }
     }
 
-    /// Zero-width and bidi control characters that can hide or reorder
-    /// text. The preview shows each one as a visible `⟨U+XXXX⟩` marker.
+    /// Scalars that render as nothing (or reorder text) and so can hide a
+    /// payload from the confirm card: every format (Cf) scalar — zero-width,
+    /// bidi controls, Unicode tags U+E0000–E007F — plus variation selectors,
+    /// fillers, the soft hyphen, and the combining grapheme joiner. The
+    /// preview shows each one as a visible `⟨U+XXXX⟩` marker.
     static func isRevealedFormatCharacter(_ value: UInt32) -> Bool {
-        (0x200B...0x200F).contains(value)
-            || (0x202A...0x202E).contains(value)
-            || (0x2060...0x2064).contains(value)
-            || (0x2066...0x2069).contains(value)
-            || value == 0xFEFF
+        if (0xE0000...0xE007F).contains(value)          // tags
+            || (0xFE00...0xFE0F).contains(value)         // variation selectors
+            || (0xE0100...0xE01EF).contains(value)
+            || [0x00AD, 0x034F, 0x115F, 0x1160, 0x180E, 0x3164, 0xFFA0].contains(value) {
+            return true
+        }
+        guard let scalar = Unicode.Scalar(value) else { return false }
+        return scalar.properties.generalCategory == .format
     }
 
     static func revealedInvisibleCharacters(_ text: String) -> String {
@@ -442,10 +448,54 @@ enum AskMishTools {
         return out
     }
 
+    /// A long run of spaces inside one line (non-breaking ones cannot wrap)
+    /// renders as a tall blank gap. Runs of 8+ become a counted marker.
+    static func collapsedSpaceRuns(_ text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"[\t\p{Zs}]{8,}"#) else { return text }
+        let ns = text as NSString
+        var out = ""
+        var last = 0
+        for match in regex.matches(in: text, range: NSRange(location: 0, length: ns.length)) {
+            out += ns.substring(with: NSRange(location: last, length: match.range.location - last))
+            let run = ns.substring(with: match.range)
+            out += "⟨\(run.unicodeScalars.count) spaces⟩"
+            last = match.range.location + match.range.length
+        }
+        out += ns.substring(from: last)
+        return out
+    }
+
+    /// Caps combining marks per character: a flood of marks stacks glyphs
+    /// over neighbouring lines while counting as one character.
+    static func cappedCombiningMarks(_ text: String, keep: Int = 3) -> String {
+        var out = ""
+        for character in text {
+            let scalars = Array(character.unicodeScalars)
+            let marks = scalars.dropFirst().filter {
+                switch $0.properties.generalCategory {
+                case .nonspacingMark, .enclosingMark, .spacingMark: return true
+                default: return false
+                }
+            }
+            guard marks.count > keep else { out.append(character); continue }
+            var kept = 0
+            for (index, scalar) in scalars.enumerated() {
+                if index > 0, marks.contains(scalar) {
+                    guard kept < keep else { continue }
+                    kept += 1
+                }
+                out.unicodeScalars.append(scalar)
+            }
+            out += "⟨+\(marks.count - keep) marks⟩"
+        }
+        return out
+    }
+
     /// Confirm-card text: line breaks normalized, blank runs collapsed to
     /// a counted marker, then invisible format characters made visible.
     static func confirmPreviewText(_ body: String) -> String {
-        revealedInvisibleCharacters(collapsedBlankLines(body))
+        revealedInvisibleCharacters(
+            cappedCombiningMarks(collapsedSpaceRuns(collapsedBlankLines(body))))
     }
 
     /// Line count for the card header. Empty lines count: a run of blank
