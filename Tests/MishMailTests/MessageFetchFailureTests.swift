@@ -7,10 +7,7 @@ final class MessageFetchFailureTests: XCTestCase {
             .notFound)
     }
 
-    func testClassify429And5xxRetryable() {
-        XCTAssertEqual(
-            MessageFetchFailureKind.classify(GmailError.http(429, "slow")),
-            .retryable)
+    func testClassify5xxRetryable() {
         XCTAssertEqual(
             MessageFetchFailureKind.classify(GmailError.http(503, "down")),
             .retryable)
@@ -23,6 +20,31 @@ final class MessageFetchFailureTests: XCTestCase {
         XCTAssertEqual(
             MessageFetchFailureKind.classify(GmailError.http(403, "denied")),
             .fatal)
+    }
+
+    /// Gmail reports "too many quota units this second" as 403, not 429.
+    /// Treating it as fatal aborted the whole history batch every pass and
+    /// the sync never advanced.
+    func testClassify403RateLimitIsRateLimited() {
+        let userLimit = """
+        {"error":{"code":403,"message":"User-rate limit exceeded.  Retry after 2026-09-14T08:13:18.000Z",\
+        "errors":[{"domain":"usageLimits","reason":"userRateLimitExceeded"}]}}
+        """
+        XCTAssertEqual(
+            MessageFetchFailureKind.classify(GmailError.http(403, userLimit)),
+            .rateLimited)
+        let projectLimit = """
+        {"error":{"code":403,"errors":[{"domain":"usageLimits","reason":"rateLimitExceeded"}]}}
+        """
+        XCTAssertEqual(
+            MessageFetchFailureKind.classify(GmailError.http(403, projectLimit)),
+            .rateLimited)
+    }
+
+    func testClassify429IsRateLimited() {
+        XCTAssertEqual(
+            MessageFetchFailureKind.classify(GmailError.http(429, "slow")),
+            .rateLimited)
     }
 
     func testClassifyURLErrorRetryable() {

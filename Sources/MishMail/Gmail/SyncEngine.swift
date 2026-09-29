@@ -517,34 +517,85 @@ actor SyncEngine {
 
     // MARK: - Incremental
 
+    /// Changed messages per committed slice. Small enough that one slice
+    /// fits well inside Gmail's per-second budget even at 5 units a message.
+    static let historySliceMessages = 100
+
     private func incrementalSync(since historyId: String, progress: (@Sendable (String) -> Void)?) async throws -> String {
         var pageToken: String?
         var latest = historyId
+        var items: [GHistoryList.Item] = []
+        repeat {
+            let page = try await client.history(since: historyId, pageToken: pageToken)
+            items += page.history ?? []
+            if let h = page.historyId { latest = h }
+            pageToken = page.nextPageToken
+        } while pageToken != nil
+
+        // Commit after every slice: a rate limit later in the run then costs
+        // one slice, not the whole range, and the next pass resumes from
+        // the last committed record instead of replaying everything.
+        let records = items.enumerated().map { index, item in
+            HistorySlicer.Record(
+                id: item.id,
+                addedIds: (item.messagesAdded ?? []).map(\.message.id),
+                labelChangedIds: ((item.labelsAdded ?? []) + (item.labelsRemoved ?? [])).map(\.message.id),
+                index: index)
+        }
+        let slices = HistorySlicer.slices(records, maxMessages: Self.historySliceMessages)
+        for (n, slice) in slices.enumerated() {
+            let sliceItems = slice.records.map { items[$0.index] }
+            let failed = try await applyHistory(records: sliceItems, progress: progress)
+            if failed > 0 {
+                // What did land is flushed; the history id stays at the
+                // previous slice so this one replays next pass.
+                PerfMetrics.measure(.syncHistoryPartial, meta: "failed=\(failed) slice=\(n + 1)/\(slices.count)") { () }
+                progress?("Sync incomplete (\(failed) messages pending retry)…")
+                throw GmailError.partialFetch(failedCount: failed)
+            }
+            if n + 1 < slices.count {
+                try await commitHistoryId(slice.lastRecordId)
+            }
+        }
+        return latest
+    }
+
+    /// Durable progress marker for a partially completed catch-up.
+    private func commitHistoryId(_ id: String) async throws {
+        try await db.write { [accountId] db in
+            if var account = try Account.fetchOne(db, key: accountId) {
+                account.historyId = id
+                try account.update(db)
+            }
+        }
+    }
+
+    /// Applies one slice of history records: full fetches for added or
+    /// uncached messages, in-place label patches for cached ones, deletes.
+    /// Returns how many fetches were still failing after retries (those ids
+    /// are not in the store; the caller must not advance past them).
+    private func applyHistory(records: [GHistoryList.Item],
+                              progress: (@Sendable (String) -> Void)?) async throws -> Int {
         // messagesAdded (and label changes for unknown local messages) need a
         // full getMessage; label-only changes on cached messages apply locally.
         var fullFetch = Set<String>()
         var deleted = Set<String>()
         // Ordered per-message label ops so add/remove sequences apply correctly.
         var labelOps: [String: [(add: [String], remove: [String])]] = [:]
-        repeat {
-            let page = try await client.history(since: historyId, pageToken: pageToken)
-            for item in page.history ?? [] {
-                for m in item.messagesAdded ?? [] { fullFetch.insert(m.message.id) }
-                for m in item.labelsAdded ?? [] {
-                    let id = m.message.id
-                    if fullFetch.contains(id) { continue }
-                    labelOps[id, default: []].append((add: m.labelIds ?? [], remove: []))
-                }
-                for m in item.labelsRemoved ?? [] {
-                    let id = m.message.id
-                    if fullFetch.contains(id) { continue }
-                    labelOps[id, default: []].append((add: [], remove: m.labelIds ?? []))
-                }
-                for m in item.messagesDeleted ?? [] { deleted.insert(m.message.id) }
+        for item in records {
+            for m in item.messagesAdded ?? [] { fullFetch.insert(m.message.id) }
+            for m in item.labelsAdded ?? [] {
+                let id = m.message.id
+                if fullFetch.contains(id) { continue }
+                labelOps[id, default: []].append((add: m.labelIds ?? [], remove: []))
             }
-            if let h = page.historyId { latest = h }
-            pageToken = page.nextPageToken
-        } while pageToken != nil
+            for m in item.labelsRemoved ?? [] {
+                let id = m.message.id
+                if fullFetch.contains(id) { continue }
+                labelOps[id, default: []].append((add: [], remove: m.labelIds ?? []))
+            }
+            for m in item.messagesDeleted ?? [] { deleted.insert(m.message.id) }
+        }
 
         fullFetch.subtract(deleted)
         for id in deleted { labelOps.removeValue(forKey: id) }
@@ -676,12 +727,7 @@ actor SyncEngine {
             if !deleted.isEmpty {
                 try await removeOrphanedThreads()
             }
-            if retryExhausted > 0 {
-                PerfMetrics.measure(.syncHistoryPartial, meta: "failed=\(retryExhausted)") { () }
-                progress?("Sync incomplete (\(retryExhausted) messages pending retry)…")
-                throw GmailError.partialFetch(failedCount: retryExhausted)
-            }
-            return latest
+            return retryExhausted
         }
         try await flushUpserts(&writeBuffer, into: &touchedKeys)
 
@@ -695,7 +741,7 @@ actor SyncEngine {
         if !deleted.isEmpty {
             try await removeOrphanedThreads()
         }
-        return latest
+        return 0
     }
 
     /// Merges label add/remove deltas into a space-separated labelIds string.

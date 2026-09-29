@@ -90,6 +90,9 @@ struct GHistoryList: Decodable {
             let message: GMessageList.Ref
             let labelIds: [String]?
         }
+        /// The record's own history id — a valid `startHistoryId`, which is
+        /// what lets the engine commit progress mid-catch-up.
+        let id: String
         let messagesAdded: [MsgWrap]?
         let messagesDeleted: [MsgWrap]?
         let labelsAdded: [LabelChange]?
@@ -131,14 +134,26 @@ enum GmailError: LocalizedError {
 enum MessageFetchFailureKind: Equatable {
     case notFound
     case retryable
+    /// Per-user quota exceeded. Gmail reports this as 403 with a
+    /// `usageLimits` reason (or 429). Retry, but only after whole seconds.
+    case rateLimited
     case fatal
+
+    var isRetryable: Bool {
+        switch self {
+        case .retryable, .rateLimited: return true
+        case .notFound, .fatal: return false
+        }
+    }
 
     static func classify(_ error: Error) -> MessageFetchFailureKind {
         if let g = error as? GmailError {
             switch g {
-            case .http(let code, _):
+            case .http(let code, let body):
                 if code == 404 { return .notFound }
-                if code == 429 || (500...599).contains(code) { return .retryable }
+                if code == 429 { return .rateLimited }
+                if code == 403, isRateLimitBody(body) { return .rateLimited }
+                if (500...599).contains(code) { return .retryable }
                 return .fatal
             case .historyExpired, .noRefreshToken, .keychainUnavailable, .partialFetch:
                 return .fatal
@@ -146,6 +161,12 @@ enum MessageFetchFailureKind: Equatable {
         }
         // URLSession / decoding / cancellation-as-error → retry next sync.
         return .retryable
+    }
+
+    /// Gmail's quota errors carry `"reason":"rateLimitExceeded"` or
+    /// `"reason":"userRateLimitExceeded"` under `usageLimits`.
+    static func isRateLimitBody(_ body: String) -> Bool {
+        body.contains("rateLimitExceeded") || body.contains("RateLimitExceeded")
     }
 }
 
@@ -303,7 +324,9 @@ actor GmailClient {
     }
 
     /// Max messages per `batch/gmail/v1` request (Gmail allows up to 100).
-    nonisolated static let batchGetChunkSize = 50
+    /// A batch is charged all at once — 5 units per message — against a
+    /// 250 units/s moving average, so 25 keeps one batch at half the ceiling.
+    nonisolated static let batchGetChunkSize = 25
 
     /// Max attempts for a single get on retryable errors (429/5xx/network).
     nonisolated static let getRetryAttempts = 3
@@ -326,8 +349,16 @@ actor GmailClient {
             let chunk = Array(ids[i..<end])
             let part: [GMessage]
             do {
-                part = try await getMessagesBatch(ids: chunk, format: format)
+                part = try await batchWithRateLimitRetry(ids: chunk, format: format)
             } catch {
+                if MessageFetchFailureKind.classify(error) == .rateLimited {
+                    // Still limited after backing off: stop spending. Every
+                    // remaining id is reported unfetched so the engine keeps
+                    // its history id here and resumes next pass. Exploding
+                    // the chunk into singles would only draw more 403s.
+                    report.retryExhaustedIds += Array(ids[i...])
+                    return report
+                }
                 // Whole batch transport failed — fall back to concurrent for chunk.
                 let sub = try await getMessagesConcurrent(ids: chunk, format: format)
                 report.messages += sub.messages
@@ -387,8 +418,8 @@ actor GmailClient {
     }
 
     private func fetchOneClassified(id: String, format: String) async throws -> ConcurrentItem {
-        var lastRetryable: Error?
         for attempt in 0..<Self.getRetryAttempts {
+            await pace(units: GmailQuotaBucket.units(forMessageGets: 1))
             do {
                 let msg = try await getMessage(id: id, format: format)
                 if attempt > 0 {
@@ -396,23 +427,64 @@ actor GmailClient {
                 }
                 return .ok(msg)
             } catch {
-                switch MessageFetchFailureKind.classify(error) {
+                let kind = MessageFetchFailureKind.classify(error)
+                switch kind {
                 case .notFound:
                     return .notFound(id)
                 case .fatal:
                     throw error
-                case .retryable:
-                    lastRetryable = error
+                case .retryable, .rateLimited:
                     if attempt + 1 < Self.getRetryAttempts {
-                        let ns: UInt64 = 200_000_000 * UInt64(1 << attempt) // 0.2s, 0.4s, …
-                        try? await Task.sleep(nanoseconds: ns)
+                        await Self.sleep(GmailRetryBackoff.delay(
+                            attempt: attempt, kind: kind, retryAfter: Self.retryAfter(error)))
                     }
                 }
             }
         }
-        _ = lastRetryable
         PerfMetrics.measure(.syncGetRetry, meta: "exhausted id=\(id)") { () }
         return .exhausted(id)
+    }
+
+    // MARK: - Quota pacing
+
+    /// Per-account token bucket (Gmail's limit is per user). Sleeping inside
+    /// the actor is fine: `Task.sleep` suspends and other calls proceed.
+    private var quota = GmailQuotaBucket()
+
+    /// Reserve `units` and wait until the bucket allows the spend.
+    private func pace(units: Int) async {
+        let delay = quota.delayBeforeSpending(units: units, now: Date())
+        if delay > 0 { await Self.sleep(delay) }
+    }
+
+    private static func sleep(_ seconds: TimeInterval) async {
+        guard seconds > 0 else { return }
+        try? await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
+    }
+
+    /// A batch is charged 5 units per id, all at once, so pace before sending.
+    /// A rate-limited batch is retried after a whole-second backoff rather
+    /// than exploded into singles on a connection Gmail has just dropped —
+    /// those singles only fail again and pin the history id for the pass.
+    private func batchWithRateLimitRetry(ids: [String], format: String) async throws -> [GMessage] {
+        for attempt in 0..<Self.getRetryAttempts {
+            await pace(units: GmailQuotaBucket.units(forMessageGets: ids.count))
+            do {
+                return try await getMessagesBatch(ids: ids, format: format)
+            } catch {
+                let kind = MessageFetchFailureKind.classify(error)
+                guard kind == .rateLimited, attempt + 1 < Self.getRetryAttempts else { throw error }
+                PerfMetrics.measure(.syncGetRetry, meta: "batch rateLimited attempt=\(attempt + 1)") { () }
+                await Self.sleep(GmailRetryBackoff.delay(
+                    attempt: attempt, kind: kind, retryAfter: Self.retryAfter(error)))
+            }
+        }
+        throw GmailError.http(429, "batch rate limited")
+    }
+
+    private static func retryAfter(_ error: Error) -> TimeInterval? {
+        guard case GmailError.http(_, let body) = error else { return nil }
+        return GmailRateLimit.retryAfter(body: body)
     }
 
     /// One multipart batch request. Pure parse of the response body is in
