@@ -382,8 +382,11 @@ actor SyncEngine {
         var pageToken: String?
         var listed = 0
         repeat {
+            // Ids only — no per-page downloads — so the largest page Gmail
+            // allows: a fifth of the list calls for a reconcile listing.
             let page = try await client.listMessages(
-                query: query, labelIds: labelIds, pageToken: pageToken, maxResults: 100,
+                query: query, labelIds: labelIds, pageToken: pageToken,
+                maxResults: GmailClient.maxListPageSize,
                 includeSpamTrash: includeSpamTrash)
             let ids = (page.messages ?? []).map(\.id)
             result.formUnion(ids)
@@ -408,6 +411,13 @@ actor SyncEngine {
     /// past its variable limit (32766), and a large Gmail-side delete or a
     /// full reconcile can name far more ids than that.
     static let sqlBindChunkSize = 500
+
+    /// `messages.list` page size for a loop that stops once `listed`
+    /// reaches `limit`: Gmail's maximum, but never more than what is left,
+    /// so a bigger page cannot overshoot the cap. At least 1.
+    static func listPageSize(listed: Int, limit: Int) -> Int {
+        max(1, min(GmailClient.maxListPageSize, limit - listed))
+    }
 
     /// Splits `items` into runs of at most `sqlBindChunkSize`.
     static func sqlChunks<T>(_ items: [T]) -> [ArraySlice<T>] {
@@ -586,7 +596,11 @@ actor SyncEngine {
             var seenGmailThreads = Set<String>()
             var downloadedGmailIds = Set<String>()
             repeat {
-                let page = try await client.listMessages(query: query, pageToken: pageToken, maxResults: 100)
+                // Larger pages mean fewer list calls; capped at what is left
+                // of `limit` so a page never lists (and so downloads) past it.
+                let page = try await client.listMessages(
+                    query: query, pageToken: pageToken,
+                    maxResults: Self.listPageSize(listed: listed, limit: limit))
                 let refs = page.messages ?? []
                 let listedIds = refs.map(\.id)
                 listedGmailIds.formUnion(listedIds)
@@ -761,8 +775,11 @@ actor SyncEngine {
             var pageToken: String?
             var listed = 0
             repeat {
+                // Most listed ids already have their attachments, so this
+                // loop is mostly paging; capped at what is left of `limit`.
                 let page = try await client.listMessages(
-                    query: query, pageToken: pageToken, maxResults: 100)
+                    query: query, pageToken: pageToken,
+                    maxResults: Self.listPageSize(listed: listed, limit: limit))
                 let listedIds = (page.messages ?? []).map(\.id)
                 listed += listedIds.count
                 let needRepair = try await db.read { [accountId] db in
