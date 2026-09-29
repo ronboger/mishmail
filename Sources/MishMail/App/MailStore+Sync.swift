@@ -183,6 +183,11 @@ extension MailStore {
         syncStatus = ids.count == 1
             ? "Syncing \(ids[0])…"
             : "Syncing \(ids.count) accounts…"
+        // Engines report progress per page from their own actors. Throttled
+        // (drop repeats, ≤ ~4 Hz, newest value always lands) so a first sync
+        // doesn't republish the FilterBar dozens of times a second; closed
+        // before the final "" so a late hop can't overwrite it.
+        let progress = makeSyncStatusSink()
 
         // Whether any account actually rewrote thread rows this pass.
         // `deriveThreads` is the single choke point for message-row writes and
@@ -196,7 +201,7 @@ extension MailStore {
                 group.addTask {
                     do {
                         let change = try await engine.syncNow { status in
-                            Task { @MainActor [weak self] in self?.syncStatus = status }
+                            progress.submit(status)
                         }
                         return (id, nil, change)
                     } catch {
@@ -245,6 +250,7 @@ extension MailStore {
                 }
             }
         }
+        progress.close()
         syncStatus = ""
         // Always: `syncLabels` can rename/add a Gmail label without touching a
         // single thread row, and the sidebar renders from this.
@@ -276,10 +282,14 @@ extension MailStore {
         let engine = engines[accountId] ?? SyncEngine(accountId: accountId)
         engines[accountId] = engine
         syncStatus = "Syncing \(accountId)…"
+        // Throttled like syncAll's; both exits close it before writing the
+        // final "" so a queued progress hop can't land on top of it.
+        let progress = makeSyncStatusSink()
         do {
             let change = try await engine.syncNow { status in
-                Task { @MainActor [weak self] in self?.syncStatus = status }
+                progress.submit(status)
             }
+            progress.close()
             applyThreadContentChange(change)
             syncStatus = ""
             isOffline = false
@@ -290,6 +300,7 @@ extension MailStore {
             reloadAccounts()
             reloadThreads()
         } catch {
+            progress.close()
             syncStatus = ""
             // Removed while this pass ran: ignore its failure (the refresh
             // token is gone and the pass was cancelled on purpose).
@@ -427,6 +438,16 @@ extension MailStore {
         }
         if newThreads.count > 3 {
             Notifier.notify(title: "MishMail", body: "\(newThreads.count) new messages", id: "mail.batch")
+        }
+    }
+
+    /// Throttled writer for per-page sync progress. See `ThrottledStatusSink`.
+    /// Seeded with the status already on screen so an identical first report
+    /// is dropped; only writes when the value actually differs.
+    func makeSyncStatusSink() -> ThrottledStatusSink {
+        ThrottledStatusSink(shown: syncStatus) { [weak self] status in
+            guard let self, self.syncStatus != status else { return }
+            self.syncStatus = status
         }
     }
 }
