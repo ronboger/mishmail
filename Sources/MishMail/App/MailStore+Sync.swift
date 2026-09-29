@@ -91,6 +91,10 @@ extension MailStore {
                 }
             }
         }
+        // Let the kernel coalesce the poll wake with other timers; see
+        // `TimerTolerance`.
+        syncTimer?.tolerance = TimerTolerance.forInterval(
+            interval, cap: TimerTolerance.pollCap)
     }
 
     /// Re-arm only when the cadence actually changed. Focus flaps between two

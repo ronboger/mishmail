@@ -58,6 +58,10 @@ targets:
         INFOPLIST_KEY_LSApplicationCategoryType: public.app-category.productivity
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         ENABLE_HARDENED_RUNTIME: true
+        # Drop unreferenced functions and data at link time: a smaller binary
+        # maps and pages in less at launch. Xcode's modern project template
+        # enables it; xcodegen's defaults do not.
+        DEAD_CODE_STRIPPING: YES
         # GRDB ships sqlite3.h next to its umbrella without listing it there;
         # clang emits -Wincomplete-umbrella for that. Harmless third-party
         # noise. The warning fires in the Clang importer during the *Swift*
@@ -119,6 +123,7 @@ targets:
         INFOPLIST_KEY_LSUIElement: true
         INFOPLIST_KEY_NSHumanReadableCopyright: ""
         ENABLE_HARDENED_RUNTIME: true
+        DEAD_CODE_STRIPPING: YES
         SKIP_INSTALL: true
   # Standalone unit tests over the non-UI core (parsers, MIME, DB schema,
   # sync derivation). Compiles those sources by directory — no app host, so no

@@ -288,6 +288,9 @@ extension MailStore {
                                                   repeats: false) { [weak self] _ in
             Task { @MainActor in await self?.fireDueScheduledSends() }
         }
+        // Tight: the user chose this send time (see `TimerTolerance`).
+        scheduledSendTimer?.tolerance = TimerTolerance.forInterval(
+            delay, cap: TimerTolerance.scheduledSendCap)
     }
 
     /// Send everything whose time has come. A row that cannot go out for
