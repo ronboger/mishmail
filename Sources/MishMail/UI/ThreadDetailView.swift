@@ -2868,6 +2868,10 @@ struct HTMLBodyView: NSViewRepresentable {
         /// Bumped per `loadDocument` / dismantle so an off-main assembly that
         /// finishes after the card moved on never navigates a reused view.
         private var assembleGeneration = 0
+        /// Generation of an off-main assembly that has not navigated yet.
+        /// The render timeout must not reveal a pooled view while its
+        /// document is still being built: that view may hold foreign DOM.
+        private var pendingAssemblyGeneration: Int?
 
         func attach(_ webView: PassthroughWebView, in container: NSView,
                     alreadyPainted: Bool, fade: Bool) {
@@ -2909,6 +2913,11 @@ struct HTMLBodyView: NSViewRepresentable {
                   documents: MessageHTMLDocuments? = nil, authored: Bool = false,
                   allowRemoteImages: Bool, fontScale: Double) {
             swapGeneration &+= 1
+            // Invalidate any off-main assembly aimed at the outgoing view. A
+            // pre-render hit does not call loadDocument, and the pool can hand
+            // the outgoing view back to this coordinator before the stale
+            // assembly lands, which would load the old body over the new one.
+            assembleGeneration &+= 1
             guard let container else {
                 recycle(next)
                 return
@@ -2961,9 +2970,21 @@ struct HTMLBodyView: NSViewRepresentable {
             // may hold a stale DOM until the blank load commits), so also
             // reveal here: a document that never reports must not stay
             // invisible past the timeout.
+            armRenderTimeout()
+        }
+
+        private func armRenderTimeout() {
             let timeout = DispatchWorkItem { [weak self] in
-                self?.revealIncoming(animated: false)
-                self?.finishRender(reason: "timeout")
+                guard let self else { return }
+                // Assembly still running off-main for this render: wait for
+                // it instead of revealing a view that has not navigated yet.
+                if let pending = self.pendingAssemblyGeneration,
+                   pending == self.assembleGeneration {
+                    self.armRenderTimeout()
+                    return
+                }
+                self.revealIncoming(animated: false)
+                self.finishRender(reason: "timeout")
             }
             renderTimeout = timeout
             DispatchQueue.main.asyncAfter(deadline: .now() + 2, execute: timeout)
@@ -2994,6 +3015,7 @@ struct HTMLBodyView: NSViewRepresentable {
             // this card is a lookup. The view stays hidden until its first
             // height report, so the extra hop shows no blank frame.
             let generation = assembleGeneration
+            pendingAssemblyGeneration = generation
             let docs = documents
             Task { @MainActor [weak self, weak webView] in
                 let document = await Task.detached(priority: .userInitiated) {
@@ -3005,6 +3027,9 @@ struct HTMLBodyView: NSViewRepresentable {
                     return HTMLBodyDocument.assemble(
                         html: html, cspMeta: csp, styleCSS: css)
                 }.value
+                if self?.pendingAssemblyGeneration == generation {
+                    self?.pendingAssemblyGeneration = nil
+                }
                 guard let self, let webView,
                       self.assembleGeneration == generation,
                       webView === self.incoming || webView === self.current

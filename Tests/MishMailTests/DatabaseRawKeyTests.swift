@@ -167,4 +167,55 @@ final class DatabaseRawKeyTests: XCTestCase {
               passphrase * 1000, rawKey * 1000)
         XCTAssertLessThan(rawKey, passphrase)
     }
+
+    func testConversionKeepsIncrementalAutoVacuum() throws {
+        try makeDatabase(keyString: key)
+        XCTAssertEqual(try AppDatabase.prepareDatabaseFile(path: path, key: key), .raw)
+        let queue = try DatabaseQueue(path: path, configuration: configuration(keyString: raw))
+        defer { try? queue.close() }
+        // 2 = INCREMENTAL; anything else makes reclaimSpaceIfNeeded run a
+        // second full VACUUM right after the conversion.
+        XCTAssertEqual(try queue.read { db in try Int.fetchOne(db, sql: "PRAGMA auto_vacuum") }, 2)
+    }
+
+    func testPlaintextEncryptionKeepsIncrementalAutoVacuum() throws {
+        try makeDatabase(keyString: nil)
+        XCTAssertEqual(try AppDatabase.prepareDatabaseFile(path: path, key: key), .raw)
+        let queue = try DatabaseQueue(path: path, configuration: configuration(keyString: raw))
+        defer { try? queue.close() }
+        XCTAssertEqual(try queue.read { db in try Int.fetchOne(db, sql: "PRAGMA auto_vacuum") }, 2)
+    }
+
+    func testConversionDeferredWhileAnotherInstanceRuns() throws {
+        try makeDatabase(keyString: key)
+        XCTAssertEqual(
+            try AppDatabase.prepareDatabaseFile(path: path, key: key, allowConversion: false),
+            .passphrase)
+        XCTAssertTrue(opens(keyString: key), "file must be left passphrase-keyed")
+        XCTAssertEqual(try AppDatabase.prepareDatabaseFile(path: path, key: key), .raw)
+        XCTAssertTrue(opens(keyString: raw))
+    }
+
+    func testConversionAbortsWhileAnotherConnectionHoldsTheWAL() throws {
+        try makeDatabase(keyString: key)
+        // A second connection mid-read pins the WAL, so TRUNCATE reports busy.
+        let other = try DatabasePool(path: path, configuration: configuration(keyString: key))
+        defer { try? other.close() }
+        try other.write { db in
+            try db.execute(sql: "INSERT INTO rekeyProbe (body) VALUES ('late')")
+        }
+        let scheme = try other.read { _ in
+            try AppDatabase.prepareDatabaseFile(path: path, key: key)
+        }
+        XCTAssertEqual(scheme, .passphrase)
+        XCTAssertTrue(opens(keyString: key))
+    }
+
+    func testOnlyKeyAndCorruptionErrorsCountAsUnreadable() {
+        XCTAssertTrue(AppDatabase.isUnreadableFileError(DatabaseError(resultCode: .SQLITE_NOTADB)))
+        XCTAssertTrue(AppDatabase.isUnreadableFileError(DatabaseError(resultCode: .SQLITE_CORRUPT)))
+        XCTAssertFalse(AppDatabase.isUnreadableFileError(DatabaseError(resultCode: .SQLITE_FULL)))
+        XCTAssertFalse(AppDatabase.isUnreadableFileError(DatabaseError(resultCode: .SQLITE_BUSY)))
+        XCTAssertFalse(AppDatabase.isUnreadableFileError(DatabaseError(resultCode: .SQLITE_IOERR)))
+    }
 }

@@ -45,6 +45,10 @@ extension MailStore {
                 accountsNeedingReauth.remove(info.email)
                 reloadAccounts()
                 await refreshSendIdentities(accountId: info.email)
+                // Own addresses are filtered at rank time. The new primary is
+                // already in `ownEmailAddresses` before send-as returns, so
+                // setSendIdentities sees no change and would not re-rank.
+                rerankContacts()
                 await sync(accountId: info.email)
             } catch {
                 lastError = error.localizedDescription

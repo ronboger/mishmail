@@ -1,3 +1,4 @@
+import AppKit
 import Foundation
 import GRDB
 
@@ -669,14 +670,20 @@ final class AppDatabase: @unchecked Sendable {
         // the pool opens and before migrations. Usually one cheap probe; the
         // one-time plaintext or passphrase→raw-key conversion copies the whole
         // file (a few seconds for a ~400 MB mailbox), exactly once.
-        let scheme = try Self.prepareDatabaseFile(path: path, key: key)
+        let scheme = try Self.prepareDatabaseFile(
+            path: path, key: key,
+            allowConversion: !Self.anotherInstanceIsRunning())
         do {
             dbPool = try Self.openAndMigrate(path: path, key: key, scheme: scheme)
-        } catch {
+        } catch let error as DatabaseError
+                    where Self.isUnreadableFileError(error) {
             // The cache can't be opened — wrong key (keychain item lost or
             // rotated, e.g. a backup restore) or a corrupt file. Everything in
             // it resyncs from Gmail, so set it aside and start fresh instead
             // of crashing at launch. The fresh file is always raw-keyed.
+            // Only a key or corruption failure qualifies: disk full, I/O or
+            // busy errors say nothing about the file, and wiping a healthy
+            // 400 MB cache for them would be worse than failing this launch.
             NSLog("MishMail: mail cache unreadable (%@); resetting", "\(error)")
             try Self.setAsideUnreadable(path: path)
             dbPool = try Self.openAndMigrate(path: path, key: key, scheme: .raw)
@@ -1011,6 +1018,23 @@ final class AppDatabase: @unchecked Sendable {
         "x'\(hexKey)'"
     }
 
+    /// Wrong key (`SQLITE_NOTADB`) or a damaged file (`SQLITE_CORRUPT`):
+    /// the only open failures that justify setting the cache aside.
+    static func isUnreadableFileError(_ error: DatabaseError) -> Bool {
+        error.resultCode == .SQLITE_NOTADB || error.resultCode == .SQLITE_CORRUPT
+    }
+
+    /// Another MishMail process with this bundle id (and so this container
+    /// and file) is running — e.g. the old build still open after an
+    /// install. Converting would rename a new file under its open handles,
+    /// and everything it wrote afterwards would land in an unlinked inode.
+    private static func anotherInstanceIsRunning() -> Bool {
+        guard let bundleId = Bundle.main.bundleIdentifier else { return false }
+        let me = ProcessInfo.processInfo.processIdentifier
+        return NSRunningApplication.runningApplications(withBundleIdentifier: bundleId)
+            .contains { $0.processIdentifier != me && !$0.isTerminated }
+    }
+
     /// Brings the file at `path` to the raw-key scheme where possible and
     /// reports how it must be opened. Must run before any pool or migrator
     /// touches the file, and leaves no connection open behind it.
@@ -1019,10 +1043,14 @@ final class AppDatabase: @unchecked Sendable {
     /// - Plaintext (pre-encryption builds): encrypted straight to raw key.
     /// - Raw-keyed already: one probe, no KDF — the steady state.
     /// - Passphrase-keyed: converted once (see `convertPassphraseToRawKey`).
-    ///   If that fails the original is left untouched and opened with the
+    ///   If that fails, or `allowConversion` is false (another instance holds
+    ///   the file), the original is left untouched and opened with the
     ///   passphrase, so the app still works and the next launch retries.
     /// - Neither key works (lost key, corrupt file): `.raw`, so the caller's
     ///   open fails and its set-aside-and-start-fresh recovery runs.
+    /// - Any other probe error (I/O, busy, disk full) is rethrown: it says
+    ///   nothing about the key, and must not route a healthy file into the
+    ///   caller's reset path.
     ///
     /// Only `mail.sqlite` itself is ever passed here; the `.unreadable`
     /// post-mortem copy and the `.encrypting` / `.rekeying` temporaries are
@@ -1033,6 +1061,7 @@ final class AppDatabase: @unchecked Sendable {
     static func prepareDatabaseFile(
         path: String,
         key: String,
+        allowConversion: Bool = true,
         beforeSwap: (String) throws -> Void = { _ in }
     ) throws -> KeyScheme {
         guard FileManager.default.fileExists(atPath: path) else { return .raw }
@@ -1045,16 +1074,15 @@ final class AppDatabase: @unchecked Sendable {
             return .raw
         } catch let error as DatabaseError where error.resultCode == .SQLITE_NOTADB {
             // Wrong key for this file: expected for a passphrase-keyed one.
-        } catch {
-            // Anything else (I/O, busy) says nothing about the scheme. Let the
-            // real open hit it and take the normal recovery path.
-            NSLog("MishMail: raw-key probe failed: %@", "\(error)")
-            return .raw
         }
         do {
             try probe(path: path, keyString: key)
-        } catch {
+        } catch let error as DatabaseError where isUnreadableFileError(error) {
             return .raw
+        }
+        guard allowConversion else {
+            NSLog("MishMail: another instance is running; raw-key conversion deferred")
+            return .passphrase
         }
         do {
             try convertPassphraseToRawKey(path: path, key: key, beforeSwap: beforeSwap)
@@ -1088,12 +1116,19 @@ final class AppDatabase: @unchecked Sendable {
         try plain.inDatabase { db in
             try db.execute(sql: "ATTACH DATABASE ? AS encrypted KEY ?",
                            arguments: [tmp, rawKeyLiteral(key)])
+            // Export does not carry auto_vacuum; set it on the empty target.
+            try db.execute(sql: "PRAGMA encrypted.auto_vacuum = INCREMENTAL")
             try db.execute(sql: "SELECT sqlcipher_export('encrypted')")
             try db.execute(sql: "DETACH DATABASE encrypted")
         }
         try plain.close()
-        try FileManager.default.removeItem(atPath: path)
-        try FileManager.default.moveItem(atPath: tmp, toPath: path)
+        for sidecar in ["-wal", "-shm"] {
+            try? FileManager.default.removeItem(atPath: path + sidecar)
+        }
+        // rename(2): `path` is always either the old file or the new one.
+        guard rename(tmp, path) == 0 else {
+            throw RekeyError.swapFailed(errno)
+        }
     }
 
     /// One-time migration of a passphrase-keyed file to the raw key.
@@ -1132,10 +1167,21 @@ final class AppDatabase: @unchecked Sendable {
                     // Fold the WAL into the main file first, so the file we
                     // later drop holds everything and no -wal content is
                     // stranded next to a file it no longer belongs to.
-                    try db.execute(sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+                    // A busy checkpoint means another connection still holds
+                    // the WAL. Swapping the file under it would strand its
+                    // later writes, so give up and retry next launch.
+                    let checkpoint = try Row.fetchOne(
+                        db, sql: "PRAGMA wal_checkpoint(TRUNCATE)")
+                    if let busy: Int = checkpoint?[0], busy != 0 {
+                        throw RekeyError.busy
+                    }
                     let userVersion = try Int.fetchOne(db, sql: "PRAGMA main.user_version") ?? 0
                     try db.execute(sql: "ATTACH DATABASE ? AS rawkeyed KEY ?",
                                    arguments: [tmp, rawKeyLiteral(key)])
+                    // Export does not carry auto_vacuum. Without this the copy
+                    // is in NONE mode and reclaimSpaceIfNeeded runs a second
+                    // full VACUUM of the file right after this one.
+                    try db.execute(sql: "PRAGMA rawkeyed.auto_vacuum = INCREMENTAL")
                     try db.execute(sql: "SELECT sqlcipher_export('rawkeyed')")
                     try db.execute(sql: "PRAGMA rawkeyed.user_version = \(userVersion)")
                     try db.execute(sql: "DETACH DATABASE rawkeyed")
@@ -1205,6 +1251,7 @@ final class AppDatabase: @unchecked Sendable {
     }
 
     enum RekeyError: Error {
+        case busy
         case verificationFailed(String)
         case swapFailed(Int32)
     }
