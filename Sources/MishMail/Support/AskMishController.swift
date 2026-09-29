@@ -715,7 +715,9 @@ final class AskMishController {
                   let store,
                   let threadID = AskMishTools.createDraftReplyThreadID(
                     argumentsJSON: call.argumentsJSON) {
-            let threadAddresses = store.messages(inThread: threadID).flatMap { message in
+            // Headers only: the off-thread check reads From/To/Cc, never the
+            // bodies `messages(inThread:)` would hydrate from SQLCipher.
+            let threadAddresses = store.messageHeaders(inThread: threadID).flatMap { message in
                 AskMishTools.addresses(in: message.fromHeader)
                     + AskMishTools.addresses(in: message.toHeader)
                     + AskMishTools.addresses(in: message.ccHeader)
@@ -809,7 +811,9 @@ final class AskMishController {
         for attached in attachedThreads { subjects[attached.id] = attached.subject }
         var messages: [LLMMessage] = []
         for id in ids {
-            let headers = store.messages(inThread: id)
+            // Headers first (ids only), bodies once via `messagesWithBodies`.
+            // `messages(inThread:)` here hydrated every body twice.
+            let headers = store.messageHeaders(inThread: id)
             let hydrated = store.messagesWithBodies(ids: headers.map(\.id))
             let bodies = hydrated.isEmpty ? headers : hydrated
             guard !bodies.isEmpty else { continue }

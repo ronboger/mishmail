@@ -1393,7 +1393,8 @@ struct ComposeRequest: Identifiable {
                 return
             }
             lastDeepLink = (target, now)
-            lastDeepLinkThreadId = openDeepLinkedThread(target)
+            // Sets `lastDeepLinkThreadId` once the off-main lookup lands.
+            openDeepLinkedThread(target)
             return
         }
         guard let mail = DefaultMailClient.parseMailto(url) else { return }
@@ -1424,65 +1425,40 @@ struct ComposeRequest: Identifiable {
 
     /// Resolve both Gmail thread ids and message ids. Gmail web links commonly
     /// carry a message token even though opening them displays the conversation.
-    @discardableResult
-    private func openDeepLinkedThread(
-        _ target: MishMailDeepLinks.ThreadTarget) -> String? {
-        let thread: MailThread? = try? db.read { db in
-            if let account = target.accountEmail {
-                if let exact = try MailThread.fetchOne(
-                    db, key: "\(account):\(target.token)") {
-                    return exact
-                }
-                if let message = try Message.fetchOne(
-                    db, key: "\(account):\(target.token)") {
-                    return try MailThread.fetchOne(db, key: message.threadId)
-                }
-                if let byThreadToken = try MailThread.fetchOne(
-                    db,
-                    sql: """
-                        SELECT * FROM thread
-                        WHERE gmailThreadId = ? AND lower(accountId) = lower(?)
-                        ORDER BY lastDate DESC LIMIT 1
-                        """,
-                    arguments: [target.token, account]) {
-                    return byThreadToken
-                }
-                return try MailThread.fetchOne(
-                    db,
-                    sql: """
-                        SELECT thread.* FROM message
-                        JOIN thread ON thread.id = message.threadId
-                        WHERE message.gmailId = ? AND lower(message.accountId) = lower(?)
-                        ORDER BY message.date DESC LIMIT 1
-                        """,
-                    arguments: [target.token, account])
+    ///
+    /// The lookup runs on a pool reader: its primary-key probes are cheap,
+    /// but the fallback scans (`gmailThreadId`, `message.gmailId`,
+    /// `lower(accountId)`) have no index and used to walk whole SQLCipher
+    /// tables on the main actor. The app is already raised by the caller, so
+    /// the few ms before the thread opens are not a visible change.
+    private func openDeepLinkedThread(_ target: MishMailDeepLinks.ThreadTarget) {
+        deepLinkGeneration += 1
+        let generation = deepLinkGeneration
+        let knownAccountIds = accounts.map(\.id)
+        let pool = db
+        Task { [weak self] in
+            let thread: MailThread? = (try? await pool.read { db in
+                try DeepLinkThreadResolver.resolve(
+                    db: db, token: target.token, accountEmail: target.accountEmail,
+                    knownAccountIds: knownAccountIds)
+            }) ?? nil
+            // Latest link wins: an older lookup still in flight must neither
+            // open its thread over a newer one nor post a stale notice.
+            guard let self, !self.isShuttingDown,
+                  generation == self.deepLinkGeneration else { return }
+            NSApp.activate(ignoringOtherApps: true)
+            guard let thread else {
+                self.showNotice("That Gmail conversation isn't available in MishMail yet")
+                self.lastDeepLinkThreadId = nil
+                return
             }
-
-            if let byThreadToken = try MailThread.fetchOne(
-                db,
-                sql: "SELECT * FROM thread WHERE gmailThreadId = ? ORDER BY lastDate DESC LIMIT 1",
-                arguments: [target.token]) {
-                return byThreadToken
-            }
-            return try MailThread.fetchOne(
-                db,
-                sql: """
-                    SELECT thread.* FROM message
-                    JOIN thread ON thread.id = message.threadId
-                    WHERE message.gmailId = ?
-                    ORDER BY message.date DESC LIMIT 1
-                    """,
-                arguments: [target.token])
+            self.openThread(thread)
+            self.lastDeepLinkThreadId = thread.id
         }
-
-        NSApp.activate(ignoringOtherApps: true)
-        guard let thread else {
-            showNotice("That Gmail conversation isn't available in MishMail yet")
-            return nil
-        }
-        openThread(thread)
-        return thread.id
     }
+
+    /// Latest deep link wins — see `openDeepLinkedThread`.
+    @ObservationIgnored private var deepLinkGeneration = 0
 
     /// Open compose from a parsed `mailto:`. Joins address arrays with ", "
     /// for the existing String prefill fields (ComposeView re-splits via
@@ -1564,8 +1540,38 @@ struct ComposeRequest: Identifiable {
     /// Full-window side by side: the source conversation left, the draft
     /// right. Needs a real conversation to show — replies and forwards carry
     /// one via `replyTo`; a fresh compose or a draft-only thread does not.
+    ///
+    /// The source conversation is resolved before the layout flips, so the
+    /// left column never renders a "Conversation unavailable" frame (and
+    /// `thread(withId:)` never has to read the database from a view body).
+    /// Usually it is in the loaded list and this is synchronous; otherwise a
+    /// pool read fetches it and split appears a few ms later.
     func enterSplitCompose() {
-        guard var req = composeRequest, req.replyTo != nil else { return }
+        guard let req = composeRequest, req.replyTo != nil,
+              let threadId = req.boundThreadId else { return }
+        if let loaded = threads.first(where: { $0.id == threadId }) {
+            splitThreadSnapshot = loaded
+            applySplitPresentation(requestId: req.id)
+            return
+        }
+        splitThreadLoadGeneration += 1
+        let generation = splitThreadLoadGeneration
+        let pool = db
+        Task { [weak self] in
+            let fetched = (try? await pool.read { try MailThread.fetchOne($0, key: threadId) }) ?? nil
+            guard let self, !self.isShuttingDown,
+                  generation == self.splitThreadLoadGeneration else { return }
+            // Same outcome as the old synchronous body read on a miss: split
+            // with the "unavailable" placeholder when the row is gone.
+            if let fetched { self.splitThreadSnapshot = fetched }
+            self.applySplitPresentation(requestId: req.id)
+        }
+    }
+
+    /// Flip the card to split — only if it is still the card that asked
+    /// (the user may have closed or replaced it during the async fetch).
+    private func applySplitPresentation(requestId: ComposeRequest.ID) {
+        guard var req = composeRequest, req.id == requestId else { return }
         req.presentation = .split
         composeRequest = req
         composeMinimized = false
@@ -1593,11 +1599,20 @@ struct ComposeRequest: Identifiable {
     }
 
     /// Resolve a thread for the split conversation column even after the
-    /// visible list moved on (view switch, reload) — memory first, then DB.
+    /// visible list moved on (view switch, reload) — the live list first,
+    /// then the snapshot `enterSplitCompose` took. Called from a view body,
+    /// so it never touches the database: a SQLCipher page miss there is an
+    /// AES decrypt + HMAC on every render.
     func thread(withId id: String) -> MailThread? {
         threads.first { $0.id == id }
-            ?? (try? db.read { try MailThread.fetchOne($0, key: id) })
+            ?? (splitThreadSnapshot?.id == id ? splitThreadSnapshot : nil)
     }
+
+    /// The split column's conversation as of entering split. Only read when
+    /// the thread has left `threads`; the live row wins whenever present.
+    @ObservationIgnored private var splitThreadSnapshot: MailThread?
+    /// Latest `enterSplitCompose` fetch wins.
+    @ObservationIgnored private var splitThreadLoadGeneration = 0
 
     /// If compose was inline for a thread we left or hid, keep the work as a
     /// floating card instead of tearing it down.
@@ -3552,18 +3567,39 @@ struct ComposeRequest: Identifiable {
             }
         }()
         let hideCategories = inboxBadgeHideCategories
-        let (local, badgeTotal): ([String: Int], Int) = (try? db.read { db in
-            try Self.fetchSidebarCounts(db: db, activeAccount: activeAccount,
-                                        badgeAccount: badgeAccount,
-                                        hideCategories: hideCategories)
-        }) ?? ([:], 0)
-
-        // Local counts only — same denorm filters as the visible lists
-        // (spam excluded; promotions/social require inInbox). Gmail CATEGORY_*
-        // label totals include spam/archived and would disagree with the list.
-        unreadCounts = local
-        Notifier.setBadge(badgeTotal)
+        // Off-main: the aggregate is ~8 COUNTs, and on SQLCipher every page
+        // miss is an AES decrypt + HMAC. Kept as separate per-predicate
+        // COUNTs in one read (not a single SUM(CASE…)) so each still hits its
+        // v21/v22 partial index — see SidebarCountsIndexTests.
+        countsRefreshGeneration += 1
+        let generation = countsRefreshGeneration
+        // A list reload computes the same counts in its own read and
+        // publishes them; if one starts after this refresh, its numbers are
+        // at least as fresh, so this result must not land over them.
+        let reloadGeneration = threadReloadGeneration
+        let pool = db
+        Task { [weak self] in
+            guard let result = try? await pool.read({ db in
+                try MailStore.fetchSidebarCounts(db: db, activeAccount: activeAccount,
+                                                 badgeAccount: badgeAccount,
+                                                 hideCategories: hideCategories)
+            }) else { return }
+            guard let self, !self.isShuttingDown,
+                  generation == self.countsRefreshGeneration,
+                  reloadGeneration == self.threadReloadGeneration else { return }
+            // Local counts only — same denorm filters as the visible lists
+            // (spam excluded; promotions/social require inInbox). Gmail
+            // CATEGORY_* label totals include spam/archived and would disagree
+            // with the list. Guarded: an Observation setter publishes even for
+            // an equal value and would re-render every sidebar badge.
+            if result.counts != self.unreadCounts { self.unreadCounts = result.counts }
+            Notifier.setBadge(result.badge)
+        }
     }
+
+    /// Latest `refreshCountsAndBadge` wins: an older read still in flight
+    /// (e.g. two quick badge-scope changes) must not overwrite a newer one.
+    @ObservationIgnored private var countsRefreshGeneration = 0
 
     /// Sidebar counts + dock badge. Delegates to `SidebarCounts` (shared with
     /// unit tests). Safe off MainActor.
