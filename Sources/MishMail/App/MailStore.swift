@@ -2727,26 +2727,7 @@ struct ComposeRequest: Identifiable {
                         let parsed = SearchQuery.parse(search)
                         var q = MailThread.all()
                         if !parsed.text.isEmpty {
-                            // Strict prefix FTS first; fuzzy only when empty so
-                            // typo expansion never dilutes exact/prefix hits.
-                            var ids = try Row.fetchAll(db, sql: """
-                                SELECT DISTINCT message.threadId FROM message
-                                JOIN message_fts ON message_fts.rowid = message.rowid
-                                WHERE message_fts MATCH ?
-                                """, arguments: [FTS5Pattern(matchingAllPrefixesIn: parsed.text)])
-                                .map { $0["threadId"] as String }
-                            if ids.isEmpty,
-                               let fuzzy = try FuzzySearch.expandedPattern(
-                                   db: db, text: parsed.text
-                               ) {
-                                ids = try Row.fetchAll(db, sql: """
-                                    SELECT DISTINCT message.threadId FROM message
-                                    JOIN message_fts ON message_fts.rowid = message.rowid
-                                    WHERE message_fts MATCH ?
-                                    """, arguments: [fuzzy])
-                                    .map { $0["threadId"] as String }
-                            }
-                            q = q.filter(ids.contains(Column("id")))
+                            q = try SearchFTS.filter(q, db: db, text: parsed.text)
                         }
                         if let from = parsed.from {
                             // fromDisplay/participants hold display names, so an email

@@ -63,13 +63,8 @@ final class SearchTrashFlickerTests: XCTestCase {
         let parsed = SearchQuery.parse(raw)
         var q = MailThread.all()
         if !parsed.text.isEmpty {
-            let ids = try Row.fetchAll(db, sql: """
-                SELECT DISTINCT message.threadId FROM message
-                JOIN message_fts ON message_fts.rowid = message.rowid
-                WHERE message_fts MATCH ?
-                """, arguments: [FTS5Pattern(matchingAllPrefixesIn: parsed.text)])
-                .map { $0["threadId"] as String }
-            q = q.filter(ids.contains(Column("id")))
+            // Production FTS filter (strict prefix, fuzzy fallback).
+            q = try SearchFTS.filter(q, db: db, text: parsed.text)
         }
         switch parsed.location {
         case .standard:
