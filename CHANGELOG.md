@@ -12,6 +12,15 @@ minor versions may still change behavior.
 ## [Unreleased]
 
 ### Added
+- **Message and Go menus.** Reply, Reply All, Forward, Archive, Trash,
+  Star, Read/Unread, Snooze and Label are in the menu bar, and Go jumps to
+  any mailbox or saved view. Help → Keyboard Shortcuts opens the list.
+- **VoiceOver reads a thread row as one item** ("Unread. Alice. Subject.
+  3 messages. Starred…") with Archive, Trash, Star and Snooze actions.
+  Toasts and errors are announced; icon-only buttons have labels.
+- **Empty lists say why.** First sync shows progress; Trash, Sent, Drafts,
+  Starred and Snoozed have their own text; a filter that hides everything
+  offers **Clear filters**.
 - **Handle with Mish** — a wand button in the conversation toolbar opens
   Ask Mish, starts a fresh chat on the "Handle with Mish" model (Settings →
   AI; it follows the Ask Mish model until set), and asks the agent to work the
@@ -29,6 +38,43 @@ minor versions may still change behavior.
   and goes out on reconnect instead of bouncing back into compose.
 
 ### Fixed
+- **Sync no longer stalls on Gmail rate limits.** Requests are paced per
+  account below Gmail's quota, a limited batch waits instead of exploding
+  into single fetches, and history is committed in slices so one failure
+  costs a slice, not the pass. A large delete in Gmail no longer blocks
+  sync, and history that expired while offline reconciles cached labels
+  and removes mail deleted meanwhile (Trash and Spam included).
+- **Legacy mail bodies decode.** ISO-8859-1, Windows-1252, Shift_JIS and
+  ISO-2022-JP messages no longer show as blank.
+- **A send that timed out is not sent twice.** Each message carries a
+  stable Message-ID, and a queued resend first checks Sent.
+- **A rejected archive, trash or label edit reverts** instead of staying
+  wrong locally.
+- **Ask Mish errors are honest.** A provider error mid-stream or a stream
+  that ends early shows an error, not a finished-looking answer; hitting
+  the length limit or a refusal says so. Busy (429/529) and transient
+  failures retry with backoff. Retry no longer duplicates your message.
+- **Long threads keep their newest messages** in summaries and Ask Mish
+  context; quoted trails are dropped and each message is labelled.
+- **The Sync button appears only for sync errors.**
+- **The pointing-hand cursor no longer sticks** after hover-archive.
+
+### Security
+- The Ask Mish confirm card shows the whole draft and makes hidden text
+  visible (blank-line and space runs, zero-width, bidi, tag characters,
+  combining floods). Every Ask Mish write needs a click, and create_draft
+  warns about off-thread and Bcc recipients like send_draft.
+- The update relauncher accepts only a UUID plan for the enclosing
+  MishMail.app, and strips quarantine only from a bundle signed by its own
+  Apple-anchored team. The updater checks the same Apple anchor.
+- The MCP server has a read deadline, a connection cap and a constant-time
+  token check; a huge number in a tool argument no longer crashes the app.
+- One-click unsubscribe blocks numeric and IPv6 forms of private hosts.
+- More risky attachment types (.terminal, .fileloc, .mobileconfig, .html,
+  macro documents, …) ask before opening.
+- Sender icons are drawn locally; sender domains no longer go to Google.
+- Discarding a draft, removing an account or AI provider, blocking a
+  sender, and deleting a view now ask first.
 - **No more sticky "won't sync" banner offline.** Connectivity failures on
   any sync (background, manual, or the follow-up after a save or edit) now
   flip the sync control to "Offline · N to sync" with a passing notice on
@@ -42,6 +88,12 @@ minor versions may still change behavior.
   re-clicking a link after dismissing the card still composes.
 
 ### Changed
+- **Ask Mish costs less and reports cost fully.** Claude requests use
+  prompt caching; Ask Mish turns now count toward Settings → AI spend,
+  priced by the model actually used, including cache tokens. Opus 4/4.1
+  prices are corrected. Thinking effort raises the output limit.
+- **Text size** steps match the Settings picker and now apply to the
+  compose body.
 - **Ask Mish thinking works on hosted models.** The Think control is no
   longer local-only. Claude, GPT-5, Grok, Gemini, and OpenRouter models that
   can think send that effort on the wire (off / low / medium / high / extra
