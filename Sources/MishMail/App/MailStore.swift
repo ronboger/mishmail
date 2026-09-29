@@ -947,52 +947,32 @@ final class MailStore {
     }
 
     /// Recomputes which of the loaded threads came from a VIP. Any message From
-    /// in the thread can pin it (not only the newest). Prefer the off-main path
-    /// in `reloadThreads` — this MainActor entry point is for VIP list mutations
-    /// that already hold the thread list in memory.
+    /// in the thread can pin it (not only the newest). Pure in-memory now
+    /// (see `computeVIPThreadIds`), so no database read on the main actor.
     func refreshVIPThreadIds() {
         let active = activeVIPEmails
         guard !active.isEmpty, !threads.isEmpty else {
             if !vipThreadIds.isEmpty { vipThreadIds = [] }
             return
         }
-        let snapshot = threads
-        vipThreadIds = (try? db.read { db in
-            try Self.computeVIPThreadIds(threads: snapshot, activeVIP: active, db: db)
-        }) ?? []
+        let hits = Self.computeVIPThreadIds(threads: threads, activeVIP: active)
+        if hits != vipThreadIds { vipThreadIds = hits }
     }
 
-    /// VIP hits for a thread list. A thread pins if *any* message's From is VIP
-    /// (replying must not drop Priority). Denorm `fromEmail` is a positive
-    /// short-circuit only; non-hits still scan messages. Safe off MainActor.
+    /// VIP hits for a thread list — see `VIPMembership.threadIds`. Pure and
+    /// in-memory; safe off MainActor.
+    nonisolated static func computeVIPThreadIds(threads: [MailThread],
+                                                activeVIP: Set<String>) -> Set<String> {
+        VIPMembership.threadIds(in: threads, activeVIP: activeVIP)
+    }
+
+    /// Source-compatible wrapper for callers that already hold a read
+    /// transaction (the off-main reload paths). The database is no longer
+    /// consulted.
     nonisolated static func computeVIPThreadIds(threads: [MailThread],
                                                 activeVIP: Set<String>,
                                                 db: Database) throws -> Set<String> {
-        guard !activeVIP.isEmpty, !threads.isEmpty else { return [] }
-        var hits = Set<String>()
-        var needScan: [String] = []
-        for t in threads {
-            // Newest From is VIP → hit without a message join.
-            if !t.fromEmail.isEmpty, activeVIP.contains(t.fromEmail) {
-                hits.insert(t.id)
-            } else {
-                // Still scan: an older message may be from a VIP.
-                needScan.append(t.id)
-            }
-        }
-        guard !needScan.isEmpty else { return hits }
-        let placeholders = needScan.map { _ in "?" }.joined(separator: ",")
-        let rows = try Row.fetchAll(db, sql: """
-            SELECT DISTINCT threadId, fromHeader FROM message
-            WHERE threadId IN (\(placeholders))
-            """, arguments: StatementArguments(needScan))
-        for row in rows {
-            let header: String = row["fromHeader"]
-            if activeVIP.contains(MessageParser.emailAddress(header).lowercased()) {
-                hits.insert(row["threadId"])
-            }
-        }
-        return hits
+        computeVIPThreadIds(threads: threads, activeVIP: activeVIP)
     }
 
     // MARK: - Gmail filters (read-only cache)

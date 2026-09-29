@@ -154,4 +154,55 @@ final class VIPMembershipTests: XCTestCase {
         XCTAssertEqual(oldTags, ["investors"], "existing VIP must not gain Suggested")
         XCTAssertEqual(newTags, ["Suggested"])
     }
+
+    // MARK: - threadIds (denormalized allFromEmails)
+
+    private func thread(_ id: String, from: String, all: String) -> MailThread {
+        var t = MailThread(
+            id: id, accountId: "me@x.com", gmailThreadId: id,
+            subject: "s", snippet: "", fromDisplay: "",
+            lastDate: Date(timeIntervalSince1970: 0), isUnread: false, isStarred: false,
+            inInbox: true, inTrash: false,
+            labelIds: "INBOX", snoozeUntil: nil, participants: "",
+            messageCount: 1, hasAttachment: false, reminderAt: nil)
+        t.fromEmail = from
+        t.allFromEmails = all
+        return t
+    }
+
+    func testThreadIdsMatchNewestOrAnyOlderSender() {
+        let threads = [
+            thread("newest", from: "vip@a.com", all: "vip@a.com"),
+            // VIP wrote earlier; the user replied last — must still pin.
+            thread("older", from: "me@x.com", all: "me@x.com vip@a.com"),
+            thread("none", from: "other@b.com", all: "other@b.com me@x.com"),
+            // Substring of a VIP address is not a match (whole tokens only).
+            thread("substr", from: "", all: "xvip@a.com"),
+        ]
+        XCTAssertEqual(
+            VIPMembership.threadIds(in: threads, activeVIP: ["vip@a.com"]),
+            ["newest", "older"])
+    }
+
+    func testThreadIdsEmptyInputs() {
+        let threads = [thread("t", from: "vip@a.com", all: "vip@a.com")]
+        XCTAssertTrue(VIPMembership.threadIds(in: threads, activeVIP: []).isEmpty)
+        XCTAssertTrue(VIPMembership.threadIds(in: [], activeVIP: ["vip@a.com"]).isEmpty)
+    }
+
+    /// The denorm must be normalized the way the old message scan normalized
+    /// From headers, or VIP pins would silently change.
+    func testAllFromEmailsNormalizesLikeMessageScan() {
+        let header = "Big Boss <VIP@A.com>"
+        let scanned = MessageParser.emailAddress(header).lowercased()
+        let msg = Message(
+            id: "m", accountId: "me@x.com", gmailId: "g", threadId: "t",
+            fromHeader: header, toHeader: "", ccHeader: "", subject: "",
+            date: Date(timeIntervalSince1970: 0), snippet: "", bodyText: "",
+            bodyHTML: nil, messageIdHeader: "", referencesHeader: "",
+            labelIds: "INBOX", isUnread: false, hasAttachment: false)
+        XCTAssertEqual(ThreadLabels.allFromEmails(from: [msg]), scanned)
+        XCTAssertEqual(scanned, "vip@a.com")
+    }
 }
+
