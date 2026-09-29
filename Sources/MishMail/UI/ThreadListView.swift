@@ -31,9 +31,12 @@ enum GroupBy: String, CaseIterable {
 
 struct ThreadListView: View {
     @Environment(MailStore.self) var store
-    /// Separate from MailStore so ↓ / j focus moves don't re-render sidebar /
-    /// detail — only the list (and ContentView's open policy) observe this.
-    @EnvironmentObject var listFocus: ListFocusState
+    // Deliberately no `ListFocusState` here. `ObservableObject` invalidation
+    // is per object, so observing it re-ran this whole body on every ↓ / j:
+    // every row model, every context menu, and a dozen `onChange` equality
+    // checks (including the full `[MailThread]`). Focus is read only by
+    // `ThreadSelectionList` (the List's selection binding) and by one
+    // `FocusedThreadRow` per row.
     @AppStorage("groupBy") private var groupByRaw = GroupBy.date.rawValue
     @AppStorage("fontScale") private var fontScale = 1.0
     @AppStorage("priorityMode") private var priorityModeRaw = PrioritySplit.Mode.starred.rawValue
@@ -126,38 +129,69 @@ struct ThreadListView: View {
     /// Cached grouping — rebuilt only when inputs change, not every body pass.
     @State private var grouped: [(String, [MailThread])] = []
     @State private var flatDisplayOrder: [String] = []
-    /// Sorted label chips per thread, cached alongside `grouped` — its inputs
-    /// (thread labels, labelsByAccount) are already recompute triggers, and
-    /// building them per row re-allocated and re-sorted on every body pass.
-    @State private var rowLabelChips: [String: [ThreadRowLabelChip]] = [:]
+    /// Per-thread display strings and sorted label chips, cached alongside
+    /// `grouped`. Their inputs (thread fields, labelsByAccount) are already
+    /// recompute triggers, and building them in the row — HTML-entity
+    /// decoding, hex color parsing, date formatting for VoiceOver — redid
+    /// that work on every row body pass.
+    @State private var rowDisplay: [String: ThreadRowDisplay] = [:]
+    /// Bumped by every layout pass. `ThreadListSections` compares this
+    /// instead of the (non-Equatable) grouped tuples to decide whether its
+    /// body must re-run.
+    @State private var layoutGeneration = 0
 
     private static let prioritySection = "Priority"
 
     /// Labels view: sections the user folded shut. Keyboard nav skips them.
     @State private var collapsedLabels: Set<String> = []
 
-    private var threadSelection: Binding<String?> {
-        Binding(
-            get: { store.selectedThreadId },
-            set: { store.selectThread($0, intent: .click) })
-    }
-
     private func isCollapsed(_ title: String) -> Bool {
         store.selectedView == .labels && collapsedLabels.contains(title)
     }
 
-    /// Snapshot everything a row needs so `ThreadRow` can skip body work when
-    /// only another row's focus changed (Equatable + no EnvironmentObject).
-    private func threadRowModel(_ thread: MailThread, isChecked: Bool) -> ThreadRowModel {
-        let labels: [ThreadRowLabelChip] = rowLabelChips[thread.id] ?? []
-        return ThreadRowModel(
-            thread: thread,
-            isFocused: listFocus.id == thread.id,
-            isChecked: isChecked,
-            multiSelectActive: !store.checkedThreadIds.isEmpty,
-            category: store.aiCategories[thread.id],
-            userLabels: labels
-        )
+    /// Everything `recomputeLayout` (and `groups()`) reads, as one value.
+    /// One `onChange` over this replaces a dozen separate ones: a reload that
+    /// swaps `threads` and `vipThreadIds` in the same transaction used to
+    /// fire two full layout passes. Array/Set/Dictionary `==` short-circuits
+    /// on shared storage, so the unchanged comparison stays cheap.
+    private struct LayoutInputs: Equatable {
+        var threads: [MailThread]
+        var vipThreadIds: Set<String>
+        var selectedView: MailboxView
+        var groupByRaw: String
+        var priorityModeRaw: String
+        var vipAlwaysPins: Bool
+        var priorityWindowDays: Int
+        var priorityMaxCount: Int
+        var collapsedLabels: Set<String>
+        // groups() reads these — without them the cached sections go stale
+        // (aiCategory grouping, Labels view after rename/reorder).
+        var aiCategories: [String: String]
+        var labelsByAccount: [String: [LabelRow]]
+        var suppressedDraftThreadIds: Set<String>
+        // Hidden-category set feeds Priority hoist suppression — recompute
+        // even when threads identity is unchanged (star pin-through).
+        var effectiveCategoryHide: Set<String>
+        // labelSections orders its sections by the accounts list.
+        var accounts: [Account]
+    }
+
+    private var layoutInputs: LayoutInputs {
+        LayoutInputs(
+            threads: store.threads,
+            vipThreadIds: store.vipThreadIds,
+            selectedView: store.selectedView,
+            groupByRaw: groupByRaw,
+            priorityModeRaw: priorityModeRaw,
+            vipAlwaysPins: vipAlwaysPins,
+            priorityWindowDays: priorityWindowDays,
+            priorityMaxCount: priorityMaxCount,
+            collapsedLabels: collapsedLabels,
+            aiCategories: store.aiCategories,
+            labelsByAccount: store.labelsByAccount,
+            suppressedDraftThreadIds: store.suppressedDraftThreadIds,
+            effectiveCategoryHide: store.effectiveCategoryHide,
+            accounts: store.accounts)
     }
 
     /// Rebuild Priority + group sections and keyboard `displayOrder`.
@@ -168,16 +202,15 @@ struct ThreadListView: View {
             let visibleThreads = store.selectedView == .drafts
                 ? store.threads.filter { !store.suppressedDraftThreadIds.contains($0.id) }
                 : store.threads
-            var chips: [String: [ThreadRowLabelChip]] = [:]
-            chips.reserveCapacity(visibleThreads.count)
+            var display: [String: ThreadRowDisplay] = [:]
+            display.reserveCapacity(visibleThreads.count)
             for thread in visibleThreads {
                 let rowChips = thread.labels
                     .compactMap { store.labelChip($0, account: thread.accountId) }
-                if !rowChips.isEmpty {
-                    chips[thread.id] = rowChips.sorted { $0.name < $1.name }
-                }
+                    .sorted { $0.name < $1.name }
+                display[thread.id] = ThreadRowDisplay(thread: thread, labels: rowChips)
             }
-            rowLabelChips = chips
+            rowDisplay = display
             let mode = PrioritySplit.Mode(rawValue: priorityModeRaw) ?? .starred
             let (priority, rest) = PrioritySplit.partition(
                 visibleThreads,
@@ -191,8 +224,11 @@ struct ThreadListView: View {
             if !priority.isEmpty { out.append((Self.prioritySection, priority)) }
             out += groups(rest)
             grouped = out
+            layoutGeneration &+= 1
             flatDisplayOrder = out.flatMap { isCollapsed($0.0) ? [] : $0.1.map(\.id) }
             // prioritySectionIds drives unstar auto-advance within the section.
+            // Both write-backs below are no-ops when nothing changed, so a
+            // layout pass can't republish the store and loop back here.
             store.updateDisplayOrder(flatDisplayOrder,
                                      prioritySectionIds: priority.map(\.id))
             // Superhuman-style: land with the top row already selected
@@ -272,37 +308,6 @@ struct ThreadListView: View {
         return out
     }
 
-    /// Labels view header: the label name as its colored Notion-style pill,
-    /// plus a count and a collapse chevron; clicking folds the section.
-    private func labelSectionHeader(_ title: String, count: Int) -> some View {
-        let tint = title == "No label" ? Color.secondary : store.labelTint(anyAccount: title)
-        let folded = collapsedLabels.contains(title)
-        return Button {
-            withAnimation(PMMotion.feedback) {
-                if folded { collapsedLabels.remove(title) }
-                else { collapsedLabels.insert(title) }
-            }
-        } label: {
-            HStack(spacing: 6) {
-                Text(title)
-                    .font(.system(size: 12 * fontScale, weight: .semibold))
-                    .foregroundStyle(tint)
-                    .padding(.horizontal, 8).padding(.vertical, 2)
-                    .background(tint.opacity(ThreadRowPillChrome.softTint.fillOpacity),
-                                in: Capsule())
-                Text("\(count)")
-                    .font(.system(size: 11 * fontScale).monospacedDigit())
-                    .foregroundStyle(.secondary)
-                Image(systemName: "chevron.right")
-                    .font(.system(size: 9 * fontScale, weight: .semibold))
-                    .foregroundStyle(.secondary)
-                    .rotationEffect(.degrees(folded ? 0 : 90))
-            }
-            .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-    }
-
     private func groupedByDate(_ threads: [MailThread]) -> [(String, [MailThread])] {
         // Bucket by the same activity date the list is ordered on. Inbox-style
         // views use lastInboundDate so replying does not re-hoist a thread
@@ -372,121 +377,26 @@ struct ThreadListView: View {
             // ScrollViewReader counters the star-into-Priority scroll jump
             // (NSTableView keeps the selected row visible after re-partition).
             ScrollViewReader { proxy in
-            List(selection: threadSelection) {
-                ForEach(grouped, id: \.0) { title, threads in
-                    Section {
-                        if !isCollapsed(title) {
-                        ForEach(threads) { thread in
-                            let checked = store.checkedThreadIds.contains(thread.id)
-                            ThreadRow(
-                                model: threadRowModel(thread, isChecked: checked),
-                                onToggleCheck: { shift in
-                                    store.toggleChecked(thread.id, extendRange: shift)
-                                },
-                                onOpenIfFocused: { store.requestOpenSelected() },
-                                onStar: { store.toggleStar(thread) },
-                                onArchive: { store.archive(thread) },
-                                onSnooze: { store.snoozingThread = thread },
-                                onTrash: { store.trash(thread) }
-                            )
-                                .equatable()
-                                .tag(thread.id)
-                                .id(thread.id)
-                                .accessibilityIdentifier("threadRow.\(thread.id)")
-                                // Notion Mail-style: READ rows recede on a
-                                // grey wash (adapts to dark mode); unread rows
-                                // sit on the plain background and pop.
-                                .listRowBackground(
-                                    checked
-                                        ? Color.notionAccent.opacity(0.10)
-                                        : (thread.isUnread
-                                            ? Color.clear : Color.primary.opacity(0.05)))
-                                .swipeActions(edge: .trailing) {
-                                    Button { store.archive(thread) } label: {
-                                        Label("Archive", systemImage: "archivebox")
-                                    }.tint(.green)
-                                    Button(role: .destructive) { store.trash(thread) } label: {
-                                        Label("Trash", systemImage: "trash")
-                                    }
-                                }
-                                .contextMenu { threadMenu(thread) }
+            ThreadSelectionList(
+                topMargin: 40 * fontScale,
+                onSelect: { store.selectThread($0, intent: .click) }
+            ) {
+                ThreadListSections(
+                    grouped: grouped,
+                    rowDisplay: rowDisplay,
+                    layoutGeneration: layoutGeneration,
+                    collapsedLabels: collapsedLabels,
+                    onToggleCollapsed: { title in
+                        withAnimation(PMMotion.feedback) {
+                            if collapsedLabels.contains(title) { collapsedLabels.remove(title) }
+                            else { collapsedLabels.insert(title) }
                         }
-                        }
-                    } header: {
-                        // Compact so the pinned (sticky) header stays a thin
-                        // line while scrolling. Secondary gray adapts to the
-                        // theme and sets headers clearly apart from thread text.
-                        if store.selectedView == .labels {
-                            labelSectionHeader(title, count: threads.count)
-                        } else {
-                        HStack(spacing: 4) {
-                            if title == Self.prioritySection {
-                                Image(systemName: "star.fill")
-                                    .font(.system(size: 9 * fontScale))
-                                    .foregroundStyle(.orange)
-                            }
-                            Text(title)
-                        }
-                        .font(.system(size: 12 * fontScale, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        }
-                    } footer: {
-                        // The air lives AFTER each group, so every gap between
-                        // groups is this exact height.
-                        Color.clear.frame(height: 40 * fontScale)
                     }
-                }
-                if store.hasMoreThreads || store.isLoadingMore {
-                    Section {
-                        Button {
-                            store.loadMoreThreads()
-                        } label: {
-                            HStack {
-                                Spacer()
-                                if store.isLoadingMore {
-                                    ProgressView().controlSize(.small)
-                                    Text("Loading older…")
-                                        .font(.system(size: 12 * fontScale))
-                                        .foregroundStyle(.secondary)
-                                } else {
-                                    Text("Load older conversations")
-                                        .font(.system(size: 12 * fontScale))
-                                        .foregroundStyle(.secondary)
-                                }
-                                Spacer()
-                            }
-                            .padding(.vertical, 8)
-                        }
-                        .buttonStyle(.plain)
-                        .disabled(store.isLoadingMore)
-                        // Near-end auto-load so deep scroll feels continuous.
-                        .onAppear { store.loadMoreThreads() }
-                    }
-                }
+                )
             }
-            .listStyle(.plain)
-            .scrollContentBackground(.hidden)
-            // Matching air above the first group.
-            .contentMargins(.top, 40 * fontScale, for: .scrollContent)
             .onAppear { recomputeLayout(scrollProxy: proxy) }
-            .onChange(of: store.threads) { recomputeLayout(scrollProxy: proxy) }
-            .onChange(of: store.vipThreadIds) { recomputeLayout(scrollProxy: proxy) }
-            .onChange(of: store.selectedView) { recomputeLayout(scrollProxy: proxy) }
-            .onChange(of: groupByRaw) { recomputeLayout(scrollProxy: proxy) }
-            .onChange(of: priorityModeRaw) { recomputeLayout(scrollProxy: proxy) }
-            .onChange(of: vipAlwaysPins) { recomputeLayout(scrollProxy: proxy) }
-            .onChange(of: priorityWindowDays) { recomputeLayout(scrollProxy: proxy) }
-            .onChange(of: priorityMaxCount) { recomputeLayout(scrollProxy: proxy) }
-            .onChange(of: collapsedLabels) { recomputeLayout(scrollProxy: proxy) }
-            // groups() also reads these — without them the cached sections
-            // go stale (aiCategory grouping, Labels view after rename/reorder).
-            .onChange(of: store.aiCategories) { recomputeLayout(scrollProxy: proxy) }
-            .onChange(of: store.labelsByAccount) { recomputeLayout(scrollProxy: proxy) }
-            .onChange(of: store.suppressedDraftThreadIds) { recomputeLayout(scrollProxy: proxy) }
-            // Hidden-category set feeds Priority hoist suppression — recompute even when threads identity is unchanged (star pin-through).
-            .onChange(of: store.effectiveCategoryHide) { recomputeLayout(scrollProxy: proxy) }
-            // labelSections orders its sections by the accounts list.
-            .onChange(of: store.accounts) { recomputeLayout(scrollProxy: proxy) }
+            // Every layout input in one comparison — see `LayoutInputs`.
+            .onChange(of: layoutInputs) { recomputeLayout(scrollProxy: proxy) }
             // Date buckets ("Today"/"Yesterday") and the Priority recency
             // cutoff capture "now" at recompute time — refresh at midnight
             // (and on time-zone changes) so they don't go stale overnight.
@@ -563,6 +473,204 @@ struct ThreadListView: View {
         .padding(.horizontal, 12).padding(.vertical, 6)
         .background(Color.notionAccent.opacity(0.08))
     }
+}
+
+/// The thread `List` plus its selection binding — the only list-level view
+/// that observes `ListFocusState`. A ↓ / j re-runs just this body: the List
+/// gets the new selection (NSTableView highlight + scroll-into-view), and
+/// `content` is a value built by `ThreadListView`, so its Equatable
+/// sections skip their body entirely. Per-row focus flows through
+/// `FocusedThreadRow`.
+///
+/// Do NOT wrap `content` in `.equatable()`. The wrapper hides the tagged
+/// rows from `List(selection:)`: clicks stop selecting and the highlight
+/// never moves (shipped once, reverted in 9074323). SwiftUI already uses
+/// `ThreadListSections`' own `==` because the view is not plain data —
+/// verified in the demo build: three ↓ presses re-ran this body three
+/// times and `ThreadListSections` / `ThreadListView` bodies zero times.
+private struct ThreadSelectionList<Content: View>: View {
+    @EnvironmentObject private var listFocus: ListFocusState
+    let topMargin: CGFloat
+    let onSelect: (String?) -> Void
+    let content: Content
+
+    init(topMargin: CGFloat,
+         onSelect: @escaping (String?) -> Void,
+         @ViewBuilder content: () -> Content) {
+        self.topMargin = topMargin
+        self.onSelect = onSelect
+        self.content = content()
+    }
+
+    var body: some View {
+        List(selection: Binding(get: { listFocus.id }, set: onSelect)) {
+            content
+        }
+        .listStyle(.plain)
+        .scrollContentBackground(.hidden)
+        // Matching air above the first group.
+        .contentMargins(.top, topMargin, for: .scrollContent)
+    }
+}
+
+/// Section headers, rows, and the load-older footer. Equatable (by
+/// conformance only — see `ThreadSelectionList`) on the
+/// layout generation (plus the collapsed set its headers draw), so a focus
+/// move — which re-runs `ThreadSelectionList` — never rebuilds row models,
+/// swipe actions, or context menus. Store properties read here (checks, AI
+/// categories, paging flags, VIPs for the menu) are tracked by Observation
+/// on this view directly, so they still invalidate it without going
+/// through `==`.
+private struct ThreadListSections: View, Equatable {
+    @Environment(MailStore.self) private var store
+    @AppStorage("fontScale") private var fontScale = 1.0
+    let grouped: [(String, [MailThread])]
+    let rowDisplay: [String: ThreadRowDisplay]
+    let layoutGeneration: Int
+    let collapsedLabels: Set<String>
+    let onToggleCollapsed: (String) -> Void
+
+    private static let prioritySection = "Priority"
+
+    // `grouped` and `rowDisplay` only change inside a layout pass, which
+    // bumps `layoutGeneration`. The closure mutates the parent's @State
+    // (reference-backed), so a kept old copy stays correct.
+    static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.layoutGeneration == rhs.layoutGeneration
+            && lhs.collapsedLabels == rhs.collapsedLabels
+    }
+
+    private func isCollapsed(_ title: String) -> Bool {
+        store.selectedView == .labels && collapsedLabels.contains(title)
+    }
+
+    var body: some View {
+        let multiSelectActive = !store.checkedThreadIds.isEmpty
+        ForEach(grouped, id: \.0) { title, threads in
+            Section {
+                if !isCollapsed(title) {
+                ForEach(threads) { thread in
+                    let checked = store.checkedThreadIds.contains(thread.id)
+                    FocusedThreadRow(
+                        model: ThreadRowModel(
+                            thread: thread,
+                            isFocused: false,
+                            isChecked: checked,
+                            multiSelectActive: multiSelectActive,
+                            category: store.aiCategories[thread.id],
+                            display: rowDisplay[thread.id]
+                                ?? ThreadRowDisplay(thread: thread, labels: [])),
+                        onToggleCheck: { shift in
+                            store.toggleChecked(thread.id, extendRange: shift)
+                        },
+                        onOpenIfFocused: { store.requestOpenSelected() },
+                        onStar: { store.toggleStar(thread) },
+                        onArchive: { store.archive(thread) },
+                        onSnooze: { store.snoozingThread = thread },
+                        onTrash: { store.trash(thread) }
+                    )
+                        .tag(thread.id)
+                        .id(thread.id)
+                        .accessibilityIdentifier("threadRow.\(thread.id)")
+                        // Notion Mail-style: READ rows recede on a
+                        // grey wash (adapts to dark mode); unread rows
+                        // sit on the plain background and pop.
+                        .listRowBackground(
+                            checked
+                                ? Color.notionAccent.opacity(0.10)
+                                : (thread.isUnread
+                                    ? Color.clear : Color.primary.opacity(0.05)))
+                        .swipeActions(edge: .trailing) {
+                            Button { store.archive(thread) } label: {
+                                Label("Archive", systemImage: "archivebox")
+                            }.tint(.green)
+                            Button(role: .destructive) { store.trash(thread) } label: {
+                                Label("Trash", systemImage: "trash")
+                            }
+                        }
+                        .contextMenu { threadMenu(thread) }
+                }
+                }
+            } header: {
+                // Compact so the pinned (sticky) header stays a thin
+                // line while scrolling. Secondary gray adapts to the
+                // theme and sets headers clearly apart from thread text.
+                if store.selectedView == .labels {
+                    labelSectionHeader(title, count: threads.count)
+                } else {
+                HStack(spacing: 4) {
+                    if title == Self.prioritySection {
+                        Image(systemName: "star.fill")
+                            .font(.system(size: 9 * fontScale))
+                            .foregroundStyle(.orange)
+                    }
+                    Text(title)
+                }
+                .font(.system(size: 12 * fontScale, weight: .semibold))
+                .foregroundStyle(.secondary)
+                }
+            } footer: {
+                // The air lives AFTER each group, so every gap between
+                // groups is this exact height.
+                Color.clear.frame(height: 40 * fontScale)
+            }
+        }
+        if store.hasMoreThreads || store.isLoadingMore {
+            Section {
+                Button {
+                    store.loadMoreThreads()
+                } label: {
+                    HStack {
+                        Spacer()
+                        if store.isLoadingMore {
+                            ProgressView().controlSize(.small)
+                            Text("Loading older…")
+                                .font(.system(size: 12 * fontScale))
+                                .foregroundStyle(.secondary)
+                        } else {
+                            Text("Load older conversations")
+                                .font(.system(size: 12 * fontScale))
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer()
+                    }
+                    .padding(.vertical, 8)
+                }
+                .buttonStyle(.plain)
+                .disabled(store.isLoadingMore)
+                // Near-end auto-load so deep scroll feels continuous.
+                .onAppear { store.loadMoreThreads() }
+            }
+        }
+    }
+
+    /// Labels view header: the label name as its colored Notion-style pill,
+    /// plus a count and a collapse chevron; clicking folds the section.
+    private func labelSectionHeader(_ title: String, count: Int) -> some View {
+        let tint = title == "No label" ? Color.secondary : store.labelTint(anyAccount: title)
+        let folded = collapsedLabels.contains(title)
+        return Button {
+            onToggleCollapsed(title)
+        } label: {
+            HStack(spacing: 6) {
+                Text(title)
+                    .font(.system(size: 12 * fontScale, weight: .semibold))
+                    .foregroundStyle(tint)
+                    .padding(.horizontal, 8).padding(.vertical, 2)
+                    .background(tint.opacity(ThreadRowPillChrome.softTint.fillOpacity),
+                                in: Capsule())
+                Text("\(count)")
+                    .font(.system(size: 11 * fontScale).monospacedDigit())
+                    .foregroundStyle(.secondary)
+                Image(systemName: "chevron.right")
+                    .font(.system(size: 9 * fontScale, weight: .semibold))
+                    .foregroundStyle(.secondary)
+                    .rotationEffect(.degrees(folded ? 0 : 90))
+            }
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+    }
 
     @ViewBuilder
     private func threadMenu(_ thread: MailThread) -> some View {
@@ -584,15 +692,10 @@ struct ThreadListView: View {
             store.setRead(thread, read: thread.isUnread)
         }
         Menu("Snooze") {
-            // Same daypart-aware list as the snooze sheet (includes "This
-            // morning" after midnight; drops anchors already past).
-            // Key on date: titles can merge on collisions ("Tomorrow morning ·
-            // This weekend") and dates are unique after SnoozePresets.dedup.
-            ForEach(SnoozePresets.presets(), id: \.date) { preset in
-                Button("\(preset.title) (\(SnoozeDateParser.format(preset.date)))") {
-                    store.snooze(thread, until: preset.date)
-                }
-            }
+            // Its own view so the presets (daypart math + one date format
+            // per preset) are computed when the submenu is materialized,
+            // not for every row whenever the section body runs.
+            SnoozePresetMenuItems(thread: thread)
             Button("Pick date & time…") { store.snoozingThread = thread }
             if thread.snoozeUntil != nil {
                 Button("Unsnooze") { store.snooze(thread, until: nil) }
@@ -626,6 +729,57 @@ struct ThreadListView: View {
         Button("Copy Gmail Link") { store.copyThreadLink(thread) }
         Divider()
         Button("Trash", role: .destructive) { store.trash(thread) }
+    }
+}
+
+/// Snooze presets for one row's context menu. A separate view so
+/// `SnoozePresets.presets()` runs once when the menu is built for display —
+/// with "now" at open time, so the anchors are never stale — instead of per
+/// row on every list body pass.
+private struct SnoozePresetMenuItems: View {
+    @Environment(MailStore.self) private var store
+    let thread: MailThread
+
+    var body: some View {
+        // Same daypart-aware list as the snooze sheet (includes "This
+        // morning" after midnight; drops anchors already past).
+        // Key on date: titles can merge on collisions ("Tomorrow morning ·
+        // This weekend") and dates are unique after SnoozePresets.dedup.
+        ForEach(SnoozePresets.presets(), id: \.date) { preset in
+            Button("\(preset.title) (\(SnoozeDateParser.format(preset.date)))") {
+                store.snooze(thread, until: preset.date)
+            }
+        }
+    }
+}
+
+/// Per-row focus isolation. Every realized row observes `ListFocusState`,
+/// but this body is only a struct copy and a comparison; the `ThreadRow`
+/// under it is `.equatable()`, so a focus move re-renders exactly the two
+/// rows whose `isFocused` flipped.
+private struct FocusedThreadRow: View {
+    @EnvironmentObject private var listFocus: ListFocusState
+    let model: ThreadRowModel
+    let onToggleCheck: (Bool) -> Void
+    let onOpenIfFocused: () -> Void
+    let onStar: () -> Void
+    let onArchive: () -> Void
+    let onSnooze: () -> Void
+    let onTrash: () -> Void
+
+    var body: some View {
+        var focused = model
+        focused.isFocused = listFocus.id == model.thread.id
+        return ThreadRow(
+            model: focused,
+            onToggleCheck: onToggleCheck,
+            onOpenIfFocused: onOpenIfFocused,
+            onStar: onStar,
+            onArchive: onArchive,
+            onSnooze: onSnooze,
+            onTrash: onTrash
+        )
+        .equatable()
     }
 }
 
@@ -1464,20 +1618,64 @@ struct FaviconView: View {
 }
 
 /// Pre-resolved label chip so rows don't hit `MailStore` during body eval.
+/// The tint and the on-selection foreground choice are derived once here
+/// (hex parsing + luminance), not in every pill's body.
 struct ThreadRowLabelChip: Equatable {
     let name: String
     let colorHex: String?
+    let tint: Color
+    /// White (vs near-black) title on the blue selection highlight.
+    /// Missing/malformed hex → stable mid-tone colors → white title.
+    let lightForegroundOnSelection: Bool
+
+    init(name: String, colorHex: String?) {
+        self.name = name
+        self.colorHex = colorHex
+        self.tint = colorHex.flatMap(Color.hexString) ?? Color.stable(for: name)
+        self.lightForegroundOnSelection =
+            ThreadRowPillChrome.selectionUsesLightForeground(hex: colorHex) ?? true
+    }
+}
+
+/// Row strings computed once per layout pass (see `recomputeLayout`), not
+/// per row body: HTML-entity decoding of subject/snippet, the sorted label
+/// chips, and the VoiceOver label (which formats the date).
+struct ThreadRowDisplay: Equatable {
+    let subject: String
+    let snippet: String
+    let accessibilityLabel: String
+    let labels: [ThreadRowLabelChip]
+
+    init(thread: MailThread, labels: [ThreadRowLabelChip]) {
+        subject = thread.subject.isEmpty ? "(no subject)" : thread.subject.decodingHTMLEntities()
+        snippet = thread.snippet.decodingHTMLEntities()
+        self.labels = labels
+        let participants = thread.participants.isEmpty ? thread.fromDisplay : thread.participants
+        var parts = [thread.isUnread ? "Unread" : "Read", participants,
+                     thread.subject.isEmpty ? "No subject" : thread.subject]
+        parts.append(thread.messageCount == 1
+            ? "1 message" : "\(thread.messageCount) messages")
+        if thread.hasAttachment { parts.append("Has attachment") }
+        if thread.isStarred { parts.append("Starred") }
+        // Captures "today" at layout time; the list recomputes on
+        // NSCalendarDayChanged, same as its date sections.
+        parts.append(thread.lastDate.formatted(thread.lastDate.threadListFormat))
+        accessibilityLabel = parts.joined(separator: ", ")
+    }
 }
 
 /// Display + focus snapshot for one list row. Equatable so key-repeat can
 /// skip body rebuilds for rows whose focus/check/content did not change.
 struct ThreadRowModel: Equatable {
     let thread: MailThread
-    let isFocused: Bool
+    /// Set by `FocusedThreadRow`, the only place that reads list focus.
+    var isFocused: Bool
     let isChecked: Bool
     let multiSelectActive: Bool
     let category: String?
-    let userLabels: [ThreadRowLabelChip]
+    let display: ThreadRowDisplay
+
+    var userLabels: [ThreadRowLabelChip] { display.labels }
 }
 
 /// Dense Notion Mail-style single-line row:
@@ -1554,10 +1752,10 @@ struct ThreadRow: View, Equatable {
                 }
                 .frame(width: 168 * fontScale, alignment: .leading)
 
-                (Text(thread.subject.isEmpty ? "(no subject)" : thread.subject.decodingHTMLEntities())
+                (Text(model.display.subject)
                     .fontWeight(thread.isUnread ? .semibold : .medium)
                     .foregroundColor(thread.isUnread ? .primary : .primary.opacity(0.65))
-                 + Text("  \(thread.snippet.decodingHTMLEntities())")
+                 + Text("  \(model.display.snippet)")
                     .foregroundColor(.secondary))
                     .font(.system(size: 14 * fontScale))
                     .lineLimit(1)
@@ -1643,7 +1841,7 @@ struct ThreadRow: View, Equatable {
         .onHover { hovering = $0 }
         .pmPointingHandCursor()
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel(rowAccessibilityLabel)
+        .accessibilityLabel(model.display.accessibilityLabel)
         .accessibilityAction(named: "Archive", onArchive)
         .accessibilityAction(named: "Trash", onTrash)
         .accessibilityAction(named: thread.isStarred ? "Unstar" : "Star", onStar)
@@ -1652,18 +1850,6 @@ struct ThreadRow: View, Equatable {
 
     private var participantsDisplay: String {
         thread.participants.isEmpty ? thread.fromDisplay : thread.participants
-    }
-
-    private var rowAccessibilityLabel: String {
-        var parts = [thread.isUnread ? "Unread" : "Read", participantsDisplay,
-                     thread.subject.isEmpty ? "No subject" : thread.subject]
-        let count = thread.messageCount == 1
-            ? "1 message" : "\(thread.messageCount) messages"
-        parts.append(count)
-        if thread.hasAttachment { parts.append("Has attachment") }
-        if thread.isStarred { parts.append("Starred") }
-        parts.append(thread.lastDate.formatted(relativeFormat))
-        return parts.joined(separator: ", ")
     }
 
     /// Gmail/Notion Mail draft cue in the sender column: an orange "Draft"
@@ -1694,13 +1880,11 @@ struct ThreadRow: View, Equatable {
     /// text on a stronger tint fill when selected so the chip stays legible
     /// on the blue list highlight (white on dark tints, near-black on pale).
     private func labelPill(_ chip: ThreadRowLabelChip) -> some View {
-        let tint = chip.colorHex.flatMap(Color.hexString) ?? Color.stable(for: chip.name)
+        let tint = chip.tint
         let chrome = ThreadRowPillChrome.forFocused(model.isFocused)
         let fg: Color = {
             guard chrome == .onSelection else { return tint }
-            // Missing/malformed hex → stable mid-tone colors → white title.
-            let light = ThreadRowPillChrome.selectionUsesLightForeground(hex: chip.colorHex) ?? true
-            return light ? .white : Color.black.opacity(0.85)
+            return chip.lightForegroundOnSelection ? .white : Color.black.opacity(0.85)
         }()
         return Text(chip.name)
             .font(.system(size: 10.5 * fontScale, weight: .medium))
