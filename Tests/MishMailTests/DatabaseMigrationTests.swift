@@ -215,9 +215,9 @@ final class DatabaseMigrationTests: XCTestCase {
         XCTAssertNotNil(fetched?.id)
         XCTAssertEqual(fetched?.subject, "Later")
         XCTAssertEqual(fetched?.replacingDraftId, "ron@x.com:d1")
-            XCTAssertEqual(fetched?.attachments.count, 1)
-            XCTAssertEqual(fetched?.attachments.first?.filename, "a.pdf")
-            XCTAssertEqual(fetched?.attachments.first?.data, Data([1, 2, 3]))
+        XCTAssertEqual(fetched?.attachments.count, 1)
+        XCTAssertEqual(fetched?.attachments.first?.filename, "a.pdf")
+        XCTAssertEqual(fetched?.attachments.first?.data, Data([1, 2, 3]))
         XCTAssertEqual(fetched?.messageId, "<fixed@mishmail.local>")
     }
 

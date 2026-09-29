@@ -26,7 +26,7 @@ extension MailStore {
         let attachments: [MIMEBuilder.Attachment]
         let replacingDraft: Message?
         /// Stable across the undo window and any offline/scheduled replay.
-        let messageId: String = MIMEBuilder.makeMessageID()
+        var messageId: String = MIMEBuilder.makeMessageID()
 
         /// Effective From identity email.
         var effectiveFromEmail: String {

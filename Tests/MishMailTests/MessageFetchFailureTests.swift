@@ -57,6 +57,21 @@ final class MessageFetchFailureTests: XCTestCase {
         XCTAssertEqual(MessageFetchFailureKind.classify(URLError(.cancelled)), .fatal)
     }
 
+    /// Only message-scoped 4xx errors may be skipped per id. Account-wide
+    /// failures (auth, scope, keychain, cancellation) must fail the pass so
+    /// history does not advance past mail that was never fetched.
+    func testPerMessagePermanentExcludesAccountWideFailures() {
+        XCTAssertTrue(MessageFetchFailureKind.isPerMessagePermanent(GmailError.http(400, "bad")))
+        XCTAssertFalse(MessageFetchFailureKind.isPerMessagePermanent(GmailError.http(401, "")))
+        XCTAssertFalse(MessageFetchFailureKind.isPerMessagePermanent(
+            GmailError.http(403, #"{"reason":"insufficientPermissions"}"#)))
+        XCTAssertFalse(MessageFetchFailureKind.isPerMessagePermanent(GmailError.http(404, "")))
+        XCTAssertFalse(MessageFetchFailureKind.isPerMessagePermanent(GmailError.http(500, "")))
+        XCTAssertFalse(MessageFetchFailureKind.isPerMessagePermanent(
+            GmailError.noRefreshToken("ron@x.com")))
+        XCTAssertFalse(MessageFetchFailureKind.isPerMessagePermanent(CancellationError()))
+    }
+
     func testPartialFetchErrorMessage() {
         let e = GmailError.partialFetch(failedCount: 3)
         XCTAssertTrue(e.localizedDescription.contains("3"))

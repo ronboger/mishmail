@@ -73,7 +73,13 @@ actor SyncEngine {
         }
         inFlightSync = task
         do {
-            let result = try await task.value
+            // An unstructured task does not inherit the caller's cancellation.
+            // Forward it so a cancelled owner stops the pass (joiners only wait).
+            let result = try await withTaskCancellationHandler {
+                try await task.value
+            } onCancel: {
+                task.cancel()
+            }
             inFlightSync = nil
             return result
         } catch {
@@ -230,7 +236,8 @@ actor SyncEngine {
         var touchedKeys = batch.touchedKeys
         if reconcileCached {
             touchedKeys.formUnion(try await reconcileBackfillWindow(
-                listedGmailIds: batch.listedGmailIds))
+                listedGmailIds: batch.listedGmailIds,
+                listingComplete: batch.listingComplete))
         }
         try await deriveThreads(for: touchedKeys)
         UserDefaults.standard.set(syncWindowDays, forKey: "backfill.window.\(accountId)")
@@ -240,13 +247,22 @@ actor SyncEngine {
     /// History expiration makes the mailbox snapshot authoritative again. In
     /// addition to downloading missing rows, re-list system-label views so an
     /// already-cached message can lose INBOX/UNREAD/STARRED/TRASH/SPAM labels.
-    private func reconcileBackfillWindow(listedGmailIds initialIds: Set<String>) async throws
+    ///
+    /// A cached row missing from the listings is deleted only when every
+    /// listing ran to its last page. A listing cut off by `windowLimit` says
+    /// nothing about the rows past the cap, so those rows are re-read by id
+    /// instead (a 404 then deletes them).
+    private func reconcileBackfillWindow(listedGmailIds initialIds: Set<String>,
+                                         listingComplete initialComplete: Bool) async throws
         -> Set<String> {
         var listed = initialIds
+        var listingComplete = initialComplete
         for label in ["INBOX", "UNREAD", "STARRED", "TRASH", "SPAM"] {
             let query = label == "STARRED" ? nil : windowQuery
-            listed.formUnion(try await listAllGmailIds(
-                query: query, labelIds: [label], limit: windowLimit))
+            let page = try await listAllGmailIds(
+                query: query, labelIds: [label], limit: windowLimit)
+            listed.formUnion(page.ids)
+            listingComplete = listingComplete && page.complete
         }
 
         let days = syncWindowDays
@@ -267,17 +283,14 @@ actor SyncEngine {
                      threadId: row["threadId"] as String)
                 }
         }
-        let stale = rows.filter { !listed.contains($0.gmailId) }
-        let metadataIds = rows.filter { listed.contains($0.gmailId) }.map { $0.gmailId }
+        let stale = listingComplete ? rows.filter { !listed.contains($0.gmailId) } : []
+        let metadataIds = listingComplete
+            ? rows.filter { listed.contains($0.gmailId) }.map { $0.gmailId }
+            : rows.map { $0.gmailId }
         var touchedKeys = Set(stale.map { $0.threadId })
 
         if !stale.isEmpty {
-            let localIds = stale.map { $0.id }
-            let placeholders = localIds.map { _ in "?" }.joined(separator: ",")
-            try await db.write { db in
-                try db.execute(sql: "DELETE FROM message WHERE id IN (\(placeholders))",
-                               arguments: StatementArguments(localIds))
-            }
+            try await deleteMessages(localIds: stale.map { $0.id })
         }
 
         if !metadataIds.isEmpty {
@@ -302,12 +315,7 @@ actor SyncEngine {
                 touchedKeys.formUnion(missingRows.map { $0.threadId })
                 let localIds = missingRows.map { $0.id }
                 if !localIds.isEmpty {
-                    let placeholders = localIds.map { _ in "?" }.joined(separator: ",")
-                    try await db.write { db in
-                        try db.execute(
-                            sql: "DELETE FROM message WHERE id IN (\(placeholders))",
-                            arguments: StatementArguments(localIds))
-                    }
+                    try await deleteMessages(localIds: localIds)
                 }
             }
         }
@@ -318,7 +326,7 @@ actor SyncEngine {
     }
 
     private func listAllGmailIds(query: String?, labelIds: [String], limit: Int) async throws
-        -> Set<String> {
+        -> (ids: Set<String>, complete: Bool) {
         var result = Set<String>()
         var pageToken: String?
         var listed = 0
@@ -330,7 +338,23 @@ actor SyncEngine {
             listed += ids.count
             pageToken = page.nextPageToken
         } while pageToken != nil && listed < limit
-        return result
+        return (result, pageToken == nil)
+    }
+
+    /// Deletes message rows by local id in bounded statements (SQLite caps
+    /// the number of bound variables per statement).
+    private func deleteMessages(localIds: [String]) async throws {
+        guard !localIds.isEmpty else { return }
+        try await db.write { db in
+            var start = 0
+            while start < localIds.count {
+                let chunk = Array(localIds[start..<min(start + 500, localIds.count)])
+                let placeholders = chunk.map { _ in "?" }.joined(separator: ",")
+                try db.execute(sql: "DELETE FROM message WHERE id IN (\(placeholders))",
+                               arguments: StatementArguments(chunk))
+                start += chunk.count
+            }
+        }
     }
 
     // MARK: - Local removal
@@ -430,6 +454,8 @@ actor SyncEngine {
         var touchedKeys: Set<String>
         var matchedThreadIds: [String]
         var listedGmailIds: Set<String>
+        /// The listing reached its last page (not cut off by `limit`).
+        var listingComplete: Bool
     }
 
     @discardableResult
@@ -444,6 +470,7 @@ actor SyncEngine {
             var fetched = 0
             var retryExhausted = 0
             var listedGmailIds = Set<String>()
+            var reachedLastPage = false
             var matchedGmailThreadIds: [String] = []
             var seenGmailThreads = Set<String>()
             repeat {
@@ -485,6 +512,7 @@ actor SyncEngine {
                     pageToken = nil
                 } else {
                     pageToken = page.nextPageToken
+                    reachedLastPage = page.nextPageToken == nil
                 }
             } while pageToken != nil && listed < limit
             try await flushUpserts(&writeBuffer, into: &touchedKeys)
@@ -495,7 +523,7 @@ actor SyncEngine {
                 accountId: accountId, gmailThreadIds: matchedGmailThreadIds)
             return FetchAllBatch(
                 touchedKeys: touchedKeys, matchedThreadIds: localThreadIds,
-                listedGmailIds: listedGmailIds)
+                listedGmailIds: listedGmailIds, listingComplete: reachedLastPage)
         }
     }
 

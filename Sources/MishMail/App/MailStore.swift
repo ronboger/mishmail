@@ -1719,7 +1719,7 @@ struct ComposeRequest: Identifiable {
     /// Serial tail for optimistic thread writes. UI updates happen first; the
     /// tail preserves mutation order and is awaited before database shutdown.
     @ObservationIgnored
-    var threadMutationPersistenceTask: Task<Result<Void, Error>, Never>?
+    var threadMutationPersistenceTask: Task<Result<[String: String], Error>, Never>?
     /// Rapid triage reconciles once after the user pauses instead of launching
     /// a full list/count query for every key press.
     @ObservationIgnored
