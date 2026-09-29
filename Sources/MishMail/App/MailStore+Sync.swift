@@ -241,6 +241,7 @@ extension MailStore {
                         isOffline = true
                         if interactive { showNotice(OfflinePolicy.offlineSyncNotice) }
                     } else {
+                        DiagnosticLog.syncFailure(account: id, error: error)
                         setSyncFailureError(
                             "\(id): \(error.localizedDescription)",
                             accountId: id)
@@ -326,6 +327,7 @@ extension MailStore {
                 // the user asking; offline they must not stack banners.
                 isOffline = true
             } else {
+                DiagnosticLog.syncFailure(account: accountId, error: error)
                 setSyncFailureError(
                     "\(accountId): \(error.localizedDescription)",
                     accountId: accountId)

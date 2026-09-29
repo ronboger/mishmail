@@ -520,8 +520,14 @@ struct ContentView: View {
                         .foregroundStyle(.orange)
                     Text(error)
                         .font(.system(size: 13))
-                        .lineLimit(3)
+                        .lineLimit(8)
+                        .textSelection(.enabled)
                         .frame(maxWidth: 360, alignment: .leading)
+                    Button("Copy") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(error, forType: .string)
+                    }
+                    .buttonStyle(.borderless)
                     if store.lastErrorRecovery == .retrySync {
                         Button("Sync") {
                             store.lastError = nil

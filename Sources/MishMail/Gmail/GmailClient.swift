@@ -114,7 +114,7 @@ enum GmailError: LocalizedError {
 
     var errorDescription: String? {
         switch self {
-        case .http(let code, let body): return "Gmail API error \(code): \(body.prefix(300))"
+        case .http(let code, let body): return "Gmail API error \(code): \(body.prefix(600))"
         case .historyExpired: return "Sync history expired; a full resync is needed."
         case .noRefreshToken(let email): return "No saved sign-in for \(email). Reauthorize the account in Settings → Accounts."
         case .keychainUnavailable(let email, let status):
@@ -307,6 +307,8 @@ actor GmailClient {
             }
             guard (200..<300).contains(code) else {
                 let body = String(data: data, encoding: .utf8) ?? ""
+                DiagnosticLog.gmailHTTP(account: accountEmail, method: method, path: path,
+                                        code: code, body: body)
                 if method == "GET",
                    MessageFetchFailureKind.classify(GmailError.http(code, body)) == .rateLimited {
                     guard retryRateLimit else {
@@ -404,7 +406,10 @@ actor GmailClient {
                 continue
             }
             guard (200..<300).contains(code) else {
-                throw GmailError.http(code, String(data: data, encoding: .utf8) ?? "")
+                let body = String(data: data, encoding: .utf8) ?? ""
+                DiagnosticLog.gmailHTTP(account: accountEmail, method: "GET",
+                                        path: "/oauth2/v2/userinfo", code: code, body: body)
+                throw GmailError.http(code, body)
             }
             return try JSONDecoder().decode(Info.self, from: data).name
         }
@@ -688,6 +693,7 @@ actor GmailClient {
             do {
                 let results = try await getMessagesBatch(ids: pending, format: format)
                 var rateLimited: [String] = []
+                var loggedStatuses = Set<Int>()
                 for result in results {
                     guard !result.id.isEmpty else { continue }
                     if let message = result.message, result.isSuccess {
@@ -698,6 +704,14 @@ actor GmailClient {
                     // leave the id unhandled so the caller retries it singly.
                     if result.statusCode == 0 || (200..<300).contains(result.statusCode) {
                         continue
+                    }
+                    // One line per status per batch; a quota hit fails many ids alike.
+                    if result.statusCode != 404, loggedStatuses.insert(result.statusCode).inserted {
+                        let same = results.filter { $0.statusCode == result.statusCode }.count
+                        DiagnosticLog.gmailHTTP(
+                            account: accountEmail, method: "GET",
+                            path: "/messages/\(result.id)", code: result.statusCode,
+                            body: result.body, note: "batch part, \(same) of \(results.count) ids")
                     }
                     let error = GmailError.http(result.statusCode, result.body)
                     switch MessageFetchFailureKind.classify(error) {
@@ -796,6 +810,8 @@ actor GmailClient {
                 if let retryAfter = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Retry-After") {
                     body += "\nRetry-After: \(retryAfter)"
                 }
+                DiagnosticLog.gmailHTTP(account: accountEmail, method: "POST", path: "/batch",
+                                        code: code, body: body, note: "ids=\(ids.count)")
                 throw GmailError.http(code, body)
             }
             let contentType = (resp as? HTTPURLResponse)?.value(forHTTPHeaderField: "Content-Type") ?? ""
