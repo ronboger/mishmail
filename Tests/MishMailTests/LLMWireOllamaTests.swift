@@ -24,7 +24,8 @@ final class LLMWireOllamaTests: XCTestCase {
         XCTAssertEqual(events[0], .token("He"))
         guard case .toolCall(let call) = events[1] else { return XCTFail("expected toolCall") }
         XCTAssertEqual(call.name, "list_threads")
-        XCTAssertEqual(call.id, "call_0") // Ollama has no ids; codec synthesizes them
+        XCTAssertTrue(call.id.hasPrefix("call_")) // Ollama has no ids; codec synthesizes a UUID
+        XCTAssertNotEqual(call.id, "call_0")
         let args = try! JSONSerialization.jsonObject(
             with: Data(call.argumentsJSON.utf8)) as! [String: Any]
         XCTAssertEqual(args["limit"] as? Int, 5)
@@ -133,6 +134,21 @@ final class LLMWireOllamaTests: XCTestCase {
         let events = state.consume(
             line: #"{"message":{"role":"assistant","content":"","thinking":"hmm"},"done":false}"#)
         XCTAssertEqual(events, [.reasoning("hmm")])
+    }
+
+    func testProviderErrorLineIsSurfaced() {
+        var state = OllamaChatWire.StreamState()
+        XCTAssertEqual(state.consume(line: #"{"error":"model is unavailable"}"#),
+                       [.error("model is unavailable")])
+    }
+
+    func testMultipleToolCallsGetDistinctIds() {
+        var state = OllamaChatWire.StreamState()
+        let first = state.consume(line: #"{"message":{"tool_calls":[{"function":{"name":"a","arguments":{}}}]},"done":false}"#)
+        let second = state.consume(line: #"{"message":{"tool_calls":[{"function":{"name":"b","arguments":{}}}]},"done":false}"#)
+        guard case .toolCall(let a) = first.first,
+              case .toolCall(let b) = second.first else { return XCTFail("expected tool calls") }
+        XCTAssertNotEqual(a.id, b.id)
     }
 
 }

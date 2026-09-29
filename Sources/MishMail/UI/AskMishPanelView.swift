@@ -13,6 +13,7 @@ import SwiftUI
 struct AskMishPanelView: View {
     let controller: AskMishController
     @Environment(MailStore.self) private var store
+    @Environment(\.accessibilityReduceMotion) private var accessibilityReduceMotion
 
     @State private var input = ""
     @State private var conversations: [ChatConversationRow] = []
@@ -30,6 +31,10 @@ struct AskMishPanelView: View {
     @State private var expandedTraces: Set<String> = []
     @State private var thinking = Ollama.thinking(for: .askMish).rawValue
     @State private var revealedBubbleIDs: Set<UUID> = []
+    @State private var providerConfig: LLMProviderConfig?
+    @State private var transcriptNearBottom = true
+    @State private var parsedBubbleText: [UUID: AttributedString] = [:]
+    @State private var expandedDraftIDs: Set<UUID> = []
 
     var body: some View {
         VStack(spacing: 0) {
@@ -45,6 +50,7 @@ struct AskMishPanelView: View {
         }
         .background(Color.notionSidebar)
         .task { await refreshConversations() }
+        .onAppear { refreshProviderConfig() }
         .task {
             let installed = (try? await Ollama.installedModels()) ?? []
             localModels = Ollama.enabledModels(installed: installed)
@@ -59,7 +65,10 @@ struct AskMishPanelView: View {
         .onChange(of: store.showAskMish) { _, shown in
             if !shown { declinePendingConfirmation() }
         }
-        .onChange(of: controller.providerID) { hostedNoticeDismissed = false }
+        .onChange(of: controller.providerID) {
+            hostedNoticeDismissed = false
+            refreshProviderConfig()
+        }
         .onDisappear {
             declinePendingConfirmation()
         }
@@ -101,6 +110,7 @@ struct AskMishPanelView: View {
             .buttonStyle(PressScaleButtonStyle())
             .foregroundStyle(.secondary)
             .help("Close Ask Mish (⌥⌘M)")
+            .accessibilityLabel("Close Ask Mish")
             .pmHitTarget()
         }
         .padding(.horizontal, 12)
@@ -255,9 +265,17 @@ struct AskMishPanelView: View {
                 .padding(12)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
-            .onChange(of: controller.bubbles.count) { scrollToTail(scroller) }
+            .onChange(of: controller.bubbles.count) {
+                if transcriptNearBottom { scrollToTail(scroller) }
+            }
             // Streaming appends to the last bubble without changing the count.
-            .onChange(of: controller.bubbles.last?.text) { scrollToTail(scroller) }
+            .onChange(of: controller.bubbles.last?.text) {
+                if transcriptNearBottom { scrollToTail(scroller) }
+            }
+            .simultaneousGesture(DragGesture(minimumDistance: 4).onChanged { value in
+                if value.translation.height < -8 { transcriptNearBottom = false }
+                if value.translation.height > 8 { transcriptNearBottom = true }
+            })
             .onAppear {
                 if revealedBubbleIDs.isEmpty {
                     revealedBubbleIDs = Set(controller.bubbles.map(\.id))
@@ -322,9 +340,21 @@ struct AskMishPanelView: View {
                 }
                 if !bubble.text.isEmpty {
                     HStack(alignment: .bottom, spacing: 1) {
-                        Text(AskMishContext.displayedText(bubble.text))
-                            .textSelection(.enabled)
-                            .foregroundStyle(bubble.isError ? Color.red : Color.primary)
+                        Group {
+                            if bubble.isStreaming {
+                                Text(bubble.text)
+                            } else {
+                                Text(parsedBubbleText[bubble.id]
+                                     ?? AttributedString(bubble.text))
+                                    .task(id: bubble.id) {
+                                        if parsedBubbleText[bubble.id] == nil {
+                                            parsedBubbleText[bubble.id] = AskMishContext.displayedText(bubble.text)
+                                        }
+                                    }
+                            }
+                        }
+                        .textSelection(.enabled)
+                        .foregroundStyle(bubble.isError ? Color.red : Color.primary)
                         if bubble.isStreaming { streamingCaret }
                     }
                 }
@@ -367,7 +397,11 @@ struct AskMishPanelView: View {
     }
 
     private var currentProviderConfig: LLMProviderConfig? {
-        LLMProviderStore.load().first { $0.id == controller.providerID }
+        providerConfig
+    }
+
+    private func refreshProviderConfig() {
+        providerConfig = LLMProviderStore.load().first { $0.id == controller.providerID }
     }
 
     /// Collapsed thinking trace. While the model is still reasoning (no
@@ -417,11 +451,19 @@ struct AskMishPanelView: View {
     }
 
     private var streamingCaret: some View {
-        TimelineView(.animation(minimumInterval: 0.53, paused: false)) { timeline in
-            let on = Int(timeline.date.timeIntervalSinceReferenceDate / 0.53) % 2 == 0
-            Text("▍")
-                .font(.system(size: 13))
-                .foregroundStyle(Color.primary.opacity(on ? 0.85 : 0.12))
+        Group {
+            if accessibilityReduceMotion {
+                Text("▍")
+                    .font(.system(size: 13))
+                    .foregroundStyle(.secondary)
+            } else {
+                TimelineView(.animation(minimumInterval: 0.53, paused: false)) { timeline in
+                    let on = Int(timeline.date.timeIntervalSinceReferenceDate / 0.53) % 2 == 0
+                    Text("▍")
+                        .font(.system(size: 13))
+                        .foregroundStyle(Color.primary.opacity(on ? 0.85 : 0.12))
+                }
+            }
         }
         .accessibilityHidden(true)
     }
@@ -574,9 +616,7 @@ struct AskMishPanelView: View {
     /// transcript still shows what went wrong.
     private var retryButton: some View {
         Button("Retry") {
-            guard let text = controller.bubbles.last(where: { $0.role == .user })?.text
-            else { return }
-            controller.send(text)
+            controller.retryLastTurn()
         }
         .buttonStyle(.link)
         .font(.caption)
@@ -588,6 +628,12 @@ struct AskMishPanelView: View {
 
     private func confirmCard(_ pending: AskMishController.PendingToolConfirmation) -> some View {
         let isSend = pending.toolName == AskMishTools.sendDraftToolName
+        let isCreate = pending.toolName == "create_draft"
+        let expanded = expandedDraftIDs.contains(pending.id)
+        let body = pending.bodyPreview
+        // Require an explicit expansion for every non-empty draft. This is a
+        // deliberate review gate when scroll-position tracking is uncertain.
+        let bodyNeedsReview = body.map { !$0.isEmpty } ?? false
         return VStack(alignment: .leading, spacing: 8) {
             HStack(spacing: 6) {
                 Image(systemName: "exclamationmark.shield")
@@ -600,16 +646,35 @@ struct AskMishPanelView: View {
             Text(pending.summary)
                 .font(.system(size: 13))
                 .fixedSize(horizontal: false, vertical: true)
-            if let body = pending.bodyPreview, !body.isEmpty {
-                Text(body)
-                    .font(.caption)
+            if let body, !body.isEmpty {
+                let lineCount = body.split(whereSeparator: { $0.isNewline }).count
+                Text("Draft body · \(body.count) characters · \(lineCount) lines")
+                    .font(.caption2)
                     .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .lineLimit(8)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.primary.opacity(0.04),
-                                in: RoundedRectangle(cornerRadius: PMRadius.sm))
+                ScrollView(.vertical) {
+                    Text(AskMishTools.collapsedBlankLines(body))
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(8)
+                }
+                .frame(maxHeight: 240)
+                .background(Color.primary.opacity(0.04),
+                            in: RoundedRectangle(cornerRadius: PMRadius.sm))
+                if bodyNeedsReview && !expanded {
+                    Button("Show full draft") {
+                        expandedDraftIDs.insert(pending.id)
+                    }
+                    .buttonStyle(.borderless)
+                    Text("Show full draft before confirming. Scroll to review the full draft.")
+                        .font(.caption2)
+                        .foregroundStyle(.orange)
+                } else {
+                    Text("Scroll to review the full draft before confirming.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
             }
             if isSend {
                 Text("MishMail queues the message. You can undo it for \(Int(MailStore.undoSendWindow)) seconds.")
@@ -618,14 +683,15 @@ struct AskMishPanelView: View {
                     .fixedSize(horizontal: false, vertical: true)
             }
             HStack(spacing: 8) {
-                Button(isSend ? "Send" : "Allow") {
+                Button(isSend ? "Send" : (isCreate ? "Create draft" : "Allow")) {
                     controller.confirmPendingTool(allow: true)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(isSend ? .red : Color.notionAccent)
                 // Create and send put mail on the wire. Return would confirm
                 // a keystroke meant for the chat, so those need a click.
-                .keyboardShortcut(pending.requiresExplicitClick ? nil : KeyboardShortcut.defaultAction)
+                .keyboardShortcut(nil)
+                .disabled(bodyNeedsReview && !expanded)
                 Button("Don't allow") {
                     controller.confirmPendingTool(allow: false)
                 }
@@ -675,6 +741,7 @@ struct AskMishPanelView: View {
                     }
                     .buttonStyle(PressScaleButtonStyle())
                     .help("Stop")
+                    .accessibilityLabel("Stop Ask Mish")
                     .pmHitTarget()
                 } else {
                     Button {
@@ -688,6 +755,7 @@ struct AskMishPanelView: View {
                         enabled: !input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty))
                     .disabled(input.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                     .help("Send (↩)")
+                    .accessibilityLabel("Send to Ask Mish")
                     .pmHitTarget()
                 }
             }

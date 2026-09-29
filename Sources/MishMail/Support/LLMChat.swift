@@ -177,6 +177,47 @@ enum LLMHostedThinking {
         }
     }
 
+    /// Output room for Anthropic thinking requests. Adaptive thinking spends
+    /// its budget inside `max_tokens`, so the answer cap has to grow with the
+    /// selected effort instead of staying at the old 8k default.
+    static func anthropicMaxTokens(model: String, thinking: LLMThinking,
+                                   defaultValue: Int = 8_192) -> Int {
+        let requested: Int
+        switch thinking {
+        case .off, .level("low"), .level("medium"):
+            requested = 16_384
+        case .level("high"):
+            requested = 32_768
+        case .level("xhigh"), .level("max"):
+            requested = 65_536
+        case .modelDefault, .level(_):
+            requested = defaultValue
+        }
+        return min(requested, anthropicOutputCap(model))
+    }
+
+    /// Conservative caps for model families whose output limits are known.
+    /// Unknown ids stay bounded rather than inheriting a potentially unsafe
+    /// provider default.
+    static func anthropicOutputCap(_ model: String) -> Int {
+        let name = leafName(model)
+        if name.contains("claude-3-5") { return 8_192 }
+        if name.contains("claude-3-7") || name.contains("claude-3.7")
+            || name.contains("sonnet-4") || name.contains("haiku-4-5") {
+            return 64_000
+        }
+        if (5...9).contains(where: { name.contains("opus-4-\($0)")
+            || name.contains("opus-4.\($0)") })
+            || name.contains("opus-5") || name.contains("sonnet-5")
+            || name.contains("fable-5") {
+            return 64_000
+        }
+        if name.contains("opus-4-1") || name.hasPrefix("claude-opus-4") {
+            return 32_000
+        }
+        return 32_000
+    }
+
     /// OpenAI accepts `xhigh` from GPT-5.1 onward. Older GPT-5 and o-series
     /// reject it, so map down to `high`.
     static func openAIEffort(_ level: String, model: String) -> String {
@@ -246,6 +287,8 @@ struct LLMToolSpec: Equatable, Sendable {
 struct LLMUsage: Codable, Equatable, Sendable {
     var promptTokens: Int
     var completionTokens: Int
+    var cacheCreationInputTokens: Int = 0
+    var cacheReadInputTokens: Int = 0
 }
 
 enum LLMEvent: Equatable, Sendable {
@@ -257,7 +300,23 @@ enum LLMEvent: Equatable, Sendable {
     /// later assistant turns must replay.
     case thinkingBlock(LLMThinkingBlock)
     case toolCall(LLMToolCall)
+    /// Provider-side stream failure reported inside an otherwise successful
+    /// HTTP response. The client turns this into a thrown error.
+    case error(String)
     case done(stopReason: String, usage: LLMUsage?)
+}
+
+enum LLMStopReason {
+    static func notice(for reason: String) -> String? {
+        switch reason.lowercased() {
+        case "max_tokens", "length":
+            return "Answer cut off at the length limit."
+        case "refusal":
+            return "The model declined to answer this request."
+        default:
+            return nil
+        }
+    }
 }
 
 /// Endpoint rule shared by every provider: loopback is always allowed;

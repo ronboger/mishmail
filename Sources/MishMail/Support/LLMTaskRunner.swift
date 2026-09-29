@@ -56,22 +56,23 @@ enum LLMTaskRunner {
             let innerTask = Task {
                 do {
                     for try await event in await LLMClient.shared.stream(
-                        messages: [LLMMessage(role: .user, text: prompt)],
+                        messages: [
+                            LLMMessage(role: .system, text: LLMPrompts.systemPrompt(for: task)),
+                            LLMMessage(role: .user, text: prompt),
+                        ],
                         tools: [], config: resolved.config, model: resolved.model,
                         task: task, maxOutputTokens: maxOutputTokens) {
                         switch event {
                         case .token(let text):
                             continuation.yield(text)
-                        case .toolCall, .reasoning, .thinkingBlock:
+                        case .toolCall, .reasoning, .thinkingBlock, .error:
                             break
-                        case .done(_, let usage):
+                        case .done(let stopReason, let usage):
+                            if let notice = LLMStopReason.notice(for: stopReason) {
+                                continuation.yield("\n\n[\(notice)]")
+                            }
                             if let usage {
-                                let row = LLMUsageLog.row(task: task, config: resolved.config,
-                                                          model: resolved.model, usage: usage,
-                                                          now: Date())
-                                try? await AppDatabase.shared.dbPool.write { db in
-                                    try row.insert(db)
-                                }
+                                await recordUsage(task: task, resolved: resolved, usage: usage)
                             }
                         }
                     }
@@ -90,5 +91,16 @@ enum LLMTaskRunner {
             output += token
         }
         return output.trimmingCharacters(in: .whitespacesAndNewlines)
+    }
+
+    /// The single write path for usage rows. Ask Mish calls this once with its
+    /// per-turn aggregate; one-shot tasks call it once per completed stream.
+    static func recordUsage(task: LLMTask, resolved: Resolved,
+                            usage: LLMUsage) async {
+        let row = LLMUsageLog.row(task: task, config: resolved.config,
+                                  model: resolved.model, usage: usage, now: Date())
+        try? await AppDatabase.shared.dbPool.write { db in
+            try row.insert(db)
+        }
     }
 }

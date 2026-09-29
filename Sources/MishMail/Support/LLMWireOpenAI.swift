@@ -102,6 +102,12 @@ enum OpenAIWire {
             guard let data = payload.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return [] }
+            if let providerError = object["error"] as? [String: Any] {
+                return [.error(providerError["message"] as? String ?? "OpenAI-compatible stream failed")]
+            }
+            if let providerError = object["error"] as? String {
+                return [.error(providerError)]
+            }
             if let u = object["usage"] as? [String: Any],
                let prompt = u["prompt_tokens"] as? Int,
                let completion = u["completion_tokens"] as? Int {

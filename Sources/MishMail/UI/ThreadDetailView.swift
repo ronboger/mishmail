@@ -1331,8 +1331,12 @@ struct ThreadDetailView: View {
         let ids = messages.map(\.id)
         let fullById = Dictionary(uniqueKeysWithValues:
             store.messagesWithBodies(ids: ids).map { ($0.id, $0) })
-        let body = messages.map { fullById[$0.id]?.bodyText ?? $0.bodyText }
-            .joined(separator: "\n\n---\n\n")
+        let fullMessages = messages.map { fullById[$0.id] ?? $0 }
+        let budget = LLMTaskRunner.resolve(.summaries)?.config.kind == .ollama
+            ? LLMPrompts.localThreadContextBudget
+            : LLMPrompts.hostedThreadContextBudget
+        let body = LLMPrompts.threadContext(
+            subject: thread.subject, messages: fullMessages, characterBudget: budget)
         let prompt = LLMPrompts.summarize(subject: thread.subject, body: body)
         Task {
             do {

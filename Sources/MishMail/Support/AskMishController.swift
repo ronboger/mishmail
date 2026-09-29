@@ -51,7 +51,7 @@ final class AskMishController {
         let argumentsJSON: String
         /// Draft body shown on the card. Nil when the tool has no body.
         var bodyPreview: String? = nil
-        /// True for create_draft / send_draft: Return must not confirm.
+        /// True for every write: Return must never confirm a mutation.
         var requiresExplicitClick: Bool = false
         /// Snapshot of the draft at confirm time. Send aborts if it drifts.
         var sendFingerprint: String? = nil
@@ -109,6 +109,11 @@ final class AskMishController {
     @ObservationIgnored private var injectedThreadIDs: Set<String> = []
     @ObservationIgnored private var totalPromptTokens = 0
     @ObservationIgnored private var totalCompletionTokens = 0
+    @ObservationIgnored private var totalCacheCreationInputTokens = 0
+    @ObservationIgnored private var totalCacheReadInputTokens = 0
+    @ObservationIgnored private var bufferedBubbleID: UUID?
+    @ObservationIgnored private var bufferedBubbleText = ""
+    @ObservationIgnored private var bubbleFlushTask: Task<Void, Never>?
 
     init(store: MailStore) {
         self.store = store
@@ -147,7 +152,20 @@ final class AskMishController {
         guard !isRunning, !trimmed.isEmpty else { return }
         isRunning = true
         turnTask = Task { [weak self] in
-            await self?.runTurn(userText: trimmed)
+            await self?.runTurn(userText: trimmed, shouldAppendUser: true)
+            self?.isRunning = false
+        }
+    }
+
+    /// Re-runs the last turn against the already persisted history. The user
+    /// bubble and database row are intentionally not appended a second time.
+    func retryLastTurn() {
+        guard !isRunning,
+              let text = bubbles.last(where: { $0.role == .user })?.text,
+              !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return }
+        isRunning = true
+        turnTask = Task { [weak self] in
+            await self?.runTurn(userText: text, shouldAppendUser: false)
             self?.isRunning = false
         }
     }
@@ -210,6 +228,10 @@ final class AskMishController {
     /// Clears the panel. The old conversation stays on disk.
     func newConversation() {
         guard !isRunning else { return }
+        bubbleFlushTask?.cancel()
+        bubbleFlushTask = nil
+        bufferedBubbleID = nil
+        bufferedBubbleText = ""
         activeTask = .askMish
         conversationID = nil
         bubbles = []
@@ -218,6 +240,8 @@ final class AskMishController {
         attachedThreads = []
         totalPromptTokens = 0
         totalCompletionTokens = 0
+        totalCacheCreationInputTokens = 0
+        totalCacheReadInputTokens = 0
         conversationCostLabel = nil
     }
 
@@ -267,6 +291,8 @@ final class AskMishController {
         attachedThreads = []
         totalPromptTokens = rows.reduce(0) { $0 + ($1.promptTokens ?? 0) }
         totalCompletionTokens = rows.reduce(0) { $0 + ($1.completionTokens ?? 0) }
+        totalCacheCreationInputTokens = 0
+        totalCacheReadInputTokens = 0
         bubbles = reloadedBubbles(from: rows)
         conversationCostLabel = totalCostLabel()
     }
@@ -327,7 +353,7 @@ final class AskMishController {
             if let config, let prompt = row.promptTokens, let completion = row.completionTokens {
                 label = LLMPricing.costLabel(
                     usage: LLMUsage(promptTokens: prompt, completionTokens: completion),
-                    config: config, model: modelID, overrides: overrides)
+                    config: config, model: resolvedModelID(for: config), overrides: overrides)
             }
             let traces = AskMishTrace.traces(calls: calls, results: results)
             bubbles.append(Bubble(
@@ -343,24 +369,36 @@ final class AskMishController {
 
     // MARK: - The loop
 
-    private func runTurn(userText: String) async {
+    private func runTurn(userText: String, shouldAppendUser: Bool) async {
         guard let config = currentProviderConfig() else {
             appendError("No model is set up. Pick one in Settings → AI.")
             return
         }
         let overrides = LLMPricing.loadOverrides()
         let wireModel = resolvedModelID(for: config)
-        await ensureConversation(firstUserText: userText)
-        await appendUser(userText)
+        if shouldAppendUser {
+            await ensureConversation(firstUserText: userText)
+            await appendUser(userText)
+        }
         let tools = AskMishTools.llmToolSpecs()
+        let threadCharacterBudget = config.kind == .ollama
+            ? LLMPrompts.localThreadContextBudget
+            : LLMPrompts.hostedThreadContextBudget
+        // The set is captured once for this user turn. Newly returned tool
+        // messages are wrapped in full, but the cached prefix never changes.
+        let compactToolMessages = AskMishContext.compactionIndices(for: history)
+        var turnUsage: LLMUsage?
 
         for _ in 0..<AskMishContext.maxToolTurnsPerUserTurn {
             var streamedText = ""
             var calls: [LLMToolCall] = []
             var thinkingBlocks: [LLMThinkingBlock] = []
             var usage: LLMUsage?
+            var stopNotice: String?
             let bubbleID = beginAssistantBubble()
-            let request = [systemMessage()] + AskMishContext.prepareForModel(history)
+            let request = [systemMessage()] + AskMishContext.prepareForModel(
+                history, compactToolMessageIndices: compactToolMessages,
+                threadCharacterBudget: threadCharacterBudget)
             do {
                 for try await event in await LLMClient.shared.stream(
                     messages: request, tools: tools, config: config,
@@ -369,7 +407,7 @@ final class AskMishController {
                     switch event {
                     case .token(let token):
                         streamedText += token
-                        updateBubble(bubbleID, text: streamedText)
+                        bufferBubbleToken(bubbleID, token)
                     case .reasoning(let trace):
                         appendReasoning(bubbleID, trace)
                     case .thinkingBlock(let block):
@@ -377,14 +415,22 @@ final class AskMishController {
                     case .toolCall(let call):
                         calls.append(call)
                         appendTrace(bubbleID, AskMishTrace.running(call))
-                    case .done(_, let reported):
+                    case .done(let stopReason, let reported):
                         usage = reported
+                        mergeUsage(reported, into: &turnUsage)
+                        if let notice = LLMStopReason.notice(for: stopReason) {
+                            stopNotice = notice
+                        }
+                    case .error(let message):
+                        throw LLMClientError.http(0, message)
                     }
                 }
             } catch is CancellationError {
                 // Keep the partial answer, drop the unanswered calls: a stored
                 // tool_use without results makes the whole turn unusable.
+                flushBufferedBubble()
                 markInterrupted(bubbleID)
+                await recordAskMishUsage(turnUsage, config: config, model: wireModel)
                 await persistTurn(assistantText: streamedText, calls: [],
                                   results: nil, usage: usage,
                                   thinkingBlocks: thinkingBlocks)
@@ -392,9 +438,13 @@ final class AskMishController {
                                 thinkingBlocks: thinkingBlocks)
                 return
             } catch {
+                flushBufferedBubble()
                 markError(bubbleID, error.localizedDescription)
+                await recordAskMishUsage(turnUsage, config: config, model: wireModel)
                 return
             }
+            flushBufferedBubble()
+            if let stopNotice { appendStopNotice(bubbleID, stopNotice) }
             if Task.isCancelled {
                 markInterrupted(bubbleID)
                 await persistTurn(assistantText: streamedText, calls: [],
@@ -402,6 +452,7 @@ final class AskMishController {
                                   thinkingBlocks: thinkingBlocks)
                 appendToHistory(assistantText: streamedText, calls: [],
                                 thinkingBlocks: thinkingBlocks)
+                await recordAskMishUsage(turnUsage, config: config, model: wireModel)
                 return
             }
             addUsage(usage)
@@ -415,6 +466,7 @@ final class AskMishController {
                 // Treat it as a failure, not as a finished turn.
                 if streamedText.isEmpty {
                     markError(bubbleID, "The model returned nothing. Try again.")
+                    await recordAskMishUsage(turnUsage, config: config, model: wireModel)
                     return
                 }
                 await persistTurn(assistantText: streamedText, calls: [],
@@ -423,6 +475,7 @@ final class AskMishController {
                 appendToHistory(assistantText: streamedText, calls: [],
                                 thinkingBlocks: thinkingBlocks)
                 finishTurnChrome(bubbleID)
+                await recordAskMishUsage(turnUsage, config: config, model: wireModel)
                 return
             }
 
@@ -449,11 +502,82 @@ final class AskMishController {
                             thinkingBlocks: thinkingBlocks)
             if Task.isCancelled {
                 markInterrupted(bubbleID)
+                await recordAskMishUsage(turnUsage, config: config, model: wireModel)
                 return
             }
             finishTurnChrome(bubbleID, moreComing: true)
         }
-        appendError("Stopped after \(AskMishContext.maxToolTurnsPerUserTurn) tool calls. Ask again to continue.")
+        await runFinalAnswer(config: config, model: wireModel, overrides: overrides,
+                             threadCharacterBudget: threadCharacterBudget,
+                             compactToolMessages: compactToolMessages,
+                             turnUsage: turnUsage)
+    }
+
+    /// One last answer-only request after the tool cap. It receives the tool
+    /// results already in history but no write/read tools, so it must explain
+    /// what it found instead of starting another loop.
+    private func runFinalAnswer(config: LLMProviderConfig, model: String,
+                                overrides: [String: LLMPrice],
+                                threadCharacterBudget: Int,
+                                compactToolMessages: Set<Int>,
+                                turnUsage: LLMUsage?) async {
+        let bubbleID = beginAssistantBubble()
+        var text = ""
+        var thinkingBlocks: [LLMThinkingBlock] = []
+        var usage: LLMUsage?
+        var aggregate = turnUsage
+        var stopNotice: String?
+        let request = [systemMessage()] + AskMishContext.prepareForModel(
+            history, compactToolMessageIndices: compactToolMessages,
+            threadCharacterBudget: threadCharacterBudget)
+        do {
+            for try await event in await LLMClient.shared.stream(
+                messages: request, tools: [], config: config, model: model, task: activeTask) {
+                switch event {
+                case .token(let token):
+                    text += token
+                    bufferBubbleToken(bubbleID, token)
+                case .reasoning(let trace):
+                    appendReasoning(bubbleID, trace)
+                case .thinkingBlock(let block):
+                    thinkingBlocks.append(block)
+                case .toolCall:
+                    // Providers should not emit calls when tools are absent.
+                    break
+                case .done(let reason, let reported):
+                    usage = reported
+                    mergeUsage(reported, into: &aggregate)
+                    stopNotice = LLMStopReason.notice(for: reason)
+                case .error(let message):
+                    throw LLMClientError.http(0, message)
+                }
+            }
+        } catch is CancellationError {
+            flushBufferedBubble()
+            markInterrupted(bubbleID)
+            await recordAskMishUsage(aggregate, config: config, model: model)
+            return
+        } catch {
+            flushBufferedBubble()
+            markError(bubbleID, error.localizedDescription)
+            await recordAskMishUsage(aggregate, config: config, model: model)
+            return
+        }
+        flushBufferedBubble()
+        if let stopNotice { appendStopNotice(bubbleID, stopNotice) }
+        addUsage(usage)
+        finishBubble(bubbleID, costLabel: LLMPricing.costLabel(
+            usage: usage, config: config, model: model, overrides: overrides))
+        conversationCostLabel = totalCostLabel()
+        if text.isEmpty {
+            markError(bubbleID, "The model returned nothing after the tool limit.")
+        } else {
+            await persistTurn(assistantText: text, calls: [], results: nil,
+                              usage: usage, thinkingBlocks: thinkingBlocks)
+            appendToHistory(assistantText: text, calls: [], thinkingBlocks: thinkingBlocks)
+            finishTurnChrome(bubbleID)
+        }
+        await recordAskMishUsage(aggregate, config: config, model: model)
     }
 
     /// Runs one tool call, gating writes behind the confirm card.
@@ -536,6 +660,23 @@ final class AskMishController {
             bodyPreview = preview.bodyPreview
             fingerprint = preview.fingerprint
             composeDraftID = draftId
+        } else if call.name == "create_draft",
+                  let store,
+                  let threadID = AskMishTools.createDraftReplyThreadID(
+                    argumentsJSON: call.argumentsJSON) {
+            let threadAddresses = store.messages(inThread: threadID).flatMap { message in
+                AskMishTools.addresses(in: message.fromHeader)
+                    + AskMishTools.addresses(in: message.toHeader)
+                    + AskMishTools.addresses(in: message.ccHeader)
+            }
+            let offThread = AskMishTools.offThreadRecipients(
+                sending: AskMishTools.createDraftRecipients(argumentsJSON: call.argumentsJSON),
+                threadAddresses: threadAddresses)
+            summary = AskMishTools.createDraftSummary(
+                recipients: AskMishTools.createDraftRecipients(argumentsJSON: call.argumentsJSON),
+                subject: AskMishTools.createDraftSubject(argumentsJSON: call.argumentsJSON),
+                hiddenCount: AskMishTools.createDraftBccCount(argumentsJSON: call.argumentsJSON),
+                offThreadRecipients: offThread)
         }
         if Task.isCancelled { return .declined }
         pendingConfirmation = PendingToolConfirmation(
@@ -622,10 +763,15 @@ final class AskMishController {
             let bodies = hydrated.isEmpty ? headers : hydrated
             guard !bodies.isEmpty else { continue }
             injectedThreadIDs.insert(id)
+            let budget = currentProviderConfig()?.kind == .ollama
+                ? LLMPrompts.localThreadContextBudget
+                : LLMPrompts.hostedThreadContextBudget
             messages.append(AskMishContext.contextMessage(
                 threadId: id,
-                threadMarkdown: ThreadExporter.markdown(
-                    subject: subjects[id] ?? "", messages: bodies)))
+                threadMarkdown: LLMPrompts.threadContext(
+                    subject: subjects[id] ?? "", messages: bodies,
+                    characterBudget: budget),
+                characterBudget: budget))
         }
         return messages
     }
@@ -656,9 +802,43 @@ final class AskMishController {
         return bubble.id
     }
 
+    /// Coalesces token-driven observations so SwiftUI does not re-render for
+    /// every tiny provider chunk.
+    private func bufferBubbleToken(_ id: UUID, _ token: String) {
+        if bufferedBubbleID != id {
+            flushBufferedBubble()
+            bufferedBubbleID = id
+            bufferedBubbleText = bubbles.first(where: { $0.id == id })?.text ?? ""
+        }
+        bufferedBubbleText += token
+        guard bubbleFlushTask == nil else { return }
+        bubbleFlushTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: 40_000_000)
+            guard !Task.isCancelled else { return }
+            self?.flushBufferedBubble()
+        }
+    }
+
+    private func flushBufferedBubble() {
+        bubbleFlushTask?.cancel()
+        bubbleFlushTask = nil
+        guard let id = bufferedBubbleID else { return }
+        updateBubble(id, text: bufferedBubbleText)
+        bufferedBubbleID = nil
+        bufferedBubbleText = ""
+    }
+
     private func updateBubble(_ id: UUID, text: String) {
         guard let index = bubbles.firstIndex(where: { $0.id == id }) else { return }
         bubbles[index].text = text
+    }
+
+    private func appendStopNotice(_ id: UUID, _ notice: String) {
+        guard let index = bubbles.firstIndex(where: { $0.id == id }) else { return }
+        if !bubbles[index].text.contains(notice) {
+            if !bubbles[index].text.isEmpty { bubbles[index].text += "\n\n" }
+            bubbles[index].text += notice
+        }
     }
 
     private func appendReasoning(_ id: UUID, _ trace: String) {
@@ -794,6 +974,26 @@ final class AskMishController {
         guard let usage else { return }
         totalPromptTokens += usage.promptTokens
         totalCompletionTokens += usage.completionTokens
+        totalCacheCreationInputTokens += usage.cacheCreationInputTokens
+        totalCacheReadInputTokens += usage.cacheReadInputTokens
+    }
+
+    private func mergeUsage(_ usage: LLMUsage?, into aggregate: inout LLMUsage?) {
+        guard let usage else { return }
+        if aggregate == nil { aggregate = LLMUsage(promptTokens: 0, completionTokens: 0) }
+        aggregate?.promptTokens += usage.promptTokens
+        aggregate?.completionTokens += usage.completionTokens
+        aggregate?.cacheCreationInputTokens += usage.cacheCreationInputTokens
+        aggregate?.cacheReadInputTokens += usage.cacheReadInputTokens
+    }
+
+    private func recordAskMishUsage(_ usage: LLMUsage?, config: LLMProviderConfig,
+                                    model: String) async {
+        guard let usage else { return }
+        await LLMTaskRunner.recordUsage(
+            task: activeTask,
+            resolved: LLMTaskRunner.Resolved(config: config, model: model),
+            usage: usage)
     }
 
     private func totalCostLabel() -> String? {
@@ -801,8 +1001,11 @@ final class AskMishController {
               let config = currentProviderConfig() else { return nil }
         return LLMPricing.costLabel(
             usage: LLMUsage(promptTokens: totalPromptTokens,
-                            completionTokens: totalCompletionTokens),
-            config: config, model: modelID, overrides: LLMPricing.loadOverrides())
+                            completionTokens: totalCompletionTokens,
+                            cacheCreationInputTokens: totalCacheCreationInputTokens,
+                            cacheReadInputTokens: totalCacheReadInputTokens),
+            config: config, model: resolvedModelID(for: config),
+            overrides: LLMPricing.loadOverrides())
     }
 
     // MARK: - Persistence

@@ -57,10 +57,7 @@ enum AskMishTools {
     ]
 
     /// Writes that can put mail on the wire. Return must not confirm these.
-    static let clickRequiredToolNames: Set<String> = [
-        "create_draft",
-        sendDraftToolName,
-    ]
+    static let clickRequiredToolNames: Set<String> = writeToolNames
 
     /// Read tools run freely. Anything not in `readToolNames` needs a confirm,
     /// including unknown names, so a new mutating tool cannot default to read.
@@ -175,13 +172,10 @@ enum AskMishTools {
     ) -> String? {
         switch toolName {
         case "create_draft":
-            let people = joined(recipients(args))
-            guard !people.isEmpty else { return nil }
-            var line = "Create a draft to \(people)."
-            if let subject = text(args, "subject"), !subject.isEmpty {
-                line += " Subject: \(quoted(subject))."
-            }
-            return line
+            return createDraftSummary(
+                recipients: recipients(args),
+                subject: text(args, "subject") ?? "",
+                hiddenCount: strings(args, "bcc").count)
 
         case sendDraftToolName:
             guard let id = text(args, "draft_id") else { return nil }
@@ -267,6 +261,51 @@ enum AskMishTools {
         return line + "."
     }
 
+    /// Summary for `create_draft`, including warnings that can be derived
+    /// before the draft exists. The controller adds the off-thread warning
+    /// after it compares recipients with the reply thread.
+    static func createDraftSummary(recipients: [String], subject: String,
+                                   hiddenCount: Int = 0,
+                                   offThreadRecipients: [String] = []) -> String {
+        let people = joined(recipients.map {
+            $0.trimmingCharacters(in: .whitespacesAndNewlines)
+        }.filter { !$0.isEmpty })
+        var line = people.isEmpty ? "Create the draft" : "Create a draft to \(people)"
+        let title = subject.trimmingCharacters(in: .whitespacesAndNewlines)
+        if !title.isEmpty { line += " — \(quoted(title))" }
+        let hidden = max(0, hiddenCount)
+        if hidden > 0 {
+            line += " Warning: includes \(hidden) Bcc recipient\(hidden == 1 ? "" : "s")."
+        } else {
+            line += "."
+        }
+        if !offThreadRecipients.isEmpty {
+            let listed = joined(offThreadRecipients)
+            line += " Warning: recipient\(offThreadRecipients.count == 1 ? "" : "s") not on the thread: \(listed)."
+        }
+        return line
+    }
+
+    static func createDraftRecipients(argumentsJSON: String) -> [String] {
+        let args = (try? decodeArguments(argumentsJSON)) ?? [:]
+        return recipients(args)
+    }
+
+    static func createDraftReplyThreadID(argumentsJSON: String) -> String? {
+        let args = (try? decodeArguments(argumentsJSON)) ?? [:]
+        return text(args, "reply_to_thread_id")
+    }
+
+    static func createDraftSubject(argumentsJSON: String) -> String {
+        let args = (try? decodeArguments(argumentsJSON)) ?? [:]
+        return text(args, "subject") ?? ""
+    }
+
+    static func createDraftBccCount(argumentsJSON: String) -> Int {
+        let args = (try? decodeArguments(argumentsJSON)) ?? [:]
+        return strings(args, "bcc").count
+    }
+
     /// Stable snapshot of the draft the user confirmed. Send aborts if the
     /// stored draft no longer matches.
     static func sendFingerprint(accountId: String, from: String,
@@ -295,13 +334,38 @@ enum AskMishTools {
         return out
     }
 
-    /// Truncated draft body for the confirm card. Nil when empty.
+    static func addresses(in header: String) -> [String] {
+        MessageParser.splitAddresses(header)
+            .map { MessageParser.emailAddress($0).trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+    }
+
+    /// Full draft body for the confirm card. The view bounds it in a scroll
+    /// region and makes whitespace-only hiding visible.
     static func preview(_ text: String?, limit: Int = 500) -> String? {
         guard let text else { return nil }
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
-        if trimmed.count <= limit { return trimmed }
-        return String(trimmed.prefix(limit)) + "…"
+        _ = limit // Kept for source compatibility with older callers.
+        return trimmed
+    }
+
+    /// Replaces runs of blank lines with an explicit marker in bounded UI.
+    /// The original body remains unchanged for compose and send.
+    static func collapsedBlankLines(_ text: String) -> String {
+        guard let regex = try? NSRegularExpression(pattern: #"(?:\n[ \t]*){3,}"#)
+        else { return text }
+        let range = NSRange(text.startIndex..., in: text)
+        var output = text
+        var matches = regex.matches(in: text, range: range).reversed()
+        for match in matches {
+            guard let matchRange = Range(match.range, in: text) else { continue }
+            let run = String(text[matchRange])
+            let blankLines = max(0, run.components(separatedBy: "\n").count - 2)
+            let replacement = "\n[\(blankLines) blank lines]\n"
+            output.replaceSubrange(matchRange, with: replacement)
+        }
+        return output
     }
 
     // MARK: - Argument readers

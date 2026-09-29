@@ -72,12 +72,16 @@ enum OllamaChatWire {
     }
 
     struct StreamState {
-        private var callCount = 0
-
         mutating func consume(line: String) -> [LLMEvent] {
             guard let data = line.data(using: .utf8),
                   let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any]
             else { return [] }
+            if let message = object["error"] as? String {
+                return [.error(message)]
+            }
+            if let message = object["error"] as? [String: Any] {
+                return [.error(message["message"] as? String ?? "Ollama stream failed")]
+            }
             var events: [LLMEvent] = []
             if let message = object["message"] as? [String: Any] {
                 if let text = message["content"] as? String, !text.isEmpty {
@@ -92,9 +96,8 @@ enum OllamaChatWire {
                     let arguments = function["arguments"] ?? [String: Any]()
                     let argsData = (try? JSONSerialization.data(withJSONObject: arguments)) ?? Data("{}".utf8)
                     events.append(.toolCall(LLMToolCall(
-                        id: "call_\(callCount)", name: name,
+                        id: "call_\(UUID().uuidString)", name: name,
                         argumentsJSON: String(decoding: argsData, as: UTF8.self))))
-                    callCount += 1
                 }
             }
             if object["done"] as? Bool == true {

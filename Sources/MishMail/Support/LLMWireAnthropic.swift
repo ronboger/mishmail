@@ -19,7 +19,7 @@ enum AnthropicWire {
                 for block in message.thinkingBlocks {
                     if let data = block.redactedData, !data.isEmpty {
                         content.append(["type": "redacted_thinking", "data": data])
-                    } else {
+                    } else if !block.signature.isEmpty {
                         content.append(["type": "thinking",
                                         "thinking": block.thinking,
                                         "signature": block.signature])
@@ -43,15 +43,30 @@ enum AnthropicWire {
                 wireMessages.append(["role": "user", "content": content])
             }
         }
-        var resolvedMax = maxTokens
+        var resolvedMax = min(maxTokens, LLMHostedThinking.anthropicOutputCap(model))
+        if LLMHostedThinking.supports(model), !isDefaultThinking(thinking) {
+            resolvedMax = LLMHostedThinking.anthropicMaxTokens(
+                model: model, thinking: thinking, defaultValue: maxTokens)
+        }
         var body: [String: Any] = [
             "model": model,
             "messages": wireMessages,
             "stream": true,
         ]
         applyThinking(model: model, thinking: thinking, maxTokens: &resolvedMax, to: &body)
+        resolvedMax = min(resolvedMax, LLMHostedThinking.anthropicOutputCap(model))
         body["max_tokens"] = resolvedMax
-        if !system.isEmpty { body["system"] = system }
+        if !system.isEmpty {
+            body["system"] = [["type": "text", "text": system,
+                                "cache_control": ["type": "ephemeral"]]]
+        }
+        if let last = wireMessages.indices.last,
+           var content = wireMessages[last]["content"] as? [[String: Any]],
+           let block = content.indices.last {
+            content[block]["cache_control"] = ["type": "ephemeral"]
+            wireMessages[last]["content"] = content
+            body["messages"] = wireMessages
+        }
         if !tools.isEmpty {
             body["tools"] = try tools.map { tool -> [String: Any] in
                 ["name": tool.name, "description": tool.description,
@@ -84,11 +99,20 @@ enum AnthropicWire {
                     "effort": LLMHostedThinking.anthropicEffort(level, model: model)
                 ]
             } else {
-                let budget = LLMHostedThinking.budgetTokens(level)
-                if maxTokens <= budget { maxTokens = budget + 8_192 }
+                var budget = LLMHostedThinking.budgetTokens(level)
+                if maxTokens <= budget {
+                    maxTokens = min(budget + 8_192,
+                                    LLMHostedThinking.anthropicOutputCap(model))
+                }
+                if maxTokens <= budget { budget = max(1, maxTokens - 1) }
                 body["thinking"] = ["type": "enabled", "budget_tokens": budget]
             }
         }
+    }
+
+    private static func isDefaultThinking(_ thinking: LLMThinking) -> Bool {
+        if case .modelDefault = thinking { return true }
+        return false
     }
 
     struct StreamState {
@@ -120,6 +144,10 @@ enum AnthropicWire {
                 if let usage = (object["message"] as? [String: Any])?["usage"] as? [String: Any],
                    let input = usage["input_tokens"] as? Int {
                     promptTokens = input
+                }
+                if let usage = (object["message"] as? [String: Any])?["usage"] as? [String: Any] {
+                    cacheCreationInputTokens = usage["cache_creation_input_tokens"] as? Int ?? 0
+                    cacheReadInputTokens = usage["cache_read_input_tokens"] as? Int ?? 0
                 }
                 return []
             case "content_block_start":
@@ -187,14 +215,38 @@ enum AnthropicWire {
                    let output = usage["output_tokens"] as? Int {
                     completionTokens = output
                 }
+                if let usage = object["usage"] as? [String: Any] {
+                    cacheCreationInputTokens = usage["cache_creation_input_tokens"] as? Int
+                        ?? cacheCreationInputTokens
+                    cacheReadInputTokens = usage["cache_read_input_tokens"] as? Int
+                        ?? cacheReadInputTokens
+                }
                 return []
             case "message_stop":
+                sawMessageStop = true
                 return [.done(stopReason: stopReason,
                               usage: LLMUsage(promptTokens: promptTokens,
-                                              completionTokens: completionTokens))]
+                                              completionTokens: completionTokens,
+                                              cacheCreationInputTokens: cacheCreationInputTokens,
+                                              cacheReadInputTokens: cacheReadInputTokens))]
+            case "error":
+                let providerError = object["error"] as? [String: Any]
+                let message = providerError?["message"] as? String
+                    ?? object["error"] as? String
+                    ?? object["message"] as? String
+                    ?? "Anthropic stream failed"
+                return [.error(message)]
             default:
                 return []
             }
+        }
+
+        private var cacheCreationInputTokens = 0
+        private var cacheReadInputTokens = 0
+        private(set) var sawMessageStop = false
+
+        mutating func finalEvents() -> [LLMEvent] {
+            sawMessageStop ? [] : [.error("stream ended early")]
         }
     }
 }
