@@ -213,7 +213,8 @@ final class DatabaseRawKeyTests: XCTestCase {
 
     func testOnlyEnvironmentFailuresAreTransient() {
         for code: ResultCode in [.SQLITE_BUSY, .SQLITE_LOCKED, .SQLITE_FULL,
-                                 .SQLITE_IOERR, .SQLITE_NOMEM, .SQLITE_CANTOPEN] {
+                                 .SQLITE_IOERR, .SQLITE_NOMEM, .SQLITE_CANTOPEN, .SQLITE_READONLY,
+                                 .SQLITE_PERM, .SQLITE_PROTOCOL, .SQLITE_INTERRUPT] {
             XCTAssertTrue(AppDatabase.isTransientOpenError(DatabaseError(resultCode: code)), "\(code)")
         }
         // Key, corruption and migration failures keep the reset path.

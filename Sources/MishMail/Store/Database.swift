@@ -1030,7 +1030,8 @@ final class AppDatabase: @unchecked Sendable {
         guard let error = error as? DatabaseError else { return false }
         switch error.resultCode {
         case .SQLITE_BUSY, .SQLITE_LOCKED, .SQLITE_FULL, .SQLITE_IOERR,
-             .SQLITE_NOMEM, .SQLITE_CANTOPEN:
+             .SQLITE_NOMEM, .SQLITE_CANTOPEN, .SQLITE_READONLY, .SQLITE_PERM,
+             .SQLITE_PROTOCOL, .SQLITE_INTERRUPT:
             return true
         default:
             return false
@@ -1085,6 +1086,9 @@ final class AppDatabase: @unchecked Sendable {
             } catch RekeyError.busy {
                 NSLog("MishMail: plaintext cache busy; encryption deferred")
                 return .plaintext
+            } catch where !isTransientOpenError(error) {
+                // Damaged plaintext file: the raw open fails and resets.
+                return .raw
             }
             return .raw
         }
