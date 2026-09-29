@@ -145,13 +145,15 @@ extension MailStore {
         let messages = try Message
             .filter(Column("threadId") == threadId)
             .fetchAll(db)
-        for var message in messages {
-            message.labelIds = SyncEngine.applyLabelDelta(
+        for message in messages {
+            let labelIds = SyncEngine.applyLabelDelta(
                 labelIds: message.labelIds,
                 add: labels.add,
                 remove: labels.remove)
-            message.isUnread = message.labelIds.split(separator: " ").contains("UNREAD")
-            try message.save(db)
+            let isUnread = labelIds.split(separator: " ").contains("UNREAD")
+            try db.execute(
+                sql: "UPDATE message SET labelIds = ?, isUnread = ? WHERE id = ?",
+                arguments: [labelIds, isUnread, message.id])
         }
     }
 

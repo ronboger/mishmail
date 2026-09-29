@@ -789,16 +789,19 @@ actor SyncEngine {
                 var missing: [String] = []
                 for (gmailId, ops) in opsSnapshot {
                     let key = "\(account):\(gmailId)"
-                    guard var msg = try Message.fetchOne(db, key: key) else {
+                    guard let msg = try Message.fetchOne(db, key: key) else {
                         missing.append(gmailId)
                         continue
                     }
+                    var labelIds = msg.labelIds
                     for op in ops {
-                        msg.labelIds = Self.applyLabelDelta(labelIds: msg.labelIds,
-                                                            add: op.add, remove: op.remove)
+                        labelIds = Self.applyLabelDelta(labelIds: labelIds,
+                                                        add: op.add, remove: op.remove)
                     }
-                    msg.isUnread = msg.labelIds.split(separator: " ").contains("UNREAD")
-                    try msg.save(db)
+                    let isUnread = labelIds.split(separator: " ").contains("UNREAD")
+                    try db.execute(
+                        sql: "UPDATE message SET labelIds = ?, isUnread = ? WHERE id = ?",
+                        arguments: [labelIds, isUnread, msg.id])
                     keys.insert(msg.threadId)
                 }
                 return (keys, missing)
