@@ -214,10 +214,13 @@ actor SyncEngine {
                 // never wipe them. Gmail's own label color only seeds a label
                 // that has no local color yet.
                 let existing = try LabelRow.fetchOne(db, key: id)
-                try LabelRow(id: id, accountId: accountId,
-                             gmailLabelId: l.id, name: l.name, type: l.type ?? "user",
-                             color: existing?.color ?? l.color?.backgroundColor,
-                             sortOrder: existing?.sortOrder ?? LabelRow.unsorted).save(db)
+                let row = LabelRow(id: id, accountId: accountId,
+                                   gmailLabelId: l.id, name: l.name, type: l.type ?? "user",
+                                   color: existing?.color ?? l.color?.backgroundColor,
+                                   sortOrder: existing?.sortOrder ?? LabelRow.unsorted)
+                // Runs every pass, and labels almost never change between
+                // passes — write only rows that differ from the stored one.
+                if row != existing { try row.save(db) }
             }
         }
     }
@@ -379,8 +382,11 @@ actor SyncEngine {
         var pageToken: String?
         var listed = 0
         repeat {
+            // Ids only — no per-page downloads — so the largest page Gmail
+            // allows: a fifth of the list calls for a reconcile listing.
             let page = try await client.listMessages(
-                query: query, labelIds: labelIds, pageToken: pageToken, maxResults: 100,
+                query: query, labelIds: labelIds, pageToken: pageToken,
+                maxResults: GmailClient.maxListPageSize,
                 includeSpamTrash: includeSpamTrash)
             let ids = (page.messages ?? []).map(\.id)
             result.formUnion(ids)
@@ -405,6 +411,13 @@ actor SyncEngine {
     /// past its variable limit (32766), and a large Gmail-side delete or a
     /// full reconcile can name far more ids than that.
     static let sqlBindChunkSize = 500
+
+    /// `messages.list` page size for a loop that stops once `listed`
+    /// reaches `limit`: Gmail's maximum, but never more than what is left,
+    /// so a bigger page cannot overshoot the cap. At least 1.
+    static func listPageSize(listed: Int, limit: Int) -> Int {
+        max(1, min(GmailClient.maxListPageSize, limit - listed))
+    }
 
     /// Splits `items` into runs of at most `sqlBindChunkSize`.
     static func sqlChunks<T>(_ items: [T]) -> [ArraySlice<T>] {
@@ -583,7 +596,11 @@ actor SyncEngine {
             var seenGmailThreads = Set<String>()
             var downloadedGmailIds = Set<String>()
             repeat {
-                let page = try await client.listMessages(query: query, pageToken: pageToken, maxResults: 100)
+                // Larger pages mean fewer list calls; capped at what is left
+                // of `limit` so a page never lists (and so downloads) past it.
+                let page = try await client.listMessages(
+                    query: query, pageToken: pageToken,
+                    maxResults: Self.listPageSize(listed: listed, limit: limit))
                 let refs = page.messages ?? []
                 let listedIds = refs.map(\.id)
                 listedGmailIds.formUnion(listedIds)
@@ -758,8 +775,11 @@ actor SyncEngine {
             var pageToken: String?
             var listed = 0
             repeat {
+                // Most listed ids already have their attachments, so this
+                // loop is mostly paging; capped at what is left of `limit`.
                 let page = try await client.listMessages(
-                    query: query, pageToken: pageToken, maxResults: 100)
+                    query: query, pageToken: pageToken,
+                    maxResults: Self.listPageSize(listed: listed, limit: limit))
                 let listedIds = (page.messages ?? []).map(\.id)
                 listed += listedIds.count
                 let needRepair = try await db.read { [accountId] db in
@@ -1118,10 +1138,11 @@ actor SyncEngine {
         var keys = Set<String>()
         for item in items {
             var msg = item.message
+            let existing = try Message.fetchOne(db, key: msg.id)
             if item.headersOnly {
                 // Preserve body + attachments; keep hasAttachment if metadata
                 // reported none (empty payload always looks attachment-free).
-                if let existing = try Message.fetchOne(db, key: msg.id) {
+                if let existing {
                     if !msg.hasAttachment { msg.hasAttachment = existing.hasAttachment }
                     // A metadata payload that omitted headers must not wipe a
                     // recorded List-Unsubscribe. Empty incoming + recorded
@@ -1134,7 +1155,7 @@ actor SyncEngine {
                 }
                 msg.bodyText = ""
                 msg.bodyHTML = nil
-                try msg.save(db)
+                try writeMessageRow(db, msg, existing: existing)
                 keys.insert(msg.threadId)
                 continue
             }
@@ -1144,7 +1165,7 @@ actor SyncEngine {
             let bodyHTML = msg.bodyHTML
             msg.bodyText = ""
             msg.bodyHTML = nil
-            try msg.save(db)
+            try writeMessageRow(db, msg, existing: existing)
             try MessageBody(messageId: msg.id, bodyText: bodyText, bodyHTML: bodyHTML).save(db)
             try AttachmentRow.filter(Column("messageId") == item.message.id).deleteAll(db)
             for att in item.attachments {
@@ -1153,6 +1174,23 @@ actor SyncEngine {
             keys.insert(item.message.threadId)
         }
         return keys
+    }
+
+    /// Insert, or update only the columns that changed.
+    ///
+    /// A full-row `save` names every column in its UPDATE, so the v40 FTS
+    /// trigger (`AFTER UPDATE OF subject, fromHeader, toHeader, ccHeader`)
+    /// fired — deleting and re-inserting the message's FTS entry — even for
+    /// a label-only change or an identical replay. `updateChanges` writes
+    /// only the differing columns (nothing at all when the row is equal), so
+    /// the trigger fires only when an indexed header really changed.
+    private static func writeMessageRow(_ db: Database, _ msg: Message,
+                                        existing: Message?) throws {
+        if let existing {
+            try msg.updateChanges(db, from: existing)
+        } else {
+            try msg.insert(db)
+        }
     }
 
     /// Commits `items` in one write transaction and unions thread keys into
@@ -1178,15 +1216,42 @@ actor SyncEngine {
     /// `derivationCount` callback (invoked once per key) so tests can verify
     /// the collapse directly against an isolated in-memory database, the
     /// same pattern used by `pruneMessages`.
+    ///
+    /// Large key sets (a full backfill, a window change, a rebuild) commit
+    /// in chunks of `deriveChunkSize` threads so the writer is released
+    /// between chunks and user actions (mark read, archive) are not queued
+    /// behind one multi-second transaction. Splitting adds no new failure
+    /// state: the message rows these keys cover were already committed by
+    /// earlier `flushUpserts` transactions, so a crash between two derive
+    /// chunks leaves the same "messages written, thread not yet derived"
+    /// state a crash between flush and derive always could. historyId is
+    /// committed only after this returns, as before.
     private func deriveThreads(for keys: Set<String>) async throws {
         guard !keys.isEmpty else { return }
-        try await db.write { [accountId] db in
-            try Self.deriveThreads(db, for: keys, accountId: accountId)
+        for chunk in Self.deriveChunks(keys) {
+            let chunkKeys = Set(chunk)
+            try await db.write { [accountId] db in
+                try Self.deriveThreads(db, for: chunkKeys, accountId: accountId)
+            }
+            // Single choke point for message-row writes: everything that
+            // rewrites messages re-derives their threads here, so recording
+            // the keys once covers backfill, history catch-up, window changes
+            // and search. Per chunk, so a later chunk's failure still reports
+            // the threads that did change.
+            touchedThreadIds.formUnion(chunkKeys)
         }
-        // Single choke point for message-row writes: everything that rewrites
-        // messages re-derives their threads here, so recording the keys once
-        // covers backfill, history catch-up, window changes and search.
-        touchedThreadIds.formUnion(keys)
+    }
+
+    /// Threads re-derived per write transaction in `deriveThreads(for:)`.
+    static let deriveChunkSize = 500
+
+    /// Splits thread keys into runs of at most `deriveChunkSize`. Sorted so
+    /// the chunking is deterministic (Set order is not).
+    static func deriveChunks(_ keys: Set<String>) -> [ArraySlice<String>] {
+        let sorted = keys.sorted()
+        return stride(from: 0, to: sorted.count, by: deriveChunkSize).map {
+            sorted[$0..<min($0 + deriveChunkSize, sorted.count)]
+        }
     }
 
     static func deriveThreads(_ db: Database, for keys: Set<String>, accountId: String,
@@ -1202,7 +1267,16 @@ actor SyncEngine {
             guard let thread = deriveThread(
                 threadKey: threadKey, gmailThreadId: gmailThreadId,
                 accountId: accountId, messages: messages, existing: existing) else { continue }
-            try thread.save(db)
+            // Most touched threads come out identical (a label-only change on
+            // an old message, a replayed history record). Skipping the no-op
+            // UPDATE saves a page rewrite (and its SQLCipher encrypt + HMAC)
+            // plus the index updates on every thread column.
+            if thread != existing {
+                try thread.save(db)
+            }
+            // Still reconciled when the row is unchanged: it is a read-only
+            // no-op when the junction already matches, and this pass is what
+            // heals a junction that drifted from labelIds.
             try ThreadLabels.rewrite(db, threadId: thread.id, labelIds: thread.labelIds)
         }
     }

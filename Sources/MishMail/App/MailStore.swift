@@ -2834,26 +2834,7 @@ struct ComposeRequest: Identifiable {
                         let parsed = SearchQuery.parse(search)
                         var q = MailThread.all()
                         if !parsed.text.isEmpty {
-                            // Strict prefix FTS first; fuzzy only when empty so
-                            // typo expansion never dilutes exact/prefix hits.
-                            var ids = try Row.fetchAll(db, sql: """
-                                SELECT DISTINCT message.threadId FROM message
-                                JOIN message_fts ON message_fts.rowid = message.rowid
-                                WHERE message_fts MATCH ?
-                                """, arguments: [FTS5Pattern(matchingAllPrefixesIn: parsed.text)])
-                                .map { $0["threadId"] as String }
-                            if ids.isEmpty,
-                               let fuzzy = try FuzzySearch.expandedPattern(
-                                   db: db, text: parsed.text
-                               ) {
-                                ids = try Row.fetchAll(db, sql: """
-                                    SELECT DISTINCT message.threadId FROM message
-                                    JOIN message_fts ON message_fts.rowid = message.rowid
-                                    WHERE message_fts MATCH ?
-                                    """, arguments: [fuzzy])
-                                    .map { $0["threadId"] as String }
-                            }
-                            q = q.filter(ids.contains(Column("id")))
+                            q = try SearchFTS.filter(q, db: db, text: parsed.text)
                         }
                         if let from = parsed.from {
                             // fromDisplay/participants hold display names, so an email
@@ -2941,8 +2922,7 @@ struct ComposeRequest: Identifiable {
                         let inbound = MailStore.usesInboundSort(for: view)
                         inboundSort = inbound
                         listRequest = q
-                        let key = ThreadListPaging.sortDateSQL(inboundSort: inbound)
-                        return try q.order(sql: "\(key) DESC, id DESC")
+                        return try q.order(sql: ThreadListQuery.orderSQL(inboundSort: inbound))
                             .limit(fetchLimit).fetchAll(db)
                     }
                 }
@@ -3148,10 +3128,9 @@ struct ComposeRequest: Identifiable {
                     q = MailStore.applyChips(q, chips, keepIds: keepIds, starKeepIds: starKeepIds)
                     if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
                     let inbound = MailStore.usesInboundSort(for: view)
-                    let key = ThreadListPaging.sortDateSQL(inboundSort: inbound)
                     q = q.filter(sql: ThreadListPaging.olderThanSQL(inboundSort: inbound),
                                  arguments: [cursor.sortDate, cursor.sortDate, cursor.id])
-                    let rows = try q.order(sql: "\(key) DESC, id DESC")
+                    let rows = try q.order(sql: ThreadListQuery.orderSQL(inboundSort: inbound))
                         .limit(ThreadListPaging.probeLimit()).fetchAll(db)
                     return ThreadListPaging.splitPage(rows)
                 }
@@ -3362,23 +3341,18 @@ struct ComposeRequest: Identifiable {
         var q = MailThread.all()
         let now = Date()
         func notSnoozed(_ q: QueryInterfaceRequest<MailThread>) -> QueryInterfaceRequest<MailThread> {
-            q.filter(Column("snoozeUntil") == nil || Column("snoozeUntil") <= now)
+            ThreadListQuery.notSnoozed(q, now: now)
         }
         switch view {
+        // Inbox-style predicates live in ThreadListQuery so the sort-index
+        // test (ThreadListIndexTests) runs the same SQL.
         case .inbox:
             // Category filtering is handled by the Categories chip.
-            q = notSnoozed(q.filter(Column("inInbox") == true && Column("inTrash") == false))
+            q = ThreadListQuery.inbox(now: now)
         case .promotions:
-            // Match gmail.com's Promotions tab: in-inbox category mail, never spam.
-            q = q.filter(Column("inTrash") == false
-                         && Column("inSpam") == false
-                         && Column("inInbox") == true
-                         && Column("inPromotions") == true)
+            q = ThreadListQuery.promotions()
         case .social:
-            q = q.filter(Column("inTrash") == false
-                         && Column("inSpam") == false
-                         && Column("inInbox") == true
-                         && Column("inSocial") == true)
+            q = ThreadListQuery.social()
         case .starred:
             q = q.filter((Column("isStarred") == true || starKeepIds.contains(Column("id")))
                          && Column("inTrash") == false)
@@ -3407,7 +3381,7 @@ struct ComposeRequest: Identifiable {
         case .trash:
             q = q.filter(Column("inTrash") == true)
         case .account(let a):
-            q = notSnoozed(q.filter(Column("accountId") == a && Column("inInbox") == true && Column("inTrash") == false))
+            q = ThreadListQuery.accountInbox(a, now: now)
         case .label(let a, let labelId, _):
             q = q.filter(Column("accountId") == a)
             q = filterThreads(q, matchingLabelIds: [labelId], starKeepIds: starKeepIds)

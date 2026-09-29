@@ -410,6 +410,10 @@ actor GmailClient {
         }
     }
 
+    /// Largest page `messages.list` and `history.list` accept. A list call
+    /// costs the same quota whatever its size, so id-only paging uses this.
+    static let maxListPageSize = 500
+
     /// `includeSpamTrash` must be true to list TRASH or SPAM: without it
     /// Gmail can answer a `labelIds=TRASH` + `q` listing with nothing, and a
     /// reconcile then reads every cached trash/spam row as deleted.
@@ -819,8 +823,12 @@ actor GmailClient {
         let _: ThreadResp = try await request("POST", "/threads/\(id)/trash")
     }
 
-    func history(since historyId: String, pageToken: String? = nil) async throws -> GHistoryList {
-        var q = ["startHistoryId": historyId]
+    /// `maxResults` defaults to Gmail's cap (500) rather than its implicit
+    /// 100: the engine collects every page before slicing, so page size only
+    /// sets how many round trips (2 quota units each) a catch-up takes.
+    func history(since historyId: String, pageToken: String? = nil,
+                 maxResults: Int = GmailClient.maxListPageSize) async throws -> GHistoryList {
+        var q = ["startHistoryId": historyId, "maxResults": String(maxResults)]
         if let pageToken { q["pageToken"] = pageToken }
         return try await request("GET", "/history", query: q)
     }
