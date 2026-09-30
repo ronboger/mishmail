@@ -621,15 +621,20 @@ actor SyncEngine {
                 let missingGmailIds = listedIds.filter { missingSet.contains($0) }
                 // Batch HTTP when enabled; retry-exhausted ids retry next window pass.
                 let report = try await client.getMessages(ids: missingGmailIds)
-                // Parse the whole page off this actor, in parallel; the loop
-                // below then only buffers and flushes, in fetch order.
-                let parsedPage = await MessageParser.parseConcurrently(
-                    report.messages, accountId: accountId)
-                for (msg, (message, attachments)) in zip(report.messages, parsedPage) {
-                    downloadedGmailIds.insert(msg.id)
-                    writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
-                    if writeBuffer.count >= Self.writeChunkSize {
-                        try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                // Parse off this actor, in parallel, one slice at a time; the
+                // loop then only buffers and flushes, in fetch order. Slicing
+                // bounds how many parsed bodies (HTML plus inlined CID images)
+                // are alive at once — a whole 500-message page would be.
+                for range in Self.parseSliceRanges(count: report.messages.count) {
+                    let slice = Array(report.messages[range])
+                    let parsedSlice = await MessageParser.parseConcurrently(
+                        slice, accountId: accountId)
+                    for (msg, (message, attachments)) in zip(slice, parsedSlice) {
+                        downloadedGmailIds.insert(msg.id)
+                        writeBuffer.append(PendingUpsert(message: message, attachments: attachments))
+                        if writeBuffer.count >= Self.writeChunkSize {
+                            try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                        }
                     }
                 }
                 fetched += report.messages.count
@@ -795,14 +800,17 @@ actor SyncEngine {
                     let report = try await client.getMessages(
                         ids: needRepair, format: "full")
                     exhausted += report.retryExhaustedIds.count
-                    let parsedPage = await MessageParser.parseConcurrently(
-                        report.messages, accountId: accountId)
-                    for (message, attachments) in parsedPage {
-                        writeBuffer.append(PendingUpsert(
-                            message: message, attachments: attachments,
-                            headersOnly: false))
-                        if writeBuffer.count >= Self.writeChunkSize {
-                            try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                    for range in Self.parseSliceRanges(count: report.messages.count) {
+                        let slice = Array(report.messages[range])
+                        let parsedSlice = await MessageParser.parseConcurrently(
+                            slice, accountId: accountId)
+                        for (message, attachments) in parsedSlice {
+                            writeBuffer.append(PendingUpsert(
+                                message: message, attachments: attachments,
+                                headersOnly: false))
+                            if writeBuffer.count >= Self.writeChunkSize {
+                                try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                            }
                         }
                     }
                     repaired += report.messages.count
@@ -1009,13 +1017,16 @@ actor SyncEngine {
             if !needFull.isEmpty {
                 let report = try await client.getMessages(ids: needFull, format: "full")
                 retryExhausted += report.retryExhaustedIds.count
-                let parsedPage = await MessageParser.parseConcurrently(
-                    report.messages, accountId: accountId)
-                for (message, attachments) in parsedPage {
-                    writeBuffer.append(PendingUpsert(
-                        message: message, attachments: attachments, headersOnly: false))
-                    if writeBuffer.count >= Self.writeChunkSize {
-                        try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                for range in Self.parseSliceRanges(count: report.messages.count) {
+                    let slice = Array(report.messages[range])
+                    let parsedSlice = await MessageParser.parseConcurrently(
+                        slice, accountId: accountId)
+                    for (message, attachments) in parsedSlice {
+                        writeBuffer.append(PendingUpsert(
+                            message: message, attachments: attachments, headersOnly: false))
+                        if writeBuffer.count >= Self.writeChunkSize {
+                            try await flushUpserts(&writeBuffer, into: &touchedKeys)
+                        }
                     }
                 }
                 if report.hasRetryExhausted {
@@ -1120,6 +1131,18 @@ actor SyncEngine {
     /// Messages per write transaction on backfill / full-fetch paths.
     /// Tuned to amortize SQLCipher commit cost without holding huge buffers.
     static let writeChunkSize = 32
+
+    /// Full-body parse slice. Parallel parse holds every parsed message of
+    /// its input at once; 128 keeps several cores busy while bounding peak
+    /// memory to a fraction of a 500-message list page.
+    static let parseSliceSize = 128
+
+    /// Index ranges, not copies: only the slice being parsed is copied.
+    static func parseSliceRanges(count: Int) -> [Range<Int>] {
+        stride(from: 0, to: count, by: parseSliceSize).map {
+            $0..<min($0 + parseSliceSize, count)
+        }
+    }
 
     /// Parsed message + attachment rows ready for a batched local write.
     struct PendingUpsert {

@@ -35,12 +35,7 @@ extension MailStore {
         let client = client(for: thread.accountId)
         let gmailThreadId = thread.gmailThreadId
         let isDemo = demoMode
-        // Bulk remote runs are chained: the calls inside one run are
-        // bounded, so without the chain a quick bulk undo could reach Gmail
-        // before the tail of the bulk action it undoes.
-        let predecessor = bulkRemoteTail
-        bulkRemoteTail = Task {
-            _ = await predecessor?.value
+        Task {
             switch await persistence.value {
             case .failure(let error):
                 await MainActor.run {
@@ -318,7 +313,14 @@ extension MailStore {
         for thread in targets where !accountIds.contains(thread.accountId) {
             accountIds.append(thread.accountId)
         }
-        Task {
+        // Bulk remote runs are chained: the calls inside one run are
+        // bounded, so without the chain a quick bulk undo could reach Gmail
+        // before the tail of the bulk action it undoes. Single-thread
+        // edits stay independent tasks, as before.
+        let predecessor = bulkRemoteTail
+        bulkRemoteTail = Task {
+            _ = await predecessor?.value
+            if self.isShuttingDown { return }
             switch await persistence.value {
             case .failure(let error):
                 // One transaction: every row rolled back together, so every

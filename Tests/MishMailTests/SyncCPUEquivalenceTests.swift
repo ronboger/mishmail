@@ -176,3 +176,14 @@ final class SyncCPUEquivalenceTests: XCTestCase {
               + "cores=\(ProcessInfo.processInfo.activeProcessorCount)")
     }
 }
+
+final class ParseSliceRangeTests: XCTestCase {
+    func testRangesCoverInputInOrderWithoutOverlap() {
+        let size = SyncEngine.parseSliceSize
+        for count in [0, 1, size - 1, size, size + 1, 3 * size, 500] {
+            let ranges = SyncEngine.parseSliceRanges(count: count)
+            XCTAssertEqual(ranges.flatMap { Array($0) }, Array(0..<count), "count \(count)")
+            XCTAssertTrue(ranges.allSatisfy { $0.count <= size && !$0.isEmpty })
+        }
+    }
+}
