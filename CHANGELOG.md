@@ -28,6 +28,14 @@ minor versions may still change behavior.
   - Contact mining runs off the main thread. Background polling no longer
     re-fetches send-as identities or rewrites every label each minute, and
     unchanged messages and threads are no longer rewritten during sync.
+  - Arrow and j/k browsing re-renders only the selection, not the list.
+  - Bulk archive/trash/star/read on a multi-selection writes all rows in
+    one transaction and sends at most four Gmail requests at a time per
+    account.
+  - Sync decodes and parses messages in parallel off the sync actors, and
+    HTML stripping no longer recompiles its regexes per message.
+  - The settings badge refresh, split-compose thread lookup and deep links
+    no longer read the encrypted database on the main thread.
 
 ## [0.5.0] - 2026-09-29
 
