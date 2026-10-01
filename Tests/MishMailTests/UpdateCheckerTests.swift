@@ -25,6 +25,19 @@ final class UpdateCheckerTests: XCTestCase {
         XCTAssertTrue(UpdateChecker.isNewer("0.1.1", than: "abc"))
     }
 
+    /// A suffixed tag is never offered: "0.6.0-beta.1" used to parse as
+    /// [0, 6, 0, 1] and outrank the final 0.6.0.
+    func testPreReleaseSuffixIsNeverNewer() {
+        XCTAssertFalse(UpdateChecker.isNewer("0.6.0-beta.1", than: "0.6.0"))
+        XCTAssertFalse(UpdateChecker.isNewer("0.6.0-beta.1", than: "0.5.0"))
+        XCTAssertFalse(UpdateChecker.isNewer("0.6.0-rc1", than: "0.5.0"))
+        XCTAssertFalse(UpdateChecker.isNewer("0.6.x", than: "0.5.0"))
+        XCTAssertFalse(UpdateChecker.isNewer("0.-6.0", than: "0.5.0"))
+        XCTAssertFalse(UpdateChecker.isNewer("", than: "0.5.0"))
+        // Surrounding whitespace is not a suffix.
+        XCTAssertTrue(UpdateChecker.isNewer(" 0.6.0 ", than: "0.5.0"))
+    }
+
     func testFindAppPrefersMishMailName() throws {
         let root = FileManager.default.temporaryDirectory
             .appendingPathComponent("pm-update-test-\(UUID().uuidString)", isDirectory: true)
