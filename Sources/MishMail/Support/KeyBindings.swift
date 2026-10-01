@@ -21,8 +21,9 @@ struct ShortcutSpec: Identifiable {
 
 /// Single source of truth for the Gmail-style single-key shortcuts:
 /// defaults, user overrides (persisted to UserDefaults), and both
-/// key→command and command→key lookups. The `g` prefix and `?` help key
-/// are reserved and handled before this registry is consulted.
+/// key→command and command→key lookups. The `g` prefix, the `?` help key
+/// and the `/` search key are reserved and handled before this registry is
+/// consulted.
 @MainActor
 final class KeyBindings: ObservableObject {
     enum Category: String, CaseIterable {
@@ -30,7 +31,24 @@ final class KeyBindings: ObservableObject {
         case actions = "Actions"
     }
 
-    static let reservedKeys: Set<String> = ["g", "?"]
+    static let reservedKeys: Set<String> = ["g", "?", "/"]
+
+    /// False for keys the main-window key monitor consumes before it asks
+    /// this registry: Return, Tab, Delete and Esc (control characters), and
+    /// the arrows, Home/End and function keys (AppKit reports those as
+    /// private-use scalars U+F700–U+F8FF). A command bound to one of them
+    /// would have no working key.
+    static func isDeliverable(_ key: String) -> Bool {
+        !key.unicodeScalars.contains {
+            CharacterSet.controlCharacters.contains($0)
+                || (0xF700...0xF8FF).contains($0.value)
+        }
+    }
+
+    /// True when a stored override can still fire its command.
+    private static func isBindable(_ key: String) -> Bool {
+        key.count == 1 && key != " " && !reservedKeys.contains(key) && isDeliverable(key)
+    }
 
     static let catalog: [ShortcutSpec] = [
         .init(command: .next, title: "Next conversation", category: .navigation, defaultKey: "j"),
@@ -87,6 +105,13 @@ final class KeyBindings: ObservableObject {
                 guard let cmd = ShortcutCommand(rawValue: key) else { continue }
                 let normalized = Self.normalizeKey(value)
                 if normalized != value { needsNormalizePersist = true }
+                // An override saved before `/`, Return, arrows and function
+                // keys were refused: drop it so the command gets its default
+                // key back instead of staying unreachable.
+                guard Self.isBindable(normalized) else {
+                    needsNormalizePersist = true
+                    continue
+                }
                 loaded[cmd] = normalized
             }
             overrides = loaded
@@ -134,6 +159,9 @@ final class KeyBindings: ObservableObject {
         }
         guard !Self.reservedKeys.contains(key) else {
             return .rejected("\"\(key)\" is reserved.")
+        }
+        guard Self.isDeliverable(key) else {
+            return .rejected("Return, Tab, Delete, arrow and function keys can't be used.")
         }
         if self.key(for: command) == key { return .ok }
         if let other = primaryCommand(for: key) { return .conflict(other) }

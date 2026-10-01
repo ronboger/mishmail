@@ -58,6 +58,43 @@ final class KeyBindingsTests: XCTestCase {
         XCTAssertEqual(kb.key(for: .archive), "e")
     }
 
+    /// The main-window key monitor consumes `/` (search), Return, Tab,
+    /// Delete, the arrows, Home/End and the function keys before the
+    /// registry is consulted. A rebind to one of them would leave the
+    /// command with no working key.
+    func testKeysTheMonitorNeverDeliversAreRejected() {
+        let kb = KeyBindings(defaults: defaults)
+        let undeliverable = ["/", "\r", "\t", "\u{3}", "\u{7F}", "\u{1B}",
+                             "\u{F700}", "\u{F701}", "\u{F729}", "\u{F72B}",
+                             "\u{F704}", "\u{F8FF}"]
+        for key in undeliverable {
+            guard case .rejected = kb.rebind(.archive, to: key) else {
+                return XCTFail("\(key.unicodeScalars.map { String($0.value, radix: 16) }) must be rejected")
+            }
+        }
+        XCTAssertEqual(kb.key(for: .archive), "e")
+        XCTAssertEqual(kb.command(for: "e"), .archive)
+        XCTAssertNil(kb.command(for: "/"))
+    }
+
+    /// An override stored before the rule existed must not keep the command
+    /// without a key: it falls back to the catalog default on load.
+    func testStoredUndeliverableOverrideFallsBackToDefault() {
+        let raw = ["archive": "/", "trash": "\r", "snooze": "q"]
+        defaults.set(try! JSONEncoder().encode(raw), forKey: "keyBindings")
+        let kb = KeyBindings(defaults: defaults)
+        XCTAssertEqual(kb.key(for: .archive), "e")
+        XCTAssertEqual(kb.key(for: .trash), "#")
+        XCTAssertEqual(kb.key(for: .snooze), "q")
+        XCTAssertEqual(kb.command(for: "e"), .archive)
+        // The cleaned set is persisted.
+        let kb2 = KeyBindings(defaults: defaults)
+        XCTAssertEqual(kb2.key(for: .archive), "e")
+        let stored = try! JSONDecoder().decode(
+            [String: String].self, from: defaults.data(forKey: "keyBindings")!)
+        XCTAssertEqual(stored, ["snooze": "q"])
+    }
+
     func testAliasKeyTriggersCommandUntilRebound() {
         let kb = KeyBindings(defaults: defaults)
         XCTAssertEqual(kb.command(for: "b"), .snooze)
