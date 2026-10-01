@@ -274,6 +274,64 @@ final class SnoozeDateParserTests: XCTestCase {
         XCTAssertTrue(labels.contains(where: { $0.hasPrefix("february") }), labels.joined(separator: ", "))
     }
 
+    // MARK: - Day-part words
+
+    /// "This evening" is a preset title, so people type it. It used to
+    /// prefix-match "this weekend" and snooze to Saturday.
+    func testThisDayPartMeansToday() {
+        // Same list as a bare "evening": today first (Enter takes it), then
+        // the usual ladder at that hour.
+        let evening = SnoozeDateParser.suggestions(for: "this evening", now: now)
+        XCTAssertEqual(evening, SnoozeDateParser.suggestions(for: "evening", now: now))
+        XCTAssertTrue(evening.first?.label.hasPrefix("Today") ?? false)
+        let e = comps(evening.first?.date)
+        XCTAssertEqual([e.month, e.day, e.hour], [7, 7, 18])
+
+        let a = comps(first("this afternoon"))
+        XCTAssertEqual([a.month, a.day, a.hour], [7, 7, SnoozePresets.afternoonHour])
+        // 08:00 has passed at the 10:00 fixture → the next morning.
+        let m = comps(first("this morning"))
+        XCTAssertEqual([m.month, m.day, m.hour], [7, 8, SnoozePresets.morningHour])
+    }
+
+    /// "afternoon" also ends in "noon". The suffix table was a Dictionary,
+    /// so which one matched changed from launch to launch.
+    func testAfternoonIsNotNoon() {
+        let t = comps(first("tomorrow afternoon"))
+        XCTAssertEqual([t.month, t.day, t.hour], [7, 8, SnoozePresets.afternoonHour])
+        let bare = comps(first("afternoon"))
+        XCTAssertEqual([bare.month, bare.day, bare.hour], [7, 7, SnoozePresets.afternoonHour])
+        let fri = comps(first("fri afternoon"))
+        XCTAssertEqual([fri.month, fri.day, fri.hour], [7, 10, SnoozePresets.afternoonHour])
+    }
+
+    /// The parser and the preset rows must agree on what each day part means.
+    func testDayPartHoursMatchPresets() {
+        XCTAssertEqual(comps(first("tomorrow morning")).hour, SnoozePresets.morningHour)
+        XCTAssertEqual(comps(first("tomorrow afternoon")).hour, SnoozePresets.afternoonHour)
+        XCTAssertEqual(comps(first("tomorrow evening")).hour, SnoozePresets.eveningHour)
+        let preset = SnoozePresets.presets(now: now).first { $0.title == "This afternoon" }
+        XCTAssertEqual(first("this afternoon"), preset?.date)
+    }
+
+    func testNoonStillParses() {
+        let fri = comps(first("fri noon"))
+        XCTAssertEqual([fri.month, fri.day, fri.hour], [7, 10, 12])
+        let tm = comps(first("tomorrow at noon"))
+        XCTAssertEqual([tm.month, tm.day, tm.hour], [7, 8, 12])
+        let bare = comps(first("at noon"))
+        XCTAssertEqual([bare.month, bare.day, bare.hour], [7, 7, 12])
+    }
+
+    /// "tonight" ends in "night" but is its own keyword, not "to" + night.
+    func testTonightIsNotSplit() {
+        let out = SnoozeDateParser.suggestions(for: "tonight", now: now)
+        XCTAssertEqual(out.count, 1, out.map(\.label).joined(separator: ", "))
+        XCTAssertTrue(out.first?.label.hasPrefix("Tonight") ?? false)
+        let c = comps(out.first?.date)
+        XCTAssertEqual([c.month, c.day, c.hour], [7, 7, 20])
+    }
+
     // MARK: - Hostile input (the field parses on every keystroke)
 
     /// Day/month habit ("25/12") and impossible months used to index

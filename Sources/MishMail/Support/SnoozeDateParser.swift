@@ -362,12 +362,31 @@ enum SnoozeDateParser {
     /// Peels a trailing time expression off the query:
     /// "fri 3pm" → ("fri", 15:00), "aug 12 at 17:30" → ("aug 12", 17:30).
     private static func splitTime(from text: String) -> (String, (hour: Int, minute: Int)?) {
-        let wordTimes: [String: Int] = ["noon": 12, "morning": 8, "afternoon": 14, "evening": 18, "night": 20]
+        // An array, not a Dictionary: iteration order must not change from
+        // launch to launch. Hours come from the preset anchors so "this
+        // afternoon" typed and "This afternoon" clicked are the same time.
+        let wordTimes: [(word: String, hour: Int)] = [
+            ("afternoon", SnoozePresets.afternoonHour),
+            ("morning", SnoozePresets.morningHour),
+            ("evening", SnoozePresets.eveningHour),
+            ("night", 20),
+            ("noon", 12),
+        ]
         for (word, hour) in wordTimes where text.hasSuffix(word) {
-            let rest = String(text.dropLast(word.count))
-                .trimmingCharacters(in: .whitespaces)
-            let cleaned = rest.hasSuffix(" at") ? String(rest.dropLast(3)) : rest
-            return (cleaned, (hour, 0))
+            let head = text.dropLast(word.count)
+            // Whole words only: "afternoon" is not "after" + "noon", and
+            // "tonight" is a keyword of its own, not "to" + "night".
+            guard head.isEmpty || head.last?.isWhitespace == true else { continue }
+            var rest = head.trimmingCharacters(in: .whitespaces)
+            if rest == "at" {
+                rest = ""
+            } else if rest.hasSuffix(" at") {
+                rest = String(rest.dropLast(3))
+            }
+            // "this evening" is today's evening. Left alone, "this" would
+            // prefix-match "this weekend" and resolve to Saturday.
+            if rest == "this" { rest = "" }
+            return (rest, (hour, 0))
         }
         if let m = text.firstMatch(of: /(?:\bat )?(\d{1,2})(?::(\d{2}))? ?(am|pm)?$/),
            m.3 != nil || m.2 != nil {  // require am/pm or minutes so "aug 12" isn't a time
