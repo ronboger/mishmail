@@ -112,20 +112,17 @@ enum MessageParser {
     /// copies — though mail added via `users.messages.insert`/import can
     /// carry an attacker-authored first header, so this is a guard, not a
     /// guarantee). And the match is a boundary-checked method token after
-    /// stripping parenthesized comments, because Google echoes attacker bytes
-    /// verbatim in the same value (`smtp.mailfrom=` envelope sender) — a
-    /// quoted local part like `"dmarc=pass"@evil.example` must not satisfy it.
+    /// stripping parenthesized comments and quoted strings, because Google
+    /// echoes attacker bytes verbatim in the same value (`smtp.mailfrom=`
+    /// envelope sender) — a quoted local part like `"dmarc=pass"@evil.example`
+    /// or `"x;dmarc=pass"@evil.example` must not satisfy it.
     static func senderAuthenticated(_ g: GMessage) -> Bool? {
         guard let raw = g.payload?.headers?
             .first(where: {
                 $0.name.caseInsensitiveCompare("Authentication-Results") == .orderedSame
             })?
             .value else { return nil }
-        var results = raw.lowercased()
-        // Parenthesized CFWS comments can hold attacker-influenced text.
-        while let range = results.range(of: #"\([^()]*\)"#, options: .regularExpression) {
-            results.removeSubrange(range)
-        }
+        let results = strippingCommentsAndQuotedStrings(raw.lowercased())
         guard let verdict = results.range(
             of: #"(?:^|;)\s*dmarc\s*=\s*([a-z0-9-]+)"#,
             options: .regularExpression) else { return false }
@@ -134,6 +131,41 @@ enum MessageParser {
             .last?
             .trimmingCharacters(in: .whitespaces)
         return value == "pass"
+    }
+
+    /// Removes parenthesized CFWS comments (nested) and double-quoted
+    /// strings from a structured header value. Both can hold
+    /// attacker-influenced text, and a `;` inside either is not a method
+    /// separator: `smtp.mailfrom="x;dmarc=pass"@evil.example` must not read
+    /// as a verdict. A backslash escapes the next character inside both. An
+    /// unterminated quote or comment swallows the rest of the value — fail
+    /// closed, since nothing after it can be told from sender text.
+    static func strippingCommentsAndQuotedStrings(_ value: String) -> String {
+        var out = ""
+        out.reserveCapacity(value.count)
+        var inQuotes = false
+        var escaped = false
+        var commentDepth = 0
+        for ch in value {
+            if inQuotes || commentDepth > 0 {
+                if escaped { escaped = false; continue }
+                if ch == "\\" { escaped = true; continue }
+                if inQuotes {
+                    if ch == "\"" { inQuotes = false }
+                } else if ch == "(" {
+                    commentDepth += 1
+                } else if ch == ")" {
+                    commentDepth -= 1
+                }
+                continue
+            }
+            switch ch {
+            case "\"": inQuotes = true
+            case "(": commentDepth += 1
+            default: out.append(ch)
+            }
+        }
+        return out
     }
 
     private static func partHeader(_ part: GMessage.Part, _ name: String) -> String? {

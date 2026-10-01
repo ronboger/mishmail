@@ -308,6 +308,30 @@ final class MessageParsingTests: XCTestCase {
             #"mx.google.com; spf=pass smtp.mailfrom=\"dmarc=pass\"@evil.example; dmarc=fail"#)])
         XCTAssertEqual(MessageParser.senderAuthenticated(forgedLocalPart), false)
 
+        // A `;` inside the quoted local part must not act as a method
+        // separator: the only real verdict here is dmarc=fail.
+        let quotedSemicolon = try authMessage([("Authentication-Results",
+            #"mx.google.com; spf=pass smtp.mailfrom=\"x;dmarc=pass\"@evil.example; dmarc=fail header.from=trusted.com"#)])
+        XCTAssertEqual(MessageParser.senderAuthenticated(quotedSemicolon), false)
+        XCTAssertEqual(
+            MessageParser.parse(quotedSemicolon, accountId: "a@x.com").0.senderAuth, false)
+
+        // An escaped quote does not end the quoted string.
+        let escapedQuote = try authMessage([("Authentication-Results",
+            #"mx.google.com; spf=pass smtp.mailfrom=\"a\\\";dmarc=pass; b\"@evil.example; dmarc=fail"#)])
+        XCTAssertEqual(MessageParser.senderAuthenticated(escapedQuote), false)
+
+        // Unterminated quote: everything after it is sender text. Fail closed.
+        let openQuote = try authMessage([("Authentication-Results",
+            #"mx.google.com; spf=pass smtp.mailfrom=\"x;dmarc=pass header.from=trusted.com"#)])
+        XCTAssertEqual(MessageParser.senderAuthenticated(openQuote), false)
+
+        // A quote character inside a comment is comment text, not a string
+        // start: the real verdict after it still counts.
+        let quoteInComment = try authMessage([("Authentication-Results",
+            #"mx.google.com; spf=pass (5\" rule) smtp.mailfrom=x.com; dmarc=pass (p=none \"x) header.from=x.com"#)])
+        XCTAssertEqual(MessageParser.senderAuthenticated(quoteInComment), true)
+
         // Token smuggled in a parenthesized comment.
         let commentToken = try authMessage([("Authentication-Results",
             "mx.google.com; dmarc=fail (google.com: dmarc=pass text) header.from=evil.example")])
