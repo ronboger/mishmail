@@ -606,6 +606,14 @@ enum MessageParser {
         "command", "js", "jxa", "py", "rb", "pl", "php", "ps1",
         "exe", "msi", "com", "bat", "cmd", "scr", "jar", "bin",
         "ipa", "apk",
+        // Web documents (run script / load remote content in a browser).
+        "xhtml", "xht", "shtml", "mht", "mhtml", "webarchive", "hta", "jnlp", "vbs",
+        // Location files (mount or open a remote server on double-click).
+        "url", "afploc", "ftploc", "nfsloc", "vncloc", "term",
+        // Disk images and installer archives.
+        "sparseimage", "sparsebundle", "cdr", "xip",
+        // Macro-enabled Office templates and add-ins.
+        "xlam", "xla", "xltm", "dotm", "potm", "ppam", "ppsm", "sldm",
     ]
 
     /// True when the filename looks executable / installer-like, including
