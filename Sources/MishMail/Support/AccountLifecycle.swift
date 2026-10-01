@@ -17,6 +17,25 @@ enum AccountLifecycle {
         }
     }
 
+    /// Accounts a sync pass should attempt. A background pass skips accounts
+    /// already known to need reauthorization: only the user can fix those,
+    /// and each attempt is a request to Google's token endpoint with a dead
+    /// token. A user-initiated pass tries all of them. The flag is cleared by
+    /// a successful sign-in or sync, after which polling resumes.
+    static func accountsToSync(
+        all: [String], needingReauth: Set<String>, interactive: Bool
+    ) -> [String] {
+        interactive ? all : all.filter { !needingReauth.contains($0) }
+    }
+
+    /// Whether a reauthorization failure should raise the banner. Repeat
+    /// failures for an account that is already flagged stay quiet, so a
+    /// dismissed banner does not return and does not replace an unrelated
+    /// one — unless the user asked for the sync that failed.
+    static func presentsReauthBanner(newlyFlagged: Bool, interactive: Bool) -> Bool {
+        newlyFlagged || interactive
+    }
+
     /// Demo / UI-test processes are Keychain-free. Never let real OAuth data
     /// cross that boundary.
     static func blocksDemoConnect(usesFixtureDatabaseKey: Bool) -> Bool {

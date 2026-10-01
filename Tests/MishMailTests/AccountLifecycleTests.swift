@@ -173,4 +173,43 @@ final class AccountLifecycleTests: XCTestCase {
         XCTAssertTrue(defaults.bool(forKey: "backfill.starred.b@x.com"))
         XCTAssertTrue(defaults.bool(forKey: "backfill.attachments.b@x.com"))
     }
+
+    // MARK: - Reauthorization
+
+    func testBackgroundSyncSkipsAccountsThatNeedReauth() {
+        let all = ["a@x.com", "b@x.com", "c@x.com"]
+        XCTAssertEqual(
+            AccountLifecycle.accountsToSync(
+                all: all, needingReauth: ["b@x.com"], interactive: false),
+            ["a@x.com", "c@x.com"])
+        XCTAssertEqual(
+            AccountLifecycle.accountsToSync(
+                all: all, needingReauth: Set(all), interactive: false),
+            [])
+        XCTAssertEqual(
+            AccountLifecycle.accountsToSync(all: all, needingReauth: [], interactive: false),
+            all)
+    }
+
+    /// "Sync now" must still try: it is how the user learns the sign-in is
+    /// still rejected.
+    func testInteractiveSyncTriesEveryAccount() {
+        let all = ["a@x.com", "b@x.com"]
+        XCTAssertEqual(
+            AccountLifecycle.accountsToSync(
+                all: all, needingReauth: ["b@x.com"], interactive: true),
+            all)
+    }
+
+    func testReauthBannerShowsOnceUnlessTheUserAsked() {
+        XCTAssertTrue(AccountLifecycle.presentsReauthBanner(
+            newlyFlagged: true, interactive: false))
+        XCTAssertFalse(AccountLifecycle.presentsReauthBanner(
+            newlyFlagged: false, interactive: false),
+            "a dismissed banner must not return on the next background failure")
+        XCTAssertTrue(AccountLifecycle.presentsReauthBanner(
+            newlyFlagged: false, interactive: true))
+        XCTAssertTrue(AccountLifecycle.presentsReauthBanner(
+            newlyFlagged: true, interactive: true))
+    }
 }

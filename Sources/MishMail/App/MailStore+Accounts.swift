@@ -102,11 +102,16 @@ extension MailStore {
         }
     }
 
-    func requireReauthorization(for accountID: String) {
+    /// - Parameter interactive: The failure came from a sync the user asked
+    ///   for. Background and follow-up failures raise the banner only the
+    ///   first time (see `AccountLifecycle.presentsReauthBanner`).
+    func requireReauthorization(for accountID: String, interactive: Bool = false) {
         // A sync that ends after its account was removed must not bring the
         // account back as a reauthorization request.
         guard isKnownAccount(accountID) else { return }
-        accountsNeedingReauth.insert(accountID)
+        let newlyFlagged = accountsNeedingReauth.insert(accountID).inserted
+        guard AccountLifecycle.presentsReauthBanner(
+            newlyFlagged: newlyFlagged, interactive: interactive) else { return }
         lastErrorSyncAccountId = nil
         presentedError = ErrorRecovery.reauthorizationRequired(for: accountID)
     }
