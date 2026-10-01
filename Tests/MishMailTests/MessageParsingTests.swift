@@ -101,6 +101,48 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertEqual(MessageParser.emailAddress(""), "")
     }
 
+    /// A quoted display name (or a comment) can carry a decoy `<address>`.
+    /// The mailbox is the angle-addr that ends the header, outside quotes
+    /// and comments (RFC 5322 name-addr); block, VIP, reply and the
+    /// remote-image gate all key on it.
+    func testEmailAddressIgnoresDecoyInQuotedDisplayName() {
+        let spoof = "\"Boss <boss@trusted.com>\" <attacker@evil.example>"
+        XCTAssertEqual(MessageParser.emailAddress(spoof), "attacker@evil.example")
+        XCTAssertEqual(MessageParser.displayName(fromHeader: spoof), "Boss <boss@trusted.com>")
+        // Unquoted decoy: the last angle pair is the mailbox.
+        let unquoted = "Boss <boss@trusted.com> <attacker@evil.example>"
+        XCTAssertEqual(MessageParser.emailAddress(unquoted), "attacker@evil.example")
+        XCTAssertEqual(MessageParser.displayName(fromHeader: unquoted), "Boss <boss@trusted.com>")
+        // Escaped quote inside the quoted name does not end the quoted run.
+        XCTAssertEqual(
+            MessageParser.emailAddress(#""Boss \" <boss@trusted.com>" <attacker@evil.example>"#),
+            "attacker@evil.example")
+        // Decoy in a trailing comment must not win over the real mailbox.
+        let comment = "Boss <attacker@evil.example> (<boss@trusted.com>)"
+        XCTAssertEqual(MessageParser.emailAddress(comment), "attacker@evil.example")
+        XCTAssertEqual(MessageParser.displayName(fromHeader: comment), "Boss")
+        XCTAssertEqual(
+            MessageParser.emailAddress(#"Boss <attacker@evil.example> (a \) (nested <boss@trusted.com>))"#),
+            "attacker@evil.example")
+        // Quoted local part that contains brackets.
+        XCTAssertEqual(MessageParser.emailAddress(#"Odd <"a<b>c"@x.com>"#), #""a<b>c"@x.com"#)
+        // Unbalanced quote: no unquoted pair exists, so use the last pair.
+        XCTAssertEqual(
+            MessageParser.emailAddress("\"Boss <boss@trusted.com> <attacker@evil.example>"),
+            "attacker@evil.example")
+        // A stray quote must not make the real mailbox "quoted" and leave
+        // the comment decoy as the only pair.
+        XCTAssertEqual(
+            MessageParser.emailAddress("Boss\" <attacker@evil.example> (<boss@trusted.com>)"),
+            "attacker@evil.example")
+        // Unbalanced comment in a display name still finds the mailbox.
+        XCTAssertEqual(MessageParser.emailAddress("Jane :-( <jane@x.com>"), "jane@x.com")
+        XCTAssertEqual(MessageParser.emailAddress("Jane Doe (Acme) <jane@x.com>"), "jane@x.com")
+        // Apostrophes are not quotes.
+        XCTAssertEqual(MessageParser.emailAddress("O'Brien <ob@x.com>"), "ob@x.com")
+        XCTAssertEqual(MessageParser.displayName(fromHeader: "O'Brien <ob@x.com>"), "O'Brien")
+    }
+
     func testSplitAddressesRespectsQuotedCommas() {
         let header = "\"Boger, Ron\" <ron@x.com>, Jane Doe <jane@y.com>, bare@z.com"
         let parts = MessageParser.splitAddresses(header)

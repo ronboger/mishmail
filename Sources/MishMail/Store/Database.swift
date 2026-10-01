@@ -2104,6 +2104,38 @@ final class AppDatabase: @unchecked Sendable {
                 columns: ["threadId", "date"])
             try db.execute(sql: "DROP INDEX IF EXISTS message_on_threadId")
         }
+        // v45: sender denorm for threads whose From header the old
+        // first-`<...>`-pair parser misread. A quoted display name such as
+        // `"Boss <boss@trusted.com>" <attacker@evil.example>` stored the
+        // decoy address in `fromEmail` / `allFromEmails`, which drive block,
+        // VIP and split matching, and those columns are only rewritten when
+        // sync next touches the thread. Only headers where the two parsers
+        // can disagree are visited (a second `<`, or a `>` before the `<`).
+        // Raw SQL only — do not decode the live `Message` record here.
+        m.registerMigration("v45") { db in
+            let threadIds = try String.fetchAll(db, sql: """
+                SELECT DISTINCT threadId FROM message
+                WHERE fromHeader LIKE '%<%<%' OR fromHeader LIKE '%>%<%'
+                """)
+            for threadKey in threadIds {
+                let fromHeaders = try String.fetchAll(db, sql: """
+                    SELECT fromHeader FROM message
+                    WHERE threadId = ?
+                    ORDER BY date DESC
+                    """, arguments: [threadKey])
+                guard let newest = fromHeaders.first else { continue }
+                try db.execute(sql: """
+                    UPDATE thread
+                    SET fromEmail = ?, allFromEmails = ?, fromDisplay = ?
+                    WHERE id = ?
+                    """, arguments: [
+                        MessageParser.emailAddress(newest).lowercased(),
+                        ThreadLabels.allFromEmails(fromHeaders: fromHeaders),
+                        MessageParser.displayName(fromHeader: newest),
+                        threadKey,
+                    ])
+            }
+        }
         return m
     }
 }

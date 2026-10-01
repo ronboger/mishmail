@@ -470,8 +470,10 @@ enum MessageParser {
     }
 
     /// Extracts a display name from a From header like `Jane Doe <jane@x.com>`.
+    /// The name is the text before the same `<` that `emailAddress` uses, so
+    /// the two never describe different mailboxes.
     static func displayName(fromHeader: String) -> String {
-        if let lt = fromHeader.firstIndex(of: "<") {
+        if let lt = angleAddress(in: fromHeader)?.lt ?? fromHeader.firstIndex(of: "<") {
             let name = fromHeader[..<lt].trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
             if !name.isEmpty { return name }
         }
@@ -480,13 +482,77 @@ enum MessageParser {
 
     /// Extracts a bare email address from an address header.
     /// Tolerates malformed headers (missing or out-of-order angle brackets).
+    ///
+    /// Security: the result feeds block, VIP, reply and the remote-image
+    /// gate, so it must be the mailbox the message really names. See
+    /// `angleAddress(in:)` for which `<...>` pair counts.
     static func emailAddress(_ header: String) -> String {
-        if let lt = header.firstIndex(of: "<"),
-           let gt = header.firstIndex(of: ">"),
-           lt < gt {
-            return String(header[header.index(after: lt)..<gt])
+        if let pair = angleAddress(in: header) {
+            return String(header[header.index(after: pair.lt)..<pair.gt])
         }
         return header.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
+    }
+
+    /// The `<` and `>` of the angle-addr in one mailbox (RFC 5322 name-addr:
+    /// `[display-name] angle-addr`, so the mailbox is the LAST pair).
+    ///
+    /// Brackets inside a quoted string or a parenthesized comment are sender
+    /// text, not syntax: `"Boss <boss@trusted.com>" <attacker@evil.example>`
+    /// and `Boss <attacker@evil.example> (<boss@trusted.com>)` both name the
+    /// attacker. Taking the first pair let the decoy address through.
+    ///
+    /// Rule: the last `<` outside quotes and comments, then the first `>`
+    /// outside them after it. A header with an unbalanced quote or comment
+    /// has no such pair; retry with comments only, then quotes only, then
+    /// plain text, so one stray `"` or `(` cannot turn the whole header
+    /// into "quoted" text and hand the choice back to a decoy. Nil when the
+    /// header has no ordered pair at all.
+    private static func angleAddress(
+        in header: String
+    ) -> (lt: String.Index, gt: String.Index)? {
+        guard header.contains("<") else { return nil }
+        for (quotes, comments) in [(true, true), (false, true), (true, false), (false, false)] {
+            if let pair = angleAddress(in: header, honorQuotes: quotes, honorComments: comments) {
+                return pair
+            }
+        }
+        return nil
+    }
+
+    private static func angleAddress(
+        in header: String, honorQuotes: Bool, honorComments: Bool
+    ) -> (lt: String.Index, gt: String.Index)? {
+        var inQuotes = false
+        var escaped = false
+        var commentDepth = 0
+        var lt: String.Index?
+        var gt: String.Index?
+        for index in header.indices {
+            let ch = header[index]
+            if escaped { escaped = false; continue }
+            // Backslash escapes the next character in quotes and comments.
+            if ch == "\\", inQuotes || commentDepth > 0 { escaped = true; continue }
+            if inQuotes {
+                if ch == "\"" { inQuotes = false }
+                continue
+            }
+            if commentDepth > 0 {
+                if ch == "(" { commentDepth += 1 }
+                if ch == ")" { commentDepth -= 1 }
+                continue
+            }
+            switch ch {
+            case "\"" where honorQuotes: inQuotes = true
+            case "(" where honorComments: commentDepth += 1
+            case "<": lt = index; gt = nil
+            case ">": if lt != nil, gt == nil { gt = index }
+            default: break
+            }
+        }
+        // Still inside a quote or comment at the end: the run was never
+        // closed, so what it hid is not trustworthy as "not syntax".
+        guard !inQuotes, commentDepth == 0, let lt, let gt else { return nil }
+        return (lt, gt)
     }
 
     /// Attachment filenames come from the sender. Reduce to a bare filename
