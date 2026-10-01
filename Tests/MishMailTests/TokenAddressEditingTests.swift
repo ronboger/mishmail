@@ -34,6 +34,34 @@ final class TokenAddressEditingTests: XCTestCase {
         XCTAssertEqual(result.draft, "")
     }
 
+    // MARK: - persistSnapshot (draft save)
+
+    /// A silent autosave fires on a 1.5 s timer while the user may still be
+    /// typing a recipient. It must not turn "bob@exam" into a chip, and must
+    /// not erase the text.
+    func testAutosaveSnapshotLeavesTypedRecipientAlone() {
+        let half = TokenAddressEditing.persistSnapshot(
+            tokens: ["a@x.com"], draft: "bob@exam", committing: false)
+        XCTAssertEqual(half.tokens, ["a@x.com"])
+        XCTAssertEqual(half.draft, "bob@exam")
+
+        let noAt = TokenAddressEditing.persistSnapshot(
+            tokens: ["a@x.com"], draft: "ali", committing: false)
+        XCTAssertEqual(noAt.tokens, ["a@x.com"])
+        XCTAssertEqual(noAt.draft, "ali")
+    }
+
+    /// The close path (Esc / ✕) keeps the old rule: typed addresses count.
+    func testClosingSnapshotCommitsLikeCommit() {
+        for draft in ["bob@example.com", " bob@example.com, ", "ali", "", "a@x.com"] {
+            let snapshot = TokenAddressEditing.persistSnapshot(
+                tokens: ["a@x.com"], draft: draft, committing: true)
+            let commit = TokenAddressEditing.commit(tokens: ["a@x.com"], draft: draft)
+            XCTAssertEqual(snapshot.tokens, commit.tokens, draft)
+            XCTAssertEqual(snapshot.draft, commit.draft, draft)
+        }
+    }
+
     // MARK: - beginEdit (click chip)
 
     func testClickChipLoadsAddressIntoDraftAndRemovesChip() {

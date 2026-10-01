@@ -413,14 +413,15 @@ struct ComposeView: View {
     /// so overlapping runs stay serial.
     @MainActor
     private func performPersist(silent: Bool, syncAfter: Bool) async {
-        // Typed-but-uncommitted addresses count too.
-        for (draft, tokens) in [(toDraft, $toTokens), (ccDraft, $ccTokens), (bccDraft, $bccTokens)] {
-            let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
-            if cleaned.contains("@"), !tokens.wrappedValue.contains(cleaned) {
-                tokens.wrappedValue.append(cleaned)
-            }
+        // Typed-but-uncommitted addresses count too — on the close path only.
+        // A silent autosave fires while the user may still be typing one, so
+        // it leaves the address fields alone and saves the chips as they are.
+        for (draft, tokens) in [($toDraft, $toTokens), ($ccDraft, $ccTokens), ($bccDraft, $bccTokens)] {
+            let next = TokenAddressEditing.persistSnapshot(
+                tokens: tokens.wrappedValue, draft: draft.wrappedValue, committing: !silent)
+            if next.tokens != tokens.wrappedValue { tokens.wrappedValue = next.tokens }
+            if next.draft != draft.wrappedValue { draft.wrappedValue = next.draft }
         }
-        toDraft = ""; ccDraft = ""; bccDraft = ""
         guard hasContent else {
             draftStatus = .idle
             return
