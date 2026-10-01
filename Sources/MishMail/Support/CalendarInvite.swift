@@ -638,13 +638,31 @@ struct CalendarInvite: Equatable, Sendable {
         return (name, params, value)
     }
 
+    /// RFC 5545 §3.3.11 TEXT unescape in one left-to-right pass, so an
+    /// escaped backslash is consumed before the character after it is read
+    /// (`\\\\notes` is `\\notes`, not backslash + newline + "otes").
     private static func unescape(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\\n", with: "\n")
-            .replacingOccurrences(of: "\\N", with: "\n")
-            .replacingOccurrences(of: "\\,", with: ",")
-            .replacingOccurrences(of: "\\;", with: ";")
-            .replacingOccurrences(of: "\\\\", with: "\\")
+        guard value.contains("\\") else { return value }
+        var out = ""
+        out.reserveCapacity(value.count)
+        var escaped = false
+        for ch in value {
+            if escaped {
+                switch ch {
+                case "n", "N": out.append("\n")
+                case ",", ";", "\\": out.append(ch)
+                // Not an RFC escape: keep both characters as written.
+                default: out.append("\\"); out.append(ch)
+                }
+                escaped = false
+            } else if ch == "\\" {
+                escaped = true
+            } else {
+                out.append(ch)
+            }
+        }
+        if escaped { out.append("\\") }
+        return out
     }
 
     private static func escape(_ value: String) -> String {

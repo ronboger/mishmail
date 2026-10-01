@@ -641,6 +641,23 @@ final class CalendarInviteTests: XCTestCase {
         XCTAssertEqual(CalendarInvite.displayZoneName(long).count, 65)
     }
 
+    /// RFC 5545 §3.3.11: `\\` is one backslash, so `\\n` is backslash + "n",
+    /// not a newline.
+    func testTextUnescapeIsSinglePass() {
+        func invite(description: String) -> CalendarInvite? {
+            CalendarInvite.parse(
+                "BEGIN:VCALENDAR\nMETHOD:REQUEST\nBEGIN:VEVENT\nUID:esc@x.com\n"
+                + "DESCRIPTION:\(description)\nEND:VEVENT\nEND:VCALENDAR")
+        }
+        XCTAssertEqual(
+            invite(description: #"Notes at \\\\server\\share\\notes"#)?.description,
+            #"Notes at \\server\share\notes"#)
+        XCTAssertEqual(invite(description: #"a\, b\; c\nd\Ne"#)?.description,
+                       "a, b; c\nd\ne")
+        // Unknown escape and a trailing lone backslash stay as written.
+        XCTAssertEqual(invite(description: #"C:\temp \"#)?.description, #"C:\temp \"#)
+    }
+
     func testQuotedCNWithSemicolon() {
         let ics = """
             BEGIN:VCALENDAR
