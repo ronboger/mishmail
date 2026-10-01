@@ -96,6 +96,11 @@ extension MailStore {
             if OfflinePolicy.shouldDefer(error) {
                 isOffline = true
                 await queueThreadChange(change, accountId: accountId, gmailThreadId: gmailThreadId)
+            } else if ThreadEditRetryPolicy.shouldRequeue(error) {
+                // Quota or server error: Gmail is reachable (not offline)
+                // but did not take the edit. Keep it for the replay ahead
+                // of the next sync instead of reverting the thread.
+                await queueThreadChange(change, accountId: accountId, gmailThreadId: gmailThreadId)
             } else {
                 lastError = error.localizedDescription
                 await rederiveThreadFromMessages(
@@ -148,6 +153,8 @@ extension MailStore {
     /// Gmail's history reflects the user's offline work before it is read
     /// back. Stops at the first connectivity failure (still offline); drops
     /// rows Gmail rejects outright (a thread deleted meanwhile is a 404).
+    /// A quota or server error keeps the row for the next pass, until the
+    /// row passes `ThreadEditRetryPolicy.maxQueuedAge`.
     func flushPendingThreadOps() async {
         guard !demoMode, !isShuttingDown, !pendingOpsFlushInFlight else { return }
         pendingOpsFlushInFlight = true
@@ -160,6 +167,7 @@ extension MailStore {
             if pendingThreadOpCount != 0 { pendingThreadOpCount = 0 }
             return
         }
+        var serverFailures = 0
         for row in rows {
             guard !isShuttingDown else { break }
             guard let change = row.change, !change.isEmpty else {
@@ -183,6 +191,14 @@ extension MailStore {
                 if AccountLifecycle.isReauthRequired(error) {
                     requireReauthorization(for: row.accountId)
                     break
+                }
+                if let failure = ThreadEditRetryPolicy.serverFailure(error),
+                   !ThreadEditRetryPolicy.isExpired(createdAt: row.createdAt) {
+                    // Gmail is busy, not gone: the row stays queued.
+                    serverFailures += 1
+                    if ThreadEditRetryPolicy.stopsReplay(
+                        after: failure, failuresSoFar: serverFailures) { break }
+                    continue
                 }
                 // Gone or rejected: the next sync shows Gmail's truth.
                 if !SendThreading.isNotFound(error) {
