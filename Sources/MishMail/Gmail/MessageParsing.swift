@@ -456,38 +456,12 @@ enum MessageParser {
         return lines.joined(separator: "\n")
     }
 
-    /// Decodes the common named entities plus numeric forms
-    /// (`&#8217;`, `&#x1F600;`). `&amp;` goes last so `&amp;lt;` stays `&lt;`.
-    /// Compiled once: decodeEntities runs inside every stripHTML (sync time).
-    private static let numericEntityRegex = try? NSRegularExpression(
-        pattern: "&#(x[0-9a-fA-F]+|[0-9]+);")
-
+    /// Entity decoding for `stripHTML`. One decoder serves stripped bodies,
+    /// snippets and export (`String.decodingHTMLEntities`): the private
+    /// six-name table that used to live here left `&rsquo;` and `&eacute;`
+    /// as literal text in every quoted reply of HTML mail.
     static func decodeEntities(_ s: String) -> String {
-        var r = s
-        for (entity, ch) in [("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"),
-                             ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'")] {
-            r = r.replacingOccurrences(of: entity, with: ch)
-        }
-        if let regex = numericEntityRegex {
-            var result = ""
-            var last = r.startIndex
-            for m in regex.matches(in: r, range: NSRange(r.startIndex..., in: r)) {
-                guard let range = Range(m.range, in: r),
-                      let numRange = Range(m.range(at: 1), in: r) else { continue }
-                let num = r[numRange]
-                let value = num.hasPrefix("x")
-                    ? UInt32(num.dropFirst(), radix: 16)
-                    : UInt32(num)
-                result += r[last..<range.lowerBound]
-                if let value, let scalar = Unicode.Scalar(value) {
-                    result.append(Character(scalar))
-                }
-                last = range.upperBound
-            }
-            result += r[last...]
-            r = result
-        }
-        return r.replacingOccurrences(of: "&amp;", with: "&")
+        s.decodingHTMLEntities()
     }
 
     /// The text a reply should quote. Prefer the HTML body — it is what the

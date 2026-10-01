@@ -185,6 +185,66 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertEqual(MessageParser.stripHTML(html), "One\nTwo \u{2014} dash\n\nA &lt; B A")
     }
 
+    /// HTML-only mail: `bodyText` (reply quote, plain alternative, export,
+    /// MCP and AI context) must carry real characters, not entity names, and
+    /// never C1 control characters.
+    func testStripHTMLDecodesNamedEntitiesAndWindows1252Numerics() {
+        let html = "<p>Don&rsquo;t miss it &mdash; caf&eacute; &#146;</p>"
+        XCTAssertEqual(MessageParser.stripHTML(html),
+                       "Don\u{2019}t miss it \u{2014} caf\u{00E9} \u{2019}")
+        XCTAssertEqual(
+            MessageParser.stripHTML("<p>&Uuml;ber &ntilde; &szlig; &Aring;&aring; &frac12; &iquest;&hearts;</p>"),
+            "\u{00DC}ber \u{00F1} \u{00DF} \u{00C5}\u{00E5} \u{00BD} \u{00BF}\u{2665}")
+        // Single pass: an escaped entity stays escaped once.
+        XCTAssertEqual(MessageParser.stripHTML("<p>&amp;eacute; &amp;#146;</p>"), "&eacute; &#146;")
+        // Unknown names stay literal.
+        XCTAssertEqual(MessageParser.stripHTML("<p>AT&T &bogus; R&D</p>"), "AT&T &bogus; R&D")
+    }
+
+    func testNumericC1ReferencesMapThroughWindows1252() {
+        XCTAssertEqual("&#128;&#x80;".decodingHTMLEntities(), "\u{20AC}\u{20AC}")
+        XCTAssertEqual("&#145;a&#146; &#147;b&#148;".decodingHTMLEntities(),
+                       "\u{2018}a\u{2019} \u{201C}b\u{201D}")
+        XCTAssertEqual("&#150;&#151;&#133;&#153;&#x99;".decodingHTMLEntities(),
+                       "\u{2013}\u{2014}\u{2026}\u{2122}\u{2122}")
+        // No reference in 0x80...0x9F may yield a C1 control character,
+        // including the five code points Windows-1252 leaves undefined.
+        for value in 0x80...0x9F {
+            for form in ["&#\(value);", "&#x\(String(value, radix: 16));"] {
+                let decoded = form.decodingHTMLEntities()
+                XCTAssertFalse(
+                    decoded.unicodeScalars.contains { (0x80...0x9F).contains($0.value) },
+                    "\(form) decoded to a control character")
+                XCTAssertFalse(decoded.contains("&"), "\(form) was not decoded")
+            }
+        }
+        XCTAssertEqual("a&#0;b".decodingHTMLEntities(), "a\u{FFFD}b")
+        XCTAssertEqual("&#x0001F600;&#0000039;".decodingHTMLEntities(), "😀'")
+        // Latin-1 above the C1 block is unchanged.
+        XCTAssertEqual("&#160;&#233;".decodingHTMLEntities(), "\u{00A0}\u{00E9}")
+    }
+
+    /// The HTML 4 set is 252 names; spot-check each block and the case pairs.
+    func testDecodesHTML4NamedEntitySet() {
+        XCTAssertEqual("&Agrave;&agrave;&Eacute;&eacute;&Ccedil;&ccedil;&Oslash;&oslash;&yuml;&Yuml;"
+            .decodingHTMLEntities(), "ÀàÉéÇçØøÿŸ")
+        XCTAssertEqual("&OElig;&oelig;&Scaron;&scaron;&AElig;&aelig;&ETH;&eth;&THORN;&thorn;"
+            .decodingHTMLEntities(), "ŒœŠšÆæÐðÞþ")
+        XCTAssertEqual("&Alpha;&alpha;&Omega;&omega;&thetasym;&piv;".decodingHTMLEntities(), "ΑαΩωϑϖ")
+        XCTAssertEqual("&iexcl;&curren;&brvbar;&uml;&ordf;&not;&macr;&sup2;&acute;&micro;&cedil;&frac34;"
+            .decodingHTMLEntities(), "¡¤¦¨ª¬¯²´µ¸¾")
+        XCTAssertEqual("&sbquo;&bdquo;&lsaquo;&rsaquo;&circ;&tilde;&oline;&spades;&clubs;&diams;"
+            .decodingHTMLEntities(), "‚„‹›ˆ˜‾♠♣♦")
+        XCTAssertEqual("&forall;&part;&exist;&nabla;&isin;&radic;&cap;&cup;&int;&there4;&equiv;&sube;"
+            .decodingHTMLEntities(), "∀∂∃∇∈√∩∪∫∴≡⊆")
+        XCTAssertEqual("&lArr;&rArr;&hArr;&crarr;&lceil;&rfloor;&lang;&rang;&loz;"
+            .decodingHTMLEntities(), "⇐⇒⇔↵⌈⌋〈〉◊")
+        // Spaces stay plain spaces; invisible joiners are dropped (previews
+        // and plain text gain nothing from them).
+        XCTAssertEqual("a&nbsp;b&ensp;c&emsp;d&thinsp;e&shy;f&zwnj;g&zwj;h".decodingHTMLEntities(),
+                       "a b c d efgh")
+    }
+
     func testStripHTMLCollapsesBlankRuns() {
         let html = "<p>First</p><br><br><br><div></div><p>Second</p>"
         XCTAssertEqual(MessageParser.stripHTML(html), "First\n\nSecond")
