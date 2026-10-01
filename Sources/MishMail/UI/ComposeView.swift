@@ -107,6 +107,11 @@ struct ComposeView: View {
     /// one, which single-key shortcuts allow while minimized — onDisappear
     /// saves the draft instead of silently dropping it.
     @State private var didFinish = false
+    /// Which explicit exit claimed `didFinish`. Decides whether a draft save
+    /// that is still queued / on the wire may land (`ComposeFinish`): Send,
+    /// Schedule, and Discard drop it; save-and-close must not, or Esc / ✕
+    /// would lose the text. Nil while editing and on a replaced-card unmount.
+    @State private var finish: ComposeFinish?
     /// Live draft Gmail message to replace on the next save (starts as
     /// `editDraft` / undo restore, then tracks each successful autosave).
     /// Thread this into Send, Discard, and replace — never only into autosave.
@@ -154,9 +159,10 @@ struct ComposeView: View {
     /// discard/save path still awaits persist — Send itself unmounts without
     /// that wait.
     @discardableResult
-    private func beginFinish() -> Bool {
+    private func beginFinish(_ kind: ComposeFinish) -> Bool {
         guard !didFinish else { return false }
         didFinish = true
+        finish = kind
         autosaveTask?.cancel()
         autosaveTask = nil
         bodyFocused = false
@@ -172,6 +178,7 @@ struct ComposeView: View {
     /// Undo `beginFinish` when the action can't complete (e.g. empty To:).
     private func abortFinish() {
         didFinish = false
+        finish = nil
         // Only clear the flag if this card is still the mounted request —
         // a newer compose opened during finish already reset it.
         if store.composeRequest?.id == request.id {
@@ -462,8 +469,9 @@ struct ComposeView: View {
             atts = ((try? await store.loadAttachments(for: source)) ?? []) + atts
         }
         // Send unmounts without awaiting this task; drop a late createDraft so
-        // we don't upload a draft the user already sent.
-        if didFinish { return }
+        // we don't upload a draft the user already sent. Save-and-close also
+        // sets `didFinish` but must still save — ask the exit kind, not the flag.
+        if ComposeFinish.dropsLateDraftSave(finish) { return }
         // Demo: never claim "Draft saved" — close uses non-silent for the notice.
         if store.demoMode {
             if !silent {
@@ -511,7 +519,9 @@ struct ComposeView: View {
             // createDraft was already on the wire when Send cancelled the task:
             // delete the just-created draft so Gmail Drafts doesn't keep sent
             // content (PendingSend.replacingDraft is the older completed id).
-            if didFinish {
+            // Not on save-and-close: there this draft is the user's work, and
+            // `saveDraft` already deleted the one it replaced.
+            if ComposeFinish.dropsLateDraftSave(finish) {
                 await store.deleteUnderlyingDraft(saved, silent: true)
                 return
             }
@@ -548,7 +558,7 @@ struct ComposeView: View {
     /// Awaits the save so offline failure still surfaces via lastError, and
     /// always syncs after a silent autosave so the Drafts list is fresh.
     private func saveAndClose() {
-        guard beginFinish() else { return }
+        guard beginFinish(.saveAndClose) else { return }
         Task { @MainActor in
             await enqueuePersist(silent: false, syncAfter: true)
             close()
@@ -576,7 +586,7 @@ struct ComposeView: View {
     }
 
     private func discardAndCloseImmediately() {
-        guard beginFinish() else { return }
+        guard beginFinish(.discard) else { return }
         Task { @MainActor in
             // Finish any in-flight createDraft so we delete the real server draft.
             await awaitPersistIdle()
@@ -2629,7 +2639,7 @@ struct ComposeView: View {
         // Unmount immediately: do not wait on an in-flight createDraft round-trip
         // (that made post-Send `e` archive feel stuck behind Gmail). Body comes
         // from the editor; liveDraft is the last *completed* autosave id.
-        guard beginFinish() else { return }
+        guard beginFinish(.send) else { return }
         cancelInFlightPersist()
         guard let pending = buildPendingSend() else {
             // Not sendable (empty To:) — re-enable the card.
@@ -2650,7 +2660,7 @@ struct ComposeView: View {
     }
 
     private func scheduleSend(at date: Date) {
-        guard beginFinish() else { return }
+        guard beginFinish(.schedule) else { return }
         cancelInFlightPersist()
         guard let pending = buildPendingSend() else {
             abortFinish()
@@ -2664,7 +2674,7 @@ struct ComposeView: View {
     /// Drop a *debounced* autosave when Send packages content from the editor.
     /// Do not cancel an in-flight `persistTask`: `createDraft` may still land
     /// at Gmail after cancel, leaving an orphan with no delete path. Leave the
-    /// task running; `performPersist` checks `didFinish` and deletes a late
+    /// task running; `performPersist` checks `finish` and deletes a late
     /// draft (or skips the upload if finish landed first). Discard still awaits
     /// idle so it can delete the real draft id.
     private func cancelInFlightPersist() {
