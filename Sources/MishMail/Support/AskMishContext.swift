@@ -269,6 +269,42 @@ enum AskMishContext {
         return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    /// What to do with the tool calls of one model response.
+    enum ToolRunPlan: Equatable {
+        case run
+        /// The response hit the output limit, so the last call's arguments can
+        /// be partial JSON. Nothing runs; the model is told to send it again.
+        case cutOff
+        /// The model declined. Nothing runs and the turn ends.
+        case refused
+    }
+
+    /// Tool calls run only from a response that finished. A call from a turn
+    /// that stopped at `max_tokens`/`length` or `refusal` must never reach a
+    /// confirm card: its arguments are not what the model meant to send.
+    static func toolRunPlan(stopReason: String) -> ToolRunPlan {
+        switch stopReason.lowercased() {
+        case "max_tokens", "length": return .cutOff
+        case "refusal": return .refused
+        default: return .run
+        }
+    }
+
+    /// One error result per call for a response whose tools must not run, so
+    /// every stored tool_use still has its tool_result. Nil when they do run.
+    static func unrunToolResults(for calls: [LLMToolCall],
+                                 plan: ToolRunPlan) -> [LLMToolResult]? {
+        let text: String
+        switch plan {
+        case .run: return nil
+        case .cutOff:
+            text = "This call did not run: the response was cut off at the output limit. Send it again, shorter."
+        case .refused:
+            text = "This call did not run: the response stopped before it was complete."
+        }
+        return calls.map { LLMToolResult(callID: $0.id, content: text, isError: true) }
+    }
+
     /// `[label](url)` becomes `label (url)` so a hostile model answer cannot
     /// hide a link behind friendly text.
     static func neutralizeMarkdownLinks(_ text: String) -> String {

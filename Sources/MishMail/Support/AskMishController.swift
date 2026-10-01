@@ -434,6 +434,7 @@ final class AskMishController {
             var thinkingBlocks: [LLMThinkingBlock] = []
             var usage: LLMUsage?
             var stopNotice: String?
+            var toolPlan = AskMishContext.ToolRunPlan.run
             let bubbleID = beginAssistantBubble()
             compactToolMessages = AskMishContext.cappedCompactionIndices(
                 for: history, stable: compactToolMessages,
@@ -461,6 +462,7 @@ final class AskMishController {
                     case .done(let stopReason, let reported):
                         usage = reported
                         mergeUsage(reported, into: &turnUsage)
+                        toolPlan = AskMishContext.toolRunPlan(stopReason: stopReason)
                         if let notice = LLMStopReason.notice(for: stopReason) {
                             stopNotice = notice
                         }
@@ -525,8 +527,16 @@ final class AskMishController {
             // Run every call, then persist the assistant row and its single
             // tool row in one write. A cancel part-way still answers each
             // remaining call, so the stored ids stay balanced.
-            var results: [LLMToolResult] = []
-            for call in calls {
+            //
+            // A response cut off at the output limit, or a refusal, runs
+            // nothing: no confirm card, no dispatch. Each call gets an error
+            // result instead.
+            let unrun = AskMishContext.unrunToolResults(for: calls, plan: toolPlan)
+            for result in unrun ?? [] {
+                updateTrace(bubbleID, callID: result.callID, result: result)
+            }
+            var results: [LLMToolResult] = unrun ?? []
+            for call in calls where unrun == nil {
                 if Task.isCancelled {
                     let stopped = LLMToolResult(
                         callID: call.id, content: "Stopped before this ran.", isError: true)
@@ -545,6 +555,11 @@ final class AskMishController {
                             thinkingBlocks: thinkingBlocks)
             if Task.isCancelled {
                 markInterrupted(bubbleID)
+                await recordAskMishUsage(turnUsage, config: config, model: wireModel)
+                return
+            }
+            if toolPlan == .refused {
+                finishTurnChrome(bubbleID)
                 await recordAskMishUsage(turnUsage, config: config, model: wireModel)
                 return
             }
