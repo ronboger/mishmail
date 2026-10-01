@@ -273,4 +273,124 @@ final class SnoozeDateParserTests: XCTestCase {
         XCTAssertTrue(labels.contains(where: { $0.hasPrefix("friday") }), labels.joined(separator: ", "))
         XCTAssertTrue(labels.contains(where: { $0.hasPrefix("february") }), labels.joined(separator: ", "))
     }
+
+    // MARK: - Hostile input (the field parses on every keystroke)
+
+    /// Day/month habit ("25/12") and impossible months used to index
+    /// `monthSymbols` out of range and take the app down.
+    func testSlashDateWithMonthOutOfRangeDoesNotTrap() {
+        let dec = comps(first("25/12"))
+        XCTAssertEqual([dec.year, dec.month, dec.day], [2026, 12, 25])
+        let jan = comps(first("13/1"))
+        XCTAssertEqual([jan.year, jan.month, jan.day], [2027, 1, 13])
+        for q in ["0/5", "5/0", "13/13", "0/0", "99/99", "25/12/0", "32/1"] {
+            XCTAssertTrue(SnoozeDateParser.suggestions(for: q, now: now).isEmpty, q)
+        }
+    }
+
+    /// A day the month does not have must not roll into the next month under
+    /// a label that names the typed (impossible) date.
+    func testImpossibleDayOfMonthGivesNothing() {
+        for q in ["2/30", "feb 30", "31 apr", "4/31"] {
+            XCTAssertTrue(SnoozeDateParser.suggestions(for: q, now: now).isEmpty, q)
+        }
+    }
+
+    func testHugeNumbersDoNotTrap() {
+        for q in ["99999999999999999999d", "in 99999999999999999999 days",
+                  "in 99999999999999999999", "99999999999999999999h",
+                  "9223372036854775807w", "9223372036854775807 months",
+                  "in 9223372036854775807"] {
+            for s in SnoozeDateParser.suggestions(for: q, now: now) {
+                XCTAssertGreaterThan(s.date, now, q)
+            }
+        }
+    }
+
+    /// `\d` matches every Unicode digit, `Int()` only ASCII ones.
+    func testNonASCIIDigitsDoNotTrap() {
+        for q in ["١٢/٣", "٣d", "in ٣ days", "aug ١٢", "١٢ aug", "tm ١٠", "٣pm", "１２/２５"] {
+            for s in SnoozeDateParser.suggestions(for: q, now: now) {
+                XCTAssertGreaterThan(s.date, now, q)
+            }
+        }
+    }
+
+    /// Fuzz: a few thousand generated inputs built from the fragments the
+    /// parser reacts to. It must never trap and never offer a date that is
+    /// not in the future. Seeded, so a failure reproduces.
+    func testFuzzNeverTrapsAndNeverReturnsPastDate() {
+        var rng = SplitMix64(seed: 0x5EED_CAFE)
+        let fragments: [String] = [
+            "0", "1", "2", "3", "7", "8", "9", "12", "13", "24", "25", "29", "30", "31", "32",
+            "59", "60", "99", "100", "2026", "2027", "9999", "0000", "00",
+            "99999999999999999999", "9223372036854775807", "9223372036854775808",
+            "/", "//", ":", ",", ".", "-", " ", "  ", "\t", "\n",
+            "h", "hr", "hrs", "d", "w", "wk", "wks", "mo", "m", "min", "mins", "minutes",
+            "hour", "hours", "day", "days", "week", "weeks", "month", "months", "s",
+            "in", "in ", "at", " at ", "am", "pm", "a", "p",
+            "jan", "feb", "february", "mar", "apr", "may", "jun", "jul", "aug", "sep",
+            "sept", "oct", "nov", "dec", "december",
+            "mon", "tue", "wed", "thu", "fri", "friday", "sat", "sun",
+            "today", "tod", "tonight", "tomorrow", "tom", "tm", "tmrw", "later", "lt",
+            "next", "next ", "this", "this ", "week", "weekend", "wknd", "end of", "eod",
+            "eow", "eom", "noon", "morning", "afternoon", "evening", "night",
+            "١٢", "٣", "１２", "é", "ß", "İ", "🙂", "👨‍👩‍👧", "日本", "\u{0301}", "\u{200B}",
+            "\u{FEFF}", "\0", "(", ")", "[", "\\", "*", "+", "?", "$", "^",
+        ]
+        // Edges of the calendar as well as the plain fixture.
+        let cal = Calendar.current
+        let nows: [Date] = [
+            now,
+            cal.date(from: DateComponents(year: 2026, month: 12, day: 31, hour: 23, minute: 59, second: 59))!,
+            cal.date(from: DateComponents(year: 2028, month: 2, day: 29, hour: 0, minute: 0))!,
+            cal.date(from: DateComponents(year: 2027, month: 1, day: 31, hour: 19, minute: 30))!,
+            cal.date(from: DateComponents(year: 2026, month: 3, day: 8, hour: 1, minute: 59))!,   // US DST start
+            cal.date(from: DateComponents(year: 2026, month: 11, day: 1, hour: 1, minute: 30))!,  // US DST end
+            cal.date(from: DateComponents(year: 2026, month: 7, day: 10, hour: 17, minute: 59))!, // Friday
+        ]
+        var checked = 0
+        var productive = 0
+        for i in 0..<4000 {
+            var q = ""
+            let parts = Int(rng.next() % 6) + 1
+            for _ in 0..<parts {
+                q += fragments[Int(rng.next() % UInt64(fragments.count))]
+                if rng.next() % 3 == 0 { q += " " }
+            }
+            if rng.next() % 16 == 0 { q = q.uppercased() }
+            let fixture = nows[i % nows.count]
+            let out = SnoozeDateParser.suggestions(for: q, now: fixture)
+            XCTAssertLessThanOrEqual(out.count, 5, q.debugDescription)
+            if !out.isEmpty { productive += 1 }
+            for s in out {
+                XCTAssertGreaterThan(s.date, fixture, q.debugDescription)
+            }
+            checked += 1
+        }
+        // Very long inputs: one repeated fragment and one random mix.
+        for fragment in ["9", "9/", "a", "in 9 ", "aug ", "🙂", "next ", "12:"] {
+            let long = String(repeating: fragment, count: 5000)
+            for s in SnoozeDateParser.suggestions(for: long, now: now) {
+                XCTAssertGreaterThan(s.date, now)
+            }
+            checked += 1
+        }
+        XCTAssertGreaterThan(checked, 4000)
+        // Guards the corpus itself: if nothing parses, the loop proves nothing.
+        XCTAssertGreaterThan(productive, 200, "fuzz corpus no longer reaches the date paths")
+    }
+}
+
+/// Small deterministic generator so the fuzz corpus is the same on each run.
+private struct SplitMix64 {
+    private var state: UInt64
+    init(seed: UInt64) { state = seed }
+    mutating func next() -> UInt64 {
+        state &+= 0x9E37_79B9_7F4A_7C15
+        var z = state
+        z = (z ^ (z >> 30)) &* 0xBF58_476D_1CE4_E5B9
+        z = (z ^ (z >> 27)) &* 0x94D0_49BB_1331_11EB
+        return z ^ (z >> 31)
+    }
 }
