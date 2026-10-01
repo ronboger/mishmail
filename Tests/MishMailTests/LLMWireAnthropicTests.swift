@@ -272,6 +272,86 @@ final class LLMWireAnthropicTests: XCTestCase {
 
     // MARK: - tool_choice none
 
+    // MARK: - Whitespace-only assistant text
+
+    func testRequestBodyOmitsWhitespaceOnlyTextBesideToolUse() throws {
+        let messages: [LLMMessage] = [
+            LLMMessage(role: .user, text: "search"),
+            LLMMessage(role: .assistant, text: "\n\n",
+                       toolCalls: [LLMToolCall(id: "tu1", name: "search_threads",
+                                               argumentsJSON: "{}")],
+                       thinkingBlocks: [LLMThinkingBlock(thinking: "plan", signature: "sig")]),
+            LLMMessage(role: .tool, text: "",
+                       toolResults: [LLMToolResult(callID: "tu1", content: "[]", isError: false)]),
+        ]
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-opus-5", messages: messages, tools: toolSpecs, maxTokens: 4096))
+        let wire = body["messages"] as! [[String: Any]]
+        XCTAssertEqual(wire.count, 3)
+        let assistant = wire[1]["content"] as! [[String: Any]]
+        XCTAssertEqual(assistant.map { $0["type"] as? String }, ["thinking", "tool_use"])
+        // The pair stays intact: the result still follows its tool_use.
+        let results = wire[2]["content"] as! [[String: Any]]
+        XCTAssertEqual(results[0]["tool_use_id"] as? String, assistant[1]["id"] as? String)
+    }
+
+    func testRequestBodyDropsAssistantWithNoTextAndNoToolUse() throws {
+        let messages: [LLMMessage] = [
+            LLMMessage(role: .user, text: "one"),
+            LLMMessage(role: .assistant, text: " \n",
+                       thinkingBlocks: [LLMThinkingBlock(thinking: "plan", signature: "sig")]),
+            LLMMessage(role: .user, text: "two"),
+        ]
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-opus-5", messages: messages, tools: [], maxTokens: 4096))
+        let wire = body["messages"] as! [[String: Any]]
+        XCTAssertEqual(wire.map { $0["role"] as? String }, ["user", "user"])
+    }
+
+    /// A dropped assistant message has no tool_use, so tool results directly
+    /// after it are orphans. They must go with it, or the request holds a
+    /// tool_result without its tool_use.
+    func testDroppedAssistantTakesItsOrphanToolResultsWithIt() throws {
+        let messages: [LLMMessage] = [
+            LLMMessage(role: .user, text: "one"),
+            LLMMessage(role: .assistant, text: "\n"),
+            LLMMessage(role: .tool, text: "",
+                       toolResults: [LLMToolResult(callID: "gone", content: "[]", isError: false)]),
+            LLMMessage(role: .user, text: "two"),
+            LLMMessage(role: .assistant, text: "",
+                       toolCalls: [LLMToolCall(id: "tu2", name: "search_threads",
+                                               argumentsJSON: "{}")]),
+            LLMMessage(role: .tool, text: "",
+                       toolResults: [LLMToolResult(callID: "tu2", content: "[]", isError: false)]),
+        ]
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-opus-5", messages: messages, tools: toolSpecs, maxTokens: 4096))
+        let wire = body["messages"] as! [[String: Any]]
+        XCTAssertEqual(wire.map { $0["role"] as? String },
+                       ["user", "user", "assistant", "user"])
+        var useIDs: Set<String> = []
+        var resultIDs: Set<String> = []
+        for message in wire {
+            for block in message["content"] as! [[String: Any]] {
+                if block["type"] as? String == "tool_use" { useIDs.insert(block["id"] as! String) }
+                if block["type"] as? String == "tool_result" {
+                    resultIDs.insert(block["tool_use_id"] as! String)
+                }
+            }
+        }
+        XCTAssertEqual(useIDs, ["tu2"])
+        XCTAssertEqual(resultIDs, ["tu2"])
+    }
+
+    func testRequestBodyKeepsTextWithSurroundingWhitespaceUnchanged() throws {
+        let messages = [LLMMessage(role: .user, text: "q"),
+                        LLMMessage(role: .assistant, text: "\nanswer\n")]
+        let body = try decode(try AnthropicWire.requestBody(
+            model: "claude-opus-5", messages: messages, tools: [], maxTokens: 4096))
+        let content = (body["messages"] as! [[String: Any]])[1]["content"] as! [[String: Any]]
+        XCTAssertEqual(content[0]["text"] as? String, "\nanswer\n")
+    }
+
     private var toolHistory: [LLMMessage] {
         [
             LLMMessage(role: .user, text: "find acme"),

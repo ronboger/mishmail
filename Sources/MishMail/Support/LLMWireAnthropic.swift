@@ -8,7 +8,11 @@ enum AnthropicWire {
                             toolChoiceNone: Bool = false) throws -> Data {
         var system = ""
         var wireMessages: [[String: Any]] = []
+        // Set while the last assistant message was left out, so tool results
+        // directly after it (orphans by definition) are left out too.
+        var droppedAssistant = false
         for message in messages {
+            if message.role != .tool { droppedAssistant = false }
             switch message.role {
             case .system:
                 system = message.text
@@ -26,7 +30,18 @@ enum AnthropicWire {
                                         "signature": block.signature])
                     }
                 }
-                if !message.text.isEmpty {
+                // The API rejects a text block that is only whitespace, which
+                // models do emit between a thinking block and a tool call.
+                let hasText = !message.text
+                    .trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+                // No text and no tool_use is not a turn (thinking alone is
+                // rejected too). It carries no tool_use, so dropping it cannot
+                // strand a tool_result that belongs to a sent call.
+                guard hasText || !message.toolCalls.isEmpty else {
+                    droppedAssistant = true
+                    continue
+                }
+                if hasText {
                     content.append(["type": "text", "text": message.text])
                 }
                 for call in message.toolCalls {
@@ -37,6 +52,7 @@ enum AnthropicWire {
                 }
                 wireMessages.append(["role": "assistant", "content": content])
             case .tool:
+                if droppedAssistant { continue }
                 let content: [[String: Any]] = message.toolResults.map { result in
                     ["type": "tool_result", "tool_use_id": result.callID,
                      "content": result.content, "is_error": result.isError]

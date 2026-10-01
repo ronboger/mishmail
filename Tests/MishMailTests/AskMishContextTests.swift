@@ -503,6 +503,17 @@ final class AskMishContextTests: XCTestCase {
                                                 lastUserBubbleText: "  "), .nothing)
     }
 
+    // MARK: - Sendable assistant content
+
+    func testWhitespaceOnlyAssistantTextIsNotSendable() {
+        XCTAssertFalse(AskMishContext.hasSendableAssistantContent(text: "", calls: []))
+        XCTAssertFalse(AskMishContext.hasSendableAssistantContent(text: "\n\n ", calls: []))
+        XCTAssertTrue(AskMishContext.hasSendableAssistantContent(text: " ok ", calls: []))
+        XCTAssertTrue(AskMishContext.hasSendableAssistantContent(
+            text: "\n\n",
+            calls: [LLMToolCall(id: "c", name: "list_threads", argumentsJSON: "{}")]))
+    }
+
     // MARK: - Context budgeting
 
     func testContextMessageSkipsSecondBudgetPass() {

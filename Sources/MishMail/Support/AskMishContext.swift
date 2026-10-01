@@ -261,6 +261,14 @@ enum AskMishContext {
         }
     }
 
+    /// True when an assistant turn has something the provider accepts on
+    /// replay: a tool call, or text that is more than whitespace. Anthropic
+    /// rejects a whitespace-only text block, so "\n\n" alone is not a turn.
+    static func hasSendableAssistantContent(text: String, calls: [LLMToolCall]) -> Bool {
+        if !calls.isEmpty { return true }
+        return !text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
     /// `[label](url)` becomes `label (url)` so a hostile model answer cannot
     /// hide a link behind friendly text.
     static func neutralizeMarkdownLinks(_ text: String) -> String {
