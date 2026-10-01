@@ -208,20 +208,44 @@ actor SyncEngine {
     private func syncLabels() async throws {
         let labels = try await client.labels()
         try await db.write { [accountId] db in
-            for l in labels {
-                let id = "\(accountId):\(l.id)"
-                // Color and order are local customizations — a resync must
-                // never wipe them. Gmail's own label color only seeds a label
-                // that has no local color yet.
-                let existing = try LabelRow.fetchOne(db, key: id)
-                let row = LabelRow(id: id, accountId: accountId,
-                                   gmailLabelId: l.id, name: l.name, type: l.type ?? "user",
-                                   color: existing?.color ?? l.color?.backgroundColor,
-                                   sortOrder: existing?.sortOrder ?? LabelRow.unsorted)
-                // Runs every pass, and labels almost never change between
-                // passes — write only rows that differ from the stored one.
-                if row != existing { try row.save(db) }
-            }
+            try Self.applyLabels(db, accountId: accountId, labels: labels)
+        }
+    }
+
+    /// Makes this account's label rows match Gmail's label list: inserts
+    /// new labels, updates changed ones, and deletes rows whose label Gmail
+    /// no longer lists (deleted in Gmail). Other accounts are not touched.
+    ///
+    /// An empty list deletes nothing: every mailbox has system labels, so
+    /// an empty answer is a bad response, not "all labels deleted".
+    /// Exercised directly by the test suite.
+    static func applyLabels(_ db: Database, accountId: String, labels: [GLabel]) throws {
+        for l in labels {
+            let id = "\(accountId):\(l.id)"
+            // Color and order are local customizations — a resync must
+            // never wipe them. Gmail's own label color only seeds a label
+            // that has no local color yet.
+            let existing = try LabelRow.fetchOne(db, key: id)
+            let row = LabelRow(id: id, accountId: accountId,
+                               gmailLabelId: l.id, name: l.name, type: l.type ?? "user",
+                               color: existing?.color ?? l.color?.backgroundColor,
+                               sortOrder: existing?.sortOrder ?? LabelRow.unsorted)
+            // Runs every pass, and labels almost never change between
+            // passes — write only rows that differ from the stored one.
+            if row != existing { try row.save(db) }
+        }
+        guard !labels.isEmpty else { return }
+        // Compared in memory, not with `NOT IN (…)`: the fetched list can
+        // exceed what one statement binds.
+        let fetched = Set(labels.map(\.id))
+        let stored = try String.fetchAll(
+            db, sql: "SELECT gmailLabelId FROM label WHERE accountId = ?",
+            arguments: [accountId])
+        let gone = stored.filter { !fetched.contains($0) }.map { "\(accountId):\($0)" }
+        for chunk in sqlChunks(gone) {
+            try db.execute(
+                sql: "DELETE FROM label WHERE accountId = ? AND id IN (\(placeholders(chunk.count)))",
+                arguments: StatementArguments([accountId] + Array(chunk)))
         }
     }
 
