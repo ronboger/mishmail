@@ -4379,6 +4379,13 @@ struct ComposeRequest: Identifiable {
     var scheduledSends: [ScheduledSend] = []
     @ObservationIgnored
     var scheduledSendTimer: Timer?
+    /// Due rows the last sweep had to keep, by row id (see
+    /// `ScheduledSendPolicy`). Observed: the Scheduled list labels rows
+    /// from it. In memory only — the first sweep after launch rebuilds it.
+    var scheduledSendHolds: [Int64: ScheduledSendPolicy.HoldState] = [:]
+    /// Row the due-sweep is sending right now.
+    @ObservationIgnored
+    var scheduledSendInFlightRowId: Int64?
 
 
     // MARK: - Calendar invite RSVP
