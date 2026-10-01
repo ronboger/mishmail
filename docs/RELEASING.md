@@ -63,7 +63,9 @@ everyone." This doc is about `make release`.
    the old version — anyone building from the tag gets the previous release.
    If that happens, redo it: `gh release delete v0.2.0 --cleanup-tag`, push,
    then re-create the release from the artifacts already in
-   `build/dd.noindex/Build/Products/Release/`.
+   `build/ddship.noindex/Build/Products/Release/` (the `make release` build
+   directory — **not** `build/dd.noindex`, which holds the arm64-only
+   `make install` build).
 
 4. **Cut the release.** `make release` runs the full test suite first, then
    builds Release, zips the app, writes **SHA256SUMS**, and creates the GitHub
@@ -73,8 +75,13 @@ everyone." This doc is about `make release`.
    ```
    This runs, in order:
    - `make test` (gate — must pass)
-   - `xcodebuild ... -configuration Release` (with Distribution entitlements
-     when `Config/Local.xcconfig` defines `DEVELOPMENT_TEAM`)
+   - `xcodebuild ... -configuration Release` into `build/ddship.noindex`
+     (with Distribution entitlements, via `MISHMAIL_APP_ENTITLEMENTS`)
+   - artifact checks, which stop the release before anything is published:
+     the embedded relauncher exists, is signed, and is not sandboxed; the
+     app passes `codesign --verify --deep --strict`; its
+     `CFBundleShortVersionString` equals the tag version; its Team ID equals
+     `DEVELOPMENT_TEAM`. None of these need Developer ID or notarization.
    - `ditto -c -k --keepParent MishMail.app MishMail-<version>.zip`
    - `shasum -a 256 … > SHA256SUMS`
    - `gh release create v<version> MishMail-<version>.zip SHA256SUMS --generate-notes`
@@ -82,7 +89,7 @@ everyone." This doc is about `make release`.
 5. **Verify.**
    ```sh
    gh release view v0.2.0 --web     # zip + SHA256SUMS both attached
-   cat build/dd.noindex/Build/Products/Release/SHA256SUMS
+   cat build/ddship.noindex/Build/Products/Release/SHA256SUMS
    ```
    Running apps pick it up within ~a day, or immediately via **Settings →
    Updates → Check for Updates**. The updater downloads the zip, checks
@@ -153,10 +160,14 @@ for strangers. Setup:
    ```
    Keep `ENABLE_HARDENED_RUNTIME` on (it already is in `project.yml`).
    **`make release` / `make install` automatically pass
-   `CODE_SIGN_ENTITLEMENTS=…/MishMail.Distribution.entitlements`** whenever
-   `DEVELOPMENT_TEAM` is set, so library validation stays ON for shipping
-   builds. (Ad-hoc CI/Debug still use the looser entitlements so the
-   separately-signed GRDB framework can load.)
+   `MISHMAIL_APP_ENTITLEMENTS=…/MishMail.Distribution.entitlements`** when a
+   valid signing identity exists for `DEVELOPMENT_TEAM`, so library
+   validation stays ON for shipping builds. (Ad-hoc CI/Debug still use the
+   looser entitlements so the separately-signed GRDB framework can load.)
+   Do not set `CODE_SIGN_ENTITLEMENTS` yourself: in `Config/Local.xcconfig`
+   it has no effect (`project.yml` overrides it per target), and on the
+   `xcodebuild` command line it applies to every target and sandboxes the
+   relauncher.
 2. **Store notarization credentials** once so `make release` can notarize
    automatically:
    ```sh
@@ -176,8 +187,8 @@ path regardless of signing.
   before anything is published. Fix, commit, re-run.
 - **"There is no XCFramework found at …" pointing at an old path** — the
   DerivedData cache went stale (e.g. the repo directory was moved/renamed).
-  Fix: `rm -rf build/dd.noindex` and re-run; packages re-resolve on the next
-  build.
+  Fix: `rm -rf build/dd.noindex build/ddship.noindex` and re-run; packages
+  re-resolve on the next build.
 - **"Refusing release: no valid signing identity"** — see
   [Signing tiers](#signing-tiers); usually a missing `Config/Local.xcconfig`
   or an expired Apple Development cert. A paid Developer ID is **not**
@@ -185,10 +196,13 @@ path regardless of signing.
 - **`gh release create` says the release exists** — you already released this
   version. Bump `MARKETING_VERSION` and try again, or delete the old release.
 - **Updater doesn't offer the new version** — confirm the new
-  `MARKETING_VERSION` is strictly greater than the installed one, the release
-  isn't marked draft/prerelease, and the `.zip` asset is attached
+  `MARKETING_VERSION` is strictly greater than the installed one and is
+  digits and dots only (a suffixed tag such as `v0.6.0-beta.1` is never
+  offered), the release isn't marked draft/prerelease, and the `.zip` asset
+  is attached
   (`gh release view v<version>`).
 - **"crash on launch — different Team IDs"** — hardened runtime + library
   validation rejecting the ad-hoc-signed GRDB framework. Already handled by
-  `com.apple.security.cs.disable-library-validation` in `project.yml`; if you
+  `com.apple.security.cs.disable-library-validation` in the dev entitlements
+  (`Sources/MishMail/MishMail.entitlements`, used by ad-hoc builds); if you
   changed signing, make sure the app and its embedded frameworks share a team.

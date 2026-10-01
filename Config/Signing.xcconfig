@@ -13,13 +13,13 @@
 //     CODE_SIGN_IDENTITY = Apple Development
 //
 // No paid Apple Developer membership is required for that personal-use setup.
-// Paid membership is required for Developer ID / notarized shipping builds;
-// those also switch to the distribution entitlements (library validation stays
-// ON — the embedded GRDB framework is re-signed with your team):
+// Paid membership is required for Developer ID / notarized shipping builds.
+// `make install` and `make release` switch the app to the distribution
+// entitlements themselves (MISHMAIL_APP_ENTITLEMENTS; library validation stays
+// ON — the embedded GRDB framework is re-signed with your team). Do not set
+// CODE_SIGN_ENTITLEMENTS here: project.yml overrides it per target.
 //
-//     CODE_SIGN_ENTITLEMENTS = Sources/MishMail/MishMail.Distribution.entitlements
-//
-// The optional include below picks it up automatically when present.
+// The optional include below picks Local.xcconfig up automatically when present.
 
 CODE_SIGN_STYLE = Manual
 CODE_SIGN_IDENTITY = -
