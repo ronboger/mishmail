@@ -3789,15 +3789,19 @@ struct ComposeRequest: Identifiable {
         // ViewEditor's structured fields back into the JSON so chipsJSON stays
         // authoritative and form edits still take effect.
         if var chips = v.chipsJSON.flatMap({ try? JSONDecoder().decode(FilterChips.self, from: $0) }) {
+            chips.labelName = SavedViewFold.labelName(
+                current: chips.labelName, oldLabelId: chips.labelId, newLabelId: v.labelId)
             chips.labelId = v.labelId
             chips.unreadOnly = v.unreadOnly
             chips.showArchived = v.showArchived
             chips.hasAttachmentOnly = v.hasAttachmentOnly
             chips.senderContains = v.senderContains
-            if v.excludePromotions {
-                chips.category.hide.formUnion(["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"])
-            }
-            if let cat = v.category { chips.category.show = [cat] }
+            // Both directions: the editor must be able to turn these OFF too.
+            let categories = SavedViewFold.categories(
+                show: chips.category.show, hide: chips.category.hide,
+                excludePromotions: v.excludePromotions, category: v.category)
+            chips.category.show = categories.show
+            chips.category.hide = categories.hide
             v.chipsJSON = try? JSONEncoder().encode(chips)
         }
         try? db.write { db in
