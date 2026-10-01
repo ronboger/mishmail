@@ -212,4 +212,42 @@ final class AccountLifecycleTests: XCTestCase {
         XCTAssertTrue(AccountLifecycle.presentsReauthBanner(
             newlyFlagged: true, interactive: true))
     }
+
+    // MARK: - Scope after removal
+
+    func testActiveAccountResetsOnlyWhenItWasRemoved() {
+        XCTAssertNil(AccountLifecycle.activeAccountAfterRemoval(
+            active: "a@x.com", removed: "a@x.com"))
+        XCTAssertEqual(AccountLifecycle.activeAccountAfterRemoval(
+            active: "b@x.com", removed: "a@x.com"), "b@x.com")
+        XCTAssertNil(AccountLifecycle.activeAccountAfterRemoval(
+            active: nil, removed: "a@x.com"))
+    }
+
+    func testViewScopedToRemovedAccountIsLeft() {
+        XCTAssertTrue(AccountLifecycle.viewIsScopedToRemovedAccount(
+            viewAccount: "a@x.com", removed: "a@x.com"))
+        XCTAssertFalse(AccountLifecycle.viewIsScopedToRemovedAccount(
+            viewAccount: "b@x.com", removed: "a@x.com"))
+        XCTAssertFalse(AccountLifecycle.viewIsScopedToRemovedAccount(
+            viewAccount: nil, removed: "a@x.com"),
+            "a unified view stays selected")
+    }
+
+    func testBadgeScopeFallsBackToAllOnlyForTheRemovedAccount() {
+        XCTAssertEqual(AccountLifecycle.badgeScopeRawAfterRemoval(
+            raw: "account:a@x.com", removed: "a@x.com"), "all")
+        XCTAssertEqual(AccountLifecycle.badgeScopeRawAfterRemoval(
+            raw: "account:b@x.com", removed: "a@x.com"), "account:b@x.com")
+        // Not a prefix match: a longer address that starts the same is
+        // another account.
+        XCTAssertEqual(AccountLifecycle.badgeScopeRawAfterRemoval(
+            raw: "account:a@x.com.au", removed: "a@x.com"), "account:a@x.com.au")
+        XCTAssertEqual(AccountLifecycle.badgeScopeRawAfterRemoval(
+            raw: "focused", removed: "a@x.com"), "focused")
+        XCTAssertEqual(AccountLifecycle.badgeScopeRawAfterRemoval(
+            raw: "all", removed: "a@x.com"), "all")
+        XCTAssertNil(AccountLifecycle.badgeScopeRawAfterRemoval(
+            raw: nil, removed: "a@x.com"), "an unset preference stays unset")
+    }
 }

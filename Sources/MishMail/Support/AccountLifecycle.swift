@@ -116,4 +116,29 @@ enum AccountLifecycle {
             defaults.removeObject(forKey: key)
         }
     }
+
+    // MARK: - Scope after removal
+    //
+    // Primitive types on purpose: `MailboxView` and `BadgeScope` live in the
+    // app target, outside the hostless suite.
+
+    /// The single-account filter after `removed` is gone: back to the unified
+    /// view when it pointed at that account, unchanged otherwise.
+    static func activeAccountAfterRemoval(active: String?, removed: String) -> String? {
+        active == removed ? nil : active
+    }
+
+    /// True when the selected view shows only `removed`'s mail (its inbox,
+    /// one of its labels, or a saved view scoped to it) and would be an
+    /// empty list from now on. `viewAccount` is nil for a unified view.
+    static func viewIsScopedToRemovedAccount(viewAccount: String?, removed: String) -> Bool {
+        viewAccount == removed
+    }
+
+    /// The dock-badge scope preference ("all", "focused", "account:<email>")
+    /// after `removed` is gone. A scope of the removed account would count
+    /// nothing, so it falls back to "all".
+    static func badgeScopeRawAfterRemoval(raw: String?, removed: String) -> String? {
+        raw == "account:\(removed)" ? "all" : raw
+    }
 }

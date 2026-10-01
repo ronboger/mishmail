@@ -71,6 +71,7 @@ extension MailStore {
         // ignored (see `isKnownAccount`).
         let engine = engines[id]
         accounts.removeAll { $0.id == id }
+        leaveScope(ofRemovedAccount: id)
         Task { @MainActor [weak self] in
             await engine?.cancelSync()
             Keychain.delete("refreshToken.\(id)")
@@ -99,6 +100,33 @@ extension MailStore {
             // Own-address set changed — drop the weight map and re-mine.
             self.rebuildContacts(forceFull: true)
             await self.reloadPendingThreadOpCount()
+        }
+    }
+
+    /// Nothing may stay scoped to an account that no longer exists: the
+    /// list would be empty, the switcher would still name the address, and
+    /// the dock badge would count nothing.
+    private func leaveScope(ofRemovedAccount id: String) {
+        let viewAccount: String?
+        switch selectedView {
+        case .account(let account), .label(let account, _, _):
+            viewAccount = account
+        case .saved(let viewId, _):
+            viewAccount = savedViews.first { $0.id == viewId }?.accountId
+        default:
+            viewAccount = nil
+        }
+        if AccountLifecycle.viewIsScopedToRemovedAccount(viewAccount: viewAccount, removed: id) {
+            selectedView = .inbox
+        }
+        if AccountLifecycle.activeAccountAfterRemoval(active: activeAccountId, removed: id)
+            != activeAccountId {
+            setActiveAccount(nil)
+        }
+        let badgeRaw = Self.badgeScope.rawValue
+        if AccountLifecycle.badgeScopeRawAfterRemoval(raw: badgeRaw, removed: id) != badgeRaw {
+            // The reload at the end of `removeAccount` recounts the badge.
+            Self.badgeScope = .all
         }
     }
 
