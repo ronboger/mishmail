@@ -70,9 +70,12 @@ final class LLMModelRankTests: XCTestCase {
         XCTAssertEqual(LLMHostedThinking.anthropicEffort("xhigh", model: "claude-opus-4-6"), "max")
         XCTAssertEqual(LLMHostedThinking.anthropicEffort("xhigh", model: "claude-opus-5"), "xhigh")
         XCTAssertEqual(LLMHostedThinking.anthropicEffort("high", model: "claude-opus-4-6"), "high")
-        XCTAssertFalse(LLMHostedThinking.acceptsDisabled("claude-fable-5-1"))
-        XCTAssertTrue(LLMHostedThinking.acceptsDisabled("claude-sonnet-5"))
-        XCTAssertFalse(LLMHostedThinking.acceptsDisabled("claude-sonnet-4-5"))
+        XCTAssertEqual(LLMHostedThinking.anthropicOff("claude-fable-5-1"), .omit)
+        XCTAssertEqual(LLMHostedThinking.anthropicOff("claude-sonnet-5"), .disabled)
+        XCTAssertEqual(LLMHostedThinking.anthropicOff("claude-sonnet-4-5"), .omit)
+        XCTAssertEqual(LLMHostedThinking.anthropicOff("claude-opus-5"), .disabled)
+        XCTAssertEqual(LLMHostedThinking.anthropicOff("claude-opus-5-5"), .omitWithLowEffort)
+        XCTAssertEqual(LLMHostedThinking.anthropicOff("claude-sonnet-5-5"), .betweenTools)
         XCTAssertEqual(LLMHostedThinking.openAIEffort("medium", model: "grok-3-mini"), "high")
     }
 }

@@ -130,10 +130,29 @@ enum LLMHostedThinking {
         return false
     }
 
-    /// True when `thinking: { type: disabled }` is accepted. Fable rejects it.
-    static func acceptsDisabled(_ model: String) -> Bool {
-        if leafName(model).contains("fable") { return false }
-        return usesAdaptive(model)
+    /// How "thinking off" goes on the Anthropic wire. The form is per model:
+    /// a form the model does not accept fails the whole request with a 400.
+    enum AnthropicOff: Equatable {
+        /// `thinking: { type: disabled }` (Claude 4.6–4.8, Opus 5, Sonnet 5).
+        case disabled
+        /// No field; the model keeps its own default (Fable, pre-4.6 models).
+        case omit
+        /// No `thinking` field and `output_config.effort: low`. Claude Opus 5.5
+        /// cannot turn thinking off; effort is its only control.
+        case omitWithLowEffort
+        /// `thinking: { type: between_tools }` with no other thinking field.
+        /// Claude Sonnet 5.5 only; valid at effort `high` or below, so no
+        /// effort goes with it.
+        case betweenTools
+    }
+
+    static func anthropicOff(_ model: String) -> AnthropicOff {
+        let name = leafName(model)
+        if name.contains("fable") { return .omit }
+        // The 5.5 ids first: "opus-5-5" also contains "opus-5".
+        if name.contains("opus-5-5") || name.contains("opus-5.5") { return .omitWithLowEffort }
+        if name.contains("sonnet-5-5") || name.contains("sonnet-5.5") { return .betweenTools }
+        return usesAdaptive(model) ? .disabled : .omit
     }
 
     /// Claude 4.6+ uses adaptive thinking plus `output_config.effort`.

@@ -145,6 +145,57 @@ final class LLMWireAnthropicTests: XCTestCase {
         XCTAssertEqual((body["thinking"] as! [String: Any])["type"] as? String, "disabled")
     }
 
+    /// Claude Opus 5.5 rejects `disabled` at every effort level. Off there is
+    /// no `thinking` field plus the lowest effort.
+    func testRequestBodyOffOnOpus55OmitsThinkingAndLowersEffort() throws {
+        for model in ["claude-opus-5-5", "anthropic/claude-opus-5.5"] {
+            let body = try decode(try AnthropicWire.requestBody(
+                model: model, messages: [LLMMessage(role: .user, text: "hi")],
+                tools: [], maxTokens: 4096, thinking: .off))
+            XCTAssertNil(body["thinking"], model)
+            XCTAssertEqual((body["output_config"] as? [String: Any])?["effort"] as? String,
+                           "low", model)
+        }
+    }
+
+    /// Claude Sonnet 5.5 rejects `disabled`; `between_tools` is its off form
+    /// and takes no other field. No effort is sent, so the default applies.
+    func testRequestBodyOffOnSonnet55SendsBetweenTools() throws {
+        for model in ["claude-sonnet-5-5", "claude-sonnet-5.5"] {
+            let body = try decode(try AnthropicWire.requestBody(
+                model: model, messages: [LLMMessage(role: .user, text: "hi")],
+                tools: [], maxTokens: 4096, thinking: .off))
+            let thinking = body["thinking"] as? [String: Any]
+            XCTAssertEqual(thinking?["type"] as? String, "between_tools", model)
+            XCTAssertEqual(thinking?.count, 1, model)
+            XCTAssertNil(body["output_config"], model)
+        }
+    }
+
+    func testRequestBodyOffStaysDisabledOnOpus5AndClaude46To48() throws {
+        for model in ["claude-opus-5", "claude-opus-4-8", "claude-opus-4-7",
+                      "claude-opus-4-6", "claude-sonnet-4-6"] {
+            let body = try decode(try AnthropicWire.requestBody(
+                model: model, messages: [LLMMessage(role: .user, text: "hi")],
+                tools: [], maxTokens: 4096, thinking: .off))
+            XCTAssertEqual((body["thinking"] as? [String: Any])?["type"] as? String,
+                           "disabled", model)
+            XCTAssertNil(body["output_config"], model)
+        }
+    }
+
+    func testThinkingLevelStaysAdaptiveOnOpus55AndSonnet55() throws {
+        for model in ["claude-opus-5-5", "claude-sonnet-5-5"] {
+            let body = try decode(try AnthropicWire.requestBody(
+                model: model, messages: [LLMMessage(role: .user, text: "hi")],
+                tools: [], maxTokens: 4096, thinking: .level("xhigh")))
+            XCTAssertEqual((body["thinking"] as? [String: Any])?["type"] as? String,
+                           "adaptive", model)
+            XCTAssertEqual((body["output_config"] as? [String: Any])?["effort"] as? String,
+                           "xhigh", model)
+        }
+    }
+
     func testRequestBodyOmitsOffOnFable() throws {
         let body = try decode(try AnthropicWire.requestBody(
             model: "claude-fable-5-1", messages: [LLMMessage(role: .user, text: "hi")],
