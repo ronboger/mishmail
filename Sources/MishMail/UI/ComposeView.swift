@@ -1756,7 +1756,6 @@ struct ComposeView: View {
         }
         guard let original else { return }
         let ownAddresses = store.ownEmailAddresses
-        let sender = MessageParser.emailAddress(original.fromHeader)
 
         if request.forward {
             let subj = original.subject
@@ -1787,26 +1786,12 @@ struct ComposeView: View {
             prefillAttachments(of: attachmentSources)
             return
         } else {
-            if ownAddresses.contains(sender.lowercased()) {
-                // Replying to my own message: target its recipients, not me.
-                toTokens = MessageParser.splitAddresses(original.toHeader)
-                    .map { MessageParser.emailAddress($0) }
-                    .filter { $0.contains("@") && !ownAddresses.contains($0.lowercased()) }
-                if toTokens.isEmpty { toTokens = [sender] }  // genuinely a note to self
-            } else {
-                toTokens = [sender]
-            }
+            // Reply-To, own-message, and Reply All rules: ReplyRecipients.
+            let recipients = ReplyRecipients.compute(
+                for: original, ownAddresses: ownAddresses, replyAll: request.replyAll)
+            toTokens = recipients.to
             if request.replyAll {
-                // Everyone on the original except me and whoever is already in To.
-                let taken = Set(toTokens.map { $0.lowercased() })
-                let others = MessageParser.splitAddresses(original.toHeader + "," + original.ccHeader)
-                    .map { MessageParser.emailAddress($0) }
-                    .filter { $0.contains("@") }
-                    .filter { !ownAddresses.contains($0.lowercased())
-                              && $0.lowercased() != sender.lowercased()
-                              && !taken.contains($0.lowercased()) }
-                var seen = Set<String>()
-                ccTokens = others.filter { seen.insert($0.lowercased()).inserted }
+                ccTokens = recipients.cc
                 if !ccTokens.isEmpty { showCc = true }
             }
             let subj = original.subject

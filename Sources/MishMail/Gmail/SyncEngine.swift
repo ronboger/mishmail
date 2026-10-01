@@ -1182,6 +1182,11 @@ actor SyncEngine {
                         msg.listUnsubscribe = existing.listUnsubscribe
                         msg.listUnsubscribePost = existing.listUnsubscribePost
                     }
+                    // Same rule for Reply-To.
+                    if (msg.replyToHeader ?? "").isEmpty,
+                       let kept = existing.replyToHeader, !kept.isEmpty {
+                        msg.replyToHeader = kept
+                    }
                 }
                 msg.bodyText = ""
                 msg.bodyHTML = nil

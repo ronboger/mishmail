@@ -551,7 +551,7 @@ actor ThreadDetailRepository {
                        bccHeader, subject, date, snippet,
                        '' AS bodyText, NULL AS bodyHTML,
                        messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment,
-                       senderAuth
+                       senderAuth, replyToHeader
                 FROM message
                 WHERE threadId = ?
                 ORDER BY date

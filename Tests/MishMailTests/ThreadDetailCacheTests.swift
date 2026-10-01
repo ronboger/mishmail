@@ -448,6 +448,23 @@ final class ThreadDetailCacheTests: XCTestCase {
         XCTAssertEqual(payload.messages.map(\.senderAuth), [false])
     }
 
+    /// Reply reads `message.replyToHeader` from the pane's Message. The
+    /// custom SELECT must project it, or every reply from the reading pane
+    /// goes to From even when the row has a recorded Reply-To.
+    func testFetchPayloadProjectsReplyToHeader() async throws {
+        let pool = try makeMailPool()
+        try await pool.write { db in
+            var message = self.fixtureMessage(id: "m1", labels: "INBOX")
+            message.replyToHeader = "desk@help.example"
+            _ = try SyncEngine.upsertPending(
+                db, items: [.init(message: message, attachments: [])])
+        }
+        let payload = try await pool.read { db in
+            try ThreadDetailRepository.fetchPayload(threadId: "thread", db: db)
+        }
+        XCTAssertEqual(payload.messages.map(\.replyToHeader), ["desk@help.example"])
+    }
+
     private func fixtureAttachment(messageId: String) -> AttachmentRow {
         AttachmentRow(
             id: nil, messageId: messageId, gmailAttachmentId: "att",

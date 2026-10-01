@@ -255,6 +255,20 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertEqual(noHeader.listUnsubscribePost, "")
     }
 
+    func testParseStoresReplyToHeader() throws {
+        let form = try authMessage([
+            ("From", "Acme Forms <noreply@forms.example>"),
+            ("Reply-To", "Customer <customer@client.example>"),
+        ])
+        XCTAssertEqual(MessageParser.parse(form, accountId: "a@x.com").0.replyToHeader,
+                       "Customer <customer@client.example>")
+
+        // Empty (not nil) marks "parsed, no header", so the open-time
+        // metadata fill does not fetch the message again.
+        let absent = try authMessage([("From", "jane@x.com")])
+        XCTAssertEqual(MessageParser.parse(absent, accountId: "a@x.com").0.replyToHeader, "")
+    }
+
     /// Google echoes attacker-controlled bytes verbatim in the header value
     /// (envelope sender, free-text comments), so a bare substring match on
     /// "dmarc=pass" would pass on a forged local part or comment text. The

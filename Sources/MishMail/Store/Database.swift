@@ -153,6 +153,10 @@ struct Message: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     /// RFC 8058 `List-Unsubscribe-Post` (v37). Same nil/empty rule as
     /// `listUnsubscribe`. `"List-Unsubscribe=One-Click"` enables HTTPS POST.
     var listUnsubscribePost: String? = nil
+    /// Raw `Reply-To` (v43). Same nil/empty rule as `listUnsubscribe`.
+    /// Reply and Reply All target it instead of `fromHeader` when it has an
+    /// address (`ReplyRecipients`).
+    var replyToHeader: String? = nil
 }
 
 /// Off-row body storage (v24). Keeps fat HTML off the `message` row so header
@@ -2103,6 +2107,16 @@ final class AppDatabase: @unchecked Sendable {
                 on: "message",
                 columns: ["threadId", "date"])
             try db.execute(sql: "DROP INDEX IF EXISTS message_on_threadId")
+        }
+
+        // v43: Reply-To header, so Reply targets it instead of From.
+        // NULL for pre-v43 rows (unknown — the open-time metadata fetch that
+        // fills List-Unsubscribe fills this too). Empty string means parsed
+        // and absent.
+        m.registerMigration("v43") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "replyToHeader", .text)
+            }
         }
         return m
     }
