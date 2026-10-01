@@ -215,8 +215,7 @@ struct MessageFetchReport: Sendable {
 /// Owns access-token refresh; the refresh token comes from the Keychain.
 actor GmailClient {
     private let accountEmail: String
-    private var accessToken: String?
-    private var tokenExpiry: Date = .distantPast
+    private var tokenCache = AccessTokenCache()
     private var tokenRefreshTask: Task<(String, Int), Error>?
 
     init(accountEmail: String) {
@@ -234,7 +233,8 @@ actor GmailClient {
     private var base: String { "https://gmail.googleapis.com/gmail/v1/users/me" }
 
     private func validToken() async throws -> String {
-        if let t = accessToken, tokenExpiry > Date().addingTimeInterval(60) { return t }
+        if let t = tokenCache.token(now: Date()) { return t }
+        let generation = tokenCache.generation
         let refresh: String
         switch Keychain.read("refreshToken.\(accountEmail)") {
         case .value(let value):
@@ -244,22 +244,43 @@ actor GmailClient {
         case .unavailable(let status):
             throw GmailError.keychainUnavailable(accountEmail, status)
         }
-        if let task = tokenRefreshTask {
-            let (token, expiresIn) = try await task.value
-            accessToken = token
-            tokenExpiry = Date().addingTimeInterval(TimeInterval(expiresIn))
-            return token
+        let task: Task<(String, Int), Error>
+        if let running = tokenRefreshTask {
+            task = running
+        } else {
+            task = Task {
+                let result = try await OAuthService.refreshAccessToken(refreshToken: refresh)
+                return (result.token, result.expiresIn)
+            }
+            tokenRefreshTask = task
         }
-        let task: Task<(String, Int), Error> = Task {
-            let result = try await OAuthService.refreshAccessToken(refreshToken: refresh)
-            return (result.token, result.expiresIn)
+        let result = await task.result
+        // Not a `defer`: `forgetAccessToken` may have replaced the task
+        // while this call was suspended.
+        if tokenRefreshTask == task { tokenRefreshTask = nil }
+        switch result {
+        case .success(let (token, expiresIn)):
+            if tokenCache.store(token, expiresIn: expiresIn, now: Date(),
+                                generation: generation) {
+                return token
+            }
+        case .failure(let error):
+            if tokenCache.generation == generation { throw error }
         }
-        tokenRefreshTask = task
-        defer { tokenRefreshTask = nil }
-        let (token, expiresIn) = try await task.value
-        accessToken = token
-        tokenExpiry = Date().addingTimeInterval(TimeInterval(expiresIn))
-        return token
+        // The sign-in changed during the refresh. The result, token or
+        // error, belongs to the old one: start over from the Keychain, which
+        // now holds the new refresh token or none.
+        return try await validToken()
+    }
+
+    /// Drops the cached access token after the account's sign-in changed
+    /// (reauthorized or removed). An access token outlives its refresh token
+    /// by up to an hour, so without this a removed account could still send,
+    /// and a reauthorized one kept its old scopes. A refresh already in
+    /// flight is detached so its result is not cached.
+    func forgetAccessToken() {
+        tokenCache.invalidate()
+        tokenRefreshTask = nil
     }
 
     private func request<T: Decodable>(_ method: String, _ path: String,
@@ -300,8 +321,7 @@ actor GmailClient {
             let http = response as? HTTPURLResponse
             let code = http?.statusCode ?? 0
             guard !(code == 401 && !didRefreshAfter401) else {
-                accessToken = nil
-                tokenExpiry = .distantPast
+                tokenCache.expire()
                 didRefreshAfter401 = true
                 continue
             }
@@ -400,8 +420,7 @@ actor GmailClient {
             let (data, response) = try await URLSession.shared.data(for: req)
             let code = (response as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401, !didRefreshAfter401 {
-                accessToken = nil
-                tokenExpiry = .distantPast
+                tokenCache.expire()
                 didRefreshAfter401 = true
                 continue
             }
@@ -802,8 +821,7 @@ actor GmailClient {
             let (data, resp) = try await URLSession.shared.data(for: req)
             let code = (resp as? HTTPURLResponse)?.statusCode ?? 0
             if code == 401, !didRefreshAfter401 {
-                accessToken = nil
-                tokenExpiry = .distantPast
+                tokenCache.expire()
                 didRefreshAfter401 = true
                 continue
             }

@@ -32,6 +32,9 @@ extension MailStore {
                 guard !demoMode || exitDemoMode() else { return }
 
                 try Keychain.set(refresh, forKey: "refreshToken.\(info.email)")
+                // The shared client may hold an access token from the old
+                // sign-in (other scopes, or a different grant).
+                await GmailClient.shared(accountEmail: info.email).forgetAccessToken()
                 try await db.write { db in
                     let existing = try Account.fetchOne(db, key: info.email)
                     let account = AccountLifecycle.accountAfterSignIn(
@@ -71,6 +74,9 @@ extension MailStore {
         Task { @MainActor [weak self] in
             await engine?.cancelSync()
             Keychain.delete("refreshToken.\(id)")
+            // After the Keychain delete: the next token request finds no
+            // refresh token and fails, instead of reusing the cached one.
+            await GmailClient.shared(accountEmail: id).forgetAccessToken()
             // The account row and its queued edits, offline drafts, scheduled
             // sends and triage rows go in one transaction.
             let purged = (try? await pool.write { db in
