@@ -154,7 +154,9 @@ extension MailStore {
     /// back. Stops at the first connectivity failure (still offline); drops
     /// rows Gmail rejects outright (a thread deleted meanwhile is a 404).
     /// A quota or server error keeps the row for the next pass, until the
-    /// row passes `ThreadEditRetryPolicy.maxQueuedAge`.
+    /// row passes `ThreadEditRetryPolicy.maxQueuedAge`. A failure that
+    /// belongs to one account (reauthorization, quota) skips that account
+    /// only; rows of a removed account are deleted (see `ThreadOpReplay`).
     func flushPendingThreadOps() async {
         guard !demoMode, !isShuttingDown, !pendingOpsFlushInFlight else { return }
         pendingOpsFlushInFlight = true
@@ -167,9 +169,19 @@ extension MailStore {
             if pendingThreadOpCount != 0 { pendingThreadOpCount = 0 }
             return
         }
-        var serverFailures = 0
-        for row in rows {
+        var pass = ThreadOpReplay.Pass()
+        replay: for row in rows {
             guard !isShuttingDown else { break }
+            guard isKnownAccount(row.accountId) else {
+                // The account was removed: no token, no thread rows. The
+                // row can never be sent and would stay at the head of the
+                // queue for ever.
+                _ = try? await pool.write { db in
+                    try PendingThreadOp.deleteIfAccountMissing(db, row: row)
+                }
+                continue
+            }
+            guard !pass.skips(row.accountId) else { continue }
             guard let change = row.change, !change.isEmpty else {
                 await rederiveThreadFromMessages(
                     accountId: row.accountId, gmailThreadId: row.gmailThreadId)
@@ -184,28 +196,29 @@ extension MailStore {
                 isOffline = false
                 shouldDelete = true
             } catch {
-                if OfflinePolicy.shouldDefer(error) {
+                switch ThreadOpReplay.replayDisposition(
+                    error: error, accountIsKnown: isKnownAccount(row.accountId),
+                    createdAt: row.createdAt) {
+                case .stopPass:
                     isOffline = true
-                    break
-                }
-                if AccountLifecycle.isReauthRequired(error) {
-                    requireReauthorization(for: row.accountId)
-                    break
-                }
-                if let failure = ThreadEditRetryPolicy.serverFailure(error),
-                   !ThreadEditRetryPolicy.isExpired(createdAt: row.createdAt) {
-                    // Gmail is busy, not gone: the row stays queued.
-                    serverFailures += 1
-                    if ThreadEditRetryPolicy.stopsReplay(
-                        after: failure, failuresSoFar: serverFailures) { break }
+                    break replay
+                case .skipAccount(let reauthorize):
+                    // The other accounts' rows still replay in this pass.
+                    if reauthorize { requireReauthorization(for: row.accountId) }
+                    pass.skip(row.accountId)
                     continue
+                case .keepRow:
+                    // Gmail is busy, not gone: the row stays queued.
+                    pass.recordServerError(row.accountId)
+                    continue
+                case .dropRow(let revert, let report):
+                    // Gone or rejected: the next sync shows Gmail's truth.
+                    if report {
+                        lastError = "Couldn't sync an offline change: \(error.localizedDescription)"
+                    }
+                    shouldDelete = true
+                    shouldRederive = revert
                 }
-                // Gone or rejected: the next sync shows Gmail's truth.
-                if !SendThreading.isNotFound(error) {
-                    lastError = "Couldn't sync an offline change: \(error.localizedDescription)"
-                }
-                shouldDelete = true
-                shouldRederive = true
             }
             // Delete only if the row is still the one we replayed: a user edit
             // made during the flush folds into it (enqueue sees the row and
