@@ -71,7 +71,12 @@ extension MailStore {
         Task { @MainActor [weak self] in
             await engine?.cancelSync()
             Keychain.delete("refreshToken.\(id)")
-            _ = try? await pool.write { db in _ = try Account.deleteOne(db, key: id) }
+            // The account row and its queued edits, offline drafts, scheduled
+            // sends and triage rows go in one transaction.
+            let purged = (try? await pool.write { db in
+                try AccountLifecycle.purgeAccount(db, id: id)
+            }) != nil
+            if purged { AccountLifecycle.clearBackfillFlags(accountId: id) }
             guard let self, !self.isShuttingDown else { return }
             // The account's mail cascades away with it; any payload cached for
             // one of its conversations must not outlive the rows behind it.
@@ -82,8 +87,12 @@ extension MailStore {
             self.reloadAccounts()
             self.sendIdentities.removeAll { $0.accountId == id }
             self.reloadThreads()
+            // The Scheduled and Outbox lists held rows for this account.
+            self.reloadScheduledSends()
+            self.reloadLocalDrafts()
             // Own-address set changed — drop the weight map and re-mine.
             self.rebuildContacts(forceFull: true)
+            await self.reloadPendingThreadOpCount()
         }
     }
 

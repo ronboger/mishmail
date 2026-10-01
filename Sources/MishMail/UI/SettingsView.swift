@@ -370,7 +370,7 @@ struct AccountsSettings: View {
                 }
                 Button("Cancel", role: .cancel) { accountToRemove = nil }
             } message: { _ in
-                Text("This removes cached mail and the saved sign-in from this Mac. Gmail mail on the server is not deleted.")
+                Text("This removes cached mail and the saved sign-in from this Mac. Unsent scheduled mail, offline drafts, and edits not yet synced for this account are deleted. Gmail mail on the server is not deleted.")
             }
         }
     }
