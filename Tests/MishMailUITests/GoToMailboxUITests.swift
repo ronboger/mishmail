@@ -19,7 +19,7 @@ final class GoToMailboxUITests: XCTestCase {
         XCTAssertTrue(app.windows.firstMatch.waitForExistence(timeout: 10))
         app.activate()
 
-        let demoThread = app.staticTexts
+        let demoThread = app.descendants(matching: .any)
             .matching(identifier: "threadRow.you@example.com:t1").firstMatch
         XCTAssertTrue(demoThread.waitForExistence(timeout: 10))
         demoThread.click()

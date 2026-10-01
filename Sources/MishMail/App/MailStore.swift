@@ -2378,7 +2378,7 @@ struct ComposeRequest: Identifiable {
             // pass. Nothing to merge, so nothing to rank or publish.
             if mined.rows == 0 && !full { return }
             let ranked = ContactMiner.ranked(from: mined.weights, excluding: ownAddresses)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self, !self.isShuttingDown,
                       generation == self.contactsRebuildGeneration else { return }
                 self.contactWeights = mined.weights
@@ -2413,7 +2413,7 @@ struct ComposeRequest: Identifiable {
         // termination tracking.
         Task.detached(priority: .utility) { [weak self] in
             let ranked = ContactMiner.ranked(from: weights, excluding: ownAddresses)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self, !self.isShuttingDown,
                       generation == self.contactsRankGeneration else { return }
                 self.publishContacts(ranked)
