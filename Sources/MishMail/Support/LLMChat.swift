@@ -352,7 +352,14 @@ enum LLMEndpoint {
             if h.hasPrefix("fc") || h.hasPrefix("fd") { return true }
             return false
         }
-        let parts = h.split(separator: ".").compactMap { UInt8($0) }
+        // Exactly four all-digit labels. `10.0.0.5.evil.com` is a public
+        // name, and `UInt8("+10")` parses, so neither may pass as an address.
+        let labels = h.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count == 4 else { return false }
+        let parts = labels.compactMap { label -> UInt8? in
+            guard label.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+            return UInt8(label)
+        }
         guard parts.count == 4 else { return false }
         if parts[0] == 10 { return true }
         if parts[0] == 192 && parts[1] == 168 { return true }
