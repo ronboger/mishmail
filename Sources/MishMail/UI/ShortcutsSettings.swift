@@ -33,7 +33,7 @@ struct ShortcutsSettings: View {
                         }
                     }
                 } footer: {
-                    Text("Single keys only — g and ? are reserved, and ⌘ shortcuts can't be changed yet.")
+                    Text("Single character keys only — g, ? and / are reserved, Return, arrow and function keys can't be used, and ⌘ shortcuts can't be changed yet.")
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
