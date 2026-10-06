@@ -113,20 +113,17 @@ enum MessageParser {
     /// copies — though mail added via `users.messages.insert`/import can
     /// carry an attacker-authored first header, so this is a guard, not a
     /// guarantee). And the match is a boundary-checked method token after
-    /// stripping parenthesized comments, because Google echoes attacker bytes
-    /// verbatim in the same value (`smtp.mailfrom=` envelope sender) — a
-    /// quoted local part like `"dmarc=pass"@evil.example` must not satisfy it.
+    /// stripping parenthesized comments and quoted strings, because Google
+    /// echoes attacker bytes verbatim in the same value (`smtp.mailfrom=`
+    /// envelope sender) — a quoted local part like `"dmarc=pass"@evil.example`
+    /// or `"x;dmarc=pass"@evil.example` must not satisfy it.
     static func senderAuthenticated(_ g: GMessage) -> Bool? {
         guard let raw = g.payload?.headers?
             .first(where: {
                 $0.name.caseInsensitiveCompare("Authentication-Results") == .orderedSame
             })?
             .value else { return nil }
-        var results = raw.lowercased()
-        // Parenthesized CFWS comments can hold attacker-influenced text.
-        while let range = results.range(of: #"\([^()]*\)"#, options: .regularExpression) {
-            results.removeSubrange(range)
-        }
+        let results = strippingCommentsAndQuotedStrings(raw.lowercased())
         guard let verdict = results.range(
             of: #"(?:^|;)\s*dmarc\s*=\s*([a-z0-9-]+)"#,
             options: .regularExpression) else { return false }
@@ -135,6 +132,41 @@ enum MessageParser {
             .last?
             .trimmingCharacters(in: .whitespaces)
         return value == "pass"
+    }
+
+    /// Removes parenthesized CFWS comments (nested) and double-quoted
+    /// strings from a structured header value. Both can hold
+    /// attacker-influenced text, and a `;` inside either is not a method
+    /// separator: `smtp.mailfrom="x;dmarc=pass"@evil.example` must not read
+    /// as a verdict. A backslash escapes the next character inside both. An
+    /// unterminated quote or comment swallows the rest of the value — fail
+    /// closed, since nothing after it can be told from sender text.
+    static func strippingCommentsAndQuotedStrings(_ value: String) -> String {
+        var out = ""
+        out.reserveCapacity(value.count)
+        var inQuotes = false
+        var escaped = false
+        var commentDepth = 0
+        for ch in value {
+            if inQuotes || commentDepth > 0 {
+                if escaped { escaped = false; continue }
+                if ch == "\\" { escaped = true; continue }
+                if inQuotes {
+                    if ch == "\"" { inQuotes = false }
+                } else if ch == "(" {
+                    commentDepth += 1
+                } else if ch == ")" {
+                    commentDepth -= 1
+                }
+                continue
+            }
+            switch ch {
+            case "\"": inQuotes = true
+            case "(": commentDepth += 1
+            default: out.append(ch)
+            }
+        }
+        return out
     }
 
     private static func partHeader(_ part: GMessage.Part, _ name: String) -> String? {
@@ -425,38 +457,12 @@ enum MessageParser {
         return lines.joined(separator: "\n")
     }
 
-    /// Decodes the common named entities plus numeric forms
-    /// (`&#8217;`, `&#x1F600;`). `&amp;` goes last so `&amp;lt;` stays `&lt;`.
-    /// Compiled once: decodeEntities runs inside every stripHTML (sync time).
-    private static let numericEntityRegex = try? NSRegularExpression(
-        pattern: "&#(x[0-9a-fA-F]+|[0-9]+);")
-
+    /// Entity decoding for `stripHTML`. One decoder serves stripped bodies,
+    /// snippets and export (`String.decodingHTMLEntities`): the private
+    /// six-name table that used to live here left `&rsquo;` and `&eacute;`
+    /// as literal text in every quoted reply of HTML mail.
     static func decodeEntities(_ s: String) -> String {
-        var r = s
-        for (entity, ch) in [("&nbsp;", " "), ("&lt;", "<"), ("&gt;", ">"),
-                             ("&quot;", "\""), ("&#39;", "'"), ("&apos;", "'")] {
-            r = r.replacingOccurrences(of: entity, with: ch)
-        }
-        if let regex = numericEntityRegex {
-            var result = ""
-            var last = r.startIndex
-            for m in regex.matches(in: r, range: NSRange(r.startIndex..., in: r)) {
-                guard let range = Range(m.range, in: r),
-                      let numRange = Range(m.range(at: 1), in: r) else { continue }
-                let num = r[numRange]
-                let value = num.hasPrefix("x")
-                    ? UInt32(num.dropFirst(), radix: 16)
-                    : UInt32(num)
-                result += r[last..<range.lowerBound]
-                if let value, let scalar = Unicode.Scalar(value) {
-                    result.append(Character(scalar))
-                }
-                last = range.upperBound
-            }
-            result += r[last...]
-            r = result
-        }
-        return r.replacingOccurrences(of: "&amp;", with: "&")
+        s.decodingHTMLEntities()
     }
 
     /// The text a reply should quote. Prefer the HTML body — it is what the
@@ -471,8 +477,10 @@ enum MessageParser {
     }
 
     /// Extracts a display name from a From header like `Jane Doe <jane@x.com>`.
+    /// The name is the text before the same `<` that `emailAddress` uses, so
+    /// the two never describe different mailboxes.
     static func displayName(fromHeader: String) -> String {
-        if let lt = fromHeader.firstIndex(of: "<") {
+        if let lt = angleAddress(in: fromHeader)?.lt ?? fromHeader.firstIndex(of: "<") {
             let name = fromHeader[..<lt].trimmingCharacters(in: CharacterSet(charactersIn: " \"'"))
             if !name.isEmpty { return name }
         }
@@ -481,13 +489,77 @@ enum MessageParser {
 
     /// Extracts a bare email address from an address header.
     /// Tolerates malformed headers (missing or out-of-order angle brackets).
+    ///
+    /// Security: the result feeds block, VIP, reply and the remote-image
+    /// gate, so it must be the mailbox the message really names. See
+    /// `angleAddress(in:)` for which `<...>` pair counts.
     static func emailAddress(_ header: String) -> String {
-        if let lt = header.firstIndex(of: "<"),
-           let gt = header.firstIndex(of: ">"),
-           lt < gt {
-            return String(header[header.index(after: lt)..<gt])
+        if let pair = angleAddress(in: header) {
+            return String(header[header.index(after: pair.lt)..<pair.gt])
         }
         return header.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
+    }
+
+    /// The `<` and `>` of the angle-addr in one mailbox (RFC 5322 name-addr:
+    /// `[display-name] angle-addr`, so the mailbox is the LAST pair).
+    ///
+    /// Brackets inside a quoted string or a parenthesized comment are sender
+    /// text, not syntax: `"Boss <boss@trusted.com>" <attacker@evil.example>`
+    /// and `Boss <attacker@evil.example> (<boss@trusted.com>)` both name the
+    /// attacker. Taking the first pair let the decoy address through.
+    ///
+    /// Rule: the last `<` outside quotes and comments, then the first `>`
+    /// outside them after it. A header with an unbalanced quote or comment
+    /// has no such pair; retry with comments only, then quotes only, then
+    /// plain text, so one stray `"` or `(` cannot turn the whole header
+    /// into "quoted" text and hand the choice back to a decoy. Nil when the
+    /// header has no ordered pair at all.
+    private static func angleAddress(
+        in header: String
+    ) -> (lt: String.Index, gt: String.Index)? {
+        guard header.contains("<") else { return nil }
+        for (quotes, comments) in [(true, true), (false, true), (true, false), (false, false)] {
+            if let pair = angleAddress(in: header, honorQuotes: quotes, honorComments: comments) {
+                return pair
+            }
+        }
+        return nil
+    }
+
+    private static func angleAddress(
+        in header: String, honorQuotes: Bool, honorComments: Bool
+    ) -> (lt: String.Index, gt: String.Index)? {
+        var inQuotes = false
+        var escaped = false
+        var commentDepth = 0
+        var lt: String.Index?
+        var gt: String.Index?
+        for index in header.indices {
+            let ch = header[index]
+            if escaped { escaped = false; continue }
+            // Backslash escapes the next character in quotes and comments.
+            if ch == "\\", inQuotes || commentDepth > 0 { escaped = true; continue }
+            if inQuotes {
+                if ch == "\"" { inQuotes = false }
+                continue
+            }
+            if commentDepth > 0 {
+                if ch == "(" { commentDepth += 1 }
+                if ch == ")" { commentDepth -= 1 }
+                continue
+            }
+            switch ch {
+            case "\"" where honorQuotes: inQuotes = true
+            case "(" where honorComments: commentDepth += 1
+            case "<": lt = index; gt = nil
+            case ">": if lt != nil, gt == nil { gt = index }
+            default: break
+            }
+        }
+        // Still inside a quote or comment at the end: the run was never
+        // closed, so what it hid is not trustworthy as "not syntax".
+        guard !inQuotes, commentDepth == 0, let lt, let gt else { return nil }
+        return (lt, gt)
     }
 
     /// Attachment filenames come from the sender. Reduce to a bare filename
@@ -509,6 +581,14 @@ enum MessageParser {
         "command", "js", "jxa", "py", "rb", "pl", "php", "ps1",
         "exe", "msi", "com", "bat", "cmd", "scr", "jar", "bin",
         "ipa", "apk",
+        // Web documents (run script / load remote content in a browser).
+        "xhtml", "xht", "shtml", "mht", "mhtml", "webarchive", "hta", "jnlp", "vbs",
+        // Location files (mount or open a remote server on double-click).
+        "url", "afploc", "ftploc", "nfsloc", "vncloc", "term",
+        // Disk images and installer archives.
+        "sparseimage", "sparsebundle", "cdr", "xip",
+        // Macro-enabled Office templates and add-ins.
+        "xlam", "xla", "xltm", "dotm", "potm", "ppam", "ppsm", "sldm",
     ]
 
     /// True when the filename looks executable / installer-like, including

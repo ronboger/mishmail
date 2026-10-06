@@ -101,6 +101,48 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertEqual(MessageParser.emailAddress(""), "")
     }
 
+    /// A quoted display name (or a comment) can carry a decoy `<address>`.
+    /// The mailbox is the angle-addr that ends the header, outside quotes
+    /// and comments (RFC 5322 name-addr); block, VIP, reply and the
+    /// remote-image gate all key on it.
+    func testEmailAddressIgnoresDecoyInQuotedDisplayName() {
+        let spoof = "\"Boss <boss@trusted.com>\" <attacker@evil.example>"
+        XCTAssertEqual(MessageParser.emailAddress(spoof), "attacker@evil.example")
+        XCTAssertEqual(MessageParser.displayName(fromHeader: spoof), "Boss <boss@trusted.com>")
+        // Unquoted decoy: the last angle pair is the mailbox.
+        let unquoted = "Boss <boss@trusted.com> <attacker@evil.example>"
+        XCTAssertEqual(MessageParser.emailAddress(unquoted), "attacker@evil.example")
+        XCTAssertEqual(MessageParser.displayName(fromHeader: unquoted), "Boss <boss@trusted.com>")
+        // Escaped quote inside the quoted name does not end the quoted run.
+        XCTAssertEqual(
+            MessageParser.emailAddress(#""Boss \" <boss@trusted.com>" <attacker@evil.example>"#),
+            "attacker@evil.example")
+        // Decoy in a trailing comment must not win over the real mailbox.
+        let comment = "Boss <attacker@evil.example> (<boss@trusted.com>)"
+        XCTAssertEqual(MessageParser.emailAddress(comment), "attacker@evil.example")
+        XCTAssertEqual(MessageParser.displayName(fromHeader: comment), "Boss")
+        XCTAssertEqual(
+            MessageParser.emailAddress(#"Boss <attacker@evil.example> (a \) (nested <boss@trusted.com>))"#),
+            "attacker@evil.example")
+        // Quoted local part that contains brackets.
+        XCTAssertEqual(MessageParser.emailAddress(#"Odd <"a<b>c"@x.com>"#), #""a<b>c"@x.com"#)
+        // Unbalanced quote: no unquoted pair exists, so use the last pair.
+        XCTAssertEqual(
+            MessageParser.emailAddress("\"Boss <boss@trusted.com> <attacker@evil.example>"),
+            "attacker@evil.example")
+        // A stray quote must not make the real mailbox "quoted" and leave
+        // the comment decoy as the only pair.
+        XCTAssertEqual(
+            MessageParser.emailAddress("Boss\" <attacker@evil.example> (<boss@trusted.com>)"),
+            "attacker@evil.example")
+        // Unbalanced comment in a display name still finds the mailbox.
+        XCTAssertEqual(MessageParser.emailAddress("Jane :-( <jane@x.com>"), "jane@x.com")
+        XCTAssertEqual(MessageParser.emailAddress("Jane Doe (Acme) <jane@x.com>"), "jane@x.com")
+        // Apostrophes are not quotes.
+        XCTAssertEqual(MessageParser.emailAddress("O'Brien <ob@x.com>"), "ob@x.com")
+        XCTAssertEqual(MessageParser.displayName(fromHeader: "O'Brien <ob@x.com>"), "O'Brien")
+    }
+
     func testSplitAddressesRespectsQuotedCommas() {
         let header = "\"Boger, Ron\" <ron@x.com>, Jane Doe <jane@y.com>, bare@z.com"
         let parts = MessageParser.splitAddresses(header)
@@ -141,6 +183,66 @@ final class MessageParsingTests: XCTestCase {
         let html = "<ul><li>One</li><li>Two &#8212; dash</li></ul><p>A &amp;lt; B &#x41;</p>"
         // List end + new paragraph is a paragraph break (one blank line).
         XCTAssertEqual(MessageParser.stripHTML(html), "One\nTwo \u{2014} dash\n\nA &lt; B A")
+    }
+
+    /// HTML-only mail: `bodyText` (reply quote, plain alternative, export,
+    /// MCP and AI context) must carry real characters, not entity names, and
+    /// never C1 control characters.
+    func testStripHTMLDecodesNamedEntitiesAndWindows1252Numerics() {
+        let html = "<p>Don&rsquo;t miss it &mdash; caf&eacute; &#146;</p>"
+        XCTAssertEqual(MessageParser.stripHTML(html),
+                       "Don\u{2019}t miss it \u{2014} caf\u{00E9} \u{2019}")
+        XCTAssertEqual(
+            MessageParser.stripHTML("<p>&Uuml;ber &ntilde; &szlig; &Aring;&aring; &frac12; &iquest;&hearts;</p>"),
+            "\u{00DC}ber \u{00F1} \u{00DF} \u{00C5}\u{00E5} \u{00BD} \u{00BF}\u{2665}")
+        // Single pass: an escaped entity stays escaped once.
+        XCTAssertEqual(MessageParser.stripHTML("<p>&amp;eacute; &amp;#146;</p>"), "&eacute; &#146;")
+        // Unknown names stay literal.
+        XCTAssertEqual(MessageParser.stripHTML("<p>AT&T &bogus; R&D</p>"), "AT&T &bogus; R&D")
+    }
+
+    func testNumericC1ReferencesMapThroughWindows1252() {
+        XCTAssertEqual("&#128;&#x80;".decodingHTMLEntities(), "\u{20AC}\u{20AC}")
+        XCTAssertEqual("&#145;a&#146; &#147;b&#148;".decodingHTMLEntities(),
+                       "\u{2018}a\u{2019} \u{201C}b\u{201D}")
+        XCTAssertEqual("&#150;&#151;&#133;&#153;&#x99;".decodingHTMLEntities(),
+                       "\u{2013}\u{2014}\u{2026}\u{2122}\u{2122}")
+        // No reference in 0x80...0x9F may yield a C1 control character,
+        // including the five code points Windows-1252 leaves undefined.
+        for value in 0x80...0x9F {
+            for form in ["&#\(value);", "&#x\(String(value, radix: 16));"] {
+                let decoded = form.decodingHTMLEntities()
+                XCTAssertFalse(
+                    decoded.unicodeScalars.contains { (0x80...0x9F).contains($0.value) },
+                    "\(form) decoded to a control character")
+                XCTAssertFalse(decoded.contains("&"), "\(form) was not decoded")
+            }
+        }
+        XCTAssertEqual("a&#0;b".decodingHTMLEntities(), "a\u{FFFD}b")
+        XCTAssertEqual("&#x0001F600;&#0000039;".decodingHTMLEntities(), "😀'")
+        // Latin-1 above the C1 block is unchanged.
+        XCTAssertEqual("&#160;&#233;".decodingHTMLEntities(), "\u{00A0}\u{00E9}")
+    }
+
+    /// The HTML 4 set is 252 names; spot-check each block and the case pairs.
+    func testDecodesHTML4NamedEntitySet() {
+        XCTAssertEqual("&Agrave;&agrave;&Eacute;&eacute;&Ccedil;&ccedil;&Oslash;&oslash;&yuml;&Yuml;"
+            .decodingHTMLEntities(), "ÀàÉéÇçØøÿŸ")
+        XCTAssertEqual("&OElig;&oelig;&Scaron;&scaron;&AElig;&aelig;&ETH;&eth;&THORN;&thorn;"
+            .decodingHTMLEntities(), "ŒœŠšÆæÐðÞþ")
+        XCTAssertEqual("&Alpha;&alpha;&Omega;&omega;&thetasym;&piv;".decodingHTMLEntities(), "ΑαΩωϑϖ")
+        XCTAssertEqual("&iexcl;&curren;&brvbar;&uml;&ordf;&not;&macr;&sup2;&acute;&micro;&cedil;&frac34;"
+            .decodingHTMLEntities(), "¡¤¦¨ª¬¯²´µ¸¾")
+        XCTAssertEqual("&sbquo;&bdquo;&lsaquo;&rsaquo;&circ;&tilde;&oline;&spades;&clubs;&diams;"
+            .decodingHTMLEntities(), "‚„‹›ˆ˜‾♠♣♦")
+        XCTAssertEqual("&forall;&part;&exist;&nabla;&isin;&radic;&cap;&cup;&int;&there4;&equiv;&sube;"
+            .decodingHTMLEntities(), "∀∂∃∇∈√∩∪∫∴≡⊆")
+        XCTAssertEqual("&lArr;&rArr;&hArr;&crarr;&lceil;&rfloor;&lang;&rang;&loz;"
+            .decodingHTMLEntities(), "⇐⇒⇔↵⌈⌋〈〉◊")
+        // Spaces stay plain spaces; invisible joiners are dropped (previews
+        // and plain text gain nothing from them).
+        XCTAssertEqual("a&nbsp;b&ensp;c&emsp;d&thinsp;e&shy;f&zwnj;g&zwj;h".decodingHTMLEntities(),
+                       "a b c d efgh")
     }
 
     func testStripHTMLCollapsesBlankRuns() {
@@ -279,6 +381,30 @@ final class MessageParsingTests: XCTestCase {
         let forgedLocalPart = try authMessage([("Authentication-Results",
             #"mx.google.com; spf=pass smtp.mailfrom=\"dmarc=pass\"@evil.example; dmarc=fail"#)])
         XCTAssertEqual(MessageParser.senderAuthenticated(forgedLocalPart), false)
+
+        // A `;` inside the quoted local part must not act as a method
+        // separator: the only real verdict here is dmarc=fail.
+        let quotedSemicolon = try authMessage([("Authentication-Results",
+            #"mx.google.com; spf=pass smtp.mailfrom=\"x;dmarc=pass\"@evil.example; dmarc=fail header.from=trusted.com"#)])
+        XCTAssertEqual(MessageParser.senderAuthenticated(quotedSemicolon), false)
+        XCTAssertEqual(
+            MessageParser.parse(quotedSemicolon, accountId: "a@x.com").0.senderAuth, false)
+
+        // An escaped quote does not end the quoted string.
+        let escapedQuote = try authMessage([("Authentication-Results",
+            #"mx.google.com; spf=pass smtp.mailfrom=\"a\\\";dmarc=pass; b\"@evil.example; dmarc=fail"#)])
+        XCTAssertEqual(MessageParser.senderAuthenticated(escapedQuote), false)
+
+        // Unterminated quote: everything after it is sender text. Fail closed.
+        let openQuote = try authMessage([("Authentication-Results",
+            #"mx.google.com; spf=pass smtp.mailfrom=\"x;dmarc=pass header.from=trusted.com"#)])
+        XCTAssertEqual(MessageParser.senderAuthenticated(openQuote), false)
+
+        // A quote character inside a comment is comment text, not a string
+        // start: the real verdict after it still counts.
+        let quoteInComment = try authMessage([("Authentication-Results",
+            #"mx.google.com; spf=pass (5\" rule) smtp.mailfrom=x.com; dmarc=pass (p=none \"x) header.from=x.com"#)])
+        XCTAssertEqual(MessageParser.senderAuthenticated(quoteInComment), true)
 
         // Token smuggled in a parenthesized comment.
         let commentToken = try authMessage([("Authentication-Results",

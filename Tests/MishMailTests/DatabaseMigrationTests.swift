@@ -545,6 +545,59 @@ final class DatabaseMigrationTests: XCTestCase {
                        "v30 must clear inDrafts when only discarded drafts exist")
     }
 
+    /// v45 rewrites the sender denorm for cached threads whose From header
+    /// carried a decoy address in a quoted display name, and leaves normal
+    /// threads untouched.
+    func testUpgradeToV45RecomputesSpoofedSenderDenorm() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v42")
+        try q.write { db in
+            try db.execute(sql: """
+                INSERT INTO account (id, displayName, senderName)
+                VALUES ('ron@x.com', 'P', '')
+                """)
+            // Stale denorm as the old first-pair parser derived it.
+            try db.execute(sql: """
+                INSERT INTO thread (id, accountId, gmailThreadId, subject, snippet, fromDisplay,
+                    lastDate, isUnread, isStarred, inInbox, inTrash, labelIds, participants,
+                    messageCount, hasAttachment, inSent, inDrafts, inPromotions, inSocial,
+                    fromEmail, allFromEmails)
+                VALUES
+                ('ron@x.com:spoof', 'ron@x.com', 'spoof', 'Wire', '', 'Boss',
+                 '2026-07-30 12:00:00', 1, 0, 1, 0, 'INBOX', 'Boss .. me', 2, 0, 1, 0, 0, 0,
+                 'boss@trusted.com', 'boss@trusted.com ron@x.com'),
+                ('ron@x.com:plain', 'ron@x.com', 'plain', 'Hi', '', 'Stale Name',
+                 '2026-07-30 12:00:00', 0, 0, 1, 0, 'INBOX', 'Anna', 1, 0, 0, 0, 0, 0,
+                 'anna@x.com', 'anna@x.com')
+                """)
+            try db.execute(sql: """
+                INSERT INTO message (id, accountId, gmailId, threadId, fromHeader, toHeader,
+                    ccHeader, bccHeader, subject, date, snippet, bodyText, messageIdHeader,
+                    referencesHeader, labelIds, isUnread, hasAttachment)
+                VALUES
+                ('ron@x.com:s1', 'ron@x.com', 's1', 'ron@x.com:spoof',
+                 'Ron <ron@x.com>', '', '', '', 'Wire',
+                 '2026-07-29 00:00:00', '', '', '', '', 'SENT', 0, 0),
+                ('ron@x.com:s2', 'ron@x.com', 's2', 'ron@x.com:spoof',
+                 '"Boss <boss@trusted.com>" <Attacker@Evil.example>', '', '', '', 'Wire',
+                 '2026-07-30 12:00:00', '', '', '', '', 'INBOX UNREAD', 1, 0),
+                ('ron@x.com:p1', 'ron@x.com', 'p1', 'ron@x.com:plain',
+                 'Anna <anna@x.com>', '', '', '', 'Hi',
+                 '2026-07-30 12:00:00', '', '', '', '', 'INBOX', 0, 0)
+                """)
+        }
+        try AppDatabase.migrator.migrate(q)
+
+        let spoof = try q.read { db in try MailThread.fetchOne(db, key: "ron@x.com:spoof") }
+        XCTAssertEqual(spoof?.fromEmail, "attacker@evil.example")
+        XCTAssertEqual(spoof?.allFromEmails, "attacker@evil.example ron@x.com")
+        XCTAssertEqual(spoof?.fromDisplay, "Boss <boss@trusted.com>")
+        // Not a candidate header: the row is not rewritten at all.
+        let plain = try q.read { db in try MailThread.fetchOne(db, key: "ron@x.com:plain") }
+        XCTAssertEqual(plain?.fromEmail, "anna@x.com")
+        XCTAssertEqual(plain?.fromDisplay, "Stale Name")
+    }
+
     /// v30 must not clear inTrash on thread rows with zero cached messages
     /// (orphan / mid-prune). trashDraftFlags([]) is (false, false).
     func testUpgradeToV30SkipsThreadsWithNoMessages() throws {

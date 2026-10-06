@@ -25,10 +25,16 @@ enum ThreadLabels {
 
     /// Space-separated unique lowercased From emails across `messages`.
     static func allFromEmails(from messages: [Message]) -> String {
+        allFromEmails(fromHeaders: messages.map(\.fromHeader))
+    }
+
+    /// Same, from raw From header values (migrations must not decode the
+    /// live `Message` record).
+    static func allFromEmails(fromHeaders: [String]) -> String {
         var seen = Set<String>()
         var ordered: [String] = []
-        for m in messages {
-            let e = MessageParser.emailAddress(m.fromHeader).lowercased()
+        for header in fromHeaders {
+            let e = MessageParser.emailAddress(header).lowercased()
             guard e.contains("@"), seen.insert(e).inserted else { continue }
             ordered.append(e)
         }
