@@ -1718,10 +1718,12 @@ struct ComposeRequest: Identifiable {
     var engines: [String: SyncEngine] = [:]
     @ObservationIgnored
     var clients: [String: GmailClient] = [:]
+    /// What the new-mail notifier has already accounted for this session.
+    /// Unseeded until the launch baseline is in place: every unread thread
+    /// already in the cache would look "new", so the first pass only records
+    /// what is there rather than announcing all of it.
     @ObservationIgnored
-    var knownUnreadInboxIds: Set<String> = []
-    @ObservationIgnored
-    var notifiedThreadIds: Set<String> = []
+    var newMailNotifications = NewMailNotifications()
     /// Serial tail for optimistic thread writes. UI updates happen first; the
     /// tail preserves mutation order and is awaited before database shutdown.
     @ObservationIgnored
@@ -3856,13 +3858,6 @@ struct ComposeRequest: Identifiable {
     /// backfill cannot starve these cheap sweeps — they do not depend on
     /// sync having completed.
     @ObservationIgnored var dueSweepTask: Task<Void, Never>?
-
-
-    /// True once the launch baseline is in place. Until then every unread
-    /// thread already in the cache would look "new", so the first pass only
-    /// records what is there rather than announcing all of it.
-    @ObservationIgnored
-    var unreadBaselineSeeded = false
 
     // MARK: - Keyboard shortcuts
 
