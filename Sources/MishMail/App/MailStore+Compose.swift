@@ -691,6 +691,8 @@ extension MailStore {
                       local: LocalDraft? = nil,
                       silent: Bool = false,
                       syncAfter: Bool? = nil) async -> DraftSaveOutcome {
+        // Set when Gmail was reachable but refused the save on the close path.
+        var rejection: Error?
         if !isOffline {
             lastDraftSaveError = nil
             if let saved = await saveDraft(from: accountId, fromEmail: fromEmail,
@@ -702,10 +704,17 @@ extension MailStore {
                 isOffline = false
                 return .uploaded(saved)
             }
-            guard let error = lastDraftSaveError, OfflinePolicy.shouldDefer(error) else {
+            // Closing with a save Gmail refused (re-auth, 429, 5xx) must not
+            // drop the text: keep it in the Outbox like the offline case.
+            guard let error = lastDraftSaveError,
+                  DraftSavePolicy.keepsDraftLocally(error: error, closing: !silent) else {
                 return .failed
             }
-            isOffline = true
+            if DraftSavePolicy.marksOffline(error) {
+                isOffline = true
+            } else {
+                rejection = error
+            }
         }
         let now = Date()
         var row = local ?? LocalDraft(
@@ -753,7 +762,12 @@ extension MailStore {
             return .failed
         }
         reloadLocalDrafts()
-        if !silent { showNotice(OfflinePolicy.localDraftNotice) }
+        if let rejection {
+            // `saveDraft` bannered "Draft not saved"; the text is in the Outbox now.
+            lastError = DraftSavePolicy.keptAfterRejectionMessage(rejection)
+        } else if !silent {
+            showNotice(OfflinePolicy.localDraftNotice)
+        }
         return .keptLocally(stored)
     }
 

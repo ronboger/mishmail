@@ -34,3 +34,31 @@ enum ComposeDrafts {
         return nonDrafts.last
     }
 }
+
+/// How the user explicitly left a compose card.
+///
+/// A draft save can still be queued or on the wire at that moment. Whether
+/// it may land depends on the exit: after Send / Schedule / Discard the
+/// content is mail (or gone) and a late save would leave a stray draft;
+/// after save-and-close (Esc / ✕) the save *is* the point and must land.
+enum ComposeFinish: Equatable {
+    case saveAndClose
+    case send
+    case schedule
+    case discard
+
+    /// True when a draft save that completes (or starts) after this exit
+    /// must be skipped, and a draft it already created must be deleted.
+    var dropsLateDraftSave: Bool {
+        switch self {
+        case .saveAndClose: return false
+        case .send, .schedule, .discard: return true
+        }
+    }
+
+    /// Same rule for "no explicit exit" (still editing, or the card was
+    /// replaced and saves on unmount): never drop.
+    static func dropsLateDraftSave(_ finish: ComposeFinish?) -> Bool {
+        finish?.dropsLateDraftSave ?? false
+    }
+}

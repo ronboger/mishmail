@@ -61,6 +61,19 @@ enum TokenAddressEditing {
         return (next, "")
     }
 
+    /// Recipient state a draft save should use.
+    ///
+    /// `committing: false` is the silent autosave: it runs on a timer while
+    /// the user may be mid-address, so it saves the chips only and returns
+    /// the inputs untouched — committing would chip a half-typed
+    /// `bob@exam`, and clearing would erase what is being typed.
+    /// `committing: true` is the close path (Esc / ✕ / replaced card), where
+    /// a typed address counts as a recipient, same as `commit`.
+    static func persistSnapshot(tokens: [String], draft: String,
+                                committing: Bool) -> (tokens: [String], draft: String) {
+        committing ? commit(tokens: tokens, draft: draft) : (tokens, draft)
+    }
+
     /// Start editing `token`:
     /// 1. Commit any pending draft that looks like an email (don't lose it).
     /// 2. Remove the first matching chip.
