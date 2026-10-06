@@ -467,6 +467,197 @@ final class CalendarInviteTests: XCTestCase {
         XCTAssertEqual(invite.start?.timeIntervalSince1970, start.timeIntervalSince1970)
     }
 
+    // MARK: - TZID resolution (Windows names, path ids, VTIMEZONE)
+
+    private func utc(_ y: Int, _ mo: Int, _ d: Int, _ h: Int, _ mi: Int = 0) -> Date {
+        var cal = Calendar(identifier: .gregorian)
+        cal.timeZone = TimeZone(secondsFromGMT: 0)!
+        return cal.date(from: DateComponents(
+            year: y, month: mo, day: d, hour: h, minute: mi))!
+    }
+
+    private func tzInvite(tzid: String, vtimezone: String = "") -> String {
+        """
+        BEGIN:VCALENDAR
+        METHOD:REQUEST
+        VERSION:2.0
+        \(vtimezone)
+        BEGIN:VEVENT
+        UID:tz@x.com
+        SUMMARY:Sync
+        DTSTART;TZID=\(tzid):20261005T090000
+        DTEND;TZID=\(tzid):20261005T100000
+        ORGANIZER:mailto:boss@x.com
+        END:VEVENT
+        END:VCALENDAR
+        """
+    }
+
+    func testFullWindowsMapResolvesSingapore() {
+        let invite = CalendarInvite.parse(tzInvite(tzid: "Singapore Standard Time"))!
+        XCTAssertEqual(invite.start, utc(2026, 10, 5, 1))
+        XCTAssertEqual(invite.end, utc(2026, 10, 5, 2))
+        XCTAssertNil(invite.unresolvedTZID)
+        for name in ["Central Europe Standard Time", "E. Europe Standard Time",
+                     "FLE Standard Time", "GTB Standard Time", "Turkey Standard Time",
+                     "Arabian Standard Time", "Arab Standard Time", "Korea Standard Time",
+                     "Taipei Standard Time", "SE Asia Standard Time",
+                     "New Zealand Standard Time", "W. Australia Standard Time",
+                     "E. South America Standard Time", "SA Pacific Standard Time",
+                     "Atlantic Standard Time", "Canada Central Standard Time",
+                     "Central Standard Time (Mexico)"] {
+            XCTAssertNotNil(CalendarInvite.resolveTimeZone(name), name)
+        }
+    }
+
+    func testPathStyleTZIDResolvesToIANATail() {
+        XCTAssertEqual(
+            CalendarInvite.resolveTimeZone("/mozilla.org/20050126_1/Europe/Berlin")?.identifier,
+            "Europe/Berlin")
+        XCTAssertEqual(
+            CalendarInvite.resolveTimeZone(
+                "/freeassociation.sourceforge.net/Tzfile/America/Argentina/Buenos_Aires")?
+                .identifier,
+            "America/Argentina/Buenos_Aires")
+        XCTAssertNil(CalendarInvite.resolveTimeZone("/example.org/Not/AZone"))
+        XCTAssertNil(CalendarInvite.resolveTimeZone(""))
+        let invite = CalendarInvite.parse(
+            tzInvite(tzid: "/mozilla.org/20050126_1/Europe/Berlin"))!
+        // 09:00 CEST (UTC+2) = 07:00 UTC
+        XCTAssertEqual(invite.start, utc(2026, 10, 5, 7))
+    }
+
+    func testVTimezoneFixedOffsetFallback() {
+        let invite = CalendarInvite.parse(tzInvite(
+            tzid: "Customized Time Zone",
+            vtimezone: """
+                BEGIN:VTIMEZONE
+                TZID:Customized Time Zone
+                BEGIN:STANDARD
+                DTSTART:16010101T000000
+                TZOFFSETFROM:+0800
+                TZOFFSETTO:+0800
+                END:STANDARD
+                END:VTIMEZONE
+                """))!
+        XCTAssertEqual(invite.start, utc(2026, 10, 5, 1))
+        XCTAssertEqual(invite.end, utc(2026, 10, 5, 2))
+        XCTAssertNil(invite.unresolvedTZID)
+    }
+
+    private let customEasternBlock = """
+        BEGIN:VTIMEZONE
+        TZID:Custom Eastern
+        BEGIN:STANDARD
+        DTSTART:16010101T020000
+        TZOFFSETFROM:-0400
+        TZOFFSETTO:-0500
+        RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=1SU;BYMONTH=11
+        END:STANDARD
+        BEGIN:DAYLIGHT
+        DTSTART:16010101T020000
+        TZOFFSETFROM:-0500
+        TZOFFSETTO:-0400
+        RRULE:FREQ=YEARLY;INTERVAL=1;BYDAY=2SU;BYMONTH=3
+        END:DAYLIGHT
+        END:VTIMEZONE
+        """
+
+    func testVTimezoneWithDaylightRulePicksOffsetAtEventDate() {
+        // Oct 5 is in daylight time: 09:00 at UTC-4 = 13:00 UTC.
+        let invite = CalendarInvite.parse(
+            tzInvite(tzid: "Custom Eastern", vtimezone: customEasternBlock))!
+        XCTAssertEqual(invite.start, utc(2026, 10, 5, 13))
+        XCTAssertNil(invite.unresolvedTZID)
+        // The same block in December: standard time, UTC-5.
+        let winter = CalendarInvite.parse(
+            tzInvite(tzid: "Custom Eastern", vtimezone: customEasternBlock)
+                .replacingOccurrences(of: "20261005T", with: "20261207T"))!
+        XCTAssertEqual(winter.start, utc(2026, 12, 7, 14))
+    }
+
+    func testUnresolvedTZIDIsFlaggedNotGuessed() {
+        // Two offsets and a rule that is not understood: no guess.
+        let block = customEasternBlock.replacingOccurrences(
+            of: "BYDAY=2SU;BYMONTH=3", with: "BYDAY=SU;BYSETPOS=2;BYMONTH=3")
+        for ics in [tzInvite(tzid: "Custom Eastern", vtimezone: block),
+                    tzInvite(tzid: "Custom Eastern")] {
+            let invite = CalendarInvite.parse(ics)!
+            XCTAssertEqual(invite.unresolvedTZID, "Custom Eastern")
+            XCTAssertEqual(invite.startLine,
+                           "DTSTART;TZID=Custom Eastern:20261005T090000")
+            XCTAssertEqual(invite.endLine,
+                           "DTEND;TZID=Custom Eastern:20261005T100000")
+            // The card names the zone and says the time is not converted.
+            let when = invite.whenDescription(locale: Locale(identifier: "en_US"))
+            XCTAssertTrue(when.contains("October 5, 2026"), when)
+            XCTAssertTrue(when.contains("9:00") && when.contains("10:00"), when)
+            XCTAssertTrue(when.hasSuffix(
+                "(Custom Eastern, not converted to your time zone)"), when)
+        }
+        // A resolved zone carries no such note.
+        let ok = CalendarInvite.parse(tzInvite(tzid: "Singapore Standard Time"))!
+        XCTAssertFalse(ok.whenDescription().contains("not converted"))
+    }
+
+    func testReplyEchoesRawTimesWhenTZIDUnresolved() {
+        let block = customEasternBlock.replacingOccurrences(
+            of: "BYDAY=2SU;BYMONTH=3", with: "BYDAY=SU;BYSETPOS=2;BYMONTH=3")
+        let invite = CalendarInvite.parse(
+            tzInvite(tzid: "Custom Eastern", vtimezone: block))!
+        let reply = invite.replyICS(status: .accepted, attendeeEmail: "ron@x.com")
+        let lines = CalendarInvite.unfold(reply)
+        XCTAssertTrue(lines.contains("DTSTART;TZID=Custom Eastern:20261005T090000"))
+        XCTAssertTrue(lines.contains("DTEND;TZID=Custom Eastern:20261005T100000"))
+        // The zone definition travels with the lines that name it, before
+        // the VEVENT, and the reply is still one calendar with one event.
+        let tzStart = lines.firstIndex(of: "BEGIN:VTIMEZONE")
+        let eventStart = lines.firstIndex(of: "BEGIN:VEVENT")
+        // No re-computed UTC DTSTART inside the event.
+        XCTAssertFalse(lines[(eventStart ?? 0)...].contains { $0.hasPrefix("DTSTART:") })
+        XCTAssertNotNil(tzStart)
+        XCTAssertLessThan(tzStart ?? .max, eventStart ?? -1)
+        XCTAssertTrue(lines.contains("TZID:Custom Eastern"))
+        XCTAssertEqual(lines.filter { $0 == "BEGIN:VEVENT" }.count, 1)
+        XCTAssertEqual(lines.filter { $0 == "END:VCALENDAR" }.count, 1)
+        XCTAssertEqual(CalendarInvite.parse(reply)?.method, .reply)
+
+        // No VTIMEZONE in the source: the raw lines alone.
+        let bare = CalendarInvite.parse(tzInvite(tzid: "Custom Eastern"))!
+            .replyICS(status: .declined, attendeeEmail: "ron@x.com")
+        XCTAssertTrue(bare.contains("DTSTART;TZID=Custom Eastern:20261005T090000\r\n"))
+        XCTAssertFalse(bare.contains("VTIMEZONE"))
+
+        // A resolved zone keeps the UTC form.
+        let resolved = CalendarInvite.parse(tzInvite(tzid: "Singapore Standard Time"))!
+            .replyICS(status: .accepted, attendeeEmail: "ron@x.com")
+        XCTAssertTrue(resolved.contains("DTSTART:20261005T010000Z\r\n"))
+        XCTAssertFalse(resolved.contains("VTIMEZONE"))
+    }
+
+    func testDisplayZoneNameIsOneBoundedLine() {
+        XCTAssertEqual(CalendarInvite.displayZoneName(" A\u{07}B\tC "), "ABC")
+        let long = String(repeating: "z", count: 200)
+        XCTAssertEqual(CalendarInvite.displayZoneName(long).count, 65)
+    }
+
+    /// RFC 5545 §3.3.11: `\\` is one backslash, so `\\n` is backslash + "n",
+    /// not a newline.
+    func testTextUnescapeIsSinglePass() {
+        func invite(description: String) -> CalendarInvite? {
+            CalendarInvite.parse(
+                "BEGIN:VCALENDAR\nMETHOD:REQUEST\nBEGIN:VEVENT\nUID:esc@x.com\n"
+                + "DESCRIPTION:\(description)\nEND:VEVENT\nEND:VCALENDAR")
+        }
+        XCTAssertEqual(
+            invite(description: #"Notes at \\\\server\\share\\notes"#)?.description,
+            #"Notes at \\server\share\notes"#)
+        XCTAssertEqual(invite(description: #"a\, b\; c\nd\Ne"#)?.description,
+                       "a, b; c\nd\ne")
+        // Unknown escape and a trailing lone backslash stay as written.
+        XCTAssertEqual(invite(description: #"C:\temp \"#)?.description, #"C:\temp \"#)
+    }
+
     func testQuotedCNWithSemicolon() {
         let ics = """
             BEGIN:VCALENDAR
