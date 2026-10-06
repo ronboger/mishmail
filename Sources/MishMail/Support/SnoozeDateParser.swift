@@ -21,8 +21,8 @@ enum SnoozeDateParser {
         // A bare trailing number after a date *word* is a 24h hour:
         // "tm 10" → tomorrow 10:00, "fri 20" → Friday 20:00. Guarded to
         // date words only so "aug 12" keeps 12 as the day, not the hour.
-        if time == nil, let m = datePart.wholeMatch(of: /(.+) (\d{1,2})/) {
-            let hour = Int(m.2)!
+        if time == nil, let m = datePart.wholeMatch(of: /(.+) (\d{1,2})/),
+           let hour = Int(m.2) {
             if hour < 24, Self.isDateWord(String(m.1), calendar: cal) {
                 datePart = String(m.1)
                 time = (hour, 0)
@@ -38,9 +38,9 @@ enum SnoozeDateParser {
             guard let date, date > now, !results.contains(where: { $0.date == date }) else { return }
             results.append(Suggestion(label: "\(name)  ·  \(Self.format(date))", date: date))
         }
-        func nextWeekday(_ weekday: Int) -> Date {
+        func nextWeekday(_ weekday: Int, _ fallbackHour: Int = 8) -> Date? {
             cal.nextDate(after: now, matching: DateComponents(weekday: weekday),
-                         matchingPolicy: .nextTime)!
+                         matchingPolicy: .nextTime).flatMap { at($0, fallbackHour) }
         }
         func addHours(_ n: Int) -> Date? {
             cal.date(byAdding: .hour, value: n, to: now)
@@ -70,17 +70,17 @@ enum SnoozeDateParser {
                let evening = at(now, SnoozePresets.eveningHour), evening > now {
                 return evening
             }
-            return at(nextWeekday(6), SnoozePresets.eveningHour)
+            return nextWeekday(6, SnoozePresets.eveningHour)
         }
         func endOfMonth() -> Date? {
-            let dayRange = cal.range(of: .day, in: .month, for: now)!
+            guard let dayRange = cal.range(of: .day, in: .month, for: now) else { return nil }
             var comps = cal.dateComponents([.year, .month], from: now)
             comps.day = dayRange.count
             guard let last = cal.date(from: comps), let dated = at(last) else { return nil }
             if dated > now { return dated }
             // Already past this month's end → last day of next month.
-            guard let nextMonth = cal.date(byAdding: .month, value: 1, to: last) else { return nil }
-            let nextRange = cal.range(of: .day, in: .month, for: nextMonth)!
+            guard let nextMonth = cal.date(byAdding: .month, value: 1, to: last),
+                  let nextRange = cal.range(of: .day, in: .month, for: nextMonth) else { return nil }
             var nextComps = cal.dateComponents([.year, .month], from: nextMonth)
             nextComps.day = nextRange.count
             return cal.date(from: nextComps).flatMap { at($0) }
@@ -91,7 +91,7 @@ enum SnoozeDateParser {
             let today = at(now)
             add("Today", today)
             if let today, today <= now {
-                add("Tomorrow", at(cal.date(byAdding: .day, value: 1, to: now)!))
+                add("Tomorrow", cal.date(byAdding: .day, value: 1, to: now).flatMap { at($0) })
             }
         }
 
@@ -102,13 +102,14 @@ enum SnoozeDateParser {
             ("tomorrow", { addDays(1) }),
             ("later today", { laterToday() }),
             ("later", { laterToday() }),
-            ("next week", { at(nextWeekday(2)) }),          // Monday
+            ("next week", { nextWeekday(2) }),              // Monday
             ("next month", {
-                let comps = cal.dateComponents([.year, .month], from: cal.date(byAdding: .month, value: 1, to: now)!)
-                return at(cal.date(from: comps)!)
+                guard let inAMonth = cal.date(byAdding: .month, value: 1, to: now) else { return nil }
+                let comps = cal.dateComponents([.year, .month], from: inAMonth)
+                return cal.date(from: comps).flatMap { at($0) }
             }),
-            ("weekend", { at(nextWeekday(7)) }),            // Saturday
-            ("this weekend", { at(nextWeekday(7)) }),
+            ("weekend", { nextWeekday(7) }),                // Saturday
+            ("this weekend", { nextWeekday(7) }),
             ("end of day", { endOfDay() }),
             ("end of week", { endOfWeek() }),
             ("end of month", { endOfMonth() }),
@@ -148,7 +149,7 @@ enum SnoozeDateParser {
         // Saturday/Sunday, "fri" → Friday).
         let symbols = cal.weekdaySymbols  // Sunday-first
         for (i, name) in symbols.enumerated() where name.lowercased().hasPrefix(datePart) {
-            add(name, at(nextWeekday(i + 1)))
+            add(name, nextWeekday(i + 1))
         }
 
         // Relative durations: "in 2 weeks", "2 days", "3h", "in 1 h", and
@@ -162,20 +163,36 @@ enum SnoozeDateParser {
         // "aug 12" / "12 aug" / "8/12", each optionally with a year
         // ("aug 17 2027", "8/12/27"). Without a year we roll to next year
         // if the date has already passed.
-        let months = cal.monthSymbols.map { $0.lowercased() }
-        func monthDay(month: Int, day: Int, year: Int? = nil) -> Date? {
-            if let year {
-                return cal.date(from: DateComponents(year: year, month: month, day: day)).flatMap { at($0) }
-            }
-            var comps = DateComponents(year: cal.component(.year, from: now), month: month, day: day)
-            guard let d = cal.date(from: comps) else { return nil }
-            if let dated = at(d), dated > now { return dated }
-            comps.year! += 1
-            return cal.date(from: comps).flatMap { at($0) }
+        let monthNames = cal.monthSymbols
+        let months = monthNames.map { $0.lowercased() }
+        /// The date only when that month really has that day: Calendar
+        /// otherwise rolls "feb 30" into March under a label that still
+        /// says February 30.
+        func exact(year: Int, month: Int, day: Int) -> Date? {
+            guard let d = cal.date(from: DateComponents(year: year, month: month, day: day)) else { return nil }
+            let back = cal.dateComponents([.year, .month, .day], from: d)
+            guard back.year == year, back.month == month, back.day == day else { return nil }
+            return at(d)
         }
-        func label(month: Int, day: Int, year: Int?) -> String {
-            let base = "\(cal.monthSymbols[month]) \(day)"
-            return year.map { "\(base), \($0)" } ?? base
+        func monthDay(month: Int, day: Int, year: Int? = nil) -> Date? {
+            if let year { return exact(year: year, month: month, day: day) }
+            // No year typed: the next time that date comes round. Looks a
+            // few years ahead so "feb 29" lands on the next leap year.
+            let thisYear = cal.component(.year, from: now)
+            for offset in 0..<8 {
+                if let dated = exact(year: thisYear + offset, month: month, day: day), dated > now {
+                    return dated
+                }
+            }
+            return nil
+        }
+        /// `month` is 1-based. Every typed month/day goes through this range
+        /// check: the field parses on each keystroke, so "25/12" or "0/5"
+        /// must give no suggestion, never an out-of-range month name lookup.
+        func addMonthDay(month: Int, day: Int, year: Int?) {
+            guard monthNames.indices.contains(month - 1), (1...31).contains(day) else { return }
+            let base = "\(monthNames[month - 1]) \(day)"
+            add(year.map { "\(base), \($0)" } ?? base, monthDay(month: month, day: day, year: year))
         }
         func fullYear(_ raw: Int?) -> Int? {
             guard let raw else { return nil }
@@ -183,24 +200,31 @@ enum SnoozeDateParser {
         }
         if let m = datePart.wholeMatch(of: /([a-z]{3,}) (\d{1,2})(?:,? (\d{2,4}))?/),
            let month = months.firstIndex(where: { $0.hasPrefix(String(m.1)) }) {
-            let year = fullYear(m.3.flatMap { Int($0) })
-            add(label(month: month, day: Int(m.2)!, year: year),
-                monthDay(month: month + 1, day: Int(m.2)!, year: year))
+            if let day = Int(m.2) {
+                addMonthDay(month: month + 1, day: day, year: fullYear(m.3.flatMap { Int($0) }))
+            }
         } else if let m = datePart.wholeMatch(of: /(\d{1,2}) ([a-z]{3,})(?:,? (\d{2,4}))?/),
                   let month = months.firstIndex(where: { $0.hasPrefix(String(m.2)) }) {
-            let year = fullYear(m.3.flatMap { Int($0) })
-            add(label(month: month, day: Int(m.1)!, year: year),
-                monthDay(month: month + 1, day: Int(m.1)!, year: year))
+            if let day = Int(m.1) {
+                addMonthDay(month: month + 1, day: day, year: fullYear(m.3.flatMap { Int($0) }))
+            }
         } else if let m = datePart.wholeMatch(of: /(\d{1,2})\/(\d{1,2})(?:\/(\d{2,4}))?/) {
-            let year = fullYear(m.3.flatMap { Int($0) })
-            add(label(month: Int(m.1)! - 1, day: Int(m.2)!, year: year),
-                monthDay(month: Int(m.1)!, day: Int(m.2)!, year: year))
+            // `\d` also matches non-ASCII digits, which `Int()` rejects.
+            if let first = Int(m.1), let second = Int(m.2) {
+                let year = fullYear(m.3.flatMap { Int($0) })
+                if (1...12).contains(first) {
+                    addMonthDay(month: first, day: second, year: year)
+                } else if (1...12).contains(second) {
+                    // First number cannot be a month → day/month ("25/12").
+                    addMonthDay(month: second, day: first, year: year)
+                }
+            }
         } else if datePart.wholeMatch(of: /[a-z]+/) != nil {
             // Bare month ("s", "sep", "september") → 1st of that month at 8am
             // (rolls to next year when the 1st has already passed). Digits /
             // spaces above keep "aug 12" on the day path.
-            for (i, name) in months.enumerated() where name.hasPrefix(datePart) {
-                add(cal.monthSymbols[i], monthDay(month: i + 1, day: 1))
+            for (i, name) in monthNames.enumerated() where name.lowercased().hasPrefix(datePart) {
+                add(name, monthDay(month: i + 1, day: 1))
             }
         }
 
@@ -221,8 +245,8 @@ enum SnoozeDateParser {
         addDays: (Int, Int) -> Date?
     ) {
         // Compact: "2h", "3d", "1w", "2mo" (mo = month; bare "m" stays month-name).
-        if let m = text.wholeMatch(of: /(\d+)\s*(h|hr|hrs|d|w|wk|wks|mo)s?/) {
-            let n = Int(m.1)!
+        if let m = text.wholeMatch(of: /(\d+)\s*(h|hr|hrs|d|w|wk|wks|mo)s?/),
+           let n = relativeCount(m.1) {
             switch String(m.2) {
             case "h", "hr", "hrs":
                 add("In \(n) hour\(n == 1 ? "" : "s")", addHours(n))
@@ -240,8 +264,8 @@ enum SnoozeDateParser {
 
         // "in 2 weeks" / "2 days" / "in 2 da" (unit prefix-matched).
         if let m = text.wholeMatch(of: /(?:in )?(\d+)\s*([a-z]*)/),
-           let unit = resolveUnitPrefix(String(m.2)), !String(m.2).isEmpty {
-            let n = Int(m.1)!
+           let unit = resolveUnitPrefix(String(m.2)), !String(m.2).isEmpty,
+           let n = relativeCount(m.1) {
             switch unit {
             case .hour:
                 add("In \(n) hour\(n == 1 ? "" : "s")", addHours(n))
@@ -257,8 +281,7 @@ enum SnoozeDateParser {
         }
 
         // "in 2" with no unit yet → offer each unit for that N.
-        if let m = text.wholeMatch(of: /in (\d+)\s*/), Int(m.1) != nil {
-            let n = Int(m.1)!
+        if let m = text.wholeMatch(of: /in (\d+)\s*/), let n = relativeCount(m.1) {
             add("In \(n) hour\(n == 1 ? "" : "s")", addHours(n))
             add("In \(n) day\(n == 1 ? "" : "s")", addDays(n, 8))
             add("In \(n) week\(n == 1 ? "" : "s")",
@@ -303,6 +326,18 @@ enum SnoozeDateParser {
 
     private enum RelativeUnit { case hour, day, week, month }
 
+    /// Largest N accepted in "in N <unit>". Keeps Calendar arithmetic far
+    /// from overflow; anything larger is a typo, not a snooze.
+    private static let maxRelativeCount = 10_000
+
+    /// The typed count, or nil when it is zero, above the cap, too long for
+    /// `Int`, or written in non-ASCII digits (`\d` matches those, `Int()`
+    /// does not).
+    private static func relativeCount(_ digits: Substring) -> Int? {
+        guard let n = Int(digits), (1...maxRelativeCount).contains(n) else { return nil }
+        return n
+    }
+
     private static func resolveUnitPrefix(_ prefix: String) -> RelativeUnit? {
         guard !prefix.isEmpty else { return nil }
         // Longest-first so "mo" → month not a false "m" minute.
@@ -327,17 +362,40 @@ enum SnoozeDateParser {
     /// Peels a trailing time expression off the query:
     /// "fri 3pm" → ("fri", 15:00), "aug 12 at 17:30" → ("aug 12", 17:30).
     private static func splitTime(from text: String) -> (String, (hour: Int, minute: Int)?) {
-        let wordTimes: [String: Int] = ["noon": 12, "morning": 8, "afternoon": 14, "evening": 18, "night": 20]
+        // An array, not a Dictionary: iteration order must not change from
+        // launch to launch. Hours come from the preset anchors so "this
+        // afternoon" typed and "This afternoon" clicked are the same time.
+        let wordTimes: [(word: String, hour: Int)] = [
+            ("afternoon", SnoozePresets.afternoonHour),
+            ("morning", SnoozePresets.morningHour),
+            ("evening", SnoozePresets.eveningHour),
+            ("night", 20),
+            ("noon", 12),
+        ]
         for (word, hour) in wordTimes where text.hasSuffix(word) {
-            let rest = String(text.dropLast(word.count))
-                .trimmingCharacters(in: .whitespaces)
-            let cleaned = rest.hasSuffix(" at") ? String(rest.dropLast(3)) : rest
-            return (cleaned, (hour, 0))
+            let head = text.dropLast(word.count)
+            // Whole words only: "afternoon" is not "after" + "noon", and
+            // "tonight" is a keyword of its own, not "to" + "night".
+            guard head.isEmpty || head.last?.isWhitespace == true else { continue }
+            var rest = head.trimmingCharacters(in: .whitespaces)
+            if rest == "at" {
+                rest = ""
+            } else if rest.hasSuffix(" at") {
+                rest = String(rest.dropLast(3))
+            }
+            // "this evening" is today's evening. Left alone, "this" would
+            // prefix-match "this weekend" and resolve to Saturday.
+            if rest == "this" { rest = "" }
+            return (rest, (hour, 0))
         }
         if let m = text.firstMatch(of: /(?:\bat )?(\d{1,2})(?::(\d{2}))? ?(am|pm)?$/),
            m.3 != nil || m.2 != nil {  // require am/pm or minutes so "aug 12" isn't a time
-            var hour = Int(m.1)!
-            let minute = m.2.flatMap { Int($0) } ?? 0
+            guard var hour = Int(m.1) else { return (text, nil) }
+            var minute = 0
+            if let raw = m.2 {
+                guard let parsed = Int(raw) else { return (text, nil) }
+                minute = parsed
+            }
             if m.3 == "pm", hour < 12 { hour += 12 }
             if m.3 == "am", hour == 12 { hour = 0 }
             guard hour < 24, minute < 60 else { return (text, nil) }
