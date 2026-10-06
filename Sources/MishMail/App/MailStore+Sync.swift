@@ -180,13 +180,19 @@ extension MailStore {
         await flushPendingThreadOps()
         await flushLocalDrafts()
         await fireDueScheduledSends()
+        // A background pass leaves out accounts that need reauthorization;
+        // signing in again clears the flag and they rejoin the next poll.
+        let syncIds = AccountLifecycle.accountsToSync(
+            all: ids, needingReauth: accountsNeedingReauth, interactive: interactive)
         // Capture engine refs before leaving MainActor for the task group.
-        let pairs: [(String, SyncEngine)] = ids.compactMap { id in
+        let pairs: [(String, SyncEngine)] = syncIds.compactMap { id in
             engines[id].map { (id, $0) }
         }
-        syncStatus = ids.count == 1
-            ? "Syncing \(ids[0])…"
-            : "Syncing \(ids.count) accounts…"
+        if !syncIds.isEmpty {
+            syncStatus = syncIds.count == 1
+                ? "Syncing \(syncIds[0])…"
+                : "Syncing \(syncIds.count) accounts…"
+        }
         // Engines report progress per page from their own actors. Throttled
         // (drop repeats, ≤ ~4 Hz, newest value always lands) so a first sync
         // doesn't republish the FilterBar dozens of times a second; closed
@@ -226,7 +232,7 @@ extension MailStore {
                 guard isKnownAccount(id) else { continue }
                 if let error {
                     if AccountLifecycle.isReauthRequired(error) {
-                        requireReauthorization(for: id)
+                        requireReauthorization(for: id, interactive: interactive)
                     } else if case GmailError.partialFetch = error {
                         // Soft: historyId not advanced; next sync retries.
                         // Still run post-sync so successful upserts appear.
