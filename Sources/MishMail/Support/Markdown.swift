@@ -186,6 +186,11 @@ enum Markdown {
 
             // Ordered list.
             if isOrderedItem(line) {
+                // The typed number of the first item is content ("2. Agreed"
+                // answers question 2) and the plain part keeps it. Without
+                // `start` the recipient's client counts every list from 1.
+                let first = orderedItemNumber(line)
+                let start = first.map { $0 == 1 ? "" : " start=\"\($0)\"" } ?? ""
                 var items: [String] = []
                 var plainItems: [String] = []
                 while i < lines.count, isOrderedItem(lines[i]) {
@@ -195,7 +200,7 @@ enum Markdown {
                     i += 1
                 }
                 let dir = TextDirection.htmlDir(of: plainItems.joined(separator: "\n"))
-                html.append("<ol dir=\"\(dir)\">" + items.map { "<li>\($0)</li>" }.joined() + "</ol>")
+                html.append("<ol\(start) dir=\"\(dir)\">" + items.map { "<li>\($0)</li>" }.joined() + "</ol>")
                 continue
             }
 
@@ -693,6 +698,12 @@ enum Markdown {
             while t.hasPrefix(" ") || t.hasPrefix("\t") { t.removeFirst() }
         }
         return t
+    }
+
+    /// The number typed before the `.` of an ordered item; nil when it does
+    /// not fit `Int`.
+    private static func orderedItemNumber(_ line: String) -> Int? {
+        Int(line.drop(while: { $0.isWhitespace }).prefix(while: { $0 != "." }))
     }
 
     private static func stripOrderedMarker(_ line: String) -> String {

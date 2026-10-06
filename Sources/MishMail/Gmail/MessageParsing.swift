@@ -89,7 +89,8 @@ enum MessageParser {
             // Empty string (not nil) so a parse is distinguishable from a
             // pre-v37 row that has never recorded these headers.
             listUnsubscribe: header("List-Unsubscribe"),
-            listUnsubscribePost: header("List-Unsubscribe-Post")
+            listUnsubscribePost: header("List-Unsubscribe-Post"),
+            replyToHeader: header("Reply-To")
         )
         return (message, attachments)
     }
@@ -937,28 +938,8 @@ enum ReplyComposer {
         _ message: Message,
         ownAddresses: Set<String>
     ) -> Bool {
-        let own = Set(ownAddresses.map { $0.lowercased() })
-        let sender = MessageParser.emailAddress(message.fromHeader).lowercased()
-
-        // Plain-reply To targets — same rules as ComposeView.setupFromReply.
-        let toTargets: [String]
-        if own.contains(sender) {
-            // Replying to own mail: target its recipients, not self.
-            toTargets = MessageParser.splitAddresses(message.toHeader)
-                .map { MessageParser.emailAddress($0).lowercased() }
-                .filter { $0.contains("@") && !own.contains($0) }
-        } else {
-            toTargets = sender.contains("@") ? [sender] : []
-        }
-        let taken = Set(toTargets)
-
-        let extras = MessageParser.splitAddresses(message.toHeader + "," + message.ccHeader)
-            .map { MessageParser.emailAddress($0).lowercased() }
-            .filter { $0.contains("@") }
-            .filter { !own.contains($0)
-                      && $0 != sender
-                      && !taken.contains($0) }
-        return !extras.isEmpty
+        !ReplyRecipients.compute(
+            for: message, ownAddresses: ownAddresses, replyAll: true).cc.isEmpty
     }
 }
 

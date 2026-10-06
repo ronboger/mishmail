@@ -23,6 +23,7 @@ final class DatabaseMigrationTests: XCTestCase {
             XCTAssertTrue(messageCols.contains("senderAuth"), "v29 must add senderAuth")
             XCTAssertTrue(messageCols.contains("listUnsubscribe"), "v37 must add listUnsubscribe")
             XCTAssertTrue(messageCols.contains("listUnsubscribePost"), "v37 must add listUnsubscribePost")
+            XCTAssertTrue(messageCols.contains("replyToHeader"), "v43 must add replyToHeader")
             let chatCols = try db.columns(in: "chatMessage").map(\.name)
             XCTAssertTrue(chatCols.contains("thinkingBlocksJSON"),
                           "v38 must add thinkingBlocksJSON")
@@ -141,6 +142,15 @@ final class DatabaseMigrationTests: XCTestCase {
         // v37: pre-existing rows have not recorded List-Unsubscribe (NULL).
         XCTAssertNil(message?.listUnsubscribe)
         XCTAssertNil(message?.listUnsubscribePost)
+        // v43: pre-existing rows have not recorded Reply-To (NULL), and the
+        // new column round-trips through the model.
+        XCTAssertNil(message?.replyToHeader)
+        if var message {
+            message.replyToHeader = "Desk <desk@help.example>"
+            try q.write { db in try message.save(db) }
+            let reloaded = try q.read { db in try Message.fetchOne(db, key: "ron@x.com:m1") }
+            XCTAssertEqual(reloaded?.replyToHeader, "Desk <desk@help.example>")
+        }
         if var message {
             message.senderAuth = false
             try q.write { db in try message.save(db) }

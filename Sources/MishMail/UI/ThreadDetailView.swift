@@ -969,6 +969,8 @@ struct ThreadDetailView: View {
         guard let idx = messages.firstIndex(where: { $0.id == message.id }) else { return }
         messages[idx].listUnsubscribe = headers.0
         messages[idx].listUnsubscribePost = headers.1
+        // Pre-v43 rows: Reply reads this (ReplyRecipients).
+        messages[idx].replyToHeader = headers.replyTo
     }
 
     /// After the open body's first stable paint, warm prev/next newest-message

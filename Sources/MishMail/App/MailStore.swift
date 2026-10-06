@@ -1108,23 +1108,24 @@ final class MailStore {
         Task { await performUnsubscribe(message) }
     }
 
-    /// Fill `listUnsubscribe` on pre-v37 rows (nil) via a metadata get.
-    /// Returns the two header values so the reading pane can patch in place
-    /// without replacing the hydrated body.
-    func refreshUnsubscribeHeaders(_ message: Message) async -> (String, String)? {
-        if let header = message.listUnsubscribe {
-            return (header, message.listUnsubscribePost ?? "")
+    /// Fill `listUnsubscribe` on pre-v37 rows and `replyToHeader` on pre-v43
+    /// rows (nil) via a metadata get. Returns the header values so the
+    /// reading pane can patch in place without replacing the hydrated body.
+    func refreshUnsubscribeHeaders(_ message: Message) async -> (String, String, replyTo: String)? {
+        if let header = message.listUnsubscribe, let replyTo = message.replyToHeader {
+            return (header, message.listUnsubscribePost ?? "", replyTo)
         }
         guard let stored = try? await db.read({
             try Message.fetchOne($0, key: message.id)
         }) else {
             return nil
         }
-        if let header = stored.listUnsubscribe {
-            return (header, stored.listUnsubscribePost ?? "")
+        if let header = stored.listUnsubscribe, let replyTo = stored.replyToHeader {
+            return (header, stored.listUnsubscribePost ?? "", replyTo)
         }
         guard !demoMode else {
-            return ("", "")
+            return (stored.listUnsubscribe ?? "", stored.listUnsubscribePost ?? "",
+                    stored.replyToHeader ?? "")
         }
         do {
             let g = try await client(for: message.accountId)
@@ -1139,7 +1140,8 @@ final class MailStore {
                 try SyncEngine.deriveThreads(
                     db, for: [parsed.threadId], accountId: message.accountId)
             }
-            return (parsed.listUnsubscribe ?? "", parsed.listUnsubscribePost ?? "")
+            return (parsed.listUnsubscribe ?? "", parsed.listUnsubscribePost ?? "",
+                    parsed.replyToHeader ?? "")
         } catch {
             return nil
         }
@@ -3720,7 +3722,7 @@ struct ComposeRequest: Identifiable {
                                bccHeader, subject, date, snippet,
                                '' AS bodyText, NULL AS bodyHTML,
                                messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment,
-                               senderAuth
+                               senderAuth, replyToHeader
                         FROM message
                         WHERE threadId = ?
                         ORDER BY date

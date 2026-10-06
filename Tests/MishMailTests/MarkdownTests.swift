@@ -89,6 +89,27 @@ final class MarkdownTests: XCTestCase {
         XCTAssertTrue(html.contains(#"<blockquote type="cite" dir="ltr">quoted line</blockquote>"#))
     }
 
+    /// The plain part keeps the typed numbers, so the HTML part must too:
+    /// "2. Agreed / 3. Not sure" answers questions 2 and 3, not 1 and 2.
+    func testOrderedListKeepsItsFirstNumber() {
+        let html = Markdown.toHTML("3. a\n4. b")
+        XCTAssertEqual(html, #"<ol start="3" dir="ltr"><li>a</li><li>b</li></ol>"#)
+
+        // A blank line ends a list; each run continues from its own number.
+        let loose = Markdown.toHTML("**x**\n\n1. a\n\n2. b\n\n10. c")
+        XCTAssertTrue(loose.contains(#"<ol dir="ltr"><li>a</li></ol>"#))
+        XCTAssertTrue(loose.contains(#"<ol start="2" dir="ltr"><li>b</li></ol>"#))
+        XCTAssertTrue(loose.contains(#"<ol start="10" dir="ltr"><li>c</li></ol>"#))
+
+        // A list from 1 stays byte-identical to the earlier output.
+        XCTAssertEqual(Markdown.toHTML("  1. a\n  2. b"),
+                       #"<ol dir="ltr"><li>a</li><li>b</li></ol>"#)
+        // 0 is a valid start. A number too large for Int has no start.
+        XCTAssertTrue(Markdown.toHTML("0. a\n1. b").contains(#"<ol start="0" dir="ltr">"#))
+        XCTAssertTrue(Markdown.toHTML("99999999999999999999999. a")
+            .hasPrefix(#"<ol dir="ltr">"#))
+    }
+
     func testFencedCodeBlock() {
         let html = Markdown.toHTML("""
         Intro
