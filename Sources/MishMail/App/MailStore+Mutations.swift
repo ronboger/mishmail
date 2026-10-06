@@ -7,11 +7,15 @@ extension MailStore {
     // MARK: - Actions (optimistic local write, then remote, then resync on failure)
 
 
+    /// Returns the post-action copy. An undo must use it as its base: the
+    /// thread write persists only columns that differ from the base (see
+    /// `ThreadUndo`).
+    @discardableResult
     func mutateThread(_ thread: MailThread,
                       autoAdvanceAction: String? = nil,
                       remote: RemoteThreadChange,
-                      local: (inout MailThread) -> Void) {
-        guard !isShuttingDown else { return }
+                      local: (inout MailThread) -> Void) -> MailThread {
+        guard !isShuttingDown else { return thread }
         var copy = thread
         local(&copy)
         let updated = copy
@@ -57,6 +61,7 @@ extension MailStore {
                 remote, client: client, accountId: thread.accountId,
                 gmailThreadId: gmailThreadId)
         }
+        return updated
     }
 
     /// Push one optimistic edit to Gmail, or park it for replay.
@@ -70,6 +75,9 @@ extension MailStore {
                                          client: GmailClient,
                                          accountId: String,
                                          gmailThreadId: String) async {
+        // An undo can have nothing to send (archive of a thread that had no
+        // INBOX); Gmail rejects a modify with no labels.
+        guard !change.isEmpty else { return }
         let pool = db
         let alreadyQueued = (try? await pool.read { db in
             try PendingThreadOp
@@ -87,6 +95,11 @@ extension MailStore {
         } catch {
             if OfflinePolicy.shouldDefer(error) {
                 isOffline = true
+                await queueThreadChange(change, accountId: accountId, gmailThreadId: gmailThreadId)
+            } else if ThreadEditRetryPolicy.shouldRequeue(error) {
+                // Quota or server error: Gmail is reachable (not offline)
+                // but did not take the edit. Keep it for the replay ahead
+                // of the next sync instead of reverting the thread.
                 await queueThreadChange(change, accountId: accountId, gmailThreadId: gmailThreadId)
             } else {
                 lastError = error.localizedDescription
@@ -140,6 +153,10 @@ extension MailStore {
     /// Gmail's history reflects the user's offline work before it is read
     /// back. Stops at the first connectivity failure (still offline); drops
     /// rows Gmail rejects outright (a thread deleted meanwhile is a 404).
+    /// A quota or server error keeps the row for the next pass, until the
+    /// row passes `ThreadEditRetryPolicy.maxQueuedAge`. A failure that
+    /// belongs to one account (reauthorization, quota) skips that account
+    /// only; rows of a removed account are deleted (see `ThreadOpReplay`).
     func flushPendingThreadOps() async {
         guard !demoMode, !isShuttingDown, !pendingOpsFlushInFlight else { return }
         pendingOpsFlushInFlight = true
@@ -152,8 +169,19 @@ extension MailStore {
             if pendingThreadOpCount != 0 { pendingThreadOpCount = 0 }
             return
         }
-        for row in rows {
+        var pass = ThreadOpReplay.Pass()
+        replay: for row in rows {
             guard !isShuttingDown else { break }
+            guard isKnownAccount(row.accountId) else {
+                // The account was removed: no token, no thread rows. The
+                // row can never be sent and would stay at the head of the
+                // queue for ever.
+                _ = try? await pool.write { db in
+                    try PendingThreadOp.deleteIfAccountMissing(db, row: row)
+                }
+                continue
+            }
+            guard !pass.skips(row.accountId) else { continue }
             guard let change = row.change, !change.isEmpty else {
                 await rederiveThreadFromMessages(
                     accountId: row.accountId, gmailThreadId: row.gmailThreadId)
@@ -168,20 +196,29 @@ extension MailStore {
                 isOffline = false
                 shouldDelete = true
             } catch {
-                if OfflinePolicy.shouldDefer(error) {
+                switch ThreadOpReplay.replayDisposition(
+                    error: error, accountIsKnown: isKnownAccount(row.accountId),
+                    createdAt: row.createdAt) {
+                case .stopPass:
                     isOffline = true
-                    break
+                    break replay
+                case .skipAccount(let reauthorize):
+                    // The other accounts' rows still replay in this pass.
+                    if reauthorize { requireReauthorization(for: row.accountId) }
+                    pass.skip(row.accountId)
+                    continue
+                case .keepRow:
+                    // Gmail is busy, not gone: the row stays queued.
+                    pass.recordServerError(row.accountId)
+                    continue
+                case .dropRow(let revert, let report):
+                    // Gone or rejected: the next sync shows Gmail's truth.
+                    if report {
+                        lastError = "Couldn't sync an offline change: \(error.localizedDescription)"
+                    }
+                    shouldDelete = true
+                    shouldRederive = revert
                 }
-                if AccountLifecycle.isReauthRequired(error) {
-                    requireReauthorization(for: row.accountId)
-                    break
-                }
-                // Gone or rejected: the next sync shows Gmail's truth.
-                if !SendThreading.isNotFound(error) {
-                    lastError = "Couldn't sync an offline change: \(error.localizedDescription)"
-                }
-                shouldDelete = true
-                shouldRederive = true
             }
             // Delete only if the row is still the one we replayed: a user edit
             // made during the flush folds into it (enqueue sees the row and
@@ -271,11 +308,14 @@ extension MailStore {
     /// (`threads.modify` / `threads.trash`) run a few at a time per account.
     /// Per-thread calls stay on purpose: `threads.modify` also covers messages
     /// not synced yet, which an id-based `messages.batchModify` would miss.
+    ///
+    /// Returns the post-action copies, in `targets` order (the undo base).
+    @discardableResult
     func mutateThreads(_ targets: [MailThread],
                        autoAdvanceAction: String? = nil,
                        remote: RemoteThreadChange,
-                       local: (inout MailThread) -> Void) {
-        guard !isShuttingDown, !targets.isEmpty else { return }
+                       local: (inout MailThread) -> Void) -> [MailThread] {
+        guard !isShuttingDown, !targets.isEmpty else { return targets }
         if let action = autoAdvanceAction {
             let leaving = Set(targets.compactMap { thread -> String? in
                 var updated = thread
@@ -288,10 +328,10 @@ extension MailStore {
         }
         guard targets.count > 1 else {
             suppressThreadReload = true
-            mutateThread(targets[0], remote: remote, local: local)
+            let updated = mutateThread(targets[0], remote: remote, local: local)
             suppressThreadReload = false
             scheduleThreadMutationReconciliation()
-            return
+            return [updated]
         }
 
         // Same optimistic order as `mutateThread`, per row, before any
@@ -338,6 +378,19 @@ extension MailStore {
             }
             guard !isDemo else { return }
             await self.applyRemoteBulkThreadChange(remote, threads: targets)
+        }
+        return edits.map(\.updated)
+    }
+
+    /// Undo one bulk action. `acted` are the post-action copies; threads
+    /// that had no INBOX before the action do not get it from the undo.
+    private func undoThreads(_ action: ThreadUndo.Action,
+                             acted: [MailThread], originals: [MailThread]) {
+        for group in ThreadUndo.undoGroups(acted: acted, originals: originals) {
+            let wasInInbox = group.wasInInbox
+            mutateThreads(group.threads,
+                          remote: ThreadUndo.undoRemote(action, wasInInbox: wasInInbox),
+                          local: { ThreadUndo.restore(action, wasInInbox: wasInInbox, &$0) })
         }
     }
 
@@ -657,19 +710,19 @@ extension MailStore {
         let priorFocus = selectedThreadId
         // Archive always marks read: selection advance cancels the reading-pane
         // dwell timer, and Gmail's own archive treats the conversation as seen.
-        mutateThread(thread, autoAdvanceAction: "archive",
-                     remote: .modify(remove: ["INBOX", "UNREAD"])) {
-            $0.inInbox = false
-            $0.isUnread = false
+        let wasInInbox = thread.inInbox
+        let acted = mutateThread(thread, autoAdvanceAction: "archive",
+                                 remote: ThreadUndo.remote(.archive)) {
+            ThreadUndo.apply(.archive, &$0)
         }
         offerUndo("Archived") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep([thread.id])
             // Undo restores inbox only — stay read (matches Gmail undo-archive).
-            // Local starts from the pre-archive snapshot, so re-assert isUnread.
-            self.mutateThread(thread, remote: .modify(add: ["INBOX"])) {
-                $0.inInbox = true
-                $0.isUnread = false
+            self.mutateThread(
+                acted, remote: ThreadUndo.undoRemote(.archive, wasInInbox: wasInInbox)
+            ) {
+                ThreadUndo.restore(.archive, wasInInbox: wasInInbox, &$0)
             }
             self.restoreSelectionFocus(priorFocus)
             self.undoAction = nil
@@ -683,10 +736,9 @@ extension MailStore {
         let focus = selectedThreadId
         // Same as single archive: drop UNREAD so a fast multi-select `e`
         // does not leave archived mail unread (dwell is cancelled by advance).
-        mutateThreads(targets, autoAdvanceAction: "archive",
-                      remote: .modify(remove: ["INBOX", "UNREAD"]), local: {
-            $0.inInbox = false
-            $0.isUnread = false
+        let acted = mutateThreads(targets, autoAdvanceAction: "archive",
+                                  remote: ThreadUndo.remote(.archive), local: {
+            ThreadUndo.apply(.archive, &$0)
         })
         clearCheckedThreads()
         let n = targets.count
@@ -694,10 +746,7 @@ extension MailStore {
         offerUndo(n == 1 ? "Archived" : "Archived \(n) conversations") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep(ids)
-            self.mutateThreads(targets, remote: .modify(add: ["INBOX"]), local: {
-                $0.inInbox = true
-                $0.isUnread = false
-            })
+            self.undoThreads(.archive, acted: acted, originals: targets)
             self.restoreSelectionFocus(focus)
             self.undoAction = nil
         }
@@ -709,15 +758,18 @@ extension MailStore {
     /// UI and the next sync agree.
     func markSpam(_ thread: MailThread) {
         let priorFocus = selectedThreadId
-        mutateThread(thread, autoAdvanceAction: "spam",
-                     remote: .modify(add: ["SPAM"], remove: ["INBOX"])) { t in
-            t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
+        let wasInInbox = thread.inInbox
+        let acted = mutateThread(thread, autoAdvanceAction: "spam",
+                                 remote: ThreadUndo.remote(.spam)) {
+            ThreadUndo.apply(.spam, &$0)
         }
         offerUndo("Marked as spam") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep([thread.id])
-            self.mutateThread(thread, remote: .modify(add: ["INBOX"], remove: ["SPAM"])) { t in
-                t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
+            self.mutateThread(
+                acted, remote: ThreadUndo.undoRemote(.spam, wasInInbox: wasInInbox)
+            ) {
+                ThreadUndo.restore(.spam, wasInInbox: wasInInbox, &$0)
             }
             self.restoreSelectionFocus(priorFocus)
             self.undoAction = nil
@@ -728,15 +780,18 @@ extension MailStore {
     /// overflow menu when the thread is already in Spam (and as spam-undo).
     func markNotSpam(_ thread: MailThread) {
         let priorFocus = selectedThreadId
-        mutateThread(thread, autoAdvanceAction: "not-spam",
-                     remote: .modify(add: ["INBOX"], remove: ["SPAM"])) { t in
-            t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
+        let wasInInbox = thread.inInbox
+        let acted = mutateThread(thread, autoAdvanceAction: "not-spam",
+                                 remote: ThreadUndo.remote(.notSpam)) {
+            ThreadUndo.apply(.notSpam, &$0)
         }
         offerUndo("Marked as not spam") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep([thread.id])
-            self.mutateThread(thread, remote: .modify(add: ["SPAM"], remove: ["INBOX"])) { t in
-                t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
+            self.mutateThread(
+                acted, remote: ThreadUndo.undoRemote(.notSpam, wasInInbox: wasInInbox)
+            ) {
+                ThreadUndo.restore(.notSpam, wasInInbox: wasInInbox, &$0)
             }
             self.restoreSelectionFocus(priorFocus)
             self.undoAction = nil
@@ -750,17 +805,11 @@ extension MailStore {
         guard !targets.isEmpty else { return }
         let focus = selectedThreadId
         let markAsSpam = targets.contains { !$0.inSpam }
-        if markAsSpam {
-            mutateThreads(targets, autoAdvanceAction: "spam",
-                          remote: .modify(add: ["SPAM"], remove: ["INBOX"]), local: { t in
-                t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
-            })
-        } else {
-            mutateThreads(targets, autoAdvanceAction: "not-spam",
-                          remote: .modify(add: ["INBOX"], remove: ["SPAM"]), local: { t in
-                t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
-            })
-        }
+        let action: ThreadUndo.Action = markAsSpam ? .spam : .notSpam
+        let acted = mutateThreads(targets, autoAdvanceAction: markAsSpam ? "spam" : "not-spam",
+                                  remote: ThreadUndo.remote(action), local: {
+            ThreadUndo.apply(action, &$0)
+        })
         clearCheckedThreads()
         let n = targets.count
         let ids = targets.map(\.id)
@@ -770,15 +819,7 @@ extension MailStore {
         offerUndo(undoLabel) { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep(ids)
-            if markAsSpam {
-                self.mutateThreads(targets, remote: .modify(add: ["INBOX"], remove: ["SPAM"]), local: { t in
-                    t.applyLabelMutation(add: ["INBOX"], remove: ["SPAM"])
-                })
-            } else {
-                self.mutateThreads(targets, remote: .modify(add: ["SPAM"], remove: ["INBOX"]), local: { t in
-                    t.applyLabelMutation(add: ["SPAM"], remove: ["INBOX"])
-                })
-            }
+            self.undoThreads(action, acted: acted, originals: targets)
             self.restoreSelectionFocus(focus)
             self.undoAction = nil
         }
@@ -792,8 +833,10 @@ extension MailStore {
         let priorFocus = selectedThreadId
         // Keep labelIds + denorm flags coherent (same pattern as markSpam) so
         // search filters on inTrash and any labelIds-based UI agree.
-        mutateThread(thread, autoAdvanceAction: "trash", remote: .trash) { t in
-            t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
+        let wasInInbox = thread.inInbox
+        let acted = mutateThread(thread, autoAdvanceAction: "trash",
+                                 remote: ThreadUndo.remote(.trash)) {
+            ThreadUndo.apply(.trash, &$0)
         }
         offerUndo("Moved to Trash") { [weak self] in
             guard let self else { return }
@@ -801,8 +844,10 @@ extension MailStore {
             // under-is:unread rows were auto-marked read and dropped keepIds
             // on trash).
             self.pinReadStateKeep([thread.id])
-            self.mutateThread(thread, remote: .modify(add: ["INBOX"], remove: ["TRASH"])) { t in
-                t.applyLabelMutation(add: ["INBOX"], remove: ["TRASH"])
+            self.mutateThread(
+                acted, remote: ThreadUndo.undoRemote(.trash, wasInInbox: wasInInbox)
+            ) {
+                ThreadUndo.restore(.trash, wasInInbox: wasInInbox, &$0)
             }
             self.restoreSelectionFocus(priorFocus)
             self.undoAction = nil
@@ -814,8 +859,9 @@ extension MailStore {
         let targets = checkedThreadsInOrder
         guard !targets.isEmpty else { return }
         let focus = selectedThreadId
-        mutateThreads(targets, autoAdvanceAction: "trash", remote: .trash, local: { t in
-            t.applyLabelMutation(add: ["TRASH"], remove: ["INBOX"])
+        let acted = mutateThreads(targets, autoAdvanceAction: "trash",
+                                  remote: ThreadUndo.remote(.trash), local: {
+            ThreadUndo.apply(.trash, &$0)
         })
         clearCheckedThreads()
         let n = targets.count
@@ -823,9 +869,7 @@ extension MailStore {
         offerUndo(n == 1 ? "Moved to Trash" : "Moved \(n) to Trash") { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep(ids)
-            self.mutateThreads(targets, remote: .modify(add: ["INBOX"], remove: ["TRASH"]), local: { t in
-                t.applyLabelMutation(add: ["INBOX"], remove: ["TRASH"])
-            })
+            self.undoThreads(.trash, acted: acted, originals: targets)
             self.restoreSelectionFocus(focus)
             self.undoAction = nil
         }
@@ -1021,15 +1065,25 @@ extension MailStore {
         // Tear the picker down *before* the optimistic mutation so auto-advance
         // publishes into a visible window (same frame as archive/trash).
         dismissSnoozePicker()
-        mutateThread(thread, autoAdvanceAction: "snooze", remote: .modify(remove: ["INBOX"])) {
-            $0.snoozeUntil = date
-            $0.inInbox = false
+        let action = ThreadUndo.Action.snooze(until: date)
+        let wasInInbox = thread.inInbox
+        let acted = mutateThread(thread, autoAdvanceAction: "snooze",
+                                 remote: ThreadUndo.remote(action)) {
+            ThreadUndo.apply(action, &$0)
         }
         // Reuse the shared formatter path — allocating DateFormatter on the
         // triage hot path is needlessly expensive on the main thread.
         offerUndo(SnoozeDateParser.undoLabel(until: date)) { [weak self] in
             guard let self else { return }
-            self.snooze(thread, until: nil)
+            // Same picker rule as unsnooze: close it only for this thread.
+            if self.snoozingThread?.id == thread.id {
+                self.dismissSnoozePicker()
+            }
+            self.mutateThread(
+                acted, remote: ThreadUndo.undoRemote(action, wasInInbox: wasInInbox)
+            ) {
+                ThreadUndo.restore(action, wasInInbox: wasInInbox, &$0)
+            }
             self.undoAction = nil
         }
     }
@@ -1049,9 +1103,10 @@ extension MailStore {
         let targets = checkedThreadsInOrder
         guard !targets.isEmpty else { return }
         let focus = selectedThreadId
-        mutateThreads(targets, autoAdvanceAction: "snooze", remote: .modify(remove: ["INBOX"]), local: {
-            $0.snoozeUntil = date
-            $0.inInbox = false
+        let action = ThreadUndo.Action.snooze(until: date)
+        let acted = mutateThreads(targets, autoAdvanceAction: "snooze",
+                                  remote: ThreadUndo.remote(action), local: {
+            ThreadUndo.apply(action, &$0)
         })
         clearCheckedThreads()
         let n = targets.count
@@ -1062,10 +1117,7 @@ extension MailStore {
         offerUndo(label) { [weak self] in
             guard let self else { return }
             self.pinReadStateKeep(ids)
-            self.mutateThreads(targets, remote: .modify(add: ["INBOX"]), local: {
-                $0.snoozeUntil = nil
-                $0.inInbox = true
-            })
+            self.undoThreads(action, acted: acted, originals: targets)
             self.restoreSelectionFocus(focus)
             self.undoAction = nil
         }
