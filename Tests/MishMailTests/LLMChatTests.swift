@@ -96,6 +96,25 @@ final class LLMChatTests: XCTestCase {
         XCTAssertTrue(LLMRemotePolicy.blocksSilentAutoSort(grok))
     }
 
+    /// A public DNS name that starts with private-looking labels is not a
+    /// LAN address: only a complete dotted quad counts.
+    func testPrivateLANHostRejectsNamesWithNumericLabels() {
+        XCTAssertFalse(LLMEndpoint.isPrivateLANHost("10.0.0.5.evil.com"))
+        XCTAssertFalse(LLMEndpoint.isPrivateLANHost("192.168.1.1.nip.io"))
+        XCTAssertFalse(LLMEndpoint.isPrivateLANHost("172.16.0.1.example.net"))
+        XCTAssertFalse(LLMEndpoint.isPrivateLANHost("10.0.0.1."))
+        XCTAssertFalse(LLMEndpoint.isPrivateLANHost("10.0.0.1.5"))
+        XCTAssertFalse(LLMEndpoint.isPrivateLANHost("10..0.0.1"))
+        XCTAssertFalse(LLMEndpoint.isPrivateLANHost("+10.0.0.1"))
+        XCTAssertFalse(LLMEndpoint.isPrivateLANHost("10.0.0"))
+
+        let disguised = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "Custom",
+            baseURL: "https://10.1.2.3.example.net/v1", defaultModel: "m",
+            authMode: .apiKey)
+        XCTAssertTrue(LLMRemotePolicy.blocksSilentAutoSort(disguised))
+    }
+
     func testFastVariantPicksFamilySibling() {
         XCTAssertEqual(
             LLMFastModel.fastVariant(of: "grok-4", available: ["grok-4", "grok-4-fast"]),

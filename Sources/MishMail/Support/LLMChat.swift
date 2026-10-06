@@ -130,10 +130,29 @@ enum LLMHostedThinking {
         return false
     }
 
-    /// True when `thinking: { type: disabled }` is accepted. Fable rejects it.
-    static func acceptsDisabled(_ model: String) -> Bool {
-        if leafName(model).contains("fable") { return false }
-        return usesAdaptive(model)
+    /// How "thinking off" goes on the Anthropic wire. The form is per model:
+    /// a form the model does not accept fails the whole request with a 400.
+    enum AnthropicOff: Equatable {
+        /// `thinking: { type: disabled }` (Claude 4.6–4.8, Opus 5, Sonnet 5).
+        case disabled
+        /// No field; the model keeps its own default (Fable, pre-4.6 models).
+        case omit
+        /// No `thinking` field and `output_config.effort: low`. Claude Opus 5.5
+        /// cannot turn thinking off; effort is its only control.
+        case omitWithLowEffort
+        /// `thinking: { type: between_tools }` with no other thinking field.
+        /// Claude Sonnet 5.5 only; valid at effort `high` or below, so no
+        /// effort goes with it.
+        case betweenTools
+    }
+
+    static func anthropicOff(_ model: String) -> AnthropicOff {
+        let name = leafName(model)
+        if name.contains("fable") { return .omit }
+        // The 5.5 ids first: "opus-5-5" also contains "opus-5".
+        if name.contains("opus-5-5") || name.contains("opus-5.5") { return .omitWithLowEffort }
+        if name.contains("sonnet-5-5") || name.contains("sonnet-5.5") { return .betweenTools }
+        return usesAdaptive(model) ? .disabled : .omit
     }
 
     /// Claude 4.6+ uses adaptive thinking plus `output_config.effort`.
@@ -352,7 +371,14 @@ enum LLMEndpoint {
             if h.hasPrefix("fc") || h.hasPrefix("fd") { return true }
             return false
         }
-        let parts = h.split(separator: ".").compactMap { UInt8($0) }
+        // Exactly four all-digit labels. `10.0.0.5.evil.com` is a public
+        // name, and `UInt8("+10")` parses, so neither may pass as an address.
+        let labels = h.split(separator: ".", omittingEmptySubsequences: false)
+        guard labels.count == 4 else { return false }
+        let parts = labels.compactMap { label -> UInt8? in
+            guard label.allSatisfy({ $0.isASCII && $0.isNumber }) else { return nil }
+            return UInt8(label)
+        }
         guard parts.count == 4 else { return false }
         if parts[0] == 10 { return true }
         if parts[0] == 192 && parts[1] == 168 { return true }

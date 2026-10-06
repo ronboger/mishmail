@@ -434,6 +434,7 @@ final class AskMishController {
             var thinkingBlocks: [LLMThinkingBlock] = []
             var usage: LLMUsage?
             var stopNotice: String?
+            var toolPlan = AskMishContext.ToolRunPlan.run
             let bubbleID = beginAssistantBubble()
             compactToolMessages = AskMishContext.cappedCompactionIndices(
                 for: history, stable: compactToolMessages,
@@ -461,6 +462,7 @@ final class AskMishController {
                     case .done(let stopReason, let reported):
                         usage = reported
                         mergeUsage(reported, into: &turnUsage)
+                        toolPlan = AskMishContext.toolRunPlan(stopReason: stopReason)
                         if let notice = LLMStopReason.notice(for: stopReason) {
                             stopNotice = notice
                         }
@@ -507,7 +509,7 @@ final class AskMishController {
             guard !calls.isEmpty else {
                 // No text and no calls: the stream ended without an answer.
                 // Treat it as a failure, not as a finished turn.
-                if streamedText.isEmpty {
+                if !AskMishContext.hasSendableAssistantContent(text: streamedText, calls: []) {
                     markError(bubbleID, "The model returned nothing. Try again.")
                     await recordAskMishUsage(turnUsage, config: config, model: wireModel)
                     return
@@ -525,8 +527,16 @@ final class AskMishController {
             // Run every call, then persist the assistant row and its single
             // tool row in one write. A cancel part-way still answers each
             // remaining call, so the stored ids stay balanced.
-            var results: [LLMToolResult] = []
-            for call in calls {
+            //
+            // A response cut off at the output limit, or a refusal, runs
+            // nothing: no confirm card, no dispatch. Each call gets an error
+            // result instead.
+            let unrun = AskMishContext.unrunToolResults(for: calls, plan: toolPlan)
+            for result in unrun ?? [] {
+                updateTrace(bubbleID, callID: result.callID, result: result)
+            }
+            var results: [LLMToolResult] = unrun ?? []
+            for call in calls where unrun == nil {
                 if Task.isCancelled {
                     let stopped = LLMToolResult(
                         callID: call.id, content: "Stopped before this ran.", isError: true)
@@ -545,6 +555,11 @@ final class AskMishController {
                             thinkingBlocks: thinkingBlocks)
             if Task.isCancelled {
                 markInterrupted(bubbleID)
+                await recordAskMishUsage(turnUsage, config: config, model: wireModel)
+                return
+            }
+            if toolPlan == .refused {
+                finishTurnChrome(bubbleID)
                 await recordAskMishUsage(turnUsage, config: config, model: wireModel)
                 return
             }
@@ -620,7 +635,7 @@ final class AskMishController {
         finishBubble(bubbleID, costLabel: LLMPricing.costLabel(
             usage: usage, config: config, model: model, overrides: overrides))
         conversationCostLabel = totalCostLabel()
-        if text.isEmpty {
+        if !AskMishContext.hasSendableAssistantContent(text: text, calls: []) {
             markError(bubbleID, "The model returned nothing after the tool limit.")
         } else {
             await persistTurn(assistantText: text, calls: [], results: nil,
@@ -843,7 +858,8 @@ final class AskMishController {
     private func appendToHistory(assistantText: String, calls: [LLMToolCall],
                                 results: [LLMToolResult]? = nil,
                                 thinkingBlocks: [LLMThinkingBlock] = []) {
-        guard !assistantText.isEmpty || !calls.isEmpty else { return }
+        guard AskMishContext.hasSendableAssistantContent(
+            text: assistantText, calls: calls) else { return }
         history.append(LLMMessage(role: .assistant, text: assistantText,
                                   toolCalls: calls, thinkingBlocks: thinkingBlocks))
         if let results, !results.isEmpty {
@@ -1116,7 +1132,8 @@ final class AskMishController {
     private func persistTurn(assistantText: String, calls: [LLMToolCall],
                              results: [LLMToolResult]?, usage: LLMUsage?,
                              thinkingBlocks: [LLMThinkingBlock] = []) async {
-        guard !assistantText.isEmpty || !calls.isEmpty else { return }
+        guard AskMishContext.hasSendableAssistantContent(
+            text: assistantText, calls: calls) else { return }
         let now = Date()
         var rows = [ChatMessageRow(
             id: UUID().uuidString, conversationId: conversationID ?? "",
