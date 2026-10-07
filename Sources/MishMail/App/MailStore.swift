@@ -312,6 +312,10 @@ final class MailStore {
     var suppressedDraftMessageIds: Set<String> = []
     var suppressedDraftThreadIds: Set<String> = []
     var suppressedDraftThreadByMessageId: [String: String] = [:]
+    /// Drafts hidden for a send in flight (undo window through delivery).
+    /// One of the two sources `suppressedDraftMessageIds` is computed from;
+    /// the other is the scheduled rows (see `ScheduledDraftSuppression`).
+    @ObservationIgnored var pendingSendDraftIds: Set<String> = []
     /// Draft ids an *open compose card* owns (the draft it was opened on plus
     /// every autosave replacement), keyed by the compose request so a card that
     /// unmounts after its successor appeared can only release its own ids.

@@ -178,17 +178,69 @@ extension MailStore {
     private func setPendingDraftSuppressed(_ draft: Message?, suppressed: Bool) {
         guard let draft else { return }
         if suppressed {
-            suppressedDraftMessageIds.insert(draft.id)
-            suppressedDraftThreadByMessageId[draft.id] = draft.threadId
+            pendingSendDraftIds.insert(draft.id)
         } else {
-            suppressedDraftMessageIds.remove(draft.id)
-            suppressedDraftThreadByMessageId.removeValue(forKey: draft.id)
+            pendingSendDraftIds.remove(draft.id)
+        }
+        applyDraftSuppression(threadHints: [draft.id: draft.threadId])
+    }
+
+    /// Recompute the hidden-draft sets from their two sources: the send in
+    /// flight (`pendingSendDraftIds`) and the scheduled rows. Releasing one
+    /// source never unhides a draft the other still owns — a message that
+    /// went from the undo window to "waiting for connection" stays hidden.
+    ///
+    /// - Parameter threadHints: draft id → thread id for drafts the caller
+    ///   holds in hand. Autosave can pass a fresh stand-in before the next
+    ///   sync has inserted that row locally, so the table cannot be asked.
+    private func applyDraftSuppression(threadHints: [String: String] = [:]) {
+        let wanted = ScheduledDraftSuppression.suppressedDraftIds(
+            pendingSendDraftIds: pendingSendDraftIds,
+            scheduledDraftIds: scheduledSends.map(\.replacingDraftId))
+        var threadByDraft = suppressedDraftThreadByMessageId
+        var touchedThreads = Set(threadHints.values)
+        for id in ScheduledDraftSuppression.staleThreadEntries(
+            suppressed: wanted, threadByDraft: threadByDraft) {
+            if let threadId = threadByDraft.removeValue(forKey: id) {
+                touchedThreads.insert(threadId)
+            }
+        }
+        let missing = ScheduledDraftSuppression.draftsMissingThread(
+            suppressed: wanted, threadByDraft: threadByDraft)
+        if !missing.isEmpty {
+            var found = threadHints.filter { missing.contains($0.key) }
+            let unknown = missing.subtracting(found.keys)
+            if !unknown.isEmpty {
+                let rows: [Row] = (try? db.read { db in
+                    try Row.fetchAll(
+                        db,
+                        sql: """
+                            SELECT id, threadId FROM message
+                            WHERE id IN (\(unknown.map { _ in "?" }.joined(separator: ",")))
+                            """,
+                        arguments: StatementArguments(Array(unknown)))
+                }) ?? []
+                for row in rows { found[row["id"]] = row["threadId"] }
+            }
+            for (id, threadId) in found {
+                threadByDraft[id] = threadId
+                touchedThreads.insert(threadId)
+            }
         }
         // Suppression is applied to the payload the repository *returns*, never
         // baked into what it caches, so this invalidates no content revision.
         // Both sets are published — the open pane re-reads off them and hits
-        // the same warm entry.
-        _ = refreshDraftThreadSuppression(draft.threadId)
+        // the same warm entry. Assign only on change: every reload of the
+        // scheduled rows comes through here.
+        if threadByDraft != suppressedDraftThreadByMessageId {
+            suppressedDraftThreadByMessageId = threadByDraft
+        }
+        if wanted != suppressedDraftMessageIds {
+            suppressedDraftMessageIds = wanted
+        }
+        for threadId in touchedThreads {
+            _ = refreshDraftThreadSuppression(threadId)
+        }
     }
 
     /// Drafts is thread-based, but suppression is message-based. Hide a row
@@ -232,6 +284,9 @@ extension MailStore {
         let holds = ScheduledSendPolicy.prune(scheduledSendHolds,
                                               keeping: scheduledSends.compactMap(\.id))
         if holds != scheduledSendHolds { scheduledSendHolds = holds }
+        // Each row hides the draft it was composed from; a row that is gone
+        // (edited, discarded, sent, restored to compose) releases it.
+        applyDraftSuppression()
         armScheduledSendTimer()
     }
 
@@ -261,6 +316,11 @@ extension MailStore {
             createdAt: Date(), messageId: p.messageId)
         try? db.write { db in try row.insert(db) }
         reloadScheduledSends()
+        // The autosaved draft may not be in the message table yet; hand over
+        // its thread so the Drafts row hides as well as the draft card.
+        if let draft = p.replacingDraft {
+            applyDraftSuppression(threadHints: [draft.id: draft.threadId])
+        }
         showNotice("Scheduled — sends \(SendSchedule.describe(date))")
     }
 
