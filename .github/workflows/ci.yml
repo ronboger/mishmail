@@ -18,9 +18,32 @@ jobs:
     runs-on: macos-26
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Full history: the build cache needs commit times (see below).
+          fetch-depth: 0
 
       - name: Install xcodegen
         run: brew install xcodegen
+
+      - name: Prepare the build cache
+        id: cache-key
+        run: |
+          # A checkout stamps every file "now"; xcodebuild would then rebuild
+          # everything over a restored cache. Use commit times instead.
+          python3 scripts/ci-restore-mtimes.py
+          # The cache comes from another runner: inodes never match.
+          defaults write com.apple.dt.XCBuild IgnoreFileSystemDeviceInodeChanges -bool YES
+          echo "xcode=$(xcodebuild -version | shasum | cut -c1-12)" >> "$GITHUB_OUTPUT"
+
+      # DerivedData and the GRDB package checkout. Runs read the newest cache
+      # for this Xcode and project file; only main (and manual runs) write one.
+      - name: Restore the build cache
+        uses: actions/cache/restore@v4
+        with:
+          path: build/dd.noindex
+          key: dd-${{ runner.os }}-${{ steps.cache-key.outputs.xcode }}-${{ hashFiles('project.yml') }}-${{ github.sha }}
+          restore-keys: |
+            dd-${{ runner.os }}-${{ steps.cache-key.outputs.xcode }}-${{ hashFiles('project.yml') }}-
 
       # Build first: the unit suite has tests that inspect the built Debug
       # app (signature, zip round trip, embedded relauncher, ad-hoc trust).
@@ -31,8 +54,19 @@ jobs:
       - name: Run unit tests
         run: make test
 
+      - name: Save the build cache
+        if: github.ref == 'refs/heads/main' || github.event_name == 'workflow_dispatch'
+        uses: actions/cache/save@v4
+        with:
+          path: build/dd.noindex
+          key: dd-${{ runner.os }}-${{ steps.cache-key.outputs.xcode }}-${{ hashFiles('project.yml') }}-${{ github.sha }}
+
   ui-test:
     name: UI smoke tests
+    # About six minutes, so not on every push or pull request. Runs when a
+    # release is published and on a manual run; `make release` starts a
+    # manual run and waits for it before it publishes (`make ui-test-ci`).
+    if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     # Separate job so a UI hang or desktop hijack cannot hide unit-test results.
     steps:
