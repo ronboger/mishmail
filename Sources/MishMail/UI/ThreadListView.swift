@@ -1094,7 +1094,9 @@ struct FilterBar: View {
                 HStack {
                     Button("Clear all") { store.chips = defaultChips }
                     Spacer()
-                    Button("Save as view…") { saveAsView() }
+                    if savedViewBase != nil {
+                        Button("Save as view…") { saveAsView() }
+                    }
                 }
                 .font(.system(size: 12))
                 .buttonStyle(.plain)
@@ -1294,25 +1296,62 @@ struct FilterBar: View {
         store.showFilterMenu = false
     }
 
+    /// The mailbox on screen written as saved-view fields; nil when a saved
+    /// view cannot express it (Trash, Drafts, a saved view…), which hides
+    /// "Save as view…". A saved view is an inbox view unless these say so.
+    private var savedViewBase: SavedViewBase.Fields? {
+        let source: SavedViewBase.Source
+        switch store.selectedView {
+        case .inbox: source = .inbox
+        case .account(let account): source = .account(account)
+        case .promotions: source = .promotions
+        case .social: source = .social
+        case .starred: source = .starred
+        case .allMail: source = .allMail
+        case .sent: source = .sent
+        case .label(let account, let labelId, let name):
+            source = .label(account: account, labelId: labelId, name: name)
+        case .snoozed, .labels, .reminders, .drafts, .scheduled, .outbox, .trash, .saved:
+            source = .unsupported
+        }
+        return SavedViewBase.fields(
+            for: source,
+            activeAccountId: store.activeAccountId,
+            chipsLabelId: store.chips.labelId,
+            chipsLabelName: store.chips.labelName,
+            chipsLabelExclude: store.chips.labelExclude,
+            chipsShowArchived: store.chips.showArchived,
+            chipsCategoryShow: store.chips.category.show)
+    }
+
     private func saveAsView() {
+        guard let base = savedViewBase else { return }
+        // The chips as the saved view needs them: the base mailbox folded in.
+        var chips = store.chips
+        chips.labelId = base.labelId
+        chips.labelName = base.labelName
+        chips.labelExclude = base.labelExclude
+        chips.showArchived = base.showArchived
+        chips.category.show = base.categoryShow
         var v = SavedView.empty()
         v.name = store.selectedView.title + " (filtered)"
-        v.accountId = store.activeAccountId
+        v.accountId = base.accountId
         // Structured fields keep the ViewEditor form usable; chipsJSON captures
         // the FULL filter set (to/cc/bcc, subject, date, calendar, exclude
         // modes…) so the saved view is lossless.
-        v.labelId = store.chips.labelId
-        v.unreadOnly = store.chips.unreadOnly
-        v.showArchived = store.chips.showArchived
-        v.hasAttachmentOnly = store.chips.hasAttachmentOnly
-        v.senderContains = store.chips.senderContains
-        if store.chips.category.hide.isSuperset(of: ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"]) {
+        v.labelId = chips.labelId
+        v.unreadOnly = chips.unreadOnly
+        v.starredOnly = base.starredOnly
+        v.showArchived = chips.showArchived
+        v.hasAttachmentOnly = chips.hasAttachmentOnly
+        v.senderContains = chips.senderContains
+        if chips.category.hide.isSuperset(of: SavedViewFold.promotionsAndSocial) {
             v.excludePromotions = true
         }
-        if let cat = store.chips.category.show.first {
+        if let cat = chips.category.show.first {
             v.category = cat
         }
-        v.chipsJSON = try? JSONEncoder().encode(store.chips)
+        v.chipsJSON = try? JSONEncoder().encode(chips)
         store.showFilterMenu = false
         store.editingView = v
     }

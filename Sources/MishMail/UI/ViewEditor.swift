@@ -26,6 +26,12 @@ struct ViewEditor: View {
 
                 Picker("Label", selection: $view.labelId) {
                     Text("Any").tag(String?.none)
+                    // A view saved from Sent holds the SENT system label,
+                    // which is not a user label; keep a row for the selection.
+                    if let id = view.labelId,
+                       !allLabels.contains(where: { $0.gmailLabelId == id }) {
+                        Text(SavedViewBase.unlistedLabelTitle(id)).tag(String?.some(id))
+                    }
                     ForEach(allLabels, id: \.gmailLabelId) { label in
                         Text(label.name).tag(String?.some(label.gmailLabelId))
                     }
