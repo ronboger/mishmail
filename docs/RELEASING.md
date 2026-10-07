@@ -75,6 +75,9 @@ everyone." This doc is about `make release`.
    ```
    This runs, in order:
    - `make test` (gate — must pass)
+   - `make ui-test-ci` (gate — must pass): starts the CI workflow on GitHub
+     for the pushed commit, UI smoke tests included, and waits about seven
+     minutes for the result. The UI tests do not run on pull requests.
    - `xcodebuild ... -configuration Release` into `build/ddship.noindex`
      (with Distribution entitlements, via `MISHMAIL_APP_ENTITLEMENTS`)
    - artifact checks, which stop the release before anything is published:

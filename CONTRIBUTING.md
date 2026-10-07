@@ -26,7 +26,9 @@ Signing defaults to portable ad-hoc; see
 `make test` must pass before every commit (the pre-commit hook enforces this
 locally, and CI runs it on every push to `main` and every pull request).
 `make ui-test` is a separate CI job for launch, demo navigation, compose, and
-Settings — it does not block the unit-test job from reporting. Tests live in
+Settings. It takes about six minutes, so it runs only for a release:
+`make release` starts it and waits, and `make ui-test-ci` starts it by hand
+for a pushed branch. Run it for a change to the UI structure. Tests live in
 `Tests/MishMailTests` and cover the non-UI core: message/MIME parsing, the
 DB schema and migrations, thread derivation, search-query parsing, and
 send-scheduling. The test target is **hostless** — it compiles `Gmail/`,

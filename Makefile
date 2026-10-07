@@ -12,7 +12,7 @@
 #   make test      is the gate: run it before every commit (the pre-commit
 #                  hook from `make hooks` does it).
 #   make ui-test   is CI-only locally: XCUITest hijacks the desktop. GitHub
-#                  runs it as a separate job on pull_request and pushes to main.
+#                  runs it for a release only (`make ui-test-ci` starts it).
 #                  Locally it refuses unless UI_TEST_LOCAL=1.
 #   make build     just compile the test (Debug) app; don't launch it.
 #   make release   build Release, zip the app, publish a GitHub release
@@ -74,7 +74,7 @@ INSTALL_SIGN_FLAGS = CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEA
 	MISHMAIL_APP_ENTITLEMENTS=Sources/MishMail/MishMail.entitlements
 endif
 
-.PHONY: test ui-test build run demo install gen hooks prune release clean signing-doctor require-stable-signing require-run-signing require-pushed
+.PHONY: test ui-test ui-test-ci build run demo install gen hooks prune release clean signing-doctor require-stable-signing require-run-signing require-pushed
 
 # Refuse to ship an embedded relauncher that inherited the app's sandbox.
 # Stripping com.apple.quarantine from the installed update is its entire job,
@@ -157,20 +157,41 @@ test: gen
 	xcodebuild test -project $(PROJECT) -scheme MishMailTests \
 		-destination '$(DESTINATION)' -derivedDataPath $(DD)
 
+# Run the CI workflow, UI smoke tests included, on GitHub for the pushed HEAD
+# and wait for the result. The branch must be pushed. Requires the gh CLI.
+# A manual run is the only event besides a published release that runs the
+# UI job (see .github/workflows/ci.yml).
+ui-test-ci:
+	@ref=$$(git rev-parse --abbrev-ref HEAD); sha=$$(git rev-parse HEAD); \
+	start=$$(date -u +%Y-%m-%dT%H:%M:%SZ); \
+	echo "Starting CI with the UI smoke tests on $$ref ($$sha)…"; \
+	gh workflow run ci.yml --ref "$$ref" || exit 1; \
+	id=""; for i in 1 2 3 4 5 6 7 8 9 10; do \
+		sleep 3; \
+		id=$$(gh run list --workflow ci.yml --event workflow_dispatch --commit "$$sha" \
+			--limit 5 --json databaseId,createdAt \
+			-q "[.[] | select(.createdAt >= \"$$start\")][0].databaseId // empty"); \
+		[ -n "$$id" ] && break; \
+	done; \
+	[ -n "$$id" ] || { echo "Could not find the run that was just started."; exit 1; }; \
+	gh run watch "$$id" --exit-status --interval 20
+
 # Small end-to-end pass over the fictional inbox. No Google account or network
 # is involved; this catches launch, navigation, compose, and Settings regressions.
 #
 # CI-ONLY locally: XCUITest cannot run headless on macOS — it launches the app,
 # takes focus, and injects keyboard/mouse events into the live desktop, so a
 # local run hijacks the machine for its duration. GitHub Actions runs unit
-# tests + build on every pull_request and push to main, and the UI suite as a
-# separate job on the same triggers. Locally the gate is `make test`. To run
-# the UI suite here anyway (and surrender the desktop while it runs):
+# tests + build on every pull_request and push to main. The UI suite takes
+# about six minutes, so it runs only for a release: `make release` starts it
+# on GitHub and waits (`make ui-test-ci`), and it runs again when the release
+# is published. Locally the gate is `make test`. To run the UI suite here
+# anyway (and surrender the desktop while it runs):
 # UI_TEST_LOCAL=1 make ui-test
 ui-test: gen
 	@if [ "$$CI" != "true" ] && [ "$(UI_TEST_LOCAL)" != "1" ]; then \
 		echo "ui-test is CI-only: XCUITest takes over the desktop while it runs."; \
-		echo "CI runs it on every push/PR. To run locally anyway: UI_TEST_LOCAL=1 make ui-test"; \
+		echo "Run it on GitHub with: make ui-test-ci. To run locally anyway: UI_TEST_LOCAL=1 make ui-test"; \
 		exit 1; \
 	fi
 	# XCUITest cannot attach deterministically when another Debug build with the
@@ -297,7 +318,7 @@ require-pushed:
 #     how every release to date has shipped); other people's Macs get
 #     Gatekeeper warnings and should build from source.
 # Both tiers use Distribution entitlements (full library validation).
-release: require-pushed test
+release: require-pushed test ui-test-ci
 	@if [ -z "$(TEAM)" ] || [ "$(VALID_SIGNING_IDENTITY)" != "yes" ]; then \
 		echo "Refusing release: no valid signing identity for DEVELOPMENT_TEAM in Config/Local.xcconfig."; \
 		echo "Run 'make signing-doctor' for the free Personal Team setup."; \
