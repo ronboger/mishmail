@@ -380,17 +380,19 @@ struct ComposeBodyEditor: NSViewRepresentable {
         private static let reDisplayMath = try! NSRegularExpression(pattern: #"\$\$[^$]+\$\$"#)
         private static let reInlineMath = try! NSRegularExpression(pattern: Markdown.inlineMathPattern)
         private static let reInlineCode = try! NSRegularExpression(pattern: #"`[^`\n]+`"#)
-        private static let reBoldStar = try! NSRegularExpression(pattern: #"\*\*[^*\n]+\*\*"#)
-        private static let reBoldUnder = try! NSRegularExpression(pattern: #"__[^_\n]+__"#)
+        // Emphasis uses the send path's own patterns (Markdown.swift), so the
+        // editor never styles text that the sent HTML leaves literal.
+        private static let reBoldStar = try! NSRegularExpression(pattern: Markdown.boldStarPattern)
+        private static let reBoldUnder = try! NSRegularExpression(pattern: Markdown.boldUnderscorePattern)
         private static let reStrike = try! NSRegularExpression(pattern: #"~~[^~\n]+~~"#)
-        private static let reItalicStar = try! NSRegularExpression(pattern: #"(?<![\w*])\*[^*\n]+\*(?![\w*])"#)
-        private static let reItalicUnder = try! NSRegularExpression(pattern: #"(?<![\w_])_[^_\n]+_(?![\w_])"#)
+        private static let reItalicStar = try! NSRegularExpression(pattern: Markdown.italicStarPattern)
+        private static let reItalicUnder = try! NSRegularExpression(pattern: Markdown.italicUnderscorePattern)
         private static let reLineMarker = try! NSRegularExpression(pattern: #"(?m)^(\s*)(>|\d+\.|[-*+])(\s)"#)
-        private static let reDimBoldStar = try! NSRegularExpression(pattern: #"(\*\*)([^*\n]+)(\*\*)"#)
-        private static let reDimBoldUnder = try! NSRegularExpression(pattern: #"(__)([^_\n]+)(__)"#)
+        private static let reDimBoldStar = reBoldStar
+        private static let reDimBoldUnder = reBoldUnder
         private static let reDimStrike = try! NSRegularExpression(pattern: #"(~~)([^~\n]+)(~~)"#)
-        private static let reDimItalicStar = try! NSRegularExpression(pattern: #"(?<![\w*])(\*)([^*\n]+)(\*)(?![\w*])"#)
-        private static let reDimItalicUnder = try! NSRegularExpression(pattern: #"(?<![\w_])(_)([^_\n]+)(_)(?![\w_])"#)
+        private static let reDimItalicStar = reItalicStar
+        private static let reDimItalicUnder = reItalicUnder
         private static let reDimCode = try! NSRegularExpression(pattern: #"(`)([^`\n]+)(`)"#)
         private static let reDimMath = try! NSRegularExpression(pattern: #"(?<![\$\w])(\$)((?:[^$\n]*[^\s$])?)(\$)(?![\d$])"#)
 
