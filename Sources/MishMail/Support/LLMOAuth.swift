@@ -207,12 +207,11 @@ enum LLMOAuth {
 
     static func refreshRequestForm(vendor: LLMOAuthVendor,
                                    refreshToken: String) -> [String: String] {
-        var form = [
+        [
             "grant_type": "refresh_token",
             "refresh_token": refreshToken,
             "client_id": constants(for: vendor).clientID,
         ]
-        return form
     }
 
     static func parseTokens(from data: Data, now: Date) throws -> LLMOAuthTokens {
