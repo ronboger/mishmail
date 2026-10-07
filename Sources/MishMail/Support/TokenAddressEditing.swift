@@ -52,13 +52,117 @@ enum TokenAddressEditing {
     /// Commit pending draft text into a chip (blur, Return, trailing comma).
     /// Same clean/dedup rules as the pending-draft step of `beginEdit`, so the
     /// focus-loss path and the click-to-edit path cannot skew.
+    ///
+    /// The draft can hold a whole pasted list; each mailbox becomes its own
+    /// chip (`splitRecipients`). Dedup is by address, so the same mailbox in
+    /// another case or with a display name is not a second recipient.
     static func commit(tokens: [String], draft: String) -> (tokens: [String], draft: String) {
         var next = tokens
-        let cleaned = draft.trimmingCharacters(in: CharacterSet(charactersIn: " ,"))
-        if cleaned.contains("@"), !next.contains(cleaned) {
-            next.append(cleaned)
+        var seen = Set(tokens.map(addressKey))
+        for part in splitRecipients(draft) where seen.insert(addressKey(part)).inserted {
+            next.append(part)
         }
         return (next, "")
+    }
+
+    // MARK: - Recipient lists
+
+    /// Where a scan of recipient text stands: inside a quoted string, an
+    /// angle address or a comment, a `,` `;` or newline is sender text, not
+    /// a separator.
+    private struct ListScan {
+        var inQuote = false
+        var escaped = false
+        var angleDepth = 0
+        var parenDepth = 0
+
+        var atTopLevel: Bool { !inQuote && angleDepth == 0 && parenDepth == 0 }
+
+        /// Feeds one character. True when it is a top-level separator.
+        mutating func isSeparator(_ ch: Character) -> Bool {
+            if inQuote {
+                if escaped { escaped = false }
+                else if ch == "\\" { escaped = true }
+                else if ch == "\"" { inQuote = false }
+                return false
+            }
+            switch ch {
+            case "\"": inQuote = true
+            case "<": angleDepth += 1
+            case ">": angleDepth = max(0, angleDepth - 1)
+            case "(": parenDepth += 1
+            case ")": parenDepth = max(0, parenDepth - 1)
+            case ",", ";": return atTopLevel
+            default: return ch.isNewline && atTopLevel
+            }
+            return false
+        }
+    }
+
+    private static let listTrim = CharacterSet(charactersIn: ",;").union(.whitespacesAndNewlines)
+
+    /// Splits pasted or typed recipient text into one string per mailbox.
+    ///
+    /// Separators are `,` `;` and newlines outside quoted strings, angle
+    /// addresses and comments. A run of bare addresses separated only by
+    /// spaces or tabs (a pasted column) is split too; a display name never
+    /// is. Pieces without an address are dropped. A single mailbox comes
+    /// back unchanged.
+    static func splitRecipients(_ text: String) -> [String] {
+        var scan = ListScan()
+        var pieces: [String] = []
+        var current = ""
+        for ch in text {
+            if scan.isSeparator(ch) {
+                pieces.append(current)
+                current = ""
+            } else {
+                current.append(ch)
+            }
+        }
+        // An unterminated quote: nothing after it can be split with
+        // confidence, so the whole text stays one mailbox.
+        if scan.inQuote {
+            let whole = text.trimmingCharacters(in: listTrim)
+            return whole.contains("@") ? [whole] : []
+        }
+        pieces.append(current)
+
+        var out: [String] = []
+        for piece in pieces {
+            let trimmed = piece.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard trimmed.contains("@") else { continue }
+            let words = trimmed.split(whereSeparator: \.isWhitespace).map(String.init)
+            if words.count > 1, words.allSatisfy(isBareAddress) {
+                out.append(contentsOf: words)
+            } else {
+                out.append(trimmed)
+            }
+        }
+        return out
+    }
+
+    /// `local@domain` with no name, quotes, brackets or comment.
+    private static func isBareAddress(_ word: String) -> Bool {
+        let parts = word.split(separator: "@", omittingEmptySubsequences: false)
+        guard parts.count == 2, !parts[0].isEmpty, !parts[1].isEmpty else { return false }
+        return !word.contains(where: { "<>\"(),;".contains($0) })
+    }
+
+    /// Lowercased bare address of a mailbox: the identity used for dedup.
+    static func addressKey(_ mailbox: String) -> String {
+        MessageParser.emailAddress(mailbox).lowercased()
+    }
+
+    /// True when the draft's last character is a `,` or `;` that ends a
+    /// mailbox. Inside a quoted name or an angle address it is ordinary
+    /// text: typing `"Boger, Ron" <r@x.com>` must not commit at the comma.
+    static func shouldCommitOnSeparator(_ draft: String) -> Bool {
+        guard let last = draft.last, last == "," || last == ";" else { return false }
+        var scan = ListScan()
+        var lastIsSeparator = false
+        for ch in draft { lastIsSeparator = scan.isSeparator(ch) }
+        return lastIsSeparator
     }
 
     /// Recipient state a draft save should use.

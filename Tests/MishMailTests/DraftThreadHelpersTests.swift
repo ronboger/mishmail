@@ -101,7 +101,7 @@ final class DraftThreadHelpersTests: XCTestCase {
         marked.bodyText = "hi\n\(ForwardComposer.marker)\nquoted"
         XCTAssertNil(ComposeDrafts.replyParent(forDraft: marked, inThread: [inbound, marked]))
 
-        var plain = msg(id: "d4", labels: "DRAFT", date: 20)
+        let plain = msg(id: "d4", labels: "DRAFT", date: 20)
         XCTAssertEqual(
             ComposeDrafts.replyParent(forDraft: plain, inThread: [inbound, later, plain])?.gmailId,
             "2",
