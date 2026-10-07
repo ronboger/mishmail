@@ -2858,85 +2858,14 @@ struct ComposeRequest: Identifiable {
                     .reloadList, meta: "\(reloadKind) limit=\(windowLimit)"
                 ) {
                     if !search.isEmpty {
-                        let parsed = SearchQuery.parse(search)
-                        var q = MailThread.all()
-                        if !parsed.text.isEmpty {
-                            q = try SearchFTS.filter(q, db: db, text: parsed.text)
-                        }
-                        if let from = parsed.from {
-                            // fromDisplay/participants hold display names, so an email
-                            // query ("from:x@y.com") must also check the raw header.
-                            // Prefer denorm fromEmail when present; still check headers
-                            // for threads not yet backfilled.
-                            let pattern = "%\(from)%"
-                            q = q.filter(sql: """
-                                (fromDisplay LIKE ? OR participants LIKE ?
-                                 OR fromEmail LIKE ?
-                                 OR EXISTS (SELECT 1 FROM message
-                                            WHERE message.threadId = thread.id
-                                              AND message.fromHeader LIKE ?))
-                                """, arguments: [pattern, pattern, pattern, pattern])
-                        }
-                        if let to = parsed.to {
-                            // Recipient headers live on messages, so match via EXISTS.
-                            q = q.filter(sql: """
-                                EXISTS (SELECT 1 FROM message
-                                        WHERE message.threadId = thread.id
-                                          AND (message.toHeader LIKE ? OR message.ccHeader LIKE ?
-                                               OR message.bccHeader LIKE ?))
-                                """, arguments: ["%\(to)%", "%\(to)%", "%\(to)%"])
-                        }
-                        if let subject = parsed.subject {
-                            q = q.filter(sql: "subject LIKE ?", arguments: ["%\(subject)%"])
-                        }
-                        if let unread = parsed.unread {
-                            // keepIds: threads just marked read/unread stay in the
-                            // list under is:unread / is:read (same as filter chips).
-                            q = q.filter(Column("isUnread") == unread
-                                         || keepIds.contains(Column("id")))
-                        }
-                        if parsed.starred {
-                            // starKeepIds: just-unstarred threads stay under
-                            // is:starred until the search is cleared (read-state
-                            // keepIds parity).
-                            q = q.filter(Column("isStarred") == true
-                                         || starKeepIds.contains(Column("id")))
-                        }
-                        if let after = parsed.after {
-                            q = q.filter(Column("lastDate") >= after)
-                        }
-                        if let before = parsed.before {
-                            q = q.filter(Column("lastDate") < before)
-                        }
-                        for name in parsed.labels {
-                            // A label name resolves to Gmail label ids (it can exist on
-                            // several accounts); unknown names fall back to the raw
-                            // token uppercased, which covers system labels (STARRED…).
-                            var ids = allLabels
-                                .filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-                                .map(\.gmailLabelId)
-                            if ids.isEmpty { ids = [name.uppercased()] }
-                            q = MailStore.filterThreads(q, matchingLabelIds: ids,
-                                                        starKeepIds: starKeepIds)
-                        }
-                        if parsed.hasAttachment { q = q.filter(Column("hasAttachment") == true) }
-                        // Gmail search excludes trash/spam unless in:trash / in:spam /
-                        // in:anywhere. Without this, optimistic trash removes the row
-                        // and the async reload immediately brings it back.
-                        switch parsed.location {
-                        case .standard:
-                            q = q.filter(Column("inTrash") == false && Column("inSpam") == false)
-                        case .trash:
-                            q = q.filter(Column("inTrash") == true)
-                        case .spam:
-                            q = q.filter(Column("inSpam") == true)
-                        case .anywhere:
-                            break
-                        }
-                        if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                        // Search always ranks by newest message (lastDate).
-                        return try q.order(Column("lastDate").desc, Column("id").desc)
-                            .limit(fetchLimit).fetchAll(db)
+                        // The predicate builder lives in Store/ so hostless
+                        // tests run this exact SQL (SearchThreadQueryTests).
+                        let context = SearchThreadQuery.Context(
+                            labels: allLabels, keepIds: keepIds,
+                            starKeepIds: starKeepIds, accountId: activeAccount)
+                        return try SearchThreadQuery.fetch(
+                            search: search, db: db, context: context,
+                            limit: fetchLimit)
                     } else {
                         var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot,
                                                     keepIds: keepIds, starKeepIds: starKeepIds)

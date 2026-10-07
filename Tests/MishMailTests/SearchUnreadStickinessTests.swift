@@ -10,8 +10,8 @@ import GRDB
 /// thread stays listed until the search is cleared or the view changes.
 ///
 /// MailStore is AppKit-bound and not in this test target, so
-/// `searchReload` mirrors the production search branch (including keepIds).
-/// Update this copy if `MailStore.reloadThreads` search SQL changes.
+/// `searchReload` runs the production search builder (`SearchThreadQuery`,
+/// which `MailStore.reloadThreads` calls), including keepIds.
 final class SearchUnreadStickinessTests: XCTestCase {
 
     // MARK: - Fixtures
@@ -66,30 +66,12 @@ final class SearchUnreadStickinessTests: XCTestCase {
             hasAttachment: t.hasAttachment).insert(db)
     }
 
-    /// Mirrors the committed-search branch of `MailStore.reloadThreads` for
-    /// is:unread / is:read, including keepIds stickiness.
+    /// The committed-search branch of `MailStore.reloadThreads` (production
+    /// builder), including keepIds stickiness for is:unread / is:read.
     private func searchReload(_ db: Database, _ raw: String,
                               keepIds: [String] = []) throws -> [MailThread] {
-        let parsed = SearchQuery.parse(raw)
-        var q = MailThread.all()
-        if !parsed.text.isEmpty {
-            q = try SearchFTS.filter(q, db: db, text: parsed.text)
-        }
-        if let unread = parsed.unread {
-            q = q.filter(Column("isUnread") == unread
-                         || keepIds.contains(Column("id")))
-        }
-        switch parsed.location {
-        case .standard:
-            q = q.filter(Column("inTrash") == false && Column("inSpam") == false)
-        case .trash:
-            q = q.filter(Column("inTrash") == true)
-        case .spam:
-            q = q.filter(Column("inSpam") == true)
-        case .anywhere:
-            break
-        }
-        return try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
+        try SearchThreadQuery.fetch(
+            search: raw, db: db, context: .init(keepIds: keepIds), limit: 200)
     }
 
     /// Whether a committed search's read-state operator is active (same gate

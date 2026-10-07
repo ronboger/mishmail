@@ -12,10 +12,9 @@ import GRDB
 ///      SQL by `parsed.location` (standard excludes inTrash/inSpam).
 ///
 /// MailStore itself is AppKit-bound and not compiled into this test target,
-/// so — like `ThreadDenormTests.fetchSidebarCounts` — `searchReload` below
-/// mirrors the production search query (FTS text + location filter) against
-/// a real migrated in-memory DB. If you change the search SQL in
-/// `MailStore.reloadThreads`, update this copy.
+/// so `searchReload` below runs the production search query
+/// (`SearchThreadQuery`, which `MailStore.reloadThreads` calls) against a
+/// real migrated in-memory DB.
 final class SearchTrashFlickerTests: XCTestCase {
 
     // MARK: - Fixtures
@@ -57,26 +56,10 @@ final class SearchTrashFlickerTests: XCTestCase {
             hasAttachment: t.hasAttachment).insert(db)
     }
 
-    /// Mirrors the committed-search branch of `MailStore.reloadThreads`:
-    /// FTS text match plus the `parsed.location` trash/spam scope filter.
+    /// The committed-search branch of `MailStore.reloadThreads` (production
+    /// builder: FTS text match plus the `parsed.location` scope filter).
     private func searchReload(_ db: Database, _ raw: String) throws -> [MailThread] {
-        let parsed = SearchQuery.parse(raw)
-        var q = MailThread.all()
-        if !parsed.text.isEmpty {
-            // Production FTS filter (strict prefix, fuzzy fallback).
-            q = try SearchFTS.filter(q, db: db, text: parsed.text)
-        }
-        switch parsed.location {
-        case .standard:
-            q = q.filter(Column("inTrash") == false && Column("inSpam") == false)
-        case .trash:
-            q = q.filter(Column("inTrash") == true)
-        case .spam:
-            q = q.filter(Column("inSpam") == true)
-        case .anywhere:
-            break
-        }
-        return try q.order(Column("lastDate").desc).limit(200).fetchAll(db)
+        try SearchThreadQuery.fetch(search: raw, db: db, context: .init(), limit: 200)
     }
 
     /// Mirrors the committed-search branch of `threadLeavesCurrentList`.
