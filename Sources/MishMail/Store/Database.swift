@@ -458,7 +458,7 @@ struct PendingThreadOp: Codable, Identifiable, Hashable, FetchableRecord, Persis
             try row.update(db)
         } else {
             guard !change.isEmpty else { return }
-            var row = PendingThreadOp(id: nil, accountId: accountId,
+            let row = PendingThreadOp(id: nil, accountId: accountId,
                                       gmailThreadId: gmailThreadId,
                                       changeJSON: encode(change),
                                       createdAt: now, updatedAt: now)

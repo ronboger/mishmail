@@ -80,7 +80,7 @@ final class SearchThreadQueryTests: XCTestCase {
                 labelIds: labelIds, isUnread: isUnread,
                 hasAttachment: !m.attachments.isEmpty).insert(db)
             for name in m.attachments {
-                var row = AttachmentRow(
+                let row = AttachmentRow(
                     id: nil, messageId: mid, gmailAttachmentId: "att-\(name)",
                     filename: name, mimeType: "application/octet-stream", size: 10)
                 try row.insert(db)

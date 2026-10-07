@@ -234,7 +234,7 @@ enum AskMishContext {
                                 compactToolMessageIndices: Set<Int>? = nil,
                                 threadCharacterBudget: Int = LLMPrompts.hostedThreadContextBudget) -> [LLMMessage] {
         var namesByCallID: [String: String] = [:]
-        for (index, message) in messages.enumerated() {
+        for message in messages {
             if message.role == .assistant {
                 for call in message.toolCalls { namesByCallID[call.id] = call.name }
             }
