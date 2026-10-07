@@ -1,3 +1,4 @@
+import AppKit
 import CoreGraphics
 import Foundation
 
@@ -32,7 +33,32 @@ enum ComposeBodyLayout {
     /// pill sits under the last line instead of the card bottom.
     static let noQuoteMin: CGFloat = 120
 
-    /// Estimated editor height for `body` (no floor/cap).
+    /// Editor height for the laid-out text, as measured by the text view.
+    /// Preferred over `contentHeight(body:)`, whose fixed line height and
+    /// characters-per-line ignore the font scale and the real card width —
+    /// at a larger font the estimate came out short and the last lines
+    /// scrolled out of view inside a card that still had room.
+    static func contentHeight(measuredTextHeight: CGFloat) -> CGFloat {
+        editorPadding + measuredTextHeight.rounded(.up)
+    }
+
+    /// Height of the text as `textView` lays it out at its current width
+    /// and font, or nil before the view has a real width.
+    static func textHeight(of textView: NSTextView) -> CGFloat? {
+        guard let lm = textView.layoutManager, let tc = textView.textContainer,
+              // Before the first real layout the container is 0 wide and
+              // every character wraps onto its own line.
+              textView.bounds.width > 1 else { return nil }
+        lm.ensureLayout(for: tc)
+        var used = lm.usedRect(for: tc)
+        if lm.extraLineFragmentUsedRect.height > 0 {
+            used = used.union(lm.extraLineFragmentUsedRect)
+        }
+        return used.maxY + textView.textContainerInset.height * 2
+    }
+
+    /// Estimated editor height for `body` (no floor/cap). Used only until
+    /// the text view reports its first measurement.
     static func contentHeight(body: String) -> CGFloat {
         var visualLines: CGFloat = 0
         for line in body.components(separatedBy: "\n") {
@@ -57,12 +83,15 @@ enum ComposeBodyLayout {
     static func editorHeights(body: String,
                               hasCollapsedQuote: Bool,
                               slashActive: Bool,
-                              collapsedQuoteCap: CGFloat = collapsedCap)
+                              collapsedQuoteCap: CGFloat = collapsedCap,
+                              measuredTextHeight: CGFloat? = nil)
         -> (min: CGFloat, max: CGFloat) {
+        let content = measuredTextHeight.map(contentHeight(measuredTextHeight:))
+            ?? contentHeight(body: body)
         guard hasCollapsedQuote else {
             // Cap at content so an inlined quote's collapse pill hugs the
             // last line; floor at noQuoteMin so empty drafts keep a surface.
-            let maxH = max(noQuoteMin, contentHeight(body: body) + contentSlack)
+            let maxH = max(noQuoteMin, content + contentSlack)
             return (noQuoteMin, maxH)
         }
         if slashActive {
@@ -72,7 +101,7 @@ enum ComposeBodyLayout {
         // drafts hug then scroll. Min: compressible down to emptyFloor so a
         // fixed card (addresses + long body) never clips the quote pill /
         // Send row; short drafts keep min == max == emptyFloor (no snap).
-        let raw = contentHeight(body: body) + contentSlack
+        let raw = content + contentSlack
         let h = min(max(raw, emptyFloor), collapsedQuoteCap)
         return (Swift.min(h, emptyFloor), h)
     }

@@ -55,6 +55,8 @@ struct ComposeView: View {
     /// UTF-16 body selection, mirrored from the live NSTextView so inline AI
     /// edits can be enabled only when there is text to replace.
     @State private var bodySelection = NSRange(location: 0, length: 0)
+    /// Laid-out body text height from the editor; nil until first layout.
+    @State private var bodyTextHeight: CGFloat?
     /// Local keyDown monitor that steals ↑/↓/Return/Tab/Esc while the `/`
     /// picker is up — the NSTextView behind TextEditor consumes those keys
     /// before SwiftUI's onKeyPress ever sees them.
@@ -252,7 +254,8 @@ struct ComposeView: View {
             // Split compose already fills the window: use that available
             // height before introducing an internal editor scrollbar.
             collapsedQuoteCap: isSplit ? .infinity
-                                       : ComposeBodyLayout.collapsedCap).max
+                                       : ComposeBodyLayout.collapsedCap,
+            measuredTextHeight: bodyTextHeight).max
     }
 
     /// Body editor minimum — mirrors `bodyEditorMaxHeight` so short replies
@@ -264,7 +267,8 @@ struct ComposeView: View {
             hasCollapsedQuote: !quotedTail.isEmpty,
             slashActive: slashActive,
             collapsedQuoteCap: isSplit ? .infinity
-                                       : ComposeBodyLayout.collapsedCap).min
+                                       : ComposeBodyLayout.collapsedCap,
+            measuredTextHeight: bodyTextHeight).min
     }
 
     /// Focuses the body editor. Setting the FocusState synchronously in
@@ -1128,7 +1132,8 @@ struct ComposeView: View {
                               selection: $bodySelection,
                               ghostText: greetingGhostText,
                               formatTarget: formatTarget, fontSize: 14 * fontScale,
-                              onFilesDropped: { ingestDroppedFiles($0) })
+                              onFilesDropped: { ingestDroppedFiles($0) },
+                              onTextHeightChange: { bodyTextHeight = $0 })
                 .padding(.top, 10)
                 .padding(.bottom, 6)
                 // Grow with authored content while the quote is collapsed so

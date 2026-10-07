@@ -34,6 +34,10 @@ struct ComposeBodyEditor: NSViewRepresentable {
     /// Files dropped on the body (Finder / other apps) — attach, don't insert
     /// paths into the markdown source.
     var onFilesDropped: (([URL]) -> Void)? = nil
+    /// Height of the laid-out text (no padding), reported when it changes.
+    /// Compose sizes the editor from this instead of estimating from the
+    /// character count.
+    var onTextHeightChange: ((CGFloat) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, isFocused: $isFocused, caretUTF16: $caretUTF16,
@@ -117,11 +121,14 @@ struct ComposeBodyEditor: NSViewRepresentable {
         scroll.borderType = .noBorder
         scroll.documentView = textView
         context.coordinator.fontSize = fontSize
+        context.coordinator.onTextHeightChange = onTextHeightChange
+        context.coordinator.observeTextHeight(of: textView)
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.fontSize = fontSize
+        context.coordinator.onTextHeightChange = onTextHeightChange
         context.coordinator.formatTarget = formatTarget
         context.coordinator.onFilesDropped = onFilesDropped
         context.coordinator.bindFormatTarget()
@@ -151,6 +158,9 @@ struct ComposeBodyEditor: NSViewRepresentable {
             Coordinator.highlight(textView, fontSize: fontSize)
             coord.isProgrammaticUpdate = false
         }
+        // Covers programmatic text (a snippet, a prefill) and a font-size
+        // change; cheap and silent when the height did not move.
+        context.coordinator.reportTextHeight()
 
         if textView.ghostText != ghostText {
             textView.ghostText = ghostText
@@ -182,6 +192,39 @@ struct ComposeBodyEditor: NSViewRepresentable {
         var onFilesDropped: (([URL]) -> Void)?
         weak var textView: ComposeBodyTextView?
         var fontSize: CGFloat = 14
+        var onTextHeightChange: ((CGFloat) -> Void)?
+        private var reportedTextHeight: CGFloat = -1
+        private var frameObserver: NSObjectProtocol?
+
+        deinit {
+            if let frameObserver {
+                NotificationCenter.default.removeObserver(frameObserver)
+            }
+        }
+
+        /// A width change rewraps the text without any edit, so the frame is
+        /// watched as well as `textDidChange`.
+        func observeTextHeight(of textView: NSTextView) {
+            textView.postsFrameChangedNotifications = true
+            frameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: textView, queue: .main
+            ) { [weak self] _ in
+                self?.reportTextHeight()
+            }
+            reportTextHeight()
+        }
+
+        func reportTextHeight() {
+            guard let textView,
+                  let height = ComposeBodyLayout.textHeight(of: textView) else { return }
+            guard abs(height - reportedTextHeight) > 0.5 else { return }
+            reportedTextHeight = height
+            // Never write SwiftUI state inside a layout or update pass.
+            DispatchQueue.main.async { [weak self] in
+                self?.onTextHeightChange?(height)
+            }
+        }
         /// True while updateNSView (or another external rewrite) is driving
         /// the text view — selection-change callbacks must not write the
         /// caret binding (SwiftUI forbids state mutation during view update).
@@ -235,6 +278,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
             publishCaret(textView)
             publishSelection(textView)
             Self.highlight(textView, fontSize: fontSize)
+            reportTextHeight()
             // Ghost is drawn outside the text system — force a full body
             // redraw after every edit so deleted glyphs + old ghost suffix
             // never leave a double-image under the caret.
