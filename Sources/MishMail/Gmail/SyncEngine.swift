@@ -30,9 +30,17 @@ actor SyncEngine {
         syncWindowDays == 0 ? nil : "newer_than:\(syncWindowDays)d"
     }
 
+    /// Most messages one pass downloads for the window. Not the size of the
+    /// window: a larger window is finished over later passes (see
+    /// `WindowBackfill`).
     private var windowLimit: Int {
         syncWindowDays == 0 ? 50_000 : max(3000, syncWindowDays * 60)
     }
+
+    /// Cap for the id-only label listings of the history-expired reconcile.
+    /// Higher than `windowLimit` on purpose: a listing cut off there cannot
+    /// remove a label or a stale row, and ids cost one list call per 500.
+    static let reconcileListLimit = 200_000
 
     init(accountId: String) {
         self.accountId = accountId
@@ -101,6 +109,8 @@ actor SyncEngine {
                 progress?("Removing local mail…")
                 try await pruneLocalMail(keepingDays: nil)
                 UserDefaults.standard.set(Self.windowNothing, forKey: windowKey)
+                UserDefaults.standard.removeObject(
+                    forKey: WindowBackfill.listedKey(accountId: accountId))
                 UserDefaults.standard.set(false, forKey: "backfill.starred.\(accountId)")
             }
             try await db.write { [accountId] db in
@@ -111,16 +121,21 @@ actor SyncEngine {
             return drainContentChange()
         }
 
+        // A full backfill lists the window itself; one capped window
+        // listing a pass is enough.
+        var windowListedThisPass = false
         if let historyId = account.historyId {
             do {
                 let latest = try await incrementalSync(since: historyId, progress: progress)
                 try await commitHistoryId(latest)
             } catch GmailError.historyExpired {
+                windowListedThisPass = true
                 let latest = try await fullBackfill(
                     reconcileCached: true, progress: progress)
                 try await commitHistoryId(latest)
             }
         } else {
+            windowListedThisPass = true
             let latest = try await fullBackfill(progress: progress)
             try await commitHistoryId(latest)
         }
@@ -129,14 +144,27 @@ actor SyncEngine {
         // it, and remove local copies of mail that fell outside it (starred
         // mail is kept; Gmail is never touched). Always pull ALL starred mail
         // regardless of age (once).
-        if UserDefaults.standard.integer(forKey: windowKey) != syncWindowDays {
-            let batch = try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
+        //
+        // Also runs while an earlier listing of this window stopped at the
+        // per-pass cap: cached ids are skipped, so each pass continues the
+        // download until the listing reaches its last page.
+        let windowChanged = UserDefaults.standard.integer(forKey: windowKey) != syncWindowDays
+        let listedWindow = UserDefaults.standard.object(
+            forKey: WindowBackfill.listedKey(accountId: accountId)) as? Int
+        if !windowListedThisPass,
+           WindowBackfill.needsListing(
+               storedWindow: UserDefaults.standard.integer(forKey: windowKey),
+               listedWindow: listedWindow, days: syncWindowDays) {
+            let batch = try await fetchAll(
+                query: windowQuery, limit: windowLimit, countsCachedIds: false,
+                progress: progress)
             try await deriveThreads(for: batch.touchedKeys)
-            if syncWindowDays != 0 {
+            if windowChanged && syncWindowDays != 0 {
                 progress?("Removing local mail outside the window…")
                 try await pruneLocalMail(keepingDays: syncWindowDays)
             }
             UserDefaults.standard.set(syncWindowDays, forKey: windowKey)
+            recordWindowListing(complete: batch.listingComplete, progress: progress)
         }
         let starKey = "backfill.starred.\(accountId)"
         if !UserDefaults.standard.bool(forKey: starKey) {
@@ -164,6 +192,21 @@ actor SyncEngine {
 
         try await commitAccountState(lastSyncAt: Date())
         return drainContentChange()
+    }
+
+    /// Records whether the window listing reached its last page. A listing
+    /// cut off at the per-pass cap leaves the marker unset, so the next pass
+    /// lists the window again and downloads the remainder.
+    private func recordWindowListing(complete: Bool,
+                                     progress: (@Sendable (String) -> Void)?) {
+        let key = WindowBackfill.listedKey(accountId: accountId)
+        switch WindowBackfill.outcome(listingComplete: complete) {
+        case .complete:
+            UserDefaults.standard.set(syncWindowDays, forKey: key)
+        case .continueNextPass:
+            UserDefaults.standard.removeObject(forKey: key)
+            progress?("More mail will download on the next sync…")
+        }
     }
 
     /// UserDefaults key for the one-shot has:attachment repair pass.
@@ -256,9 +299,12 @@ actor SyncEngine {
         // Read before listing: history from this id onward replays anything
         // that changes while the backfill runs.
         let profile = try await client.profile()
-        let batch = try await fetchAll(query: windowQuery, limit: windowLimit, progress: progress)
+        let batch = try await fetchAll(
+            query: windowQuery, limit: windowLimit, countsCachedIds: false,
+            collectListedIds: reconcileCached, progress: progress)
         try await deriveThreads(for: batch.touchedKeys)
         UserDefaults.standard.set(syncWindowDays, forKey: "backfill.window.\(accountId)")
+        recordWindowListing(complete: batch.listingComplete, progress: progress)
         if reconcileCached {
             let plan = try await removeStaleCachedMessages(
                 listedGmailIds: batch.listedGmailIds,
@@ -296,7 +342,7 @@ actor SyncEngine {
     /// already-cached message can lose INBOX/UNREAD/STARRED/TRASH/SPAM labels.
     ///
     /// A cached row missing from the listings is deleted only when every
-    /// listing ran to its last page. A listing cut off by `windowLimit` says
+    /// listing ran to its last page. A listing cut off by its cap says
     /// nothing about the rows past the cap, so those rows are re-read by id
     /// instead (a 404 then deletes them).
     ///
@@ -314,7 +360,7 @@ actor SyncEngine {
         for label in ["INBOX", "UNREAD", "STARRED", "TRASH", "SPAM"] {
             let query = label == "STARRED" ? nil : windowQuery
             let page = try await listAllGmailIds(
-                query: query, labelIds: [label], limit: windowLimit,
+                query: query, labelIds: [label], limit: Self.reconcileListLimit,
                 includeSpamTrash: label == "TRASH" || label == "SPAM")
             listed.formUnion(page.ids)
             listingComplete = listingComplete && page.complete
@@ -624,6 +670,7 @@ actor SyncEngine {
     private struct FetchAllBatch: Sendable {
         var touchedKeys: Set<String>
         var matchedThreadIds: [String]
+        /// Every listed id; empty unless the caller asked for them.
         var listedGmailIds: Set<String>
         /// The listing reached its last page (not cut off by `limit`).
         var listingComplete: Bool
@@ -631,15 +678,21 @@ actor SyncEngine {
         var downloadedGmailIds: Set<String>
     }
 
+    /// `countsCachedIds`: false makes `limit` a cap on downloads only — the
+    /// listing walks past ids that are already cached, so a repeat call
+    /// continues where an earlier capped call stopped (window backfill).
+    /// `collectListedIds`: keep every listed id for the reconcile. Off by
+    /// default so an ordinary pass does not hold a whole window of ids.
     @discardableResult
-    private func fetchAll(query: String?, limit: Int,
+    private func fetchAll(query: String?, limit: Int, countsCachedIds: Bool = true,
+                          collectListedIds: Bool = false,
                           progress: (@Sendable (String) -> Void)?) async throws -> FetchAllBatch {
         try await PerfMetrics.measureAsync(.syncFetchAll, meta: "limit=\(limit)") {
+            var cap = WindowBackfill.ListingCap(limit: limit, countsCachedIds: countsCachedIds)
             var touchedKeys = Set<String>()
             var writeBuffer: [PendingUpsert] = []
             writeBuffer.reserveCapacity(Self.writeChunkSize)
             var pageToken: String?
-            var listed = 0
             var fetched = 0
             var retryExhausted = 0
             var listedGmailIds = Set<String>()
@@ -651,12 +704,10 @@ actor SyncEngine {
                 // Larger pages mean fewer list calls; capped at what is left
                 // of `limit` so a page never lists (and so downloads) past it.
                 let page = try await client.listMessages(
-                    query: query, pageToken: pageToken,
-                    maxResults: Self.listPageSize(listed: listed, limit: limit))
+                    query: query, pageToken: pageToken, maxResults: cap.pageSize)
                 let refs = page.messages ?? []
                 let listedIds = refs.map(\.id)
-                listedGmailIds.formUnion(listedIds)
-                listed += listedIds.count
+                if collectListedIds { listedGmailIds.formUnion(listedIds) }
                 // Preserve Gmail rank across pages; cap at `limit` unique threads.
                 Self.appendUniqueGmailThreadIds(
                     into: &matchedGmailThreadIds,
@@ -669,6 +720,7 @@ actor SyncEngine {
                 }
                 let missingSet = Set(missingIds)
                 let missingGmailIds = listedIds.filter { missingSet.contains($0) }
+                cap.record(listed: listedIds.count, missing: missingGmailIds.count)
                 // Batch HTTP when enabled; retry-exhausted ids retry next window pass.
                 let report = try await client.getMessages(ids: missingGmailIds)
                 // Parse off this actor, in parallel, one slice at a time; the
@@ -701,7 +753,7 @@ actor SyncEngine {
                     pageToken = page.nextPageToken
                     reachedLastPage = page.nextPageToken == nil
                 }
-            } while pageToken != nil && listed < limit
+            } while pageToken != nil && !cap.reached
             try await flushUpserts(&writeBuffer, into: &touchedKeys)
             if retryExhausted > 0 {
                 // Settle the threads of what landed before throwing: the next
