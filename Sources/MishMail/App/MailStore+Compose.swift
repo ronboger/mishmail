@@ -889,8 +889,11 @@ extension MailStore {
     func isDraftOnly(_ thread: MailThread) -> Bool {
         // `inDrafts` ignores discarded DRAFT+TRASH in the historical union.
         guard thread.inDrafts else { return false }
-        let msgs = messages(inThread: thread.id)
-        return !msgs.isEmpty && msgs.allSatisfy { ForwardComposer.isLiveDraft($0.labelIds) }
+        let suppressed = suppressedDraftMessageIds
+        return (try? db.read { db in
+            try DraftThreadQuery.isDraftOnly(
+                db: db, threadId: thread.id, suppressing: suppressed)
+        }) ?? false
     }
 
     /// Opens a specific draft back into compose. Reply drafts recover the

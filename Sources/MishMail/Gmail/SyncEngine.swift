@@ -1341,28 +1341,41 @@ actor SyncEngine {
 
     static func deriveThreads(_ db: Database, for keys: Set<String>, accountId: String,
                              derivationCount: (() -> Void)? = nil) throws {
-        for threadKey in keys {
-            let gmailThreadId = String(threadKey.split(separator: ":").last ?? "")
-            let messages = try Message
-                .filter(Column("threadId") == threadKey)
-                .order(Column("date").desc)
-                .fetchAll(db)
-            let existing = try MailThread.fetchOne(db, key: threadKey)
-            derivationCount?()
-            guard let thread = deriveThread(
-                threadKey: threadKey, gmailThreadId: gmailThreadId,
-                accountId: accountId, messages: messages, existing: existing) else { continue }
-            // Most touched threads come out identical (a label-only change on
-            // an old message, a replayed history record). Skipping the no-op
-            // UPDATE saves a page rewrite (and its SQLCipher encrypt + HMAC)
-            // plus the index updates on every thread column.
-            if thread != existing {
-                try thread.save(db)
+        for chunk in deriveChunks(keys) {
+            // Snapshot metadata on the caller's connection/transaction. Fetching
+            // it once per bounded chunk avoids two extra SELECTs per thread.
+            let ids = Array(chunk)
+            let existingThreads = try MailThread.filter(ids.contains(Column("id"))).fetchAll(db)
+            let existingById = Dictionary(uniqueKeysWithValues: existingThreads.map { ($0.id, $0) })
+            let labels = try ThreadLabel.filter(ids.contains(Column("threadId")))
+                .order(Column("labelId")).fetchAll(db)
+            let labelsByThread = Dictionary(grouping: labels, by: \.threadId)
+
+            for threadKey in chunk {
+                let gmailThreadId = String(threadKey.split(separator: ":").last ?? "")
+                let messages = try Message
+                    .filter(Column("threadId") == threadKey)
+                    .order(Column("date").desc)
+                    .fetchAll(db)
+                let existing = existingById[threadKey]
+                derivationCount?()
+                guard let thread = deriveThread(
+                    threadKey: threadKey, gmailThreadId: gmailThreadId,
+                    accountId: accountId, messages: messages, existing: existing) else { continue }
+                // Most touched threads come out identical (a label-only change on
+                // an old message, a replayed history record). Skipping the no-op
+                // UPDATE saves a page rewrite (and its SQLCipher encrypt + HMAC)
+                // plus the index updates on every thread column.
+                if thread != existing {
+                    try thread.save(db)
+                }
+                // Still reconciled when the row is unchanged: it is a read-only
+                // no-op when the junction already matches, and this pass is what
+                // heals a junction that drifted from labelIds.
+                try ThreadLabels.rewrite(
+                    db, threadId: thread.id, labelIds: thread.labelIds,
+                    existingLabelIds: labelsByThread[thread.id]?.map(\.labelId) ?? [])
             }
-            // Still reconciled when the row is unchanged: it is a read-only
-            // no-op when the junction already matches, and this pass is what
-            // heals a junction that drifted from labelIds.
-            try ThreadLabels.rewrite(db, threadId: thread.id, labelIds: thread.labelIds)
         }
     }
 

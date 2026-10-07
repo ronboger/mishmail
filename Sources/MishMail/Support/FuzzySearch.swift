@@ -77,21 +77,31 @@ enum FuzzySearch {
         var anyExpanded = false
         var groups: [[String]] = []
         groups.reserveCapacity(tokens.count)
+        // Equal-length tokens use the exact same bounded vocabulary query.
+        // Reuse it within this read only, so later searches see fresh mail.
+        var vocabularyByLength: [Int: [String]] = [:]
 
         for token in tokens {
-            if token.count < 3 {
+            let length = token.count
+            if length < 3 {
                 groups.append([token])
                 continue
             }
-            let maxDist = allowedDistance(forLength: token.count)
-            let minLen = max(1, token.count - maxDist)
-            let maxLen = token.count + maxDist
-            let vocab = try String.fetchAll(db, sql: """
-                SELECT term FROM message_fts_vocab
-                WHERE length(term) BETWEEN ? AND ?
-                ORDER BY doc DESC
-                LIMIT 5000
-                """, arguments: [minLen, maxLen])
+            let vocab: [String]
+            if let cached = vocabularyByLength[length] {
+                vocab = cached
+            } else {
+                let maxDist = allowedDistance(forLength: length)
+                let minLen = max(1, length - maxDist)
+                let maxLen = length + maxDist
+                vocab = try String.fetchAll(db, sql: """
+                    SELECT term FROM message_fts_vocab
+                    WHERE length(term) BETWEEN ? AND ?
+                    ORDER BY doc DESC
+                    LIMIT 5000
+                    """, arguments: [minLen, maxLen])
+                vocabularyByLength[length] = vocab
+            }
 
             let alts = candidates(for: token, in: vocab, limit: 3)
             var group: [String] = [token]

@@ -7,11 +7,14 @@ import GRDB
 enum ThreadLabels {
     /// Replace junction rows for `threadId` with the user labels in `labelIds`.
     /// No-op when the set is already exact (avoids DELETE+reinsert churn).
-    static func rewrite(_ db: Database, threadId: String, labelIds: String) throws {
+    /// `existingLabelIds`, when supplied, must be sorted and read in the same
+    /// transaction immediately before reconciliation (used by sync batches).
+    static func rewrite(_ db: Database, threadId: String, labelIds: String,
+                        existingLabelIds: [String]? = nil) throws {
         let user = labelIds.split(separator: " ").map(String.init)
             .filter { $0.hasPrefix("Label_") }
             .sorted()
-        let existing = try String.fetchAll(
+        let existing = try existingLabelIds ?? String.fetchAll(
             db,
             sql: "SELECT labelId FROM thread_label WHERE threadId = ? ORDER BY labelId",
             arguments: [threadId])
