@@ -36,6 +36,8 @@ minor versions may still change behavior.
     HTML stripping no longer recompiles its regexes per message.
   - The settings badge refresh, split-compose thread lookup and deep links
     no longer read the encrypted database on the main thread.
+  - Opening a conversation no longer rebuilds the window toolbar. The
+    rebuild was more than half of the main-thread work of each open.
 
 ## [0.5.0] - 2026-09-29
 

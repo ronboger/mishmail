@@ -92,9 +92,12 @@ private struct ScheduledRow: View {
                         store.discardScheduledSend(send)
                     }
                 }
-            } else if OfflinePolicy.isWaitingForConnection(sendAt: send.sendAt) {
-                // Due but not sent: the network, not the clock, is what it waits on.
-                Label(OfflinePolicy.waitingForConnectionLabel, systemImage: "wifi.slash")
+            } else if let status = ScheduledSendPolicy.waitingStatus(
+                sendAt: send.sendAt,
+                hold: send.id.flatMap { store.scheduledSendHolds[$0]?.hold }) {
+                // Due but not sent: the network, a sign-in, or Gmail — not
+                // the clock — is what it waits on.
+                Label(status.text, systemImage: status.systemImage)
                     .font(.system(size: 12))
                     .foregroundStyle(.secondary)
                     .lineLimit(1)

@@ -43,6 +43,8 @@ struct ContentView: View {
     @Environment(\.openSettings) private var openSettings
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var keyMonitor: Any?
+    /// Toolbar bridge for the split-compose conversation column.
+    @State private var splitToolbarModel = ThreadToolbarModel()
     @State private var layoutMode: MailLayoutMode = .list
     // Persisted so the layout survives relaunch, like the sidebar state.
     @AppStorage("readingPaneHidden") private var readingPaneHidden = false
@@ -675,10 +677,21 @@ struct ContentView: View {
                             compactMode: false,
                             focusMode: true,
                             splitMode: true,
+                            toolbarModel: splitToolbarModel,
                             onBack: { store.exitSplitCompose() },
                             onReply: { msg in
                                 store.openCompose(.init(replyTo: msg))
                             })
+                            .modifier(ThreadDetailToolbar(
+                                thread: thread,
+                                compactMode: false,
+                                focusMode: true,
+                                splitMode: true,
+                                model: splitToolbarModel,
+                                onBack: { store.exitSplitCompose() },
+                                onReply: { msg in
+                                    store.openCompose(.init(replyTo: msg))
+                                }))
                     } else {
                         Text("Conversation unavailable")
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
@@ -910,6 +923,7 @@ private struct DetailPaneHost: View, Equatable {
     let initialPayload: ThreadDetailPayload?
     let onBack: () -> Void
     let onReply: (Message) -> Void
+    @State private var toolbarModel = ThreadToolbarModel()
 
     // Closures are deliberately excluded, so a skipped body keeps the OLD
     // captures. Safe only while every environment value a closure captures is
@@ -928,14 +942,31 @@ private struct DetailPaneHost: View, Equatable {
     var body: some View {
         Group {
             if let thread {
-                ThreadDetailView(
+                // The remount (`.id`) must sit inside a container, and the
+                // toolbar outside it. With `.id` directly on the column's
+                // content, or the toolbar declared inside the remounted
+                // view, SwiftUI re-creates every NSToolbarItem per open:
+                // measured at over half the main-thread work of opening a
+                // conversation. Both halves are needed; either alone is not.
+                VStack(spacing: 0) {
+                    ThreadDetailView(
+                        thread: thread,
+                        compactMode: compact,
+                        focusMode: focusMode,
+                        initialPayload: initialPayload,
+                        toolbarModel: toolbarModel,
+                        onBack: onBack,
+                        onReply: onReply)
+                        .id(thread.id)
+                }
+                .modifier(ThreadDetailToolbar(
                     thread: thread,
                     compactMode: compact,
                     focusMode: focusMode,
-                    initialPayload: initialPayload,
+                    model: toolbarModel,
+                    initialMessages: initialPayload?.messages,
                     onBack: onBack,
-                    onReply: onReply)
-                    .id(thread.id)
+                    onReply: onReply))
             } else {
                 Text("Select a conversation")
                     .frame(maxWidth: .infinity, maxHeight: .infinity)

@@ -212,9 +212,13 @@ actor LLMClient {
                 yield(event)
             }
         }
-        for try await line in bytes.lines {
-            try emit(consume(line))
+        // Not `bytes.lines`: that also splits at U+2028/U+2029/U+0085, which
+        // JSON allows raw inside a string. See `LLMLineSplitter`.
+        var splitter = LLMLineSplitter()
+        for try await byte in bytes {
+            if let line = splitter.append(byte) { try emit(consume(line)) }
         }
+        if let line = splitter.finish() { try emit(consume(line)) }
         if !deduper.sawDone { try emit(finalFlush()) }
         if !deduper.sawDone { try emit([.done(stopReason: "stop", usage: nil)]) }
     }

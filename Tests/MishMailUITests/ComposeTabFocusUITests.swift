@@ -27,7 +27,7 @@ final class ComposeTabFocusUITests: XCTestCase {
 
     private func openCompose(_ app: XCUIApplication) -> (to: XCUIElement, subject: XCUIElement) {
         // Let the thread list settle, then `c` for new mail.
-        let demoThread = app.staticTexts
+        let demoThread = app.descendants(matching: .any)
             .matching(identifier: "threadRow.you@example.com:t1").firstMatch
         XCTAssertTrue(demoThread.waitForExistence(timeout: 10))
         app.typeKey("c", modifierFlags: [])

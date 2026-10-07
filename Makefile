@@ -74,7 +74,7 @@ INSTALL_SIGN_FLAGS = CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEA
 	MISHMAIL_APP_ENTITLEMENTS=Sources/MishMail/MishMail.entitlements
 endif
 
-.PHONY: test ui-test build run demo install gen hooks release clean signing-doctor require-stable-signing require-run-signing require-pushed
+.PHONY: test ui-test build run demo install gen hooks prune release clean signing-doctor require-stable-signing require-run-signing require-pushed
 
 # Refuse to ship an embedded relauncher that inherited the app's sandbox.
 # Stripping com.apple.quarantine from the installed update is its entire job,
@@ -82,15 +82,59 @@ endif
 # checks), and the result is an update that installs and then cannot be
 # opened at all — which is exactly what 0.4.3 through 0.4.5 shipped. $(1) is
 # the .app to check.
+#
+# A missing or unsigned helper must fail too. `codesign -d` prints nothing for
+# either, so a bare `codesign | grep app-sandbox` reads "not sandboxed" and
+# the gate passes — and that version then cannot update itself to the next
+# one (relauncherMissing, a manual install for everyone).
 define check_relauncher
-	@if codesign -d --entitlements - "$(1)/Contents/Library/MishMailRelauncher.app" 2>/dev/null \
-		| grep -q "app-sandbox"; then \
+	@helper="$(1)/Contents/Library/MishMailRelauncher.app"; \
+	if [ ! -f "$$helper/Contents/MacOS/MishMailRelauncher" ] \
+		|| [ ! -x "$$helper/Contents/MacOS/MishMailRelauncher" ]; then \
+		echo "Refusing: no embedded relauncher executable in"; \
+		echo "  $$helper"; \
+		echo "An app without it installs an update and then cannot restart."; \
+		exit 1; \
+	fi; \
+	if ! entitlements=$$(codesign -d --entitlements - "$$helper" 2>/dev/null); then \
+		echo "Refusing: codesign cannot read the embedded relauncher's signature"; \
+		echo "  $$helper"; \
+		echo "so its sandbox state is unknown."; \
+		exit 1; \
+	fi; \
+	if printf '%s\n' "$$entitlements" | grep -q "app-sandbox"; then \
 		echo "Refusing: the embedded relauncher is sandboxed and cannot unquarantine"; \
 		echo "the update it installs. Check MISHMAIL_APP_ENTITLEMENTS is used instead of"; \
 		echo "a command-line CODE_SIGN_ENTITLEMENTS, which applies to every target."; \
 		exit 1; \
 	fi
-	@echo "Relauncher is unsandboxed (can unquarantine the update)."
+	@echo "Relauncher is embedded and unsandboxed (can unquarantine the update)."
+endef
+
+# Check the built artifact the way the in-app updater will, BEFORE it is
+# published: the updater rejects a broken signature, a bundle version that
+# differs from the tag, and a Team ID that differs from the running install —
+# but only on each user's Mac, after the release is already out. None of
+# these need Developer ID or notarization; an Apple Development (free Personal
+# Team) build passes all three. $(1) is the .app to check.
+define check_ship_app
+	@codesign --verify --deep --strict "$(1)" || { \
+		echo "Refusing release: the built app's code signature does not verify."; \
+		exit 1; \
+	}
+	@built=$$(plutil -extract CFBundleShortVersionString raw "$(1)/Contents/Info.plist" 2>/dev/null); \
+	if [ "$$built" != "$(VERSION)" ]; then \
+		echo "Refusing release: the built app is version '$$built' but the tag would be v$(VERSION)."; \
+		echo "The updater rejects a zip whose bundle version differs from its tag."; \
+		exit 1; \
+	fi
+	@team=$$(codesign -dvv "$(1)" 2>&1 | awk -F= '/^TeamIdentifier=/ {print $$2; exit}'); \
+	if [ -z "$(TEAM)" ] || [ "$$team" != "$(TEAM)" ]; then \
+		echo "Refusing release: the built app is signed by team '$$team', expected '$(TEAM)'."; \
+		echo "Existing installs only accept an update from their own Team ID."; \
+		exit 1; \
+	fi
+	@echo "Built app verifies: signature valid, version $(VERSION), team $(TEAM)."
 endef
 
 gen:
@@ -288,6 +332,7 @@ release: require-pushed test
 		xcrun stapler staple MishMail.app; \
 	fi
 	$(call check_relauncher,$(SHIP_APP))
+	$(call check_ship_app,$(SHIP_APP))
 	cd $(SHIP_DIR) && \
 		ditto -c -k --keepParent MishMail.app $(ZIP_NAME) && \
 		shasum -a 256 $(ZIP_NAME) > SHA256SUMS && \
@@ -305,8 +350,21 @@ clean:
 	rm -rf ~/Library/Developer/Xcode/DerivedData/MishMail-*
 	@echo "Cleaned ./build and ~/Library DerivedData/MishMail-* caches."
 
-# Install the pre-commit hook (run once per clone).
+# Install the git hooks (run once per clone).
+#   pre-commit   runs the unit tests.
+#   post-merge   removes the branches that `git merge` just merged, and any
+#                branch already merged into main, with their worktrees.
+#                Git does not run it for a merge that stopped on a conflict;
+#                run `make prune` after those.
+# Hooks live in the common git dir, so linked worktrees share them.
+HOOKS_DIR = $(shell git rev-parse --git-common-dir)/hooks
 hooks:
-	printf '#!/bin/sh\nexec make -C "$$(git rev-parse --show-toplevel)" test\n' > .git/hooks/pre-commit
-	chmod +x .git/hooks/pre-commit
-	@echo "pre-commit hook installed (skip with git commit --no-verify)"
+	printf '#!/bin/sh\nexec make -C "$$(git rev-parse --show-toplevel)" test\n' > $(HOOKS_DIR)/pre-commit
+	cp scripts/post-merge-hook.sh $(HOOKS_DIR)/post-merge
+	rm -f $(HOOKS_DIR)/post-commit
+	chmod +x $(HOOKS_DIR)/pre-commit $(HOOKS_DIR)/post-merge
+	@echo "hooks installed: pre-commit (tests; skip with --no-verify), post-merge (prune merged branches)"
+
+# Remove local branches and worktrees already merged into main.
+prune:
+	scripts/prune-merged.sh

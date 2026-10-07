@@ -100,29 +100,51 @@ extension MailStore {
 
     private func attemptSend(_ p: PendingSend) async -> SendOutcome {
         do {
-            try await send(from: p.accountId, fromEmail: p.effectiveFromEmail,
-                           to: p.to, cc: p.cc, bcc: p.bcc,
-                           subject: p.subject, body: p.body, replyTo: p.replyTo,
-                           forward: p.forward,
-                           attachments: p.attachments, replacingDraft: p.replacingDraft,
-                           messageId: p.messageId)
-            isOffline = false
-            setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
-            showNotice("Sent")
+            try await deliver(p)
             return .sent
         } catch {
             if OfflinePolicy.shouldDefer(error) {
                 isOffline = true
                 return .deferredOffline
             }
-            // Bring the message back so nothing is lost.
-            setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
-            lastError = "Send failed: \(error.localizedDescription)"
-            composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
-                                            forwardAll: p.forwardAll,
-                                            editDraft: p.replacingDraft, restore: p)
+            restoreFailedSend(p, error: error)
             return .failed
         }
+    }
+
+    /// Hand `p` to Gmail. Throws with nothing changed locally, so the caller
+    /// decides where an unsent message waits.
+    private func deliver(_ p: PendingSend) async throws {
+        try await send(from: p.accountId, fromEmail: p.effectiveFromEmail,
+                       to: p.to, cc: p.cc, bcc: p.bcc,
+                       subject: p.subject, body: p.body, replyTo: p.replyTo,
+                       forward: p.forward,
+                       attachments: p.attachments, replacingDraft: p.replacingDraft,
+                       messageId: p.messageId)
+        isOffline = false
+        setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
+        showNotice("Sent")
+    }
+
+    /// Bring a message Gmail would not take back into compose so nothing is
+    /// lost. Replaces whatever the compose card holds — callers that can
+    /// fail in the background must check the card is free first.
+    private func restoreFailedSend(_ p: PendingSend, error: Error) {
+        setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
+        lastError = "Send failed: \(error.localizedDescription)"
+        composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
+                                        forwardAll: p.forwardAll,
+                                        editDraft: p.replacingDraft, restore: p)
+    }
+
+    /// Mailbox whose Gmail API actually carries `p` — the same resolution
+    /// `send` applies. The sent copy lives there, and an auth failure is
+    /// that account's.
+    private func apiAccountId(for p: PendingSend) -> String {
+        SendIdentityResolver.apiAccountId(
+            requested: p.accountId,
+            replyAccountId: p.forward ? nil : p.replyTo?.accountId,
+            draftAccountId: p.replacingDraft?.accountId)
     }
 
     /// Park a send that found no network: a scheduled row due *now*, which
@@ -156,17 +178,69 @@ extension MailStore {
     private func setPendingDraftSuppressed(_ draft: Message?, suppressed: Bool) {
         guard let draft else { return }
         if suppressed {
-            suppressedDraftMessageIds.insert(draft.id)
-            suppressedDraftThreadByMessageId[draft.id] = draft.threadId
+            pendingSendDraftIds.insert(draft.id)
         } else {
-            suppressedDraftMessageIds.remove(draft.id)
-            suppressedDraftThreadByMessageId.removeValue(forKey: draft.id)
+            pendingSendDraftIds.remove(draft.id)
+        }
+        applyDraftSuppression(threadHints: [draft.id: draft.threadId])
+    }
+
+    /// Recompute the hidden-draft sets from their two sources: the send in
+    /// flight (`pendingSendDraftIds`) and the scheduled rows. Releasing one
+    /// source never unhides a draft the other still owns — a message that
+    /// went from the undo window to "waiting for connection" stays hidden.
+    ///
+    /// - Parameter threadHints: draft id → thread id for drafts the caller
+    ///   holds in hand. Autosave can pass a fresh stand-in before the next
+    ///   sync has inserted that row locally, so the table cannot be asked.
+    private func applyDraftSuppression(threadHints: [String: String] = [:]) {
+        let wanted = ScheduledDraftSuppression.suppressedDraftIds(
+            pendingSendDraftIds: pendingSendDraftIds,
+            scheduledDraftIds: scheduledSends.map(\.replacingDraftId))
+        var threadByDraft = suppressedDraftThreadByMessageId
+        var touchedThreads = Set(threadHints.values)
+        for id in ScheduledDraftSuppression.staleThreadEntries(
+            suppressed: wanted, threadByDraft: threadByDraft) {
+            if let threadId = threadByDraft.removeValue(forKey: id) {
+                touchedThreads.insert(threadId)
+            }
+        }
+        let missing = ScheduledDraftSuppression.draftsMissingThread(
+            suppressed: wanted, threadByDraft: threadByDraft)
+        if !missing.isEmpty {
+            var found = threadHints.filter { missing.contains($0.key) }
+            let unknown = missing.subtracting(found.keys)
+            if !unknown.isEmpty {
+                let rows: [Row] = (try? db.read { db in
+                    try Row.fetchAll(
+                        db,
+                        sql: """
+                            SELECT id, threadId FROM message
+                            WHERE id IN (\(unknown.map { _ in "?" }.joined(separator: ",")))
+                            """,
+                        arguments: StatementArguments(Array(unknown)))
+                }) ?? []
+                for row in rows { found[row["id"]] = row["threadId"] }
+            }
+            for (id, threadId) in found {
+                threadByDraft[id] = threadId
+                touchedThreads.insert(threadId)
+            }
         }
         // Suppression is applied to the payload the repository *returns*, never
         // baked into what it caches, so this invalidates no content revision.
         // Both sets are published — the open pane re-reads off them and hits
-        // the same warm entry.
-        _ = refreshDraftThreadSuppression(draft.threadId)
+        // the same warm entry. Assign only on change: every reload of the
+        // scheduled rows comes through here.
+        if threadByDraft != suppressedDraftThreadByMessageId {
+            suppressedDraftThreadByMessageId = threadByDraft
+        }
+        if wanted != suppressedDraftMessageIds {
+            suppressedDraftMessageIds = wanted
+        }
+        for threadId in touchedThreads {
+            _ = refreshDraftThreadSuppression(threadId)
+        }
     }
 
     /// Drafts is thread-based, but suppression is message-based. Hide a row
@@ -207,7 +281,22 @@ extension MailStore {
         scheduledSends = (try? db.read {
             try ScheduledSend.order(Column("sendAt")).fetchAll($0)
         }) ?? []
+        let holds = ScheduledSendPolicy.prune(scheduledSendHolds,
+                                              keeping: scheduledSends.compactMap(\.id))
+        if holds != scheduledSendHolds { scheduledSendHolds = holds }
+        // Each row hides the draft it was composed from; a row that is gone
+        // (edited, discarded, sent, restored to compose) releases it.
+        applyDraftSuppression()
         armScheduledSendTimer()
+    }
+
+    /// The due-sweep is talking to Gmail about this row right now. Pulling
+    /// it into compose (or into the undo-send window) at that moment would
+    /// let the same message go out twice, so the row actions wait it out.
+    private func isScheduledSendInFlight(_ s: ScheduledSend) -> Bool {
+        guard let id = s.id, id == scheduledSendInFlightRowId else { return false }
+        showNotice("This message is being sent right now")
+        return true
     }
 
     /// Persist a composed message to go out at `date`. Survives relaunch;
@@ -227,11 +316,17 @@ extension MailStore {
             createdAt: Date(), messageId: p.messageId)
         try? db.write { db in try row.insert(db) }
         reloadScheduledSends()
+        // The autosaved draft may not be in the message table yet; hand over
+        // its thread so the Drafts row hides as well as the draft card.
+        if let draft = p.replacingDraft {
+            applyDraftSuppression(threadHints: [draft.id: draft.threadId])
+        }
         showNotice("Scheduled — sends \(SendSchedule.describe(date))")
     }
 
     /// Pull a scheduled message back into compose (nothing is lost).
     func editScheduledSend(_ s: ScheduledSend) {
+        guard !isScheduledSendInFlight(s) else { return }
         let p = pendingSend(from: s)
         try? db.write { db in _ = try ScheduledSend.deleteOne(db, key: s.id) }
         reloadScheduledSends()
@@ -242,6 +337,7 @@ extension MailStore {
 
     /// Skip the wait: goes through the normal undo-send window.
     func sendScheduledNow(_ s: ScheduledSend) {
+        guard !isScheduledSendInFlight(s) else { return }
         let p = pendingSend(from: s)
         try? db.write { db in _ = try ScheduledSend.deleteOne(db, key: s.id) }
         reloadScheduledSends()
@@ -249,6 +345,7 @@ extension MailStore {
     }
 
     func discardScheduledSend(_ s: ScheduledSend) {
+        guard !isScheduledSendInFlight(s) else { return }
         try? db.write { db in _ = try ScheduledSend.deleteOne(db, key: s.id) }
         reloadScheduledSends()
         showNotice("Scheduled message discarded")
@@ -280,10 +377,16 @@ extension MailStore {
     private func armScheduledSendTimer() {
         scheduledSendTimer?.invalidate()
         scheduledSendTimer = nil
-        guard let next = scheduledSends.map(\.sendAt).min() else { return }
-        // A due row stays put when the send found no network, so the 1s floor
-        // would re-arm this timer once a second for the whole flight.
-        let delay = OfflinePolicy.scheduledSendRetryDelay(next: next, isOffline: isOffline)
+        // A due row stays put when the send found no network (or is held
+        // for sign-in / a retry), so the 1s floor would re-arm this timer
+        // once a second for as long as that lasts.
+        let holds = scheduledSendHolds
+        let rows = scheduledSends.map { row in
+            (sendAt: row.sendAt, held: row.id.map { holds[$0] != nil } ?? false)
+        }
+        guard let delay = ScheduledSendPolicy.timerDelay(rows: rows, isOffline: isOffline) else {
+            return
+        }
         scheduledSendTimer = Timer.scheduledTimer(withTimeInterval: delay,
                                                   repeats: false) { [weak self] _ in
             Task { @MainActor in await self?.fireDueScheduledSends() }
@@ -293,30 +396,108 @@ extension MailStore {
             delay, cap: TimerTolerance.scheduledSendCap)
     }
 
-    /// Send everything whose time has come. A row that cannot go out for
-    /// want of a network stays put (it reads "Waiting for connection" in the
-    /// Scheduled list) and the loop stops — the rest would fail the same way.
+    /// Send everything whose time has come.
+    ///
+    /// A row leaves the schedule only when Gmail has the message, or when it
+    /// is handed back to a free compose card (`ScheduledSendPolicy`):
+    /// - no network: the row stays ("Waiting for connection") and the sweep
+    ///   stops — the rest would fail the same way;
+    /// - dead sign-in, rate limit, server error: the row stays and the rest
+    ///   of that account is skipped, so one account cannot starve another;
+    /// - outright rejection: back into compose, unless the card is already
+    ///   holding something (a second restore would replace the first and
+    ///   lose it) — then the row stays until the card is free.
+    ///
+    /// Every attempt, including a retry after an ambiguous 5xx or timeout,
+    /// first asks Gmail whether the stable Message-ID already arrived.
     func fireDueScheduledSends() async {
         guard !demoMode, !isShuttingDown, !scheduledSendFlushInFlight else { return }
         scheduledSendFlushInFlight = true
         defer { scheduledSendFlushInFlight = false }
         let due = scheduledSends.filter { $0.sendAt <= Date() }
         guard !due.isEmpty else { return }
-        for s in due {
+        var holds = scheduledSendHolds
+        var blockedAccounts: [String: ScheduledSendPolicy.Hold] = [:]
+        sweep: for s in due {
             guard !isShuttingDown else { break }
+            // `due` is a snapshot; Edit / Send Now / Discard during an
+            // earlier row's network call may have taken this one away.
+            guard let rowId = s.id,
+                  scheduledSends.contains(where: { $0.id == rowId }) else { continue }
+            let previous = holds[rowId]
+            let now = Date()
             let p = pendingSend(from: s)
-            if await alreadySent(p) {
-                _ = try? await db.write { db in try ScheduledSend.deleteOne(db, key: s.id) }
+            let account = apiAccountId(for: p)
+            // An account already known to need sign-in is not asked again:
+            // each try would hit Google's token endpoint with a dead token.
+            let blocked = accountsNeedingReauth.contains(account)
+                ? ScheduledSendPolicy.Hold.signIn : blockedAccounts[account]
+            if let blocked {
+                holds[rowId] = .next(blocked, previous: previous, now: now)
                 continue
             }
-            let outcome = await attemptSend(p)
-            if outcome == .deferredOffline { break }
-            _ = try? await db.write { db in try ScheduledSend.deleteOne(db, key: s.id) }
-            guard outcome == .sent else { continue }
-            Notifier.notify(title: "Scheduled message sent",
-                            body: s.subject.isEmpty ? s.toHeader : s.subject,
-                            id: "scheduled.\(s.id ?? 0)")
+            scheduledSendInFlightRowId = rowId
+            defer { scheduledSendInFlightRowId = nil }
+
+            var action: ScheduledSendPolicy.Action?
+            var failure: Error?
+            switch await sentCheck(p) {
+            case .sent:
+                // An earlier attempt reached Gmail after all. `send` threw
+                // before its cleanup, so the draft it replaced is still
+                // there and would read as an unsent message.
+                _ = try? await db.write { db in try ScheduledSend.deleteOne(db, key: rowId) }
+                holds[rowId] = nil
+                if let draft = p.replacingDraft {
+                    await deleteUnderlyingDraft(draft, silent: true)
+                }
+                continue
+            case .notSent:
+                break
+            case .unknown(let error):
+                failure = error
+                action = ScheduledSendPolicy.action(
+                    afterSentCheckFailure: error, failingSince: previous?.since, now: now)
+            }
+            if action == nil {
+                do {
+                    try await deliver(p)
+                    _ = try? await db.write { db in try ScheduledSend.deleteOne(db, key: rowId) }
+                    holds[rowId] = nil
+                    Notifier.notify(title: "Scheduled message sent",
+                                    body: s.subject.isEmpty ? s.toHeader : s.subject,
+                                    id: "scheduled.\(rowId)")
+                    continue
+                } catch {
+                    failure = error
+                    action = ScheduledSendPolicy.action(
+                        afterSendFailure: error, composeIsOpen: composeRequest != nil,
+                        failingSince: previous?.since, now: now)
+                }
+            }
+            switch action {
+            case .stopSweep:
+                isOffline = true
+                break sweep
+            case .hold(let hold):
+                if hold == .signIn { requireReauthorization(for: account) }
+                // Banner once per streak, not once per retry.
+                if hold == .rejected, previous?.hold != .rejected, let failure {
+                    lastError = "Scheduled send failed: \(failure.localizedDescription)"
+                }
+                if hold.blocksAccount { blockedAccounts[account] = hold }
+                holds[rowId] = .next(hold, previous: previous, now: now)
+            case .restoreToCompose:
+                // Compose first, row second: a failed delete leaves a row
+                // that is rejected again, never a message that is nowhere.
+                if let failure { restoreFailedSend(p, error: failure) }
+                _ = try? await db.write { db in try ScheduledSend.deleteOne(db, key: rowId) }
+                holds[rowId] = nil
+            case nil:
+                break
+            }
         }
+        if holds != scheduledSendHolds { scheduledSendHolds = holds }
         reloadScheduledSends()
     }
 
@@ -377,19 +558,30 @@ extension MailStore {
         Task { await self.sync(accountId: apiAccountId) }
     }
 
-    /// A send timeout is ambiguous: Gmail may have accepted the message while
-    /// the client saw a dropped connection. Search by the stable RFC id before
-    /// replaying a persisted send.
-    private func alreadySent(_ pending: PendingSend) async -> Bool {
+    private enum SentCheck {
+        case sent
+        case notSent
+        /// The lookup itself failed; whether Gmail has the message is unknown.
+        case unknown(Error)
+    }
+
+    /// A send timeout (or 5xx) is ambiguous: Gmail may have accepted the
+    /// message while the client saw a failure. Search by the stable RFC id
+    /// before replaying a persisted send. A lookup that fails is reported
+    /// as such — treating it as "not sent" is how a retry becomes a
+    /// duplicate (`ScheduledSendPolicy.action(afterSentCheckFailure:)`).
+    private func sentCheck(_ pending: PendingSend) async -> SentCheck {
         guard let query = SendThreading.rfc822MessageIdQuery(pending.messageId) else {
-            return false
+            return .notSent
         }
         do {
-            let page = try await client(for: pending.accountId).listMessages(
+            // The mailbox `send` used, which for a reply is the thread's
+            // owner and not necessarily `pending.accountId`.
+            let page = try await client(for: apiAccountId(for: pending)).listMessages(
                 query: query, maxResults: 1)
-            return !(page.messages ?? []).isEmpty
+            return (page.messages ?? []).isEmpty ? .notSent : .sent
         } catch {
-            return false
+            return .unknown(error)
         }
     }
 
@@ -559,6 +751,8 @@ extension MailStore {
                       local: LocalDraft? = nil,
                       silent: Bool = false,
                       syncAfter: Bool? = nil) async -> DraftSaveOutcome {
+        // Set when Gmail was reachable but refused the save on the close path.
+        var rejection: Error?
         if !isOffline {
             lastDraftSaveError = nil
             if let saved = await saveDraft(from: accountId, fromEmail: fromEmail,
@@ -570,10 +764,17 @@ extension MailStore {
                 isOffline = false
                 return .uploaded(saved)
             }
-            guard let error = lastDraftSaveError, OfflinePolicy.shouldDefer(error) else {
+            // Closing with a save Gmail refused (re-auth, 429, 5xx) must not
+            // drop the text: keep it in the Outbox like the offline case.
+            guard let error = lastDraftSaveError,
+                  DraftSavePolicy.keepsDraftLocally(error: error, closing: !silent) else {
                 return .failed
             }
-            isOffline = true
+            if DraftSavePolicy.marksOffline(error) {
+                isOffline = true
+            } else {
+                rejection = error
+            }
         }
         let now = Date()
         var row = local ?? LocalDraft(
@@ -621,7 +822,12 @@ extension MailStore {
             return .failed
         }
         reloadLocalDrafts()
-        if !silent { showNotice(OfflinePolicy.localDraftNotice) }
+        if let rejection {
+            // `saveDraft` bannered "Draft not saved"; the text is in the Outbox now.
+            lastError = DraftSavePolicy.keptAfterRejectionMessage(rejection)
+        } else if !silent {
+            showNotice(OfflinePolicy.localDraftNotice)
+        }
         return .keptLocally(stored)
     }
 
@@ -743,8 +949,11 @@ extension MailStore {
     func isDraftOnly(_ thread: MailThread) -> Bool {
         // `inDrafts` ignores discarded DRAFT+TRASH in the historical union.
         guard thread.inDrafts else { return false }
-        let msgs = messages(inThread: thread.id)
-        return !msgs.isEmpty && msgs.allSatisfy { ForwardComposer.isLiveDraft($0.labelIds) }
+        let suppressed = suppressedDraftMessageIds
+        return (try? db.read { db in
+            try DraftThreadQuery.isDraftOnly(
+                db: db, threadId: thread.id, suppressing: suppressed)
+        }) ?? false
     }
 
     /// Opens a specific draft back into compose. Reply drafts recover the

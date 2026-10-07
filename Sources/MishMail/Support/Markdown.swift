@@ -16,6 +16,25 @@ enum Markdown {
     static let inlineMathPattern =
         #"(?<![\$\w])\$(?![\s$])((?:[^$\n]*[^\s$])?)\$(?![\d$])"#
 
+    /// Emphasis patterns. Groups: 1 = opening marker, 2 = content, 3 =
+    /// closing marker. The compose editor (`ComposeBodyEditor`) styles with
+    /// these same strings, so what it shows as bold/italic is exactly what
+    /// the sent HTML marks up.
+    ///
+    /// CommonMark flanking rule: no whitespace directly inside a marker.
+    /// Without it "2 * 3 * 4" became "2 <em> 3 </em> 4" and the recipient
+    /// lost the asterisks. A marker that touches a word character on its
+    /// outer side is not emphasis either (`snake_case`, `5*3`, `terms*`).
+    static let boldStarPattern = #"(\*\*)(?!\s)([^*\n]+)(?<!\s)(\*\*)"#
+    /// `[^\W_]` is a letter or digit: `__` inside a word is not bold, while
+    /// `___x___` (bold inside italic) still is.
+    static let boldUnderscorePattern =
+        #"(?<![^\W_])(__)(?!\s)([^_\n]+)(?<!\s)(__)(?![^\W_])"#
+    static let italicStarPattern =
+        #"(?<![\w*])(\*)(?!\s)([^*\n]+)(?<!\s)(\*)(?![\w*])"#
+    static let italicUnderscorePattern =
+        #"(?<![\w_])(_)(?!\s)([^_\n]+)(?<!\s)(_)(?![\w_])"#
+
     // MARK: - Detection
 
     /// True when the body uses syntax that should become an HTML alternative.
@@ -37,10 +56,10 @@ enum Markdown {
         // Inline code, but not a bare backtick (typo).
         if text.range(of: #"`[^`\n]+`"#, options: .regularExpression) != nil { return true }
         // Emphasis: *word* or _word_ (not bare asterisks used as bullets alone).
-        if text.range(of: #"(?<![\w*])\*[^*\n]+\*(?![\w*])"#, options: .regularExpression) != nil {
+        if text.range(of: italicStarPattern, options: .regularExpression) != nil {
             return true
         }
-        if text.range(of: #"(?<![\w_])_[^_\n]+_(?![\w_])"#, options: .regularExpression) != nil {
+        if text.range(of: italicUnderscorePattern, options: .regularExpression) != nil {
             return true
         }
         // Math: $...$ or $$...$$ with non-empty interior (Pandoc rules for $).
@@ -186,6 +205,11 @@ enum Markdown {
 
             // Ordered list.
             if isOrderedItem(line) {
+                // The typed number of the first item is content ("2. Agreed"
+                // answers question 2) and the plain part keeps it. Without
+                // `start` the recipient's client counts every list from 1.
+                let first = orderedItemNumber(line)
+                let start = first.map { $0 == 1 ? "" : " start=\"\($0)\"" } ?? ""
                 var items: [String] = []
                 var plainItems: [String] = []
                 while i < lines.count, isOrderedItem(lines[i]) {
@@ -195,7 +219,7 @@ enum Markdown {
                     i += 1
                 }
                 let dir = TextDirection.htmlDir(of: plainItems.joined(separator: "\n"))
-                html.append("<ol dir=\"\(dir)\">" + items.map { "<li>\($0)</li>" }.joined() + "</ol>")
+                html.append("<ol\(start) dir=\"\(dir)\">" + items.map { "<li>\($0)</li>" }.joined() + "</ol>")
                 continue
             }
 
@@ -695,6 +719,12 @@ enum Markdown {
         return t
     }
 
+    /// The number typed before the `.` of an ordered item; nil when it does
+    /// not fit `Int`.
+    private static func orderedItemNumber(_ line: String) -> Int? {
+        Int(line.drop(while: { $0.isWhitespace }).prefix(while: { $0 != "." }))
+    }
+
     private static func stripOrderedMarker(_ line: String) -> String {
         guard let r = line.range(of: #"^\s*\d+\.\s+"#, options: .regularExpression) else { return line }
         return String(line[r.upperBound...])
@@ -742,10 +772,10 @@ enum Markdown {
         }
         // Bold ** ** or __ __
         work = replaceAll(work, regex: CompiledPattern.boldStar) { m in
-            protect("<strong>\(escapeHTML(m[1]))</strong>")
+            protect("<strong>\(escapeHTML(m[2]))</strong>")
         }
         work = replaceAll(work, regex: CompiledPattern.boldUnderscore) { m in
-            protect("<strong>\(escapeHTML(m[1]))</strong>")
+            protect("<strong>\(escapeHTML(m[2]))</strong>")
         }
         // Strikethrough
         work = replaceAll(work, regex: CompiledPattern.strikethrough) { m in
@@ -753,10 +783,10 @@ enum Markdown {
         }
         // Italic * * or _ _
         work = replaceAll(work, regex: CompiledPattern.italicStar) { m in
-            protect("<em>\(escapeHTML(m[1]))</em>")
+            protect("<em>\(escapeHTML(m[2]))</em>")
         }
         work = replaceAll(work, regex: CompiledPattern.italicUnderscore) { m in
-            protect("<em>\(escapeHTML(m[1]))</em>")
+            protect("<em>\(escapeHTML(m[2]))</em>")
         }
 
         // Escape remaining plain text, restore protected spans.
@@ -812,11 +842,11 @@ enum Markdown {
         static let displayMath = compile(#"\$\$([^$]+)\$\$"#)
         static let inlineMath = compile(Markdown.inlineMathPattern)
         static let link = compile(#"\[([^\]]*)\]\(([^)\s]+)\)"#)
-        static let boldStar = compile(#"\*\*([^*\n]+)\*\*"#)
-        static let boldUnderscore = compile(#"__([^_\n]+)__"#)
+        static let boldStar = compile(Markdown.boldStarPattern)
+        static let boldUnderscore = compile(Markdown.boldUnderscorePattern)
         static let strikethrough = compile(#"~~([^~\n]+)~~"#)
-        static let italicStar = compile(#"(?<![\w*])\*([^*\n]+)\*(?![\w*])"#)
-        static let italicUnderscore = compile(#"(?<![\w_])_([^_\n]+)_(?![\w_])"#)
+        static let italicStar = compile(Markdown.italicStarPattern)
+        static let italicUnderscore = compile(Markdown.italicUnderscorePattern)
 
         private static func compile(_ pattern: String) -> NSRegularExpression {
             try! NSRegularExpression(pattern: pattern)

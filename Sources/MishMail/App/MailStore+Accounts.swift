@@ -32,6 +32,9 @@ extension MailStore {
                 guard !demoMode || exitDemoMode() else { return }
 
                 try Keychain.set(refresh, forKey: "refreshToken.\(info.email)")
+                // The shared client may hold an access token from the old
+                // sign-in (other scopes, or a different grant).
+                await GmailClient.shared(accountEmail: info.email).forgetAccessToken()
                 try await db.write { db in
                     let existing = try Account.fetchOne(db, key: info.email)
                     let account = AccountLifecycle.accountAfterSignIn(
@@ -68,10 +71,19 @@ extension MailStore {
         // ignored (see `isKnownAccount`).
         let engine = engines[id]
         accounts.removeAll { $0.id == id }
+        leaveScope(ofRemovedAccount: id)
         Task { @MainActor [weak self] in
             await engine?.cancelSync()
             Keychain.delete("refreshToken.\(id)")
-            _ = try? await pool.write { db in _ = try Account.deleteOne(db, key: id) }
+            // After the Keychain delete: the next token request finds no
+            // refresh token and fails, instead of reusing the cached one.
+            await GmailClient.shared(accountEmail: id).forgetAccessToken()
+            // The account row and its queued edits, offline drafts, scheduled
+            // sends and triage rows go in one transaction.
+            let purged = (try? await pool.write { db in
+                try AccountLifecycle.purgeAccount(db, id: id)
+            }) != nil
+            if purged { AccountLifecycle.clearBackfillFlags(accountId: id) }
             guard let self, !self.isShuttingDown else { return }
             // The account's mail cascades away with it; any payload cached for
             // one of its conversations must not outlive the rows behind it.
@@ -82,16 +94,52 @@ extension MailStore {
             self.reloadAccounts()
             self.sendIdentities.removeAll { $0.accountId == id }
             self.reloadThreads()
+            // The Scheduled and Outbox lists held rows for this account.
+            self.reloadScheduledSends()
+            self.reloadLocalDrafts()
             // Own-address set changed — drop the weight map and re-mine.
             self.rebuildContacts(forceFull: true)
+            await self.reloadPendingThreadOpCount()
         }
     }
 
-    func requireReauthorization(for accountID: String) {
+    /// Nothing may stay scoped to an account that no longer exists: the
+    /// list would be empty, the switcher would still name the address, and
+    /// the dock badge would count nothing.
+    private func leaveScope(ofRemovedAccount id: String) {
+        let viewAccount: String?
+        switch selectedView {
+        case .account(let account), .label(let account, _, _):
+            viewAccount = account
+        case .saved(let viewId, _):
+            viewAccount = savedViews.first { $0.id == viewId }?.accountId
+        default:
+            viewAccount = nil
+        }
+        if AccountLifecycle.viewIsScopedToRemovedAccount(viewAccount: viewAccount, removed: id) {
+            selectedView = .inbox
+        }
+        if AccountLifecycle.activeAccountAfterRemoval(active: activeAccountId, removed: id)
+            != activeAccountId {
+            setActiveAccount(nil)
+        }
+        let badgeRaw = Self.badgeScope.rawValue
+        if AccountLifecycle.badgeScopeRawAfterRemoval(raw: badgeRaw, removed: id) != badgeRaw {
+            // The reload at the end of `removeAccount` recounts the badge.
+            Self.badgeScope = .all
+        }
+    }
+
+    /// - Parameter interactive: The failure came from a sync the user asked
+    ///   for. Background and follow-up failures raise the banner only the
+    ///   first time (see `AccountLifecycle.presentsReauthBanner`).
+    func requireReauthorization(for accountID: String, interactive: Bool = false) {
         // A sync that ends after its account was removed must not bring the
         // account back as a reauthorization request.
         guard isKnownAccount(accountID) else { return }
-        accountsNeedingReauth.insert(accountID)
+        let newlyFlagged = accountsNeedingReauth.insert(accountID).inserted
+        guard AccountLifecycle.presentsReauthBanner(
+            newlyFlagged: newlyFlagged, interactive: interactive) else { return }
         lastErrorSyncAccountId = nil
         presentedError = ErrorRecovery.reauthorizationRequired(for: accountID)
     }

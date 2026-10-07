@@ -74,6 +74,14 @@ struct CalendarInvite: Equatable, Sendable {
     var recurrenceIdLine: String?
     /// Raw ICS source (kept for debugging / future round-trips; reply is rebuilt).
     var sourceICS: String
+    /// TZID of DTSTART / DTEND when nothing could resolve it (not IANA, not a
+    /// Windows name, no usable VTIMEZONE). `start` / `end` then hold the wall
+    /// time read in the local zone, which is NOT the real instant: the card
+    /// shows the raw time with this name, and the reply echoes the raw lines.
+    var unresolvedTZID: String? = nil
+    /// Unfolded `DTSTART…` / `DTEND…` property lines from the request.
+    var startLine: String? = nil
+    var endLine: String? = nil
 
     /// True when Accept / Decline / Maybe should be offered.
     /// Gmail is conservative: only METHOD:REQUEST is actionable. PUBLISH /
@@ -177,14 +185,21 @@ struct CalendarInvite: Equatable, Sendable {
         var attendeeEmails: [String] = []
         var recurrenceIdLine: String?
         var events: [CalendarInvite] = []
+        // VTIMEZONE blocks normally precede the VEVENTs, but a pre-pass keeps
+        // the fallback independent of component order.
+        let zones = ICSTimeZone.parseAll(lines)
+        var rawLines: [String: String] = [:]
 
         func finishEvent() {
-            if let invite = buildInvite(
-                methodRaw: methodRaw, props: props,
+            if var invite = buildInvite(
+                methodRaw: methodRaw, props: props, zones: zones,
                 attendeeEmails: attendeeEmails,
                 recurrenceIdLine: recurrenceIdLine, sourceICS: ics) {
+                invite.startLine = rawLines["DTSTART"]
+                invite.endLine = rawLines["DTEND"]
                 events.append(invite)
             }
+            rawLines = [:]
             props = [:]
             attendeeEmails = []
             recurrenceIdLine = nil
@@ -244,6 +259,7 @@ struct CalendarInvite: Equatable, Sendable {
             // First wins for most props; later DTSTART/DTEND rarely appear twice.
             if props[name] == nil {
                 props[name] = (params, value)
+                if name == "DTSTART" || name == "DTEND" { rawLines[name] = line }
             }
         }
         if inEvent { finishEvent() }
@@ -267,6 +283,7 @@ struct CalendarInvite: Equatable, Sendable {
     private static func buildInvite(
         methodRaw: String?,
         props: [String: (params: [String: String], value: String)],
+        zones: [String: ICSTimeZone],
         attendeeEmails: [String],
         recurrenceIdLine: String?,
         sourceICS: String
@@ -283,8 +300,8 @@ struct CalendarInvite: Equatable, Sendable {
             value: props["ORGANIZER"]?.value ?? "",
             params: props["ORGANIZER"]?.params ?? [:])
 
-        let startParsed = parseDate(props["DTSTART"])
-        let endParsed = parseDate(props["DTEND"])
+        let startParsed = parseDate(props["DTSTART"], zones: zones)
+        let endParsed = parseDate(props["DTEND"], zones: zones)
         var end = endParsed?.date
         if end == nil, let start = startParsed?.date,
            let duration = props["DURATION"]?.value,
@@ -306,7 +323,8 @@ struct CalendarInvite: Equatable, Sendable {
             isAllDay: startParsed?.allDay ?? false,
             sequence: sequence,
             recurrenceIdLine: recurrenceIdLine,
-            sourceICS: sourceICS
+            sourceICS: sourceICS,
+            unresolvedTZID: startParsed?.unresolvedTZID ?? endParsed?.unresolvedTZID
         )
     }
 
@@ -324,25 +342,41 @@ struct CalendarInvite: Equatable, Sendable {
             "VERSION:2.0",
             "METHOD:REPLY",
             "CALSCALE:GREGORIAN",
+        ]
+        // The zone could not be resolved, so `start` / `end` are not the real
+        // instants. Echo the organizer's own DTSTART / DTEND (and the zone
+        // definition they refer to) instead of a wrong UTC time.
+        let echoRawTimes = unresolvedTZID != nil && startLine != nil
+        if echoRawTimes, let tzid = unresolvedTZID,
+           let zone = ICSTimeZone.parseAll(Self.unfold(sourceICS))[tzid],
+           zone.lines.count <= Self.maxEchoedZoneLines {
+            lines.append(contentsOf: zone.lines)
+        }
+        lines.append(contentsOf: [
             "BEGIN:VEVENT",
             "UID:\(uid)",
             "DTSTAMP:\(stamp)",
             "SEQUENCE:\(sequence)",
-        ]
+        ])
         // Instance RSVP on a recurring series — without this the organizer
         // applies PARTSTAT to the master / wrong occurrence.
         if let recurrenceIdLine, !recurrenceIdLine.isEmpty {
             lines.append(recurrenceIdLine)
         }
-        if let start {
-            lines.append(isAllDay
-                ? "DTSTART;VALUE=DATE:\(Self.formatDateOnly(start))"
-                : "DTSTART:\(Self.formatUTC(start))")
-        }
-        if let end {
-            lines.append(isAllDay
-                ? "DTEND;VALUE=DATE:\(Self.formatDateOnly(end))"
-                : "DTEND:\(Self.formatUTC(end))")
+        if echoRawTimes, let startLine {
+            lines.append(startLine)
+            if let endLine { lines.append(endLine) }
+        } else {
+            if let start {
+                lines.append(isAllDay
+                    ? "DTSTART;VALUE=DATE:\(Self.formatDateOnly(start))"
+                    : "DTSTART:\(Self.formatUTC(start))")
+            }
+            if let end {
+                lines.append(isAllDay
+                    ? "DTEND;VALUE=DATE:\(Self.formatDateOnly(end))"
+                    : "DTEND:\(Self.formatUTC(end))")
+            }
         }
         lines.append("SUMMARY:\(Self.escape(summary))")
         if !location.isEmpty {
@@ -362,6 +396,9 @@ struct CalendarInvite: Equatable, Sendable {
         lines.append("END:VCALENDAR")
         return Self.foldICS(lines)
     }
+
+    /// Cap on a VTIMEZONE block copied into a reply (see `replyICS`).
+    private static let maxEchoedZoneLines = 200
 
     /// RFC 5545 §3.1: fold content lines so no line exceeds 75 octets.
     /// Continuations begin with a single SPACE after CRLF.
@@ -456,19 +493,40 @@ struct CalendarInvite: Equatable, Sendable {
         let day = DateFormatter()
         day.locale = locale
         day.calendar = calendar
-        day.doesRelativeDateFormatting = true
+        // "Today" / "Tomorrow" would be a claim about the reader's clock,
+        // which an unresolved zone cannot support.
+        day.doesRelativeDateFormatting = unresolvedTZID == nil
         day.dateStyle = .full
         day.timeStyle = .none
+
+        if unresolvedTZID != nil {
+            // `start` / `end` were read in the system zone at parse time, so
+            // formatting in that same zone gives back the organizer's digits.
+            time.timeZone = .current
+            day.timeZone = .current
+        }
+        let suffix = unresolvedTZID.map {
+            " (\(Self.displayZoneName($0)), not converted to your time zone)"
+        } ?? ""
 
         let dayPart = day.string(from: start)
         if let end {
             if calendar.isDate(start, inSameDayAs: end) {
-                return "\(dayPart) · \(time.string(from: start)) – \(time.string(from: end))"
+                return "\(dayPart) · \(time.string(from: start)) – \(time.string(from: end))\(suffix)"
             }
             let endDay = day.string(from: end)
-            return "\(dayPart) \(time.string(from: start)) – \(endDay) \(time.string(from: end))"
+            return "\(dayPart) \(time.string(from: start)) – \(endDay) \(time.string(from: end))\(suffix)"
         }
-        return "\(dayPart) · \(time.string(from: start))"
+        return "\(dayPart) · \(time.string(from: start))\(suffix)"
+    }
+
+    /// TZID text for the card: untrusted, so one line and a bounded length.
+    static func displayZoneName(_ tzid: String) -> String {
+        let flat = tzid.unicodeScalars
+            .filter { !CharacterSet.controlCharacters.contains($0) }
+            .reduce(into: "") { $0.unicodeScalars.append($1) }
+            .trimmingCharacters(in: .whitespaces)
+        return flat.count > 64 ? String(flat.prefix(64)) + "…" : flat
     }
 
     // MARK: - Persistence key for local RSVP state
@@ -580,13 +638,31 @@ struct CalendarInvite: Equatable, Sendable {
         return (name, params, value)
     }
 
+    /// RFC 5545 §3.3.11 TEXT unescape in one left-to-right pass, so an
+    /// escaped backslash is consumed before the character after it is read
+    /// (`\\\\notes` is `\\notes`, not backslash + newline + "otes").
     private static func unescape(_ value: String) -> String {
-        value
-            .replacingOccurrences(of: "\\n", with: "\n")
-            .replacingOccurrences(of: "\\N", with: "\n")
-            .replacingOccurrences(of: "\\,", with: ",")
-            .replacingOccurrences(of: "\\;", with: ";")
-            .replacingOccurrences(of: "\\\\", with: "\\")
+        guard value.contains("\\") else { return value }
+        var out = ""
+        out.reserveCapacity(value.count)
+        var escaped = false
+        for ch in value {
+            if escaped {
+                switch ch {
+                case "n", "N": out.append("\n")
+                case ",", ";", "\\": out.append(ch)
+                // Not an RFC escape: keep both characters as written.
+                default: out.append("\\"); out.append(ch)
+                }
+                escaped = false
+            } else if ch == "\\" {
+                escaped = true
+            } else {
+                out.append(ch)
+            }
+        }
+        if escaped { out.append("\\") }
+        return out
     }
 
     private static func escape(_ value: String) -> String {
@@ -624,10 +700,14 @@ struct CalendarInvite: Equatable, Sendable {
     private struct ParsedDate {
         let date: Date
         let allDay: Bool
+        /// Set when the TZID could not be resolved; `date` is then the wall
+        /// time read in the local zone (see `CalendarInvite.unresolvedTZID`).
+        var unresolvedTZID: String? = nil
     }
 
     private static func parseDate(
-        _ prop: (params: [String: String], value: String)?
+        _ prop: (params: [String: String], value: String)?,
+        zones: [String: ICSTimeZone] = [:]
     ) -> ParsedDate? {
         guard let prop else { return nil }
         let value = prop.value.trimmingCharacters(in: .whitespaces)
@@ -659,58 +739,57 @@ struct CalendarInvite: Equatable, Sendable {
               let s = Int(core.dropFirst(13).prefix(2)) else { return nil }
 
         var cal = Calendar(identifier: .gregorian)
+        var unresolved: String?
+        let tzid = params["TZID"].map(cleanTZID) ?? ""
         if isUTC {
             cal.timeZone = TimeZone(secondsFromGMT: 0)!
-        } else if let tzid = params["TZID"],
-                  let tz = resolveTimeZone(tzid) {
+        } else if tzid.isEmpty {
+            // Floating time (RFC 5545 FORM #1): the reader's local time.
+            cal.timeZone = .current
+        } else if let tz = resolveTimeZone(tzid) {
             cal.timeZone = tz
+        } else if let wall = ICSTimeZone.wallTime(
+                    year: y, month: mo, day: d, hour: h, minute: mi, second: s),
+                  let offset = zones[tzid]?.offset(atLocal: wall) {
+            // The document's own VTIMEZONE says which offset applies.
+            return ParsedDate(
+                date: Date(timeIntervalSince1970: wall - Double(offset)),
+                allDay: false)
         } else {
             cal.timeZone = .current
+            unresolved = tzid
         }
         var comps = DateComponents()
         comps.year = y; comps.month = mo; comps.day = d
         comps.hour = h; comps.minute = mi; comps.second = s
         guard let date = cal.date(from: comps) else { return nil }
-        return ParsedDate(date: date, allDay: false)
+        return ParsedDate(date: date, allDay: false, unresolvedTZID: unresolved)
     }
 
-    /// Resolve an ICS TZID to a Foundation TimeZone. Handles IANA ids and a
-    /// small Windows→IANA map for the Outlook-origin invites we actually see.
-    static func resolveTimeZone(_ tzid: String) -> TimeZone? {
-        let cleaned = tzid
-            .trimmingCharacters(in: CharacterSet(charactersIn: "\""))
+    private static func cleanTZID(_ tzid: String) -> String {
+        tzid.trimmingCharacters(in: CharacterSet(charactersIn: "\""))
             .trimmingCharacters(in: .whitespaces)
+    }
+
+    /// Resolve an ICS TZID to a Foundation TimeZone: an IANA id, a Windows
+    /// zone name (Outlook / Exchange), or a path-style id whose tail is an
+    /// IANA id (`/mozilla.org/20050126_1/Europe/Berlin`). Nil when none
+    /// match — `parseDate` then tries the document's VTIMEZONE.
+    static func resolveTimeZone(_ tzid: String) -> TimeZone? {
+        let cleaned = cleanTZID(tzid)
+        guard !cleaned.isEmpty else { return nil }
         if let tz = TimeZone(identifier: cleaned) { return tz }
-        if let iana = windowsTimeZoneMap[cleaned],
+        if let iana = WindowsTimeZones.ianaIdentifier(for: cleaned),
            let tz = TimeZone(identifier: iana) { return tz }
+        let parts = cleaned.split(separator: "/").map(String.init)
+        // Three components first: `America/Argentina/Buenos_Aires`.
+        for count in [3, 2] where parts.count > count {
+            if let tz = TimeZone(identifier: parts.suffix(count).joined(separator: "/")) {
+                return tz
+            }
+        }
         return nil
     }
-
-    /// Common Windows TZ names → IANA. Incomplete by design; unmapped TZIDs
-    /// still fall back to local time in `parseDate`.
-    private static let windowsTimeZoneMap: [String: String] = [
-        "W. Europe Standard Time": "Europe/Berlin",
-        "Central European Standard Time": "Europe/Warsaw",
-        "Romance Standard Time": "Europe/Paris",
-        "GMT Standard Time": "Europe/London",
-        "Greenwich Standard Time": "Atlantic/Reykjavik",
-        "UTC": "UTC",
-        "Eastern Standard Time": "America/New_York",
-        "Central Standard Time": "America/Chicago",
-        "Mountain Standard Time": "America/Denver",
-        "Pacific Standard Time": "America/Los_Angeles",
-        "US Mountain Standard Time": "America/Phoenix",
-        "Alaskan Standard Time": "America/Anchorage",
-        "Hawaiian Standard Time": "Pacific/Honolulu",
-        "Tokyo Standard Time": "Asia/Tokyo",
-        "China Standard Time": "Asia/Shanghai",
-        "India Standard Time": "Asia/Kolkata",
-        "AUS Eastern Standard Time": "Australia/Sydney",
-        "E. Australia Standard Time": "Australia/Brisbane",
-        "Israel Standard Time": "Asia/Jerusalem",
-        "Russian Standard Time": "Europe/Moscow",
-        "South Africa Standard Time": "Africa/Johannesburg",
-    ]
 
     /// Parse RFC 5545 DURATION (`PT1H30M`, `P1D`, `-PT15M`).
     static func parseDuration(_ raw: String) -> TimeInterval? {

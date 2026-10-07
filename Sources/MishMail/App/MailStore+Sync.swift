@@ -180,13 +180,19 @@ extension MailStore {
         await flushPendingThreadOps()
         await flushLocalDrafts()
         await fireDueScheduledSends()
+        // A background pass leaves out accounts that need reauthorization;
+        // signing in again clears the flag and they rejoin the next poll.
+        let syncIds = AccountLifecycle.accountsToSync(
+            all: ids, needingReauth: accountsNeedingReauth, interactive: interactive)
         // Capture engine refs before leaving MainActor for the task group.
-        let pairs: [(String, SyncEngine)] = ids.compactMap { id in
+        let pairs: [(String, SyncEngine)] = syncIds.compactMap { id in
             engines[id].map { (id, $0) }
         }
-        syncStatus = ids.count == 1
-            ? "Syncing \(ids[0])…"
-            : "Syncing \(ids.count) accounts…"
+        if !syncIds.isEmpty {
+            syncStatus = syncIds.count == 1
+                ? "Syncing \(syncIds[0])…"
+                : "Syncing \(syncIds.count) accounts…"
+        }
         // Engines report progress per page from their own actors. Throttled
         // (drop repeats, ≤ ~4 Hz, newest value always lands) so a first sync
         // doesn't republish the FilterBar dozens of times a second; closed
@@ -226,7 +232,7 @@ extension MailStore {
                 guard isKnownAccount(id) else { continue }
                 if let error {
                     if AccountLifecycle.isReauthRequired(error) {
-                        requireReauthorization(for: id)
+                        requireReauthorization(for: id, interactive: interactive)
                     } else if case GmailError.partialFetch = error {
                         // Soft: historyId not advanced; next sync retries.
                         // Still run post-sync so successful upserts appear.
@@ -380,58 +386,34 @@ extension MailStore {
 
     // MARK: - New-mail notifications
 
-    /// Ids only — `fetchAll().map(\.id)` decoded every column of every unread
-    /// inbox thread (participants, snippet, label blob) just to throw all of
-    /// it away. `select` pushes the projection into SQL, so SQLCipher only
-    /// decrypts the pages the id index actually needs.
-    private func currentUnreadInboxIds() async -> Set<String> {
+    private func currentUnreadInboxCandidates() async -> [NewMailNotifications.Candidate] {
         let pool = db
-        return Set((try? await pool.read { db -> [String] in
-            // Primary-tab unread only. Starred promo/social can appear in the
-            // inbox *list* (CategoryHide pin-through) but do not notify — a
-            // star is a list pin, not a reclassification into Primary.
-            // Match primary badge / inbox list: skip actively snoozed rows so
-            // a sleeping unread does not notify or seed the baseline.
-            // Explicit return: multi-statement closure (let now) loses Swift's
-            // single-expression implicit return.
-            let now = Date()
-            return try MailThread
-                .filter(Column("isUnread") == true)
-                .filter(Column("inInbox") == true)
-                .filter(Column("inTrash") == false)
-                .filter(Column("inSpam") == false)
-                .filter(Column("inPromotions") == false)
-                .filter(Column("inSocial") == false)
-                .filter(Column("snoozeUntil") == nil || Column("snoozeUntil") <= now)
-                .select(Column("id"), as: String.self)
-                .fetchAll(db)
-        }) ?? [])
-    }
-    /// Adopts `current` as "already known", so none of it notifies.
-    private func adoptUnreadBaseline(_ current: Set<String>) {
-        knownUnreadInboxIds = current
-        notifiedThreadIds = current
-        unreadBaselineSeeded = true
+        return (try? await pool.read { db in
+            try NewMailNotifications.unreadInboxCandidates(db, now: Date())
+        }) ?? []
     }
 
     /// Seeds the notification baseline without notifying. Runs off the launch
     /// critical path; a sync that beats it is handled by the same flag.
     func seedUnreadBaseline() async {
-        guard !unreadBaselineSeeded else { return }
-        let current = await currentUnreadInboxIds()
-        guard !unreadBaselineSeeded else { return }   // a sync won the race
-        adoptUnreadBaseline(current)
+        guard !newMailNotifications.isSeeded else { return }
+        let current = await currentUnreadInboxCandidates()
+        guard !newMailNotifications.isSeeded else { return }   // a sync won the race
+        newMailNotifications.seed(current)
     }
 
     private func notifyNewMail() async {
-        let current = await currentUnreadInboxIds()
-        guard unreadBaselineSeeded else {
-            adoptUnreadBaseline(current)
-            return
-        }
-        let fresh = current.subtracting(notifiedThreadIds)
-        notifiedThreadIds.formUnion(current)
-        knownUnreadInboxIds = current
+        // `applyBlocklist` runs just before this and moves blocked senders'
+        // mail to Spam optimistically; the row write is still queued. Reading
+        // ahead of it would see that mail as unread inbox and notify for it.
+        _ = await threadMutationPersistenceTask?.value
+        guard !isShuttingDown else { return }
+        let current = await currentUnreadInboxCandidates()
+        // The blocked check repeats here: a block that lands after the sweep
+        // above has no Spam move yet.
+        let fresh = newMailNotifications.fresh(
+            current: current, now: Date(), demoMode: demoMode,
+            isBlocked: { self.isBlocked($0) })
         guard !fresh.isEmpty else { return }
         let pool = db
         let newThreads = (try? await pool.read { db in

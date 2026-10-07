@@ -57,6 +57,88 @@ final class MarkdownTests: XCTestCase {
         XCTAssertTrue(bad.contains("[x](javascript:alert(1))"), bad)
     }
 
+    // MARK: - Emphasis flanking
+
+    /// A marker with a space on its inner side is not emphasis (CommonMark
+    /// flanking rule). Before, "2 * 3 * 4" lost its asterisks in the HTML
+    /// part and the recipient saw "2 3 4".
+    func testSpacedAsterisksAndUnderscoresAreNotEmphasis() {
+        for text in [
+            "Total is 2 * 3 * 4 units",
+            "2 ** 3 ** 4",
+            "a _ b _ c",
+            "a __ b __ c",
+            "Rate: 5%* (see note*)",
+            "Free shipping * and returns *",
+            "*not closed *",
+            "* not opened*",
+        ] {
+            let html = Markdown.inlineHTML(text)
+            XCTAssertEqual(html, text, "must stay literal")
+        }
+        XCTAssertFalse(Markdown.looksLikeMarkdown("Total is 2 * 3 * 4 units"))
+        XCTAssertFalse(Markdown.looksLikeMarkdown("a _ b _ c"))
+        XCTAssertFalse(Markdown.looksLikeMarkdown("Rate: 5%* (see note*)"))
+    }
+
+    func testEmphasisStillRenders() {
+        XCTAssertEqual(Markdown.inlineHTML("*word*"), "<em>word</em>")
+        XCTAssertEqual(Markdown.inlineHTML("_word_"), "<em>word</em>")
+        XCTAssertEqual(Markdown.inlineHTML("**two words**"), "<strong>two words</strong>")
+        XCTAssertEqual(Markdown.inlineHTML("__two words__"), "<strong>two words</strong>")
+        XCTAssertEqual(Markdown.inlineHTML("a *b c* d, (_e_)."), "a <em>b c</em> d, (<em>e</em>).")
+        XCTAssertEqual(Markdown.inlineHTML("***both***"), "<em><strong>both</strong></em>")
+        XCTAssertEqual(Markdown.inlineHTML("___both___"), "<em><strong>both</strong></em>")
+        XCTAssertEqual(Markdown.inlineHTML("*a* and *b*"), "<em>a</em> and <em>b</em>")
+        XCTAssertTrue(Markdown.looksLikeMarkdown("an *important* point"))
+        XCTAssertTrue(Markdown.looksLikeMarkdown("an _important_ point"))
+    }
+
+    /// Identifiers, footnote marks, and URLs keep their characters.
+    func testIdentifiersFootnotesAndURLsStayLiteral() {
+        for text in [
+            "set max_retry_count and min_delay_ms",
+            "the _private_var field",
+            "file_name_v2.txt",
+            "Price is 5 USD* per unit",
+            "5*3*2 = 30",
+            "terms* and conditions* apply",
+        ] {
+            XCTAssertEqual(Markdown.inlineHTML(text), text)
+            XCTAssertFalse(Markdown.looksLikeMarkdown(text), text)
+        }
+        // `__` inside a word is not bold.
+        XCTAssertEqual(Markdown.inlineHTML("my__dunder__name"), "my__dunder__name")
+        let url = Markdown.inlineHTML("see https://x.com/a_b_c/_d_?e=*f* now")
+        XCTAssertTrue(url.contains(#"href="https://x.com/a_b_c/_d_?e=*f*""#))
+        XCTAssertTrue(url.contains(">https://x.com/a_b_c/_d_?e=*f*</a>"))
+        XCTAssertFalse(url.contains("<em>"))
+    }
+
+    /// The compose editor styles with these same patterns
+    /// (ComposeBodyEditor), so the editor preview and the sent HTML agree.
+    /// Groups: 1 = opening marker, 2 = content, 3 = closing marker.
+    func testSharedEmphasisPatternsExposeMarkerAndContentGroups() throws {
+        for (pattern, text, open, content) in [
+            (Markdown.boldStarPattern, "x **a b** y", "**", "a b"),
+            (Markdown.boldUnderscorePattern, "x __a b__ y", "__", "a b"),
+            (Markdown.italicStarPattern, "x *a b* y", "*", "a b"),
+            (Markdown.italicUnderscorePattern, "x _a b_ y", "_", "a b"),
+        ] {
+            let re = try NSRegularExpression(pattern: pattern)
+            let ns = text as NSString
+            let m = try XCTUnwrap(
+                re.firstMatch(in: text, range: NSRange(location: 0, length: ns.length)))
+            XCTAssertEqual(m.numberOfRanges, 4)
+            XCTAssertEqual(ns.substring(with: m.range(at: 1)), open)
+            XCTAssertEqual(ns.substring(with: m.range(at: 2)), content)
+            XCTAssertEqual(ns.substring(with: m.range(at: 3)), open)
+            let spaced = "2 * 3 * 4 _ 5 _ 6 ** 7 ** 8 __ 9 __"
+            XCTAssertNil(re.firstMatch(
+                in: spaced, range: NSRange(location: 0, length: (spaced as NSString).length)))
+        }
+    }
+
     // MARK: - Block rendering
 
     func testHeadingsBoldItalicCode() {
@@ -87,6 +169,27 @@ final class MarkdownTests: XCTestCase {
         XCTAssertTrue(html.contains(#"<ol dir="ltr">"#))
         XCTAssertTrue(html.contains("<li>one</li>"))
         XCTAssertTrue(html.contains(#"<blockquote type="cite" dir="ltr">quoted line</blockquote>"#))
+    }
+
+    /// The plain part keeps the typed numbers, so the HTML part must too:
+    /// "2. Agreed / 3. Not sure" answers questions 2 and 3, not 1 and 2.
+    func testOrderedListKeepsItsFirstNumber() {
+        let html = Markdown.toHTML("3. a\n4. b")
+        XCTAssertEqual(html, #"<ol start="3" dir="ltr"><li>a</li><li>b</li></ol>"#)
+
+        // A blank line ends a list; each run continues from its own number.
+        let loose = Markdown.toHTML("**x**\n\n1. a\n\n2. b\n\n10. c")
+        XCTAssertTrue(loose.contains(#"<ol dir="ltr"><li>a</li></ol>"#))
+        XCTAssertTrue(loose.contains(#"<ol start="2" dir="ltr"><li>b</li></ol>"#))
+        XCTAssertTrue(loose.contains(#"<ol start="10" dir="ltr"><li>c</li></ol>"#))
+
+        // A list from 1 stays byte-identical to the earlier output.
+        XCTAssertEqual(Markdown.toHTML("  1. a\n  2. b"),
+                       #"<ol dir="ltr"><li>a</li><li>b</li></ol>"#)
+        // 0 is a valid start. A number too large for Int has no start.
+        XCTAssertTrue(Markdown.toHTML("0. a\n1. b").contains(#"<ol start="0" dir="ltr">"#))
+        XCTAssertTrue(Markdown.toHTML("99999999999999999999999. a")
+            .hasPrefix(#"<ol dir="ltr">"#))
     }
 
     func testFencedCodeBlock() {

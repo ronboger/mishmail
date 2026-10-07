@@ -154,15 +154,16 @@ final class UpdateInstallerTests: XCTestCase {
             atPath: helper.appendingPathComponent("Contents/MacOS/MishMailRelauncher").path))
     }
 
-    /// Prefer Release, then Debug, resolved from this source file so the
-    /// working directory under xcodebuild doesn't matter.
+    /// Prefer Debug (what `make build` and CI just produced), then Release,
+    /// resolved from this source file so the working directory under
+    /// xcodebuild doesn't matter.
     private func builtAppURL() -> URL? {
         let repo = URL(fileURLWithPath: #filePath)
             .deletingLastPathComponent()
             .deletingLastPathComponent()
             .deletingLastPathComponent()
-        for rel in ["build/dd.noindex/Build/Products/Release/MishMail.app",
-                    "build/dd.noindex/Build/Products/Debug/MishMail Debug.app"] {
+        for rel in ["build/dd.noindex/Build/Products/Debug/MishMail Debug.app",
+                    "build/dd.noindex/Build/Products/Release/MishMail.app"] {
             let url = repo.appendingPathComponent(rel)
             if FileManager.default.fileExists(atPath: url.path) { return url }
         }

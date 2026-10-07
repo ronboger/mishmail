@@ -34,6 +34,10 @@ struct ComposeBodyEditor: NSViewRepresentable {
     /// Files dropped on the body (Finder / other apps) — attach, don't insert
     /// paths into the markdown source.
     var onFilesDropped: (([URL]) -> Void)? = nil
+    /// Height of the laid-out text (no padding), reported when it changes.
+    /// Compose sizes the editor from this instead of estimating from the
+    /// character count.
+    var onTextHeightChange: ((CGFloat) -> Void)? = nil
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, isFocused: $isFocused, caretUTF16: $caretUTF16,
@@ -117,11 +121,14 @@ struct ComposeBodyEditor: NSViewRepresentable {
         scroll.borderType = .noBorder
         scroll.documentView = textView
         context.coordinator.fontSize = fontSize
+        context.coordinator.onTextHeightChange = onTextHeightChange
+        context.coordinator.observeTextHeight(of: textView)
         return scroll
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
         context.coordinator.fontSize = fontSize
+        context.coordinator.onTextHeightChange = onTextHeightChange
         context.coordinator.formatTarget = formatTarget
         context.coordinator.onFilesDropped = onFilesDropped
         context.coordinator.bindFormatTarget()
@@ -151,6 +158,9 @@ struct ComposeBodyEditor: NSViewRepresentable {
             Coordinator.highlight(textView, fontSize: fontSize)
             coord.isProgrammaticUpdate = false
         }
+        // Covers programmatic text (a snippet, a prefill) and a font-size
+        // change; cheap and silent when the height did not move.
+        context.coordinator.reportTextHeight()
 
         if textView.ghostText != ghostText {
             textView.ghostText = ghostText
@@ -182,6 +192,39 @@ struct ComposeBodyEditor: NSViewRepresentable {
         var onFilesDropped: (([URL]) -> Void)?
         weak var textView: ComposeBodyTextView?
         var fontSize: CGFloat = 14
+        var onTextHeightChange: ((CGFloat) -> Void)?
+        private var reportedTextHeight: CGFloat = -1
+        private var frameObserver: NSObjectProtocol?
+
+        deinit {
+            if let frameObserver {
+                NotificationCenter.default.removeObserver(frameObserver)
+            }
+        }
+
+        /// A width change rewraps the text without any edit, so the frame is
+        /// watched as well as `textDidChange`.
+        func observeTextHeight(of textView: NSTextView) {
+            textView.postsFrameChangedNotifications = true
+            frameObserver = NotificationCenter.default.addObserver(
+                forName: NSView.frameDidChangeNotification,
+                object: textView, queue: .main
+            ) { [weak self] _ in
+                self?.reportTextHeight()
+            }
+            reportTextHeight()
+        }
+
+        func reportTextHeight() {
+            guard let textView,
+                  let height = ComposeBodyLayout.textHeight(of: textView) else { return }
+            guard abs(height - reportedTextHeight) > 0.5 else { return }
+            reportedTextHeight = height
+            // Never write SwiftUI state inside a layout or update pass.
+            DispatchQueue.main.async { [weak self] in
+                self?.onTextHeightChange?(height)
+            }
+        }
         /// True while updateNSView (or another external rewrite) is driving
         /// the text view — selection-change callbacks must not write the
         /// caret binding (SwiftUI forbids state mutation during view update).
@@ -235,6 +278,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
             publishCaret(textView)
             publishSelection(textView)
             Self.highlight(textView, fontSize: fontSize)
+            reportTextHeight()
             // Ghost is drawn outside the text system — force a full body
             // redraw after every edit so deleted glyphs + old ghost suffix
             // never leave a double-image under the caret.
@@ -336,17 +380,19 @@ struct ComposeBodyEditor: NSViewRepresentable {
         private static let reDisplayMath = try! NSRegularExpression(pattern: #"\$\$[^$]+\$\$"#)
         private static let reInlineMath = try! NSRegularExpression(pattern: Markdown.inlineMathPattern)
         private static let reInlineCode = try! NSRegularExpression(pattern: #"`[^`\n]+`"#)
-        private static let reBoldStar = try! NSRegularExpression(pattern: #"\*\*[^*\n]+\*\*"#)
-        private static let reBoldUnder = try! NSRegularExpression(pattern: #"__[^_\n]+__"#)
+        // Emphasis uses the send path's own patterns (Markdown.swift), so the
+        // editor never styles text that the sent HTML leaves literal.
+        private static let reBoldStar = try! NSRegularExpression(pattern: Markdown.boldStarPattern)
+        private static let reBoldUnder = try! NSRegularExpression(pattern: Markdown.boldUnderscorePattern)
         private static let reStrike = try! NSRegularExpression(pattern: #"~~[^~\n]+~~"#)
-        private static let reItalicStar = try! NSRegularExpression(pattern: #"(?<![\w*])\*[^*\n]+\*(?![\w*])"#)
-        private static let reItalicUnder = try! NSRegularExpression(pattern: #"(?<![\w_])_[^_\n]+_(?![\w_])"#)
+        private static let reItalicStar = try! NSRegularExpression(pattern: Markdown.italicStarPattern)
+        private static let reItalicUnder = try! NSRegularExpression(pattern: Markdown.italicUnderscorePattern)
         private static let reLineMarker = try! NSRegularExpression(pattern: #"(?m)^(\s*)(>|\d+\.|[-*+])(\s)"#)
-        private static let reDimBoldStar = try! NSRegularExpression(pattern: #"(\*\*)([^*\n]+)(\*\*)"#)
-        private static let reDimBoldUnder = try! NSRegularExpression(pattern: #"(__)([^_\n]+)(__)"#)
+        private static let reDimBoldStar = reBoldStar
+        private static let reDimBoldUnder = reBoldUnder
         private static let reDimStrike = try! NSRegularExpression(pattern: #"(~~)([^~\n]+)(~~)"#)
-        private static let reDimItalicStar = try! NSRegularExpression(pattern: #"(?<![\w*])(\*)([^*\n]+)(\*)(?![\w*])"#)
-        private static let reDimItalicUnder = try! NSRegularExpression(pattern: #"(?<![\w_])(_)([^_\n]+)(_)(?![\w_])"#)
+        private static let reDimItalicStar = reItalicStar
+        private static let reDimItalicUnder = reItalicUnder
         private static let reDimCode = try! NSRegularExpression(pattern: #"(`)([^`\n]+)(`)"#)
         private static let reDimMath = try! NSRegularExpression(pattern: #"(?<![\$\w])(\$)((?:[^$\n]*[^\s$])?)(\$)(?![\d$])"#)
 

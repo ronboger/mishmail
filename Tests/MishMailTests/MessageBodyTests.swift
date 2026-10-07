@@ -131,6 +131,46 @@ final class MessageBodyTests: XCTestCase {
         XCTAssertEqual(after?.listUnsubscribePost, "")
     }
 
+    /// Same rule for Reply-To: a metadata payload without the header must
+    /// not wipe a recorded value; a payload with the header updates it.
+    func testHeadersOnlyUpsertPreservesReplyTo() throws {
+        let q = try makeDB()
+        var full = Message(
+            id: "\(account):m1", accountId: account, gmailId: "m1",
+            threadId: "\(account):t1", fromHeader: "Forms <noreply@x.com>", toHeader: "me",
+            ccHeader: "", subject: "contact", date: Date(), snippet: "hi",
+            bodyText: "keep", bodyHTML: nil,
+            messageIdHeader: "<1>", referencesHeader: "",
+            labelIds: "INBOX", isUnread: false, hasAttachment: false)
+        full.replyToHeader = "customer@client.example"
+        try q.write { db in
+            _ = try SyncEngine.upsertPending(db, items: [
+                .init(message: full, attachments: [], headersOnly: false)
+            ])
+        }
+        var omitted = full
+        omitted.replyToHeader = ""
+        omitted.snippet = "later"
+        try q.write { db in
+            _ = try SyncEngine.upsertPending(db, items: [
+                .init(message: omitted, attachments: [], headersOnly: true)
+            ])
+        }
+        let kept = try q.read { try Message.fetchOne($0, key: "\(account):m1") }
+        XCTAssertEqual(kept?.replyToHeader, "customer@client.example")
+        XCTAssertEqual(kept?.snippet, "later")
+
+        var updated = full
+        updated.replyToHeader = "other@client.example"
+        try q.write { db in
+            _ = try SyncEngine.upsertPending(db, items: [
+                .init(message: updated, attachments: [], headersOnly: true)
+            ])
+        }
+        let after = try q.read { try Message.fetchOne($0, key: "\(account):m1") }
+        XCTAssertEqual(after?.replyToHeader, "other@client.example")
+    }
+
     func testDeleteMessageCascadesBody() throws {
         let q = try makeDB()
         try q.write { db in

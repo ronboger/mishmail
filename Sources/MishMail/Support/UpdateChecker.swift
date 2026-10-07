@@ -139,8 +139,19 @@ final class UpdateChecker: ObservableObject {
     }
 
     /// Numeric dotted-version compare: "0.2.0" is newer than "0.1.9".
+    ///
+    /// The candidate must be digits and dots only. A suffixed tag is never
+    /// newer: "0.6.0-beta.1" would otherwise split into [0, 6, 0, 1] and
+    /// outrank the final 0.6.0, and the bundle-version pin would then reject
+    /// the download anyway. `current` stays lenient (junk counts as 0) so an
+    /// odd local build can still be offered a real release.
     nonisolated static func isNewer(_ candidate: String, than current: String) -> Bool {
-        let a = candidate.split(separator: ".").map { Int($0.trimmingCharacters(in: .whitespaces)) ?? 0 }
+        let parts = candidate.trimmingCharacters(in: .whitespaces)
+            .split(separator: ".", omittingEmptySubsequences: false)
+        let a = parts.compactMap { part -> Int? in
+            part.allSatisfy(\.isASCII) && part.allSatisfy(\.isNumber) ? Int(part) : nil
+        }
+        guard !a.isEmpty, a.count == parts.count else { return false }
         let b = current.split(separator: ".").map { Int($0.trimmingCharacters(in: .whitespaces)) ?? 0 }
         for i in 0..<max(a.count, b.count) {
             let x = i < a.count ? a[i] : 0

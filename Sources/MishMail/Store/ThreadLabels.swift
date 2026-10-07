@@ -7,11 +7,14 @@ import GRDB
 enum ThreadLabels {
     /// Replace junction rows for `threadId` with the user labels in `labelIds`.
     /// No-op when the set is already exact (avoids DELETE+reinsert churn).
-    static func rewrite(_ db: Database, threadId: String, labelIds: String) throws {
+    /// `existingLabelIds`, when supplied, must be sorted and read in the same
+    /// transaction immediately before reconciliation (used by sync batches).
+    static func rewrite(_ db: Database, threadId: String, labelIds: String,
+                        existingLabelIds: [String]? = nil) throws {
         let user = labelIds.split(separator: " ").map(String.init)
             .filter { $0.hasPrefix("Label_") }
             .sorted()
-        let existing = try String.fetchAll(
+        let existing = try existingLabelIds ?? String.fetchAll(
             db,
             sql: "SELECT labelId FROM thread_label WHERE threadId = ? ORDER BY labelId",
             arguments: [threadId])
@@ -25,10 +28,16 @@ enum ThreadLabels {
 
     /// Space-separated unique lowercased From emails across `messages`.
     static func allFromEmails(from messages: [Message]) -> String {
+        allFromEmails(fromHeaders: messages.map(\.fromHeader))
+    }
+
+    /// Same, from raw From header values (migrations must not decode the
+    /// live `Message` record).
+    static func allFromEmails(fromHeaders: [String]) -> String {
         var seen = Set<String>()
         var ordered: [String] = []
-        for m in messages {
-            let e = MessageParser.emailAddress(m.fromHeader).lowercased()
+        for header in fromHeaders {
+            let e = MessageParser.emailAddress(header).lowercased()
             guard e.contains("@"), seen.insert(e).inserted else { continue }
             ordered.append(e)
         }

@@ -26,7 +26,7 @@ final class SidebarNavUITests: XCTestCase {
         app.activate()
 
         // Inbox has unstarred demo mail; Starred does not include t3.
-        let unstarred = app.staticTexts
+        let unstarred = app.descendants(matching: .any)
             .matching(identifier: "threadRow.you@example.com:t3").firstMatch
         XCTAssertTrue(unstarred.waitForExistence(timeout: 10),
                       "demo inbox should list unstarred CI thread")
@@ -47,7 +47,7 @@ final class SidebarNavUITests: XCTestCase {
         XCTAssertFalse(unstarred.exists,
                        "clicking Starred must leave the unstarred demo thread")
 
-        let starredThread = app.staticTexts
+        let starredThread = app.descendants(matching: .any)
             .matching(identifier: "threadRow.you@example.com:t1").firstMatch
         // On failure, embed the app's breadcrumb log and the accessibility
         // tree — this only runs on CI, where there is no way to see the

@@ -22,11 +22,14 @@ jobs:
       - name: Install xcodegen
         run: brew install xcodegen
 
-      - name: Run unit tests
-        run: make test
-
+      # Build first: the unit suite has tests that inspect the built Debug
+      # app (signature, zip round trip, embedded relauncher, ad-hoc trust).
+      # With no app on disk they skip, so the old order never ran them.
       - name: Build app
         run: make build
+
+      - name: Run unit tests
+        run: make test
 
   ui-test:
     name: UI smoke tests

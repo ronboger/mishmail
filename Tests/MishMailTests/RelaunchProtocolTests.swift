@@ -50,10 +50,12 @@ final class RelaunchProtocolTests: XCTestCase {
         let app = URL(fileURLWithPath: "/Applications/MishMail.app", isDirectory: true)
         let helper = app.appendingPathComponent(
             "Contents/Library/MishMailRelauncher.app", isDirectory: true)
-        XCTAssertEqual(Relaunch.enclosingAppBundle(forHelperBundle: helper), app)
+        // Compare paths: URL equality also compares the trailing slash, which
+        // `standardizedFileURL` keeps only when the bundle exists on this Mac.
+        XCTAssertEqual(Relaunch.enclosingAppBundle(forHelperBundle: helper)?.path, app.path)
         XCTAssertEqual(
-            Relaunch.resolvedTargetAppURL(appPath: app.path, helperBundleURL: helper),
-            app)
+            Relaunch.resolvedTargetAppURL(appPath: app.path, helperBundleURL: helper)?.path,
+            app.path)
         XCTAssertNil(Relaunch.resolvedTargetAppURL(
             appPath: "/Applications/Other.app", helperBundleURL: helper))
     }

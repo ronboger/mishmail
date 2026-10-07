@@ -26,6 +26,37 @@ final class ComposeBodyLayoutTests: XCTestCase {
                        + 2 * ComposeBodyLayout.lineHeight)
     }
 
+    // MARK: - measured text height
+
+    /// The estimate assumes 19pt lines and 72 characters per line. At a
+    /// larger font the same body wraps to more, taller lines; the measured
+    /// height must win so the last lines are not scrolled out of view.
+    func testMeasuredHeightOverridesTheEstimate() {
+        let body = "Thanks for the intro!\n\nLet's chat.\n\nBest,\nRon"
+        let measured: CGFloat = 7 * 26
+        for hasQuote in [false, true] {
+            let estimated = ComposeBodyLayout.editorHeights(
+                body: body, hasCollapsedQuote: hasQuote, slashActive: false)
+            let h = ComposeBodyLayout.editorHeights(
+                body: body, hasCollapsedQuote: hasQuote, slashActive: false,
+                measuredTextHeight: measured)
+            XCTAssertEqual(h.max, ComposeBodyLayout.editorPadding + measured
+                           + ComposeBodyLayout.contentSlack)
+            XCTAssertGreaterThan(h.max, estimated.max)
+        }
+    }
+
+    func testMeasuredHeightKeepsFloorsAndCap() {
+        let short = ComposeBodyLayout.editorHeights(
+            body: "Hi", hasCollapsedQuote: true, slashActive: false,
+            measuredTextHeight: 19)
+        XCTAssertEqual(short.max, ComposeBodyLayout.emptyFloor)
+        let tall = ComposeBodyLayout.editorHeights(
+            body: "x", hasCollapsedQuote: true, slashActive: false,
+            measuredTextHeight: 5_000)
+        XCTAssertEqual(tall.max, ComposeBodyLayout.collapsedCap)
+    }
+
     // MARK: - no quote / slash
 
     func testNoCollapsedQuoteHugsContent() {

@@ -44,9 +44,11 @@ final class UpdateVerifySmokeTests: XCTestCase {
         try UpdateChecker.verifyCodeSignature(of: found!)
     }
 
-    /// Prefer Release, then Debug products under the project's DerivedData.
-    /// Resolve from this source file so cwd (often not the repo root under
-    /// xcodebuild) doesn't matter.
+    /// Prefer Debug, then Release products under the project's DerivedData:
+    /// `make build` (and CI, which builds before it tests) refreshes Debug,
+    /// while the Release product is whatever `make install` last left there
+    /// and can be weeks old. Resolve from this source file so cwd (often not
+    /// the repo root under xcodebuild) doesn't matter.
     static func builtAppURL() -> URL? {
         // …/Tests/MishMailTests/ThisFile.swift → repo root
         let repo = URL(fileURLWithPath: #filePath)
@@ -54,10 +56,10 @@ final class UpdateVerifySmokeTests: XCTestCase {
             .deletingLastPathComponent()
             .deletingLastPathComponent()
         let candidates = [
-            "build/dd.noindex/Build/Products/Release/MishMail.app",
             "build/dd.noindex/Build/Products/Debug/MishMail Debug.app",
-            "build/Build/Products/Release/MishMail.app",
+            "build/dd.noindex/Build/Products/Release/MishMail.app",
             "build/Build/Products/Debug/MishMail Debug.app",
+            "build/Build/Products/Release/MishMail.app",
         ]
         for rel in candidates {
             let url = repo.appendingPathComponent(rel)

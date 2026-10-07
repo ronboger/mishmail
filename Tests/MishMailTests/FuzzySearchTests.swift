@@ -146,6 +146,83 @@ final class FuzzySearchTests: XCTestCase {
         XCTAssertEqual(hits.map(\.gmailThreadId), ["pair"])
     }
 
+    func testVocabularyReusePreservesPatternsAndMatchingMessages() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try self.seed(db, gmailId: "words", subject: "Levi jeans receive alpha bravo résumé café",
+                          date: Date(timeIntervalSince1970: 10))
+        }
+        try q.read { db in
+            for text in ["levis jeans levis", "alhpa brvao", "recieve levis recieve",
+                         "résmué café", "a levis", "zzqqxx", ""] {
+                let expected = try self.legacyExpandedPattern(db: db, text: text)
+                let actual = try FuzzySearch.expandedPattern(db: db, text: text)
+                XCTAssertEqual(actual?.rawPattern, expected?.rawPattern, text)
+                if let actual, let expected {
+                    let sql = "SELECT rowid FROM message_fts WHERE message_fts MATCH ? ORDER BY rowid"
+                    XCTAssertEqual(try Int64.fetchAll(db, sql: sql, arguments: [actual]),
+                                   try Int64.fetchAll(db, sql: sql, arguments: [expected]), text)
+                }
+            }
+        }
+    }
+
+    func testVocabularyReadsAreReusedOnlyWithinOneSearch() throws {
+        let q = try makeDB()
+        try q.write { db in
+            try self.seed(db, gmailId: "words", subject: "Levi jeans alpha bravo café",
+                          date: Date(timeIntervalSince1970: 10))
+            var scans = 0
+            db.trace {
+                if case .statement(let statement) = $0,
+                   statement.sql.contains("SELECT term FROM message_fts_vocab") { scans += 1 }
+            }
+            defer { db.trace(nil) }
+            _ = try FuzzySearch.expandedPattern(db: db, text: "levis jeans levis a")
+            XCTAssertEqual(scans, 1, "three length-5 tokens share one vocabulary scan")
+            scans = 0
+            XCTAssertNil(try FuzzySearch.expandedPattern(db: db, text: "recieve"))
+            // A later request must see newly arrived vocabulary, not a stale cache.
+            try self.seed(db, gmailId: "fresh", subject: "receive",
+                          date: Date(timeIntervalSince1970: 20))
+            let fresh = try FuzzySearch.expandedPattern(db: db, text: "recieve")
+            XCTAssertTrue(fresh?.rawPattern.contains("receive") == true)
+            XCTAssertEqual(scans, 2)
+            scans = 0
+            _ = try ThreadTypeahead.fetch(db: db, query: "receive", limit: 5)
+            XCTAssertEqual(scans, 0, "strict hits still bypass fuzzy vocabulary entirely")
+        }
+    }
+
+    /// Previous query strategy as the reference for per-request vocabulary reuse.
+    private func legacyExpandedPattern(db: Database, text: String) throws -> FTS5Pattern? {
+        let tokens = FuzzySearch.tokenize(text)
+        guard !tokens.isEmpty else { return nil }
+        var expanded = false
+        var groups: [[String]] = []
+        for token in tokens {
+            if token.count < 3 {
+                groups.append([token])
+                continue
+            }
+            let distance = FuzzySearch.allowedDistance(forLength: token.count)
+            let vocab = try String.fetchAll(db, sql: """
+                SELECT term FROM message_fts_vocab
+                WHERE length(term) BETWEEN ? AND ?
+                ORDER BY doc DESC
+                LIMIT 5000
+                """, arguments: [max(1, token.count - distance), token.count + distance])
+            var group = [token]
+            group.append(contentsOf: FuzzySearch.candidates(for: token, in: vocab, limit: 3)
+                .filter { $0 != token })
+            if group.count > 1 { expanded = true }
+            groups.append(group)
+        }
+        guard expanded else { return nil }
+        return try? db.makeFTS5Pattern(
+            rawPattern: FuzzySearch.buildRawPattern(groups: groups), forTable: "message_fts")
+    }
+
     // MARK: - Helpers (ThreadTypeaheadTests pattern)
 
     private let account = "a@x.com"

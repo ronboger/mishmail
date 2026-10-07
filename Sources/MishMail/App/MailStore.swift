@@ -312,6 +312,10 @@ final class MailStore {
     var suppressedDraftMessageIds: Set<String> = []
     var suppressedDraftThreadIds: Set<String> = []
     var suppressedDraftThreadByMessageId: [String: String] = [:]
+    /// Drafts hidden for a send in flight (undo window through delivery).
+    /// One of the two sources `suppressedDraftMessageIds` is computed from;
+    /// the other is the scheduled rows (see `ScheduledDraftSuppression`).
+    @ObservationIgnored var pendingSendDraftIds: Set<String> = []
     /// Draft ids an *open compose card* owns (the draft it was opened on plus
     /// every autosave replacement), keyed by the compose request so a card that
     /// unmounts after its successor appeared can only release its own ids.
@@ -1108,23 +1112,24 @@ final class MailStore {
         Task { await performUnsubscribe(message) }
     }
 
-    /// Fill `listUnsubscribe` on pre-v37 rows (nil) via a metadata get.
-    /// Returns the two header values so the reading pane can patch in place
-    /// without replacing the hydrated body.
-    func refreshUnsubscribeHeaders(_ message: Message) async -> (String, String)? {
-        if let header = message.listUnsubscribe {
-            return (header, message.listUnsubscribePost ?? "")
+    /// Fill `listUnsubscribe` on pre-v37 rows and `replyToHeader` on pre-v43
+    /// rows (nil) via a metadata get. Returns the header values so the
+    /// reading pane can patch in place without replacing the hydrated body.
+    func refreshUnsubscribeHeaders(_ message: Message) async -> (String, String, replyTo: String)? {
+        if let header = message.listUnsubscribe, let replyTo = message.replyToHeader {
+            return (header, message.listUnsubscribePost ?? "", replyTo)
         }
         guard let stored = try? await db.read({
             try Message.fetchOne($0, key: message.id)
         }) else {
             return nil
         }
-        if let header = stored.listUnsubscribe {
-            return (header, stored.listUnsubscribePost ?? "")
+        if let header = stored.listUnsubscribe, let replyTo = stored.replyToHeader {
+            return (header, stored.listUnsubscribePost ?? "", replyTo)
         }
         guard !demoMode else {
-            return ("", "")
+            return (stored.listUnsubscribe ?? "", stored.listUnsubscribePost ?? "",
+                    stored.replyToHeader ?? "")
         }
         do {
             let g = try await client(for: message.accountId)
@@ -1139,7 +1144,8 @@ final class MailStore {
                 try SyncEngine.deriveThreads(
                     db, for: [parsed.threadId], accountId: message.accountId)
             }
-            return (parsed.listUnsubscribe ?? "", parsed.listUnsubscribePost ?? "")
+            return (parsed.listUnsubscribe ?? "", parsed.listUnsubscribePost ?? "",
+                    parsed.replyToHeader ?? "")
         } catch {
             return nil
         }
@@ -1718,10 +1724,12 @@ struct ComposeRequest: Identifiable {
     var engines: [String: SyncEngine] = [:]
     @ObservationIgnored
     var clients: [String: GmailClient] = [:]
+    /// What the new-mail notifier has already accounted for this session.
+    /// Unseeded until the launch baseline is in place: every unread thread
+    /// already in the cache would look "new", so the first pass only records
+    /// what is there rather than announcing all of it.
     @ObservationIgnored
-    var knownUnreadInboxIds: Set<String> = []
-    @ObservationIgnored
-    var notifiedThreadIds: Set<String> = []
+    var newMailNotifications = NewMailNotifications()
     /// Serial tail for optimistic thread writes. UI updates happen first; the
     /// tail preserves mutation order and is awaited before database shutdown.
     @ObservationIgnored
@@ -2378,7 +2386,7 @@ struct ComposeRequest: Identifiable {
             // pass. Nothing to merge, so nothing to rank or publish.
             if mined.rows == 0 && !full { return }
             let ranked = ContactMiner.ranked(from: mined.weights, excluding: ownAddresses)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self, !self.isShuttingDown,
                       generation == self.contactsRebuildGeneration else { return }
                 self.contactWeights = mined.weights
@@ -2413,7 +2421,7 @@ struct ComposeRequest: Identifiable {
         // termination tracking.
         Task.detached(priority: .utility) { [weak self] in
             let ranked = ContactMiner.ranked(from: weights, excluding: ownAddresses)
-            await MainActor.run {
+            await MainActor.run { [weak self] in
                 guard let self, !self.isShuttingDown,
                       generation == self.contactsRankGeneration else { return }
                 self.publishContacts(ranked)
@@ -2850,85 +2858,14 @@ struct ComposeRequest: Identifiable {
                     .reloadList, meta: "\(reloadKind) limit=\(windowLimit)"
                 ) {
                     if !search.isEmpty {
-                        let parsed = SearchQuery.parse(search)
-                        var q = MailThread.all()
-                        if !parsed.text.isEmpty {
-                            q = try SearchFTS.filter(q, db: db, text: parsed.text)
-                        }
-                        if let from = parsed.from {
-                            // fromDisplay/participants hold display names, so an email
-                            // query ("from:x@y.com") must also check the raw header.
-                            // Prefer denorm fromEmail when present; still check headers
-                            // for threads not yet backfilled.
-                            let pattern = "%\(from)%"
-                            q = q.filter(sql: """
-                                (fromDisplay LIKE ? OR participants LIKE ?
-                                 OR fromEmail LIKE ?
-                                 OR EXISTS (SELECT 1 FROM message
-                                            WHERE message.threadId = thread.id
-                                              AND message.fromHeader LIKE ?))
-                                """, arguments: [pattern, pattern, pattern, pattern])
-                        }
-                        if let to = parsed.to {
-                            // Recipient headers live on messages, so match via EXISTS.
-                            q = q.filter(sql: """
-                                EXISTS (SELECT 1 FROM message
-                                        WHERE message.threadId = thread.id
-                                          AND (message.toHeader LIKE ? OR message.ccHeader LIKE ?
-                                               OR message.bccHeader LIKE ?))
-                                """, arguments: ["%\(to)%", "%\(to)%", "%\(to)%"])
-                        }
-                        if let subject = parsed.subject {
-                            q = q.filter(sql: "subject LIKE ?", arguments: ["%\(subject)%"])
-                        }
-                        if let unread = parsed.unread {
-                            // keepIds: threads just marked read/unread stay in the
-                            // list under is:unread / is:read (same as filter chips).
-                            q = q.filter(Column("isUnread") == unread
-                                         || keepIds.contains(Column("id")))
-                        }
-                        if parsed.starred {
-                            // starKeepIds: just-unstarred threads stay under
-                            // is:starred until the search is cleared (read-state
-                            // keepIds parity).
-                            q = q.filter(Column("isStarred") == true
-                                         || starKeepIds.contains(Column("id")))
-                        }
-                        if let after = parsed.after {
-                            q = q.filter(Column("lastDate") >= after)
-                        }
-                        if let before = parsed.before {
-                            q = q.filter(Column("lastDate") < before)
-                        }
-                        for name in parsed.labels {
-                            // A label name resolves to Gmail label ids (it can exist on
-                            // several accounts); unknown names fall back to the raw
-                            // token uppercased, which covers system labels (STARRED…).
-                            var ids = allLabels
-                                .filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
-                                .map(\.gmailLabelId)
-                            if ids.isEmpty { ids = [name.uppercased()] }
-                            q = MailStore.filterThreads(q, matchingLabelIds: ids,
-                                                        starKeepIds: starKeepIds)
-                        }
-                        if parsed.hasAttachment { q = q.filter(Column("hasAttachment") == true) }
-                        // Gmail search excludes trash/spam unless in:trash / in:spam /
-                        // in:anywhere. Without this, optimistic trash removes the row
-                        // and the async reload immediately brings it back.
-                        switch parsed.location {
-                        case .standard:
-                            q = q.filter(Column("inTrash") == false && Column("inSpam") == false)
-                        case .trash:
-                            q = q.filter(Column("inTrash") == true)
-                        case .spam:
-                            q = q.filter(Column("inSpam") == true)
-                        case .anywhere:
-                            break
-                        }
-                        if let activeAccount { q = q.filter(Column("accountId") == activeAccount) }
-                        // Search always ranks by newest message (lastDate).
-                        return try q.order(Column("lastDate").desc, Column("id").desc)
-                            .limit(fetchLimit).fetchAll(db)
+                        // The predicate builder lives in Store/ so hostless
+                        // tests run this exact SQL (SearchThreadQueryTests).
+                        let context = SearchThreadQuery.Context(
+                            labels: allLabels, keepIds: keepIds,
+                            starKeepIds: starKeepIds, accountId: activeAccount)
+                        return try SearchThreadQuery.fetch(
+                            search: search, db: db, context: context,
+                            limit: fetchLimit)
                     } else {
                         var q = MailStore.baseQuery(for: view, savedViews: savedViewsSnapshot,
                                                     keepIds: keepIds, starKeepIds: starKeepIds)
@@ -3718,7 +3655,7 @@ struct ComposeRequest: Identifiable {
                                bccHeader, subject, date, snippet,
                                '' AS bodyText, NULL AS bodyHTML,
                                messageIdHeader, referencesHeader, labelIds, isUnread, hasAttachment,
-                               senderAuth
+                               senderAuth, replyToHeader
                         FROM message
                         WHERE threadId = ?
                         ORDER BY date
@@ -3789,15 +3726,19 @@ struct ComposeRequest: Identifiable {
         // ViewEditor's structured fields back into the JSON so chipsJSON stays
         // authoritative and form edits still take effect.
         if var chips = v.chipsJSON.flatMap({ try? JSONDecoder().decode(FilterChips.self, from: $0) }) {
+            chips.labelName = SavedViewFold.labelName(
+                current: chips.labelName, oldLabelId: chips.labelId, newLabelId: v.labelId)
             chips.labelId = v.labelId
             chips.unreadOnly = v.unreadOnly
             chips.showArchived = v.showArchived
             chips.hasAttachmentOnly = v.hasAttachmentOnly
             chips.senderContains = v.senderContains
-            if v.excludePromotions {
-                chips.category.hide.formUnion(["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"])
-            }
-            if let cat = v.category { chips.category.show = [cat] }
+            // Both directions: the editor must be able to turn these OFF too.
+            let categories = SavedViewFold.categories(
+                show: chips.category.show, hide: chips.category.hide,
+                excludePromotions: v.excludePromotions, category: v.category)
+            chips.category.show = categories.show
+            chips.category.hide = categories.hide
             v.chipsJSON = try? JSONEncoder().encode(chips)
         }
         try? db.write { db in
@@ -3852,13 +3793,6 @@ struct ComposeRequest: Identifiable {
     /// backfill cannot starve these cheap sweeps — they do not depend on
     /// sync having completed.
     @ObservationIgnored var dueSweepTask: Task<Void, Never>?
-
-
-    /// True once the launch baseline is in place. Until then every unread
-    /// thread already in the cache would look "new", so the first pass only
-    /// records what is there rather than announcing all of it.
-    @ObservationIgnored
-    var unreadBaselineSeeded = false
 
     // MARK: - Keyboard shortcuts
 
@@ -4379,6 +4313,13 @@ struct ComposeRequest: Identifiable {
     var scheduledSends: [ScheduledSend] = []
     @ObservationIgnored
     var scheduledSendTimer: Timer?
+    /// Due rows the last sweep had to keep, by row id (see
+    /// `ScheduledSendPolicy`). Observed: the Scheduled list labels rows
+    /// from it. In memory only — the first sweep after launch rebuilds it.
+    var scheduledSendHolds: [Int64: ScheduledSendPolicy.HoldState] = [:]
+    /// Row the due-sweep is sending right now.
+    @ObservationIgnored
+    var scheduledSendInFlightRowId: Int64?
 
 
     // MARK: - Calendar invite RSVP

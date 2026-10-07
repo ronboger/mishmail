@@ -503,6 +503,45 @@ final class AskMishContextTests: XCTestCase {
                                                 lastUserBubbleText: "  "), .nothing)
     }
 
+    // MARK: - Sendable assistant content
+
+    func testWhitespaceOnlyAssistantTextIsNotSendable() {
+        XCTAssertFalse(AskMishContext.hasSendableAssistantContent(text: "", calls: []))
+        XCTAssertFalse(AskMishContext.hasSendableAssistantContent(text: "\n\n ", calls: []))
+        XCTAssertTrue(AskMishContext.hasSendableAssistantContent(text: " ok ", calls: []))
+        XCTAssertTrue(AskMishContext.hasSendableAssistantContent(
+            text: "\n\n",
+            calls: [LLMToolCall(id: "c", name: "list_threads", argumentsJSON: "{}")]))
+    }
+
+    // MARK: - Tool calls from a cut-off turn
+
+    func testToolsRunOnlyWhenTheTurnFinished() {
+        for reason in ["tool_use", "tool_calls", "end_turn", "stop", "pause_turn", ""] {
+            XCTAssertEqual(AskMishContext.toolRunPlan(stopReason: reason), .run, reason)
+        }
+        // A call cut at the output limit has partial arguments.
+        XCTAssertEqual(AskMishContext.toolRunPlan(stopReason: "max_tokens"), .cutOff)
+        XCTAssertEqual(AskMishContext.toolRunPlan(stopReason: "length"), .cutOff)
+        XCTAssertEqual(AskMishContext.toolRunPlan(stopReason: "MAX_TOKENS"), .cutOff)
+        XCTAssertEqual(AskMishContext.toolRunPlan(stopReason: "refusal"), .refused)
+    }
+
+    func testUnrunToolResultsAnswerEveryCallAsError() {
+        let calls = [
+            LLMToolCall(id: "a", name: "create_draft", argumentsJSON: #"{"to":["x@y.z"],"body":"Hel"#),
+            LLMToolCall(id: "b", name: "search_threads", argumentsJSON: "{}"),
+        ]
+        XCTAssertNil(AskMishContext.unrunToolResults(for: calls, plan: .run))
+        for plan in [AskMishContext.ToolRunPlan.cutOff, .refused] {
+            let results = AskMishContext.unrunToolResults(for: calls, plan: plan)
+            XCTAssertEqual(results?.map(\.callID), ["a", "b"])
+            XCTAssertEqual(results?.allSatisfy(\.isError), true)
+        }
+        XCTAssertTrue(AskMishContext.unrunToolResults(for: calls, plan: .cutOff)![0]
+            .content.contains("output limit"))
+    }
+
     // MARK: - Context budgeting
 
     func testContextMessageSkipsSecondBudgetPass() {
