@@ -7,7 +7,7 @@ SwiftUI, the Gmail REST API, and GRDB/SQLCipher.
 
 ```sh
 brew install xcodegen
-make hooks     # installs a pre-commit hook that runs the tests
+make hooks     # pre-commit runs the tests; post-merge removes merged branches and worktrees
 make test      # generate the project + run the unit tests
 make ui-test   # launch the fictional inbox and smoke-test the core UI
 make build     # build the app

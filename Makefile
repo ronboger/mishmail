@@ -74,7 +74,7 @@ INSTALL_SIGN_FLAGS = CODE_SIGN_STYLE=Manual CODE_SIGN_IDENTITY=- DEVELOPMENT_TEA
 	MISHMAIL_APP_ENTITLEMENTS=Sources/MishMail/MishMail.entitlements
 endif
 
-.PHONY: test ui-test build run demo install gen hooks release clean signing-doctor require-stable-signing require-run-signing require-pushed
+.PHONY: test ui-test build run demo install gen hooks prune release clean signing-doctor require-stable-signing require-run-signing require-pushed
 
 # Refuse to ship an embedded relauncher that inherited the app's sandbox.
 # Stripping com.apple.quarantine from the installed update is its entire job,
@@ -350,8 +350,21 @@ clean:
 	rm -rf ~/Library/Developer/Xcode/DerivedData/MishMail-*
 	@echo "Cleaned ./build and ~/Library DerivedData/MishMail-* caches."
 
-# Install the pre-commit hook (run once per clone).
+# Install the git hooks (run once per clone).
+#   pre-commit   runs the unit tests.
+#   post-merge   removes the branches that `git merge` just merged, and any
+#                branch already merged into main, with their worktrees.
+#                Git does not run it for a merge that stopped on a conflict;
+#                run `make prune` after those.
+# Hooks live in the common git dir, so linked worktrees share them.
+HOOKS_DIR = $(shell git rev-parse --git-common-dir)/hooks
 hooks:
-	printf '#!/bin/sh\nexec make -C "$$(git rev-parse --show-toplevel)" test\n' > .git/hooks/pre-commit
-	chmod +x .git/hooks/pre-commit
-	@echo "pre-commit hook installed (skip with git commit --no-verify)"
+	printf '#!/bin/sh\nexec make -C "$$(git rev-parse --show-toplevel)" test\n' > $(HOOKS_DIR)/pre-commit
+	cp scripts/post-merge-hook.sh $(HOOKS_DIR)/post-merge
+	rm -f $(HOOKS_DIR)/post-commit
+	chmod +x $(HOOKS_DIR)/pre-commit $(HOOKS_DIR)/post-merge
+	@echo "hooks installed: pre-commit (tests; skip with --no-verify), post-merge (prune merged branches)"
+
+# Remove local branches and worktrees already merged into main.
+prune:
+	scripts/prune-merged.sh

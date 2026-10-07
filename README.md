@@ -149,7 +149,7 @@ make run      # build + open an isolated fictional inbox
 make build    # generate + build without launching
 make test     # run the hostless unit tests
 make ui-test  # run the demo-inbox UI smoke test
-make hooks    # install a pre-commit hook that runs unit tests
+make hooks    # pre-commit runs unit tests; post-merge removes merged branches and worktrees
 ```
 
 You can also open `MishMail.xcodeproj` in Xcode. Configure the free Personal
