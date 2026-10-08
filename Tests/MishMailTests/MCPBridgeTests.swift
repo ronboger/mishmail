@@ -30,10 +30,30 @@ final class MCPBridgeTests: XCTestCase {
         try q.read { db in
             XCTAssertTrue(try db.tableExists("threadSummary"))
             let cols = try db.columns(in: "threadSummary").map(\.name)
-            for name in ["threadId", "summary", "model", "updatedAt"] {
+            for name in ["threadId", "summary", "model", "updatedAt", "contentFingerprint"] {
                 XCTAssertTrue(cols.contains(name), "missing column \(name)")
             }
         }
+    }
+
+    func testSummaryCacheMigrationPreservesExistingRowsAndStoresCoverage() throws {
+        let q = try DatabaseQueue()
+        try AppDatabase.migrator.migrate(q, upTo: "v42")
+        try q.write { db in
+            try seedThread(db)
+            try db.execute(sql: "INSERT INTO threadSummary(threadId, summary, model, updatedAt) VALUES (?, ?, ?, ?)",
+                           arguments: ["ron@x.com:t1", "Existing summary", "m", Date()])
+        }
+        try AppDatabase.migrator.migrate(q)
+        try q.write { db in
+            var row = try XCTUnwrap(ThreadSummaryRow.fetchOne(db, key: "ron@x.com:t1"))
+            XCTAssertEqual(row.summary, "Existing summary")
+            XCTAssertNil(row.contentFingerprint)
+            row.contentFingerprint = "source-coverage"
+            try row.save(db)
+        }
+        XCTAssertEqual(try q.read { try ThreadSummaryRow.fetchOne($0, key: "ron@x.com:t1")?.contentFingerprint },
+                       "source-coverage")
     }
 
     func testThreadSummaryUpsertAndCascadeDelete() throws {

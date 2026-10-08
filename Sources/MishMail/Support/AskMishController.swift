@@ -104,9 +104,10 @@ final class AskMishController {
     /// Wire history for this conversation, including the injected thread
     /// context. Rebuilt from the database on `loadConversation`.
     @ObservationIgnored private var history: [LLMMessage] = []
-    /// Threads whose markdown is already in `history`, so each context goes in
-    /// once per conversation instead of on every turn.
-    @ObservationIgnored private var injectedThreadIDs: Set<String> = []
+    /// Revisions and transient snapshots already in history. A reply arriving
+    /// during a chat refreshes its context on the next turn.
+    @ObservationIgnored private var injectedThreadRevisions: [String: ThreadContentRevision] = [:]
+    @ObservationIgnored private var injectedThreadContexts: [String: LLMMessage] = [:]
     @ObservationIgnored private var totalPromptTokens = 0
     @ObservationIgnored private var totalCompletionTokens = 0
     @ObservationIgnored private var totalCacheCreationInputTokens = 0
@@ -261,7 +262,8 @@ final class AskMishController {
         conversationID = nil
         bubbles = []
         history = []
-        injectedThreadIDs = []
+        injectedThreadRevisions = [:]
+        injectedThreadContexts = [:]
         attachedThreads = []
         unsentUserText = nil
         totalPromptTokens = 0
@@ -313,7 +315,8 @@ final class AskMishController {
         // whatever was open, and it would show up as a wall of quoted mail in
         // the transcript. It goes in again on the next turn.
         history = AskMishContext.llmMessages(history: rows)
-        injectedThreadIDs = []
+        injectedThreadRevisions = [:]
+        injectedThreadContexts = [:]
         attachedThreads = []
         unsentUserText = nil
         let totals = AskMishContext.usageTotals(rows: rows)
@@ -407,10 +410,14 @@ final class AskMishController {
         }
         let overrides = LLMPricing.loadOverrides()
         let wireModel = resolvedModelID(for: config)
+        // Freeze the user's selection for the entire turn, even if they open
+        // another email while the model or a tool is running.
+        let currentThread = includeSelectedThread ? store?.selectedThread : nil
+        let turnSystemMessage = systemMessage(currentThread: currentThread)
         if shouldAppendUser {
             unsentUserText = nil
             await ensureConversation(firstUserText: userText)
-            await appendUser(userText)
+            await appendUser(userText, currentThread: currentThread)
         }
         let tools = AskMishTools.llmToolSpecs()
         let isLocal = config.kind == .ollama
@@ -440,7 +447,7 @@ final class AskMishController {
                 for: history, stable: compactToolMessages,
                 characterLimit: toolResultLimit,
                 threadCharacterBudget: threadCharacterBudget)
-            let request = [systemMessage()] + AskMishContext.prepareForModel(
+            let request = [turnSystemMessage] + AskMishContext.prepareForModel(
                 history, compactToolMessageIndices: compactToolMessages,
                 threadCharacterBudget: threadCharacterBudget)
             do {
@@ -570,6 +577,7 @@ final class AskMishController {
             characterLimit: toolResultLimit,
             threadCharacterBudget: threadCharacterBudget)
         await runFinalAnswer(config: config, model: wireModel, overrides: overrides,
+                             system: turnSystemMessage,
                              tools: tools,
                              threadCharacterBudget: threadCharacterBudget,
                              compactToolMessages: compactToolMessages,
@@ -582,6 +590,7 @@ final class AskMishController {
     /// the model must explain what it found instead of starting another loop.
     private func runFinalAnswer(config: LLMProviderConfig, model: String,
                                 overrides: [String: LLMPrice],
+                                system: LLMMessage,
                                 tools: [LLMToolSpec],
                                 threadCharacterBudget: Int,
                                 compactToolMessages: Set<Int>,
@@ -592,7 +601,7 @@ final class AskMishController {
         var usage: LLMUsage?
         var aggregate = turnUsage
         var stopNotice: String?
-        let request = [systemMessage()] + AskMishContext.prepareForModel(
+        let request = [system] + AskMishContext.prepareForModel(
             history, compactToolMessageIndices: compactToolMessages,
             threadCharacterBudget: threadCharacterBudget)
         do {
@@ -783,15 +792,19 @@ final class AskMishController {
         "askMish.hostedAck.\(id.uuidString)"
     }
 
-    private func systemMessage() -> LLMMessage {
+    private func systemMessage(currentThread: MailThread?) -> LLMMessage {
         LLMMessage(role: .system, text: AskMishContext.systemPrompt(
-            date: Date(), accountEmails: store?.accounts.map(\.id) ?? []))
+            date: Date(), accountEmails: store?.accounts.map(\.id) ?? [],
+            currentThreadID: currentThread?.id,
+            currentThreadSubject: currentThread?.subject ?? "",
+            currentThreadAccount: currentThread?.accountId ?? "",
+            writingInstructions: AIWritingPreferences.instructions()))
     }
 
     // MARK: - Thread attachments
 
     /// Pins a thread to the conversation. Its markdown goes into the history
-    /// on the next user turn (once — `injectedThreadIDs` dedupes).
+    /// on the next user turn, then again only when its content changes.
     func attachThread(id: String, subject: String) {
         guard !attachedThreads.contains(where: { $0.id == id }) else { return }
         attachedThreads.append(AttachedThread(id: id, subject: subject))
@@ -811,16 +824,18 @@ final class AskMishController {
         return (rows ?? []).map { AttachedThread(id: $0.id, subject: $0.subject) }
     }
 
-    /// The open thread plus every pinned thread as markdown, each injected
-    /// once per conversation. Ordering and dedup live in
-    /// `AskMishContext.threadsToInject` (pure, tested).
-    private func contextMessages() -> [LLMMessage] {
+    /// Refresh changed snapshots and retain unchanged ones. A context refresh
+    /// replaces its old copy instead of expanding history on every sync.
+    private func contextMessages(current: MailThread?) -> [LLMMessage] {
         guard let store else { return [] }
-        let current = includeSelectedThread ? store.selectedThread : nil
-        let ids = AskMishContext.threadsToInject(
+        let candidates = Set([current?.id].compactMap { $0 } + attachedThreads.map(\.id))
+        let revisions = Dictionary(uniqueKeysWithValues: candidates.map {
+            ($0, store.contentRevision(of: $0))
+        })
+        let ids = AskMishContext.threadsToRefresh(
             currentThreadID: current?.id,
             attachedThreadIDs: attachedThreads.map(\.id),
-            alreadyInjected: injectedThreadIDs)
+            currentRevisions: revisions, injectedRevisions: injectedThreadRevisions)
         var subjects: [String: String] = [:]
         if let current { subjects[current.id] = current.subject }
         for attached in attachedThreads { subjects[attached.id] = attached.subject }
@@ -831,19 +846,27 @@ final class AskMishController {
             let headers = store.messageHeaders(inThread: id)
             let hydrated = store.messagesWithBodies(ids: headers.map(\.id))
             let bodies = hydrated.isEmpty ? headers : hydrated
-            guard !bodies.isEmpty else { continue }
-            injectedThreadIDs.insert(id)
+            guard !bodies.isEmpty else {
+                history = AskMishContext.removingContext(injectedThreadContexts[id], from: history)
+                injectedThreadContexts.removeValue(forKey: id)
+                injectedThreadRevisions.removeValue(forKey: id)
+                continue
+            }
             let budget = currentProviderConfig()?.kind == .ollama
                 ? LLMPrompts.localThreadContextBudget
                 : LLMPrompts.hostedThreadContextBudget
             // Budgeted once here. `contextMessage` must not budget again: its
             // markdown pass would re-split the text and cut the newest message.
-            messages.append(AskMishContext.contextMessage(
+            let context = AskMishContext.contextMessage(
                 threadId: id,
                 threadMarkdown: LLMPrompts.threadContext(
                     subject: subjects[id] ?? "", messages: bodies,
                     characterBudget: budget),
-                characterBudget: nil))
+                characterBudget: nil)
+            history = AskMishContext.removingContext(injectedThreadContexts[id], from: history)
+            injectedThreadContexts[id] = context
+            injectedThreadRevisions[id] = revisions[id]
+            messages.append(context)
         }
         return messages
     }
@@ -1115,8 +1138,9 @@ final class AskMishController {
 
     /// Adds the user turn (plus the thread context, when it is due) to the
     /// history, the transcript, and the database.
-    private func appendUser(_ text: String) async {
-        history.append(contentsOf: contextMessages())
+    private func appendUser(_ text: String, currentThread: MailThread?) async {
+        let contexts = contextMessages(current: currentThread)
+        history.append(contentsOf: contexts)
         let bubble = Bubble(id: UUID(), role: .user, text: text)
         bubbles.append(bubble)
         history.append(LLMMessage(role: .user, text: text))

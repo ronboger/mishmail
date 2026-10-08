@@ -72,6 +72,16 @@ struct ComposeView: View {
     @State private var linkIsEditing = false
     @State private var drafting = false
     @State private var inlineEditUndo: InlineAIEdit?
+    @State private var showAIInstructions = false
+    @State private var aiInstructions = ""
+    @FocusState private var aiInstructionsFocused: Bool
+    @State private var aiProposal: ComposeAIProposal?
+    @State private var aiProposalComplete = false
+    @State private var aiRequestFingerprint = ""
+    @State private var aiTask: Task<Void, Never>?
+    @State private var aiGeneration = 0
+    @State private var aiOperation: AIComposeOperation = .draft
+    @State private var aiRequestInstructions = ""
     @State private var error: String?
     /// Suggested replies for an empty reply body (chips above the quote pill).
     @State private var suggestedReplies: [String] = []
@@ -165,6 +175,7 @@ struct ComposeView: View {
         guard !didFinish else { return false }
         didFinish = true
         finish = kind
+        stopAIProposal()
         autosaveTask?.cancel()
         autosaveTask = nil
         bodyFocused = false
@@ -360,6 +371,14 @@ struct ComposeView: View {
          attachmentURLs.map(\.lastPathComponent).joined(separator: "|"),
          restoredAttachments.map(\.filename).joined(separator: "|")]
             .joined(separator: "\u{1e}")
+    }
+
+    private var aiInputFingerprint: String {
+        [contentFingerprint, toDraft, ccDraft, bccDraft].joined(separator: "\u{1e}")
+    }
+
+    private var aiRecipients: [String] {
+        toTokens + ccTokens + [toDraft, ccDraft].filter { $0.contains("@") }
     }
 
     /// Schedule a debounced silent autosave after the user types.
@@ -683,6 +702,7 @@ struct ComposeView: View {
             suggestRepliesIfEligible()
         }
         .onDisappear {
+            stopAIProposal()
             // Unmounted without an explicit exit: a new compose/reply request
             // replaced this card (single-key shortcuts allow that while
             // minimized). Keep the work as a draft instead of dropping it.
@@ -708,6 +728,7 @@ struct ComposeView: View {
         // Minimize keeps the card mounted (no onDisappear) — stop a live
         // suggestion stream instead of paying for chips nobody can see.
         .onChange(of: isMinimized) { _, minimized in
+            if minimized, drafting { stopAIProposal() }
             guard minimized, suggestionsLoading else { return }
             suggestionsGeneration &+= 1
             suggestionsTask?.cancel()
@@ -721,7 +742,10 @@ struct ComposeView: View {
         // ContentView Esc while expanded compose has NSText focus (close button
         // `.cancelAction` does not fire then). Sheets first, then save & close.
         .onChange(of: store.composeEscToken) { handleComposeEsc() }
-        .onChange(of: body_) { scheduleAutosave() }
+        .onChange(of: body_) {
+            if let edit = inlineEditUndo, body_ != edit.appliedBody { inlineEditUndo = nil }
+            scheduleAutosave()
+        }
         .onChange(of: subject) { scheduleAutosave() }
         .onChange(of: toTokens) { scheduleAutosave() }
         .onChange(of: ccTokens) { scheduleAutosave() }
@@ -1303,6 +1327,11 @@ struct ComposeView: View {
                     .padding(.bottom, 4)
             }
 
+            if showAIInstructions || aiProposal != nil {
+                composeAIProposalPanel
+                    .padding(.bottom, 6)
+            }
+
             if let edit = inlineEditUndo {
                 composeAIDiffBar(edit)
                     .padding(.bottom, 6)
@@ -1370,15 +1399,17 @@ struct ComposeView: View {
                         .keyboardShortcut("/", modifiers: .command)
                     }
 
-                    // Available for replies, forwards, and new mail — the draft is
-                    // generated locally and streamed into the body.
+                    // Instructions and the generated preview stay out of the
+                    // live draft until the user chooses Use draft.
                     if composeToolVisible(.ai) {
                         footerButton(
                             drafting ? "hourglass" : ComposeToolbarItem.ai.systemImage,
                             help: ComposeToolbarItem.ai.help,
                             label: ComposeToolbarItem.ai.title
-                        ) { draftWithAI() }
-                            .disabled(drafting)
+                        ) {
+                            showAIInstructions.toggle()
+                            aiInstructionsFocused = showAIInstructions
+                        }
 
                         Menu {
                             Button("Rewrite") {
@@ -1409,10 +1440,10 @@ struct ComposeView: View {
                         .buttonStyle(.plain)
                         .menuIndicator(.hidden)
                         .fixedSize()
-                        .help("Edit selection with AI")
+                        .help("Edit the selection, or the whole draft, with AI")
                         .accessibilityLabel("AI edit")
                         .accessibilityIdentifier("compose.aiEdit")
-                        .disabled(drafting || bodySelection.length == 0)
+                        .disabled(drafting || (bodySelection.length == 0 && authoredHeadIsEmpty))
                     }
 
                     // Markdown format strip (bold/italic/headers/math…). Link is
@@ -1937,12 +1968,18 @@ struct ComposeView: View {
         // Thread payloads load headers + snippets only; hydrate the body the
         // way the old flow did or the prompt can be an empty context.
         let hydrated = store.messagesWithBodies(ids: [source.id]).first ?? source
+        let conversation = ThreadSummaryPolicy.sentMessages(
+            store.messages(inThread: source.threadId))
+        let budget = LLMTaskRunner.resolve(.triage)?.config.kind == .ollama ? 6_000 : 12_000
         let prompt = LLMPrompts.quickReplies(
             subject: subject,
             latestFrom: source.fromHeader,
             latestBody: String(MessageParser.replyQuotableText(
                 text: hydrated.bodyText, html: hydrated.bodyHTML).prefix(2_000)),
-            userEmail: fromEmail)
+            userEmail: fromEmail,
+            threadContext: LLMPrompts.threadContext(
+                subject: subject, messages: conversation, characterBudget: budget),
+            writingInstructions: AIWritingPreferences.instructions())
 
         suggestionsTask = Task {
             var raw = ""
@@ -2006,53 +2043,41 @@ struct ComposeView: View {
     }
 
     private func draftWithAI() {
-        drafting = true
-        error = nil
-        inlineEditUndo = nil
-        // Split off any quoted original: everything above it is the "intent",
-        // the quote is preserved below the streamed draft.
-        let quoteStart = body_.range(of: "\n" + ForwardComposer.marker)
-            ?? body_.range(of: "\nOn ")
-        let quote = quoteStart.map { String(body_[$0.lowerBound...]) } ?? ""
-        let intent = String(quoteStart.map { body_[..<$0.lowerBound] } ?? Substring(body_))
-            .trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !drafting, !didFinish else { return }
+        let head = String(body_[..<authoredHeadEnd])
+        let intent = aiInstructions.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard original != nil || !intent.isEmpty || !head.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        else {
+            error = "Add a short instruction or some notes to draft an email."
+            aiInstructionsFocused = true
+            return
+        }
+        aiOperation = .draft
+        let resolved = LLMTaskRunner.resolve(.drafts)
         let prompt: String
         if let original {
-            prompt = LLMPrompts.draftReply(
-                originalFrom: original.fromHeader,
-                originalBody: MessageParser.replyQuotableText(
-                    text: original.bodyText, html: original.bodyHTML),
-                intent: intent,
-                userEmail: fromEmail,
-                characterBudget: LLMTaskRunner.resolve(.drafts)?.config.kind == .ollama
-                    ? LLMPrompts.localDraftOriginalBudget
-                    : LLMPrompts.hostedDraftOriginalBudget)
-        } else {
-            prompt = LLMPrompts.draftNew(intent: intent, userEmail: fromEmail)
-        }
-        let quoteTail = quote.isEmpty ? "" : "\n" + quote
-        Task {
-            do {
-                // Stream tokens in as the local model produces them.
-                var accumulated = ""
-                for try await piece in LLMTaskRunner.stream(
-                    task: .drafts, prompt: prompt,
-                    onNotice: { notice in self.error = notice }) {
-                    accumulated += piece
-                    let snapshot = accumulated
-                    await MainActor.run {
-                        // Caret follows the growing draft (end of authored head).
-                        setBody(snapshot + quoteTail,
-                                caretUTF16: (snapshot as NSString).length)
-                    }
-                }
-            } catch {
-                await MainActor.run {
-                    self.error = LLMTaskRunner.errorMessage(error, task: .drafts)
-                }
+            var conversation = ThreadSummaryPolicy.sentMessages(
+                store.messages(inThread: original.threadId))
+            // A just-opened/unsynced source can precede its thread cache.
+            if conversation.isEmpty {
+                conversation = [store.messagesWithBodies(ids: [original.id]).first ?? original]
             }
-            await MainActor.run { drafting = false }
+            let budget = resolved?.config.kind == .ollama
+                ? LLMPrompts.localThreadContextBudget : LLMPrompts.hostedThreadContextBudget
+            prompt = LLMPrompts.draftThread(
+                context: LLMPrompts.threadContext(
+                    subject: original.subject, messages: conversation, characterBudget: budget),
+                intent: intent.isEmpty ? head : "\(intent)\n\nExisting draft / notes:\n\(head)",
+                userEmail: fromEmail,
+                recipients: aiRecipients, forwarding: request.forward)
+        } else {
+            prompt = LLMPrompts.draftNew(
+                intent: intent.isEmpty ? head : "\(intent)\n\nExisting draft / notes:\n\(head)",
+                userEmail: fromEmail, subject: subject, recipients: aiRecipients)
         }
+        startAIProposal(prompt: prompt,
+                        range: NSRange(location: 0, length: (head as NSString).length),
+                        resolved: resolved)
     }
 
     /// The current body selection, preferring the live editor over the last
@@ -2073,117 +2098,208 @@ struct ComposeView: View {
         return selection
     }
 
-    /// Replace the selected text, then stream the replacement into the same
-    /// anchor. The prefix/suffix snapshot mirrors draftWithAI's accumulated
-    /// streaming writes while allowing an arbitrary insertion point.
-    private func inlineEdit(_ edit: LLMPrompts.InlineEdit, tone: String? = nil) {
-        guard !drafting, let selection = currentBodySelection() else { return }
-        let source = body_ as NSString
-        let selectedText = source.substring(with: selection)
+    /// Preview an edit of the selection, or the authored draft when there is
+    /// no selection. The quoted original is never included by default.
+    private func inlineEdit(_ edit: LLMPrompts.InlineEdit, tone: String? = nil,
+                             range: NSRange? = nil) {
+        guard !drafting, !didFinish else { return }
+        let headLength = (String(body_[..<authoredHeadEnd]) as NSString).length
+        let selection = range ?? currentBodySelection() ?? NSRange(location: 0, length: headLength)
+        guard selection.length > 0 else { return }
+        guard let proposal = ComposeAIProposal(body: body_, range: selection) else { return }
+        let selectedText = proposal.selectedText
         let prompt = LLMPrompts.inlineEdit(edit, selection: selectedText, tone: tone)
-        let prefix = source.substring(to: selection.location)
-        let suffix = source.substring(from: selection.location + selection.length)
-        let insertionLocation = selection.location
-        let originalBody = prefix + selectedText + suffix
-        let originalCaret = insertionLocation + (selectedText as NSString).length
+        aiOperation = .edit(edit, tone)
+        startAIProposal(prompt: prompt, range: selection,
+                        resolved: LLMTaskRunner.resolve(.drafts))
+    }
 
-        setBody(prefix + suffix, caretUTF16: insertionLocation)
-        bodyFocused = true
+    private func startAIProposal(prompt: String, range: NSRange,
+                                 resolved: LLMTaskRunner.Resolved?) {
+        guard let proposal = ComposeAIProposal(body: body_, range: range) else { return }
+        stopAIProposal()
+        suggestionsGeneration &+= 1
+        suggestionsTask?.cancel()
+        suggestionsLoading = false
+        suggestionsDismissed = true
+        aiProposal = proposal
+        aiRequestFingerprint = aiInputFingerprint
+        aiRequestInstructions = aiInstructions
+        aiProposalComplete = false
+        let generation = aiGeneration
+        showAIInstructions = true
+        aiInstructionsFocused = false
         drafting = true
         error = nil
         inlineEditUndo = nil
-
-        Task {
+        aiTask = Task { @MainActor in
             var accumulated = ""
             do {
                 for try await piece in LLMTaskRunner.stream(
-                    task: .drafts, prompt: prompt,
-                    onNotice: { notice in self.error = notice }) {
+                    task: .drafts, prompt: prompt, using: resolved,
+                    onNotice: { notice in
+                        if aiGeneration == generation { error = notice }
+                    }) {
+                    guard !Task.isCancelled, aiGeneration == generation, !didFinish else { return }
                     accumulated += piece
-                    let snapshot = accumulated
-                    await MainActor.run {
-                        setBody(prefix + snapshot + suffix,
-                                caretUTF16: insertionLocation + (snapshot as NSString).length)
-                    }
+                    aiProposal?.text = accumulated
                 }
-                if accumulated.isEmpty {
-                    await MainActor.run {
-                        // Empty successful streams are failures too: do not
-                        // leave the user's selection deleted without undo.
-                        setBody(originalBody, caretUTF16: originalCaret)
-                        if self.error == nil { self.error = "The model returned no replacement." }
-                    }
+                guard !Task.isCancelled, aiGeneration == generation, !didFinish else { return }
+                if accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    aiProposal = nil
+                    if error == nil { error = "The model returned no draft. Your text is unchanged." }
                 } else {
-                    await MainActor.run {
-                        inlineEditUndo = InlineAIEdit(
-                            originalBody: originalBody,
-                            originalCaret: originalCaret,
-                            beforeText: selectedText,
-                            afterText: accumulated)
-                    }
+                    aiProposalComplete = error == nil
                 }
             } catch {
-                await MainActor.run {
-                    if accumulated.isEmpty {
-                        // Restore before presenting the provider error. Partial
-                        // replacements remain intact when a later token fails.
-                        setBody(originalBody, caretUTF16: originalCaret)
-                    }
-                    self.error = LLMTaskRunner.errorMessage(error, task: .drafts)
-                }
+                guard !Task.isCancelled, aiGeneration == generation, !didFinish else { return }
+                self.error = LLMTaskRunner.errorMessage(error, task: .drafts)
             }
-            await MainActor.run { drafting = false }
+            drafting = false
+            aiTask = nil
+        }
+    }
+
+    private func stopAIProposal() {
+        aiGeneration &+= 1
+        aiTask?.cancel()
+        aiTask = nil
+        drafting = false
+        aiProposalComplete = false
+    }
+
+    private func applyAIProposal() {
+        guard aiProposalComplete, aiRequestFingerprint == aiInputFingerprint,
+              let proposal = aiProposal, let updated = proposal.applying(to: body_) else { return }
+        let edit = InlineAIEdit(originalBody: proposal.originalBody,
+                                originalCaret: proposal.range.location + proposal.range.length,
+                                appliedBody: updated)
+        setBody(updated, caretUTF16: proposal.caretUTF16)
+        inlineEditUndo = edit
+        aiProposal = nil
+        aiProposalComplete = false
+        showAIInstructions = false
+        aiInstructions = ""
+        focusBody()
+    }
+
+    private var composeAIProposalPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles").foregroundStyle(Color.notionAccent)
+                TextField("What should this email say?", text: $aiInstructions)
+                    .textFieldStyle(.plain)
+                    .focused($aiInstructionsFocused)
+                    .onSubmit { regenerateAIProposal() }
+                    .accessibilityIdentifier("compose.aiInstructions")
+                if drafting {
+                    ProgressView().controlSize(.mini)
+                    Button("Stop") {
+                        stopAIProposal()
+                        error = "Generation stopped. Your draft is unchanged."
+                    }
+                    .buttonStyle(.plain)
+                } else {
+                    Button(aiProposal == nil ? "Draft" : "Regenerate") { regenerateAIProposal() }
+                        .buttonStyle(.plain)
+                        .foregroundStyle(Color.notionAccent)
+                }
+                Button {
+                    stopAIProposal()
+                    aiProposal = nil
+                    showAIInstructions = false
+                    focusBody()
+                } label: { Image(systemName: "xmark") }
+                .buttonStyle(.plain)
+                .pmHitTarget()
+                .help("Dismiss AI preview")
+                .accessibilityLabel("Dismiss AI preview")
+            }
+            .font(.system(size: 12))
+            if let proposal = aiProposal, !proposal.text.isEmpty {
+                ScrollView {
+                    Text(proposal.text)
+                        .font(.system(size: 12.5 * fontScale))
+                        .textSelection(.enabled)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                }
+                .frame(maxHeight: 150)
+                if !drafting {
+                    HStack(spacing: 12) {
+                        Button("Use draft") { applyAIProposal() }
+                            .buttonStyle(PressScaleButtonStyle())
+                            .foregroundStyle(Color.notionAccent)
+                            .disabled(!aiProposalComplete || aiRequestFingerprint != aiInputFingerprint)
+                            .accessibilityIdentifier("compose.aiApply")
+                        Button("Copy") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(proposal.text, forType: .string)
+                        }
+                        .buttonStyle(.plain)
+                        if aiRequestFingerprint != aiInputFingerprint {
+                            Text("Draft changed — regenerate to apply.")
+                                .foregroundStyle(.secondary)
+                        }
+                    }
+                    .font(.caption)
+                }
+            } else if !drafting {
+                Text("Use a short instruction, or turn the notes in your draft into an email.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        }
+        .padding(10)
+        .background(Color.notionAccent.opacity(0.06),
+                    in: RoundedRectangle(cornerRadius: PMRadius.md))
+        .accessibilityIdentifier("compose.aiPreview")
+    }
+
+    private enum AIComposeOperation {
+        case draft
+        case edit(LLMPrompts.InlineEdit, String?)
+    }
+
+    private func regenerateAIProposal() {
+        guard aiProposal != nil, aiInstructions == aiRequestInstructions else {
+            draftWithAI()
+            return
+        }
+        switch aiOperation {
+        case .draft:
+            draftWithAI()
+        case .edit(let edit, let tone):
+            let range = aiProposal.flatMap { $0.originalBody == body_ ? $0.range : nil }
+            inlineEdit(edit, tone: tone, range: range)
         }
     }
 
     private struct InlineAIEdit {
         var originalBody: String
         var originalCaret: Int
-        var beforeText: String
-        var afterText: String
+        var appliedBody: String
     }
 
     private func composeAIDiffBar(_ edit: InlineAIEdit) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(alignment: .top, spacing: 8) {
-                Text("Before")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 44, alignment: .leading)
-                Text(edit.beforeText)
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                    .strikethrough()
-                    .lineLimit(3)
-                    .textSelection(.enabled)
+        HStack(spacing: 8) {
+            Text("AI draft applied").foregroundStyle(.secondary)
+            Spacer(minLength: 8)
+            Button("Keep") {
+                inlineEditUndo = nil
+                focusBody()
             }
-            HStack(alignment: .top, spacing: 8) {
-                Text("After")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .frame(width: 44, alignment: .leading)
-                Text(edit.afterText)
-                    .font(.caption)
-                    .lineLimit(3)
-                    .textSelection(.enabled)
+            .buttonStyle(PressScaleButtonStyle())
+            .help("Keep the AI edit")
+            Button("Undo") {
+                setBody(edit.originalBody, caretUTF16: edit.originalCaret)
+                inlineEditUndo = nil
+                focusBody()
             }
-            HStack(spacing: 8) {
-                Button("Keep") {
-                    inlineEditUndo = nil
-                    focusBody()
-                }
-                .buttonStyle(PressScaleButtonStyle())
-                .help("Keep the AI edit")
-                Button("Undo") {
-                    setBody(edit.originalBody, caretUTF16: edit.originalCaret)
-                    inlineEditUndo = nil
-                    focusBody()
-                }
-                .buttonStyle(PressScaleButtonStyle())
-                .help("Restore the text from before the last AI edit")
-            }
-            .font(.caption)
+            .buttonStyle(PressScaleButtonStyle())
+            .help("Restore the text from before the last AI edit")
+            .disabled(body_ != edit.appliedBody)
         }
+        .font(.caption)
         .padding(8)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(Color.primary.opacity(0.04),

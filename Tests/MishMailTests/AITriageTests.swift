@@ -36,4 +36,14 @@ final class AITriageTests: XCTestCase {
             pausedUntil: now.addingTimeInterval(-1), now: now))
         XCTAssertEqual(AITriage.failurePause, 600)
     }
+
+    func testLocalEndpointDoesNotMakeAnOllamaCloudModelPrivate() {
+        var config = LLMProviderConfig(id: UUID(), kind: .ollama, label: "Local",
+                                        baseURL: "http://127.0.0.1:11434", defaultModel: "llama3.2", authMode: .apiKey)
+        XCTAssertFalse(AITriage.shouldSkipSilentAutoSort(config: config, model: "llama3.2"))
+        XCTAssertTrue(AITriage.shouldSkipSilentAutoSort(config: config, model: "minimax-m3:cloud"))
+        XCTAssertTrue(AITriage.shouldSkipSilentAutoSort(config: config, model: "gpt-oss:120b-cloud"))
+        config.defaultModel = "minimax-m3:cloud"
+        XCTAssertTrue(AITriage.shouldSkipSilentAutoSort(config: config))
+    }
 }

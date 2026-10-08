@@ -20,9 +20,11 @@ enum AITriage {
     /// Silent auto-sort must not upload inbox snippets to a cloud host.
     /// `nil` config means no provider resolved — do not skip; the classify
     /// pass runs and fails locally, same as before.
-    static func shouldSkipSilentAutoSort(config: LLMProviderConfig?) -> Bool {
+    static func shouldSkipSilentAutoSort(config: LLMProviderConfig?, model: String? = nil) -> Bool {
         guard let config else { return false }
         return LLMRemotePolicy.blocksSilentAutoSort(config)
+            || (config.kind == .ollama
+                && LLMRemotePolicy.isOllamaCloudModel(model ?? config.defaultModel))
     }
 
     static func isFailurePauseActive(pausedUntil: Date?, now: Date = Date()) -> Bool {

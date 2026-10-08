@@ -40,8 +40,8 @@ extension MailStore {
         // Auto-sort is silent. A cloud triage model would upload every new
         // snippet; skip unless the assigned provider stays on this Mac or
         // on the LAN (RFC1918 / link-local Ollama).
-        if AITriage.shouldSkipSilentAutoSort(
-            config: LLMTaskRunner.resolve(.triage)?.config) {
+        let resolved = LLMTaskRunner.resolve(.triage)
+        if AITriage.shouldSkipSilentAutoSort(config: resolved?.config, model: resolved?.model) {
             return
         }
         if AITriage.isFailurePauseActive(pausedUntil: autoClassifyPausedUntil) {
