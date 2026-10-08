@@ -1768,16 +1768,10 @@ struct MessageCard: View {
                 // show that head while collapsed — even if bodyHTML exists —
                 // so nested `>` history doesn't stay visible by default.
                 if hasQuotedTrail, let head = textHead, !showQuoted {
-                    Text(head)
-                        .font(.system(size: 14.5 * fontScale))
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
+                    PlainTextBody(text: head, fontScale: fontScale)
                 } else if showPlainText, !message.bodyText.isEmpty {
                     // Manual plain-text escape hatch (see header control).
-                    Text(message.bodyText)
-                        .font(.system(size: 14.5 * fontScale))
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
+                    PlainTextBody(text: message.bodyText, fontScale: fontScale)
                 } else if let html = (cidInlinedHTML ?? message.bodyHTML), !html.isEmpty {
                     // Structured quotes are removed before WebKit sees the
                     // document. Besides avoiding repeated history parsing,
@@ -1833,10 +1827,7 @@ struct MessageCard: View {
                 } else if !message.bodyText.isEmpty {
                     // Collapsed plain-text heads are handled above; this branch
                     // is full body (no trail, or showQuoted).
-                    Text(message.bodyText)
-                        .font(.system(size: 14.5 * fontScale))
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
+                    PlainTextBody(text: message.bodyText, fontScale: fontScale)
                 }
                 if hasQuotedTrail {
                     // Same pill as the compose card: the trail is one click
@@ -2310,6 +2301,30 @@ struct MessageCard: View {
 
 /// File chip under a message. The whole chrome Quick Looks, not just the
 /// filename. Eye and Save keep their own trailing hit targets.
+/// A plain-text message body. Web links and addresses in it are clickable
+/// (`PlainTextLinks`): only http, https and mailto, and a link always shows
+/// its own destination.
+private struct PlainTextBody: View {
+    let text: String
+    let fontScale: Double
+
+    var body: some View {
+        Text(PlainTextLinks.attributed(text))
+            .font(.system(size: 14.5 * fontScale))
+            .lineSpacing(3)
+            .textSelection(.enabled)
+            .tint(Color.notionAccent)
+            .environment(\.openURL, OpenURLAction { url in
+                // Hand the link to the system, as the HTML body does; never
+                // navigate inside the app. Anything off the allow-list is inert.
+                if let external = PlainTextLinks.externalURL(for: url) {
+                    NSWorkspace.shared.open(external)
+                }
+                return .handled
+            })
+    }
+}
+
 private struct MessageAttachmentChip: View {
     let filename: String
     let sizeBytes: Int
