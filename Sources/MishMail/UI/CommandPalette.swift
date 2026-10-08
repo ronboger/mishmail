@@ -109,68 +109,78 @@ struct CommandPalette: View {
         }
     }
 
+    /// Rows come from `PaletteCommands` (pure, unit-tested); this view only
+    /// supplies the context and turns each action into a store call.
     private var commands: [Command] {
-        var cmds: [Command] = [
-            Command(id: "compose", title: "Compose New Message", icon: "square.and.pencil") {
-                $0.openCompose(.init(replyTo: nil))
+        let checkedIds = store.checkedThreadIds
+        let context = PaletteCommands.Context(
+            focused: store.selectedThread.map {
+                .init(isStarred: $0.isStarred, isUnread: $0.isUnread)
             },
-            Command(id: "sync", title: "Sync All Accounts", icon: "arrow.clockwise") { s in
-                Task { await s.syncAll() }
-            },
-            Command(id: "askmish", title: "Ask Mish", icon: "bubble.left.and.text.bubble.right") { $0.showAskMish.toggle() },
-            Command(id: "aisort", title: "Sort Inbox with AI", icon: "sparkles") { $0.classifyInbox() },
-            Command(id: "newview", title: "Add View…", icon: "plus") {
-                $0.editingView = SavedView.empty()
-            },
-            Command(id: "notionmail", title: "Moving from Notion Mail…",
-                    icon: "arrow.right.doc.on.clipboard") { s in
-                UserDefaults.standard.set(SettingsView.Pane.notionMail.rawValue,
-                                          forKey: "settingsPane")
-                openSettings()
-                s.showCommandPalette = false
-            },
-        ]
-        // Context actions on the selected thread, so Cmd-K can drive the
-        // keyboard-first flow end to end (Notion Mail-style).
-        if let thread = store.selectedThread {
-            cmds.append(contentsOf: [
-                Command(id: "act.archive", title: "Archive Conversation", icon: "archivebox", shortcut: .archive) { $0.archive(thread) },
-                Command(id: "act.trash", title: "Trash Conversation", icon: "trash", shortcut: .trash) { $0.trash(thread) },
-                Command(id: "act.star", title: thread.isStarred ? "Unstar Conversation" : "Star Conversation",
-                        icon: thread.isStarred ? "star.slash" : "star", shortcut: .toggleStar) { $0.toggleStar(thread) },
-                Command(id: "act.read", title: thread.isUnread ? "Mark Read" : "Mark Unread",
-                        icon: thread.isUnread ? "envelope.open" : "envelope", shortcut: .toggleRead) {
-                    $0.setRead(thread, read: thread.isUnread)
-                },
-                Command(id: "act.snooze", title: "Snooze Until Tomorrow", icon: "clock") {
-                    $0.snooze(thread, until: MailStore.snoozeDate(hour: 8, addDays: 1))
-                },
-                Command(id: "act.snoozeCustom", title: "Snooze Until…", icon: "calendar.badge.clock") {
-                    $0.snoozingThread = thread
-                },
-                Command(id: "act.reply", title: "Reply", icon: "arrowshape.turn.up.left", shortcut: .reply) { $0.perform(.reply) },
-                Command(id: "act.replyAll", title: "Reply All", icon: "arrowshape.turn.up.left.2", shortcut: .replyAll) { $0.perform(.replyAll) },
-                Command(id: "act.forward", title: "Forward", icon: "arrowshape.turn.up.right", shortcut: .forward) { $0.perform(.forward) },
-                Command(id: "act.label", title: "Label Conversation…", icon: "tag", shortcut: .label) { $0.perform(.label) },
-                Command(id: "act.copyLink", title: "Copy Gmail Link to Conversation", icon: "link") {
-                    $0.copyThreadLink(thread)
-                },
-            ])
+            checked: checkedIds.isEmpty ? [] : store.threads
+                .filter { checkedIds.contains($0.id) }
+                .map { .init(isStarred: $0.isStarred, isUnread: $0.isUnread) },
+            checkedCount: checkedIds.count,
+            savedViews: store.savedViews.map { .init(id: $0.id ?? -1, name: $0.name) })
+        return PaletteCommands.entries(context).map { entry in
+            Command(id: entry.id, title: entry.title, icon: entry.icon,
+                    shortcut: entry.shortcut) { [openSettings] store in
+                Self.run(entry.action, on: store, openSettings: openSettings)
+            }
         }
-        let builtins: [MailboxView] = [.inbox, .promotions, .social, .starred, .snoozed,
-                                       .reminders, .drafts, .sent, .allMail, .trash]
-        for v in builtins {
-            cmds.append(Command(id: "view.\(v.title)", title: "Go to \(v.title)", icon: "tray") { s in
-                s.goTo(v)
-            })
+    }
+
+    private static func run(_ action: PaletteCommands.Action, on store: MailStore,
+                            openSettings: OpenSettingsAction) {
+        switch action {
+        case .compose:
+            store.openCompose(.init(replyTo: nil))
+        case .syncAll:
+            Task { await store.syncAll() }
+        case .toggleAskMish:
+            store.showAskMish.toggle()
+        case .sortInboxWithAI:
+            store.classifyInbox()
+        case .addView:
+            store.editingView = SavedView.empty()
+        case .notionMailSettings:
+            UserDefaults.standard.set(SettingsView.Pane.notionMail.rawValue,
+                                      forKey: "settingsPane")
+            openSettings()
+            store.showCommandPalette = false
+        case .perform(let command):
+            store.perform(command)
+        case .snoozeTomorrow:
+            let date = MailStore.snoozeDate(hour: 8, addDays: 1)
+            if !store.checkedThreadIds.isEmpty {
+                store.snoozeChecked(until: date)
+            } else if let thread = store.selectedThread {
+                store.snooze(thread, until: date)
+            }
+        case .copyLink:
+            if let thread = store.selectedThread { store.copyThreadLink(thread) }
+        case .goTo(let mailbox):
+            store.goTo(mailboxView(mailbox))
+        case .goToSaved(let id, let name):
+            store.goTo(.saved(id, name))
+        case .search(let text):
+            store.commitSearch(text)
         }
-        for v in store.savedViews {
-            cmds.append(Command(id: "saved.\(v.id ?? -1)", title: "Go to \(v.name)",
-                                icon: "line.3.horizontal.decrease.circle") { s in
-                s.goTo(.saved(v.id ?? -1, v.name))
-            })
+    }
+
+    private static func mailboxView(_ mailbox: BuiltinMailbox) -> MailboxView {
+        switch mailbox {
+        case .inbox: return .inbox
+        case .promotions: return .promotions
+        case .social: return .social
+        case .starred: return .starred
+        case .snoozed: return .snoozed
+        case .reminders: return .reminders
+        case .drafts: return .drafts
+        case .sent: return .sent
+        case .allMail: return .allMail
+        case .trash: return .trash
         }
-        return cmds
     }
 
     private var filtered: [Command] {
