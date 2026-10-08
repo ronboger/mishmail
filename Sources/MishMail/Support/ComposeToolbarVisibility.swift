@@ -46,7 +46,7 @@ enum ComposeToolbarItem: String, CaseIterable, Identifiable, Codable {
         case .attach: return "Attach files"
         case .link: return "Insert link (⌘K)"
         case .snippets: return "Insert a saved snippet (⌘/)"
-        case .ai: return "Draft with local AI (Ollama)"
+        case .ai: return "Write with AI — give instructions and review a draft"
         case .bold: return "Bold (⌘B)"
         case .italic: return "Italic (⌘I)"
         case .strikethrough: return "Strikethrough (⌘⇧X)"

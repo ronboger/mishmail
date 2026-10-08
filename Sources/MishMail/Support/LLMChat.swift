@@ -403,6 +403,14 @@ enum LLMEndpoint {
 /// Whether a provider sends mail text off this Mac, and whether a custom
 /// host still needs an explicit consent (preset hosts are expected).
 enum LLMRemotePolicy {
+    /// Ollama's local daemon can proxy cloud inference. Official cloud tags
+    /// must not be treated as on-device just because the URL is loopback.
+    static func isOllamaCloudModel(_ model: String) -> Bool {
+        let name = model.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return name.hasSuffix(":cloud") || name.hasSuffix("-cloud")
+            || name.hasSuffix("-cloud:latest")
+    }
+
     /// Hosts we ship as presets. Mail to these is expected; a typed-in
     /// host needs a confirm because it receives mail content.
     static let knownHosts: Set<String> = [

@@ -79,6 +79,8 @@ struct ThreadDetailView: View {
         didSet {
             messageRoles = ThreadMessageRoles(messages: messages)
             toolbarModel.publish(threadId: thread.id, messages: messages)
+            summaryFingerprint = ThreadSummaryPolicy.fingerprint(subject: thread.subject, messages: messages)
+            summaryEligible = ThreadSummaryPolicy.isWorthSummarizing(messages)
         }
     }
     /// Draft vs sent split of `messages`, derived once per change instead of
@@ -94,10 +96,14 @@ struct ThreadDetailView: View {
     /// Identifies the running summary so a late stream cannot write into
     /// the next thread after the user moves on.
     @State private var summaryRequestId: UUID?
+    @State private var summaryTask: Task<Void, Never>?
+    @State private var summaryFingerprint = ""
+    @State private var summaryEligible = false
+    @State private var summarySourceFingerprint = ""
     @State private var summarizing = false
     @State private var summaryError: String?
-    /// Persisted MCP / agent summary (`threadSummary` row). Shown only when no
-    /// ephemeral model summary is present.
+    @AppStorage(ThreadSummaryPolicy.autoSummarizeKey) private var autoSummarizeLocal = false
+    /// Completed summaries are cached locally and carry their source fingerprint.
     @State private var persistedSummary: ThreadSummaryRow?
     /// Session opt-in: Load images for every card in this thread.
     @State private var loadRemoteImagesForThread = false
@@ -170,6 +176,9 @@ struct ThreadDetailView: View {
         _messages = State(initialValue: initialPayload.messages)
         _messageRoles = State(
             initialValue: ThreadMessageRoles(messages: initialPayload.messages))
+        _summaryFingerprint = State(initialValue: ThreadSummaryPolicy.fingerprint(
+            subject: thread.subject, messages: initialPayload.messages))
+        _summaryEligible = State(initialValue: ThreadSummaryPolicy.isWorthSummarizing(initialPayload.messages))
         _attachmentsByMessageId = State(
             initialValue: initialPayload.attachmentsByMessageId)
         _bodyPrepByMessageId = State(
@@ -403,6 +412,7 @@ struct ThreadDetailView: View {
             }
             .onDisappear {
                 toolbarModel.uninstall(threadId: thread.id)
+                cancelSummary()
                 scrollDisarmGate.setWheelArmed(false)
                 detailLoadGeneration &+= 1
                 refreshTask?.cancel()
@@ -938,7 +948,6 @@ struct ThreadDetailView: View {
         if inlineComposeActive {
             beginInlineComposeScroll(proxy: proxy)
         }
-        aiSummary = nil; summaryError = nil; summarizing = false; summaryRequestId = nil
         // Open the policy's default card set (newest only, or every sent card
         // in side-by-side) and hydrate bodies + CID/attachment recovery.
         seedExpandedMessagesIfNeeded()
@@ -1084,48 +1093,51 @@ struct ThreadDetailView: View {
         return items
     }
 
-    /// AI summary. Only offered for multi-message threads (a single short
-    /// message doesn't need one). Collapses to a one-line affordance until
-    /// asked; the summary streams from the selected provider. Ephemeral model
-    /// output takes precedence over a persisted MCP `threadSummary` row.
+    /// A compact brief at the point of reading. Cached text stays visible when
+    /// new mail arrives, with a freshness cue and a refresh action.
     @ViewBuilder
     private var summarySection: some View {
-        if messages.count >= 2 || (messages.first?.bodyText.count ?? 0) > 800 {
-            VStack(alignment: .leading, spacing: 6) {
-                if let aiSummary {
-                    HStack(alignment: .top, spacing: 8) {
-                        Image(systemName: "sparkles")
-                            .font(.system(size: 11 * fontScale))
-                            .foregroundStyle(.tint)
-                        Text(aiSummary)
-                            .font(.system(size: 12.5 * fontScale))
-                            .textSelection(.enabled)
-                            .frame(maxWidth: .infinity, alignment: .leading)
-                    }
-                    .padding(10)
-                    .background(Color.notionAccent.opacity(0.08), in: RoundedRectangle(cornerRadius: PMRadius.md))
-                } else if let persisted = persistedSummary {
+        VStack(alignment: .leading, spacing: 6) {
+            if summaryEligible || persistedSummary != nil || aiSummary != nil {
+                if let text = aiSummary ?? persistedSummary?.summary {
                     VStack(alignment: .leading, spacing: 4) {
                         HStack(alignment: .top, spacing: 8) {
                             Image(systemName: "sparkles")
                                 .font(.system(size: 11 * fontScale))
                                 .foregroundStyle(.tint)
-                            Text(persisted.summary)
+                            Text(text)
                                 .font(.system(size: 12.5 * fontScale))
                                 .textSelection(.enabled)
                                 .frame(maxWidth: .infinity, alignment: .leading)
                         }
                         HStack(spacing: 8) {
-                            Text("Summarized by \(persisted.model)")
+                            if summarizing {
+                                ProgressView().controlSize(.mini)
+                                Text("Summarizing…")
+                            } else if let row = persistedSummary, aiSummary == nil {
+                                Text(summaryFreshnessLabel(row))
+                            } else {
+                                Text("Thread summary")
+                            }
                             Spacer(minLength: 8)
-                            Text("Summary generated \(persisted.updatedAt.formatted(date: .abbreviated, time: .shortened))")
+                            if summarizing {
+                                Button("Stop") { cancelSummary() }
+                                    .buttonStyle(.plain)
+                            } else {
+                                Button("Refresh") { summarizeThread() }
+                                    .buttonStyle(.plain)
+                                    .help("Update the summary and next action from the current conversation")
+                                    .accessibilityIdentifier("thread.summaryRefresh")
+                            }
                         }
                         .font(.system(size: 10.5 * fontScale))
                         .foregroundStyle(.secondary)
                     }
                     .padding(10)
                     .background(Color.notionAccent.opacity(0.08), in: RoundedRectangle(cornerRadius: PMRadius.md))
+                    .accessibilityIdentifier("thread.summary")
                 } else {
+                    HStack(spacing: 8) {
                     Button { summarizeThread() } label: {
                         HStack(spacing: 4) {
                             Image(systemName: summarizing ? "hourglass" : "sparkles")
@@ -1137,6 +1149,14 @@ struct ThreadDetailView: View {
                     .buttonStyle(.plain)
                     .disabled(summarizing)
                     .help("Generate an AI TL;DR of this thread")
+                    .accessibilityIdentifier("thread.summarize")
+                    if summarizing {
+                        Button("Stop") { cancelSummary() }
+                            .buttonStyle(.plain)
+                            .font(.system(size: 11 * fontScale))
+                            .foregroundStyle(.secondary)
+                    }
+                    }
                 }
                 if let summaryError {
                     Text(summaryError)
@@ -1144,62 +1164,140 @@ struct ThreadDetailView: View {
                         .foregroundStyle(.secondary)
                 }
             }
-            .padding(.horizontal)
-            .task(id: thread.id) {
-                await loadPersistedSummary()
-            }
         }
+        .padding(.horizontal)
+        .task(id: summaryFingerprint) {
+            if summarySourceFingerprint != summaryFingerprint {
+                cancelSummary()
+                aiSummary = nil
+                summaryError = nil
+            }
+            await loadPersistedSummary()
+            guard !Task.isCancelled, !summarizing,
+                  let resolved = LLMTaskRunner.resolve(.summaries),
+                  ThreadSummaryPolicy.shouldAutoSummarize(
+                    messages: messages, config: resolved.config, model: resolved.model,
+                    enabled: autoSummarizeLocal),
+                  persistedSummary.map({ !ThreadSummaryPolicy.isCurrent($0, fingerprint: summaryFingerprint) }) ?? true
+            else { return }
+            summarizeThread(quiet: true)
+        }
+    }
+
+    private func summaryFreshnessLabel(_ row: ThreadSummaryRow) -> String {
+        if ThreadSummaryPolicy.isCurrent(row, fingerprint: summaryFingerprint) {
+            return "\(row.model) · \(row.updatedAt.formatted(date: .abbreviated, time: .omitted))"
+        }
+        return row.contentFingerprint == nil
+            ? "Refresh to verify this summary" : "New messages since this summary"
+    }
+
+    private func cancelSummary() {
+        if summarizing { aiSummary = nil }
+        summaryRequestId = nil
+        summaryTask?.cancel()
+        summaryTask = nil
+        summarizing = false
     }
 
     private func loadPersistedSummary() async {
         let id = thread.id
+        let fingerprint = summaryFingerprint
         let row = try? await AppDatabase.shared.dbPool.read { db in
             try ThreadSummaryRow.fetchOne(db, key: id)
         }
         await MainActor.run {
-            guard thread.id == id else { return }
+            guard !Task.isCancelled, thread.id == id, summaryFingerprint == fingerprint else { return }
             persistedSummary = row
         }
     }
 
-    private func summarizeThread() {
+    private func summarizeThread(quiet: Bool = false) {
+        guard !summarizing, !summaryFingerprint.isEmpty else { return }
         summarizing = true
         summaryError = nil
         aiSummary = nil
+        let fingerprint = summaryFingerprint
+        summarySourceFingerprint = fingerprint
         // Summary needs full bodies; hydrate anything still header-only.
-        let ids = messages.map(\.id)
+        let sent = ThreadSummaryPolicy.sentMessages(messages)
+        let ids = sent.map(\.id)
         let fullById = Dictionary(uniqueKeysWithValues:
             store.messagesWithBodies(ids: ids).map { ($0.id, $0) })
-        let fullMessages = messages.map { fullById[$0.id] ?? $0 }
-        let budget = LLMTaskRunner.resolve(.summaries)?.config.kind == .ollama
+        let fullMessages = sent.map { fullById[$0.id] ?? $0 }
+        let hasMissingBodies = fullMessages.contains {
+            ThreadRefresh.needsBodyLoad($0) && !$0.snippet.isEmpty
+        }
+        let resolved = LLMTaskRunner.resolve(.summaries)
+        let budget = resolved?.config.kind == .ollama
             ? LLMPrompts.localThreadContextBudget
             : LLMPrompts.hostedThreadContextBudget
         let body = LLMPrompts.threadContext(
             subject: thread.subject, messages: fullMessages, characterBudget: budget)
-        let prompt = LLMPrompts.summarize(subject: thread.subject, body: body)
+        let prompt = LLMPrompts.summarize(subject: thread.subject, body: body,
+                                        userEmail: thread.accountId)
         let requestId = UUID()
         summaryRequestId = requestId
-        Task { @MainActor in
+        summaryTask = Task { @MainActor in
             var accumulated = ""
             do {
                 for try await piece in LLMTaskRunner.stream(
-                    task: .summaries, prompt: prompt,
+                    task: .summaries, prompt: prompt, using: resolved,
                     onNotice: { notice in
                         if summaryRequestId == requestId { summaryError = notice }
                     }) {
-                    guard summaryRequestId == requestId else { return }
+                    guard !Task.isCancelled, summaryRequestId == requestId,
+                          summaryFingerprint == fingerprint else { return }
                     accumulated += piece
                     aiSummary = accumulated
                 }
-                guard summaryRequestId == requestId else { return }
-                if accumulated.isEmpty, summaryError == nil {
+                guard !Task.isCancelled, summaryRequestId == requestId,
+                      summaryFingerprint == fingerprint else { return }
+                let text = accumulated.trimmingCharacters(in: .whitespacesAndNewlines)
+                if text.isEmpty, summaryError == nil {
                     summaryError = "No summary was produced."
+                    aiSummary = nil
+                } else if hasMissingBodies, summaryError == nil {
+                    summaryError = "Some message bodies are unavailable. This summary uses previews; refresh after mail loads."
+                } else if summaryError == nil {
+                    let row = ThreadSummaryRow(threadId: thread.id, summary: text,
+                                               model: resolved?.model ?? "AI", updatedAt: Date(),
+                                               contentFingerprint: fingerprint)
+                    // Check the source again in the same transaction as the
+                    // cache write: sync may land before this view refreshes.
+                    do {
+                        let saved = try await AppDatabase.shared.dbPool.write { db -> Bool in
+                            guard let current = try MailThread.fetchOne(db, key: row.threadId) else { return false }
+                            let headers = try Message.filter(Column("threadId") == row.threadId).fetchAll(db)
+                            guard ThreadSummaryPolicy.fingerprint(subject: current.subject, messages: headers)
+                                    == fingerprint else { return false }
+                            try row.save(db)
+                            return true
+                        }
+                        guard !Task.isCancelled, summaryRequestId == requestId else { return }
+                        if saved {
+                            persistedSummary = row
+                            aiSummary = nil
+                        } else {
+                            aiSummary = nil
+                            summaryError = "The conversation changed. Refresh the summary."
+                        }
+                    } catch {
+                        guard !Task.isCancelled, summaryRequestId == requestId else { return }
+                        summaryError = "Summary is shown, but couldn't be saved for next time."
+                    }
                 }
             } catch {
-                guard summaryRequestId == requestId else { return }
-                summaryError = LLMTaskRunner.errorMessage(error, task: .summaries)
+                guard !Task.isCancelled, summaryRequestId == requestId else { return }
+                aiSummary = nil
+                if !quiet { summaryError = LLMTaskRunner.errorMessage(error, task: .summaries) }
+            }
+            if quiet, summaryError != nil {
+                aiSummary = nil
+                summaryError = nil
             }
             summarizing = false
+            summaryTask = nil
         }
     }
 
@@ -1768,16 +1866,10 @@ struct MessageCard: View {
                 // show that head while collapsed — even if bodyHTML exists —
                 // so nested `>` history doesn't stay visible by default.
                 if hasQuotedTrail, let head = textHead, !showQuoted {
-                    Text(head)
-                        .font(.system(size: 14.5 * fontScale))
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
+                    PlainTextBody(text: head, fontScale: fontScale)
                 } else if showPlainText, !message.bodyText.isEmpty {
                     // Manual plain-text escape hatch (see header control).
-                    Text(message.bodyText)
-                        .font(.system(size: 14.5 * fontScale))
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
+                    PlainTextBody(text: message.bodyText, fontScale: fontScale)
                 } else if let html = (cidInlinedHTML ?? message.bodyHTML), !html.isEmpty {
                     // Structured quotes are removed before WebKit sees the
                     // document. Besides avoiding repeated history parsing,
@@ -1833,10 +1925,7 @@ struct MessageCard: View {
                 } else if !message.bodyText.isEmpty {
                     // Collapsed plain-text heads are handled above; this branch
                     // is full body (no trail, or showQuoted).
-                    Text(message.bodyText)
-                        .font(.system(size: 14.5 * fontScale))
-                        .lineSpacing(3)
-                        .textSelection(.enabled)
+                    PlainTextBody(text: message.bodyText, fontScale: fontScale)
                 }
                 if hasQuotedTrail {
                     // Same pill as the compose card: the trail is one click
@@ -2310,6 +2399,30 @@ struct MessageCard: View {
 
 /// File chip under a message. The whole chrome Quick Looks, not just the
 /// filename. Eye and Save keep their own trailing hit targets.
+/// A plain-text message body. Web links and addresses in it are clickable
+/// (`PlainTextLinks`): only http, https and mailto, and a link always shows
+/// its own destination.
+private struct PlainTextBody: View {
+    let text: String
+    let fontScale: Double
+
+    var body: some View {
+        Text(PlainTextLinks.attributed(text))
+            .font(.system(size: 14.5 * fontScale))
+            .lineSpacing(3)
+            .textSelection(.enabled)
+            .tint(Color.notionAccent)
+            .environment(\.openURL, OpenURLAction { url in
+                // Hand the link to the system, as the HTML body does; never
+                // navigate inside the app. Anything off the allow-list is inert.
+                if let external = PlainTextLinks.externalURL(for: url) {
+                    NSWorkspace.shared.open(external)
+                }
+                return .handled
+            })
+    }
+}
+
 private struct MessageAttachmentChip: View {
     let filename: String
     let sizeBytes: Int

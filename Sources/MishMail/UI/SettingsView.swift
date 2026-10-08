@@ -1578,6 +1578,8 @@ struct AISettings: View {
     @State private var contextTokens: Int = Ollama.contextTokens
     @AppStorage(MailStore.autoClassifyKey) private var autoClassify = true
     @AppStorage(MailStore.suggestRepliesKey) private var suggestReplies = true
+    @AppStorage(AIWritingPreferences.storageKey) private var writingInstructions = ""
+    @AppStorage(ThreadSummaryPolicy.autoSummarizeKey) private var autoSummarizeLocal = false
     @State private var providers: [LLMProviderConfig] = LLMProviderStore.load()
     @State private var editingProvider: LLMProviderConfig?
     @State private var addingProvider = false
@@ -1779,6 +1781,32 @@ struct AISettings: View {
                 }
 
                 Section {
+                    TextField("E.g. Keep it brief, use a warm tone, sign off with my first name",
+                              text: $writingInstructions, axis: .vertical)
+                        .lineLimit(3...6)
+                        .onChange(of: writingInstructions) {
+                            let normalized = AIWritingPreferences.normalized(writingInstructions)
+                            if writingInstructions.count > AIWritingPreferences.characterLimit {
+                                writingInstructions = normalized
+                            }
+                        }
+                        .accessibilityLabel("AI writing preferences")
+                        .accessibilityIdentifier("settings.aiWritingPreferences")
+                } header: {
+                    Text("How I write")
+                } footer: {
+                    Text("Remember your tone, sign-off, or booking link for drafts, suggested replies, and Ask Mish. Specific instructions for an email take precedence.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Toggle("Summarize long threads on this Mac", isOn: $autoSummarizeLocal)
+                } footer: {
+                    Text("When you open a long conversation, prepare a short summary and next action using local Ollama. Completed summaries are saved and flag new replies. Hosted and LAN models require the Summarize button.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
                     Toggle("Suggest replies when you reply", isOn: $suggestReplies)
                 } footer: {
                     Text("Opening a reply shows up to three suggested responses inside the compose card. Uses the Triage model above; the strip names the model it used.")
@@ -1827,7 +1855,7 @@ struct AISettings: View {
     private var triageSendsOffDevice: Bool {
         let assignment = LLMProviderStore.assignment(for: .triage)
         let config = providers.first { $0.id == assignment.providerID }
-        return config.map(LLMRemotePolicy.blocksSilentAutoSort) ?? false
+        return AITriage.shouldSkipSilentAutoSort(config: config, model: assignment.model)
     }
 
     @ViewBuilder

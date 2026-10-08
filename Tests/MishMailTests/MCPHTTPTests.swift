@@ -50,9 +50,7 @@ final class MCPHTTPTests: XCTestCase {
         XCTAssertTrue(text.contains("Connection: close\r\n"))
         XCTAssertTrue(text.contains("Content-Type: application/json\r\n"))
         XCTAssertTrue(text.hasSuffix("\r\n\r\n{\"ok\":true}") || text.contains("\r\n\r\n{\"ok\":true}"))
-        // Body is exact tail after blank line.
-        let parts = data.split(separator: UInt8(0x0A), omittingEmptySubsequences: false)
-        // Simpler: find \r\n\r\n
+        // Body is exact tail after blank line: find \r\n\r\n
         let sep = Data([0x0D, 0x0A, 0x0D, 0x0A])
         let range = data.range(of: sep)!
         XCTAssertEqual(data.subdata(in: range.upperBound..<data.endIndex), body)

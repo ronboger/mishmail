@@ -283,6 +283,23 @@ Fixed shortcuts (not customizable):
 
 Mail text stays on this Mac unless you assign a task to a hosted model.
 
+In compose, **AI draft** opens a short instruction field (for example, “ask
+for two more days”). Replies use the conversation, including earlier
+decisions, and stream into a separate preview. **Use draft** applies it;
+**Undo** restores your text. Rewrite, shorten, and tone changes work on a
+selection or the whole authored draft. Generated text never overwrites edits
+made while the model is working. Set your preferred tone, sign-off, or booking
+link once in **Settings → AI → How I write**; drafts, suggested replies, and
+Ask Mish reuse it.
+
+Thread summaries include the current state and a **Next** action. Completed
+summaries are saved locally; new replies flag them for **Refresh**. In
+**Settings → AI**, you can opt into summaries when opening long threads with
+Ollama on this Mac. Hosted and LAN models always use the explicit summary
+button. Ask Mish refreshes changed open and pinned conversations on the next
+question, and keeps each question tied to the thread that was selected when
+you asked it.
+
 **Local (default).** Install [Ollama](https://ollama.com) and pull a small model:
 
 ```sh

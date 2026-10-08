@@ -50,10 +50,11 @@ enum LLMTaskRunner {
     /// `onNotice` instead, or to the log when the caller has no place to
     /// show it.
     static func stream(task: LLMTask, prompt: String,
+                       using resolved: Resolved? = nil,
                        maxOutputTokens: Int? = nil,
                        onNotice: (@MainActor @Sendable (String) -> Void)? = nil)
         -> AsyncThrowingStream<String, Error> {
-        guard let resolved = resolve(task) else {
+        guard let resolved = resolved ?? resolve(task) else {
             return AsyncThrowingStream { continuation in
                 continuation.finish()
             }
@@ -64,7 +65,8 @@ enum LLMTaskRunner {
                 do {
                     for try await event in await LLMClient.shared.stream(
                         messages: [
-                            LLMMessage(role: .system, text: LLMPrompts.systemPrompt(for: task)),
+                            LLMMessage(role: .system, text: LLMPrompts.systemPrompt(
+                                for: task, writingInstructions: AIWritingPreferences.instructions())),
                             LLMMessage(role: .user, text: prompt),
                         ],
                         tools: [], config: resolved.config, model: resolved.model,

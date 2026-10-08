@@ -11,6 +11,27 @@ minor versions may still change behavior.
 
 ## [Unreleased]
 
+### Added
+- **AI draft in compose.** Give a short instruction ("ask for two more
+  days"); the draft streams into a separate preview. **Use draft** applies
+  it and **Undo** restores your text. Rewrite, shorten and tone changes work
+  on a selection or the whole draft.
+- **How I write** (Settings → AI): set tone, sign-off or a booking link once.
+  Drafts, suggested replies and Ask Mish use it.
+- **Summaries know when they are stale.** A saved thread summary is flagged
+  for Refresh when a new reply arrives.
+- **Paste a recipient list.** A pasted list (commas, semicolons, new lines,
+  or a column of addresses) becomes one chip per mailbox, without
+  duplicates. A comma inside a quoted name no longer erases what you typed.
+- **Clickable links in plain-text mail.** Web links and addresses in a
+  plain-text body open in the browser or a new message.
+- **Cmd-K acts on checked conversations.** Archive, Trash, Star, Mark Read,
+  Snooze and Label in the palette apply to the whole selection.
+
+### Fixed
+- **Compose no longer hides the last lines of a reply** at a larger text
+  size. The body is sized from the real text layout.
+
 ### Changed
 - **Faster everywhere.** A performance pass across launch, the thread list,
   the reading pane and sync:

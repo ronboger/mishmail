@@ -70,7 +70,12 @@ struct TokenAddressField: View {
                                     // Typing into the draft exits chip selection
                                     // (Gmail: first character replaces selection).
                                     if keyboard.selection != nil { keyboard.selection = nil }
-                                    if draft.hasSuffix(",") { commitDraft() }
+                                    // `,` or `;` ends a mailbox unless it is inside a
+                                    // quoted name; a pasted column arrives with newlines.
+                                    if TokenAddressEditing.shouldCommitOnSeparator(draft)
+                                        || draft.contains(where: \.isNewline) {
+                                        commitDraft()
+                                    }
                                     keepDraftVisible(using: scrollProxy)
                                 }
                                 .onChange(of: focused) {

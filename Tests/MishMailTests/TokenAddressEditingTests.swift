@@ -34,6 +34,149 @@ final class TokenAddressEditingTests: XCTestCase {
         XCTAssertEqual(result.draft, "")
     }
 
+    // MARK: - splitRecipients (pasted lists)
+
+    /// A single valid mailbox must come back byte-for-byte: a splitter that
+    /// damages one address is worse than no splitter.
+    func testSplitLeavesSingleMailboxesIntact() {
+        let singles = [
+            "a@x.com",
+            "first.last+tag@sub.example.co.uk",
+            "o'brien@x.com",
+            "user@[192.168.0.1]",
+            "Ann Lee <a@x.com>",
+            "<a@x.com>",
+            "a@x.com <a@x.com>",
+            "\"Boger, Ron\" <r@x.com>",
+            "\"Boger; Ron\" <r@x.com>",
+            "\"Ann \\\"The, Boss\\\" Lee\" <a+b@x.com>",
+            "\"weird,local;part\"@x.com",
+            "\"a b\"@x.com",
+            "a@x.com (Ann Lee)",
+            "Ann a@x.com",
+            "Zoë Müller <z@x.com>",
+            "\"Team <ops>, EU\" <ops@x.com>",
+        ]
+        for single in singles {
+            XCTAssertEqual(TokenAddressEditing.splitRecipients(single), [single], single)
+        }
+    }
+
+    func testSplitSeparatesCommaSemicolonAndNewlineLists() {
+        let expected = ["a@x.com", "b+1@y.com", "c@z.com"]
+        for list in ["a@x.com, b+1@y.com, c@z.com",
+                     "a@x.com; b+1@y.com; c@z.com",
+                     "a@x.com;b+1@y.com;c@z.com;",
+                     "a@x.com\nb+1@y.com\nc@z.com\n",
+                     "a@x.com\r\nb+1@y.com\r\nc@z.com",
+                     " a@x.com ,, ; b+1@y.com,\n c@z.com , "] {
+            XCTAssertEqual(TokenAddressEditing.splitRecipients(list), expected, list)
+        }
+    }
+
+    /// Bare addresses separated by spaces or tabs only (a pasted column).
+    /// Words are split only when every word is an address, so a display
+    /// name is never cut.
+    func testSplitSeparatesWhitespaceListsOfBareAddresses() {
+        XCTAssertEqual(TokenAddressEditing.splitRecipients("a@x.com b@y.com\tc@z.com"),
+                       ["a@x.com", "b@y.com", "c@z.com"])
+        XCTAssertEqual(TokenAddressEditing.splitRecipients("Ann Lee a@x.com"),
+                       ["Ann Lee a@x.com"])
+    }
+
+    func testSplitKeepsQuotedNamesAndAngleAddressesWhole() {
+        XCTAssertEqual(
+            TokenAddressEditing.splitRecipients(
+                "Ann <a@x.com>, \"Boger, Ron\" <r@x.com>; \"Lee; Pat\" <p@x.com>"),
+            ["Ann <a@x.com>", "\"Boger, Ron\" <r@x.com>", "\"Lee; Pat\" <p@x.com>"])
+    }
+
+    /// Cmd+C on chips writes `clipboardText`; pasting that back must give the
+    /// same mailboxes, one per chip.
+    func testSplitRoundTripsTheAppsOwnCopyFormat() {
+        let names = ["josh@glyphic.bio": "Josh Yang",
+                     "r@x.com": "Boger, Ron",
+                     "q@x.com": "Pat \"Q\" Lee",
+                     "bare@x.com": ""]
+        let emails = ["josh@glyphic.bio", "r@x.com", "q@x.com", "bare@x.com"]
+        let copied = TokenAddressEditing.clipboardText(emails: emails) { names[$0] }
+        let parts = TokenAddressEditing.splitRecipients(copied)
+        XCTAssertEqual(parts, emails.map {
+            TokenAddressEditing.formatMailbox(email: $0, name: names[$0])
+        })
+        XCTAssertEqual(parts.map(TokenAddressEditing.addressKey), emails)
+    }
+
+    func testSplitDropsPiecesWithoutAnAddress() {
+        XCTAssertEqual(TokenAddressEditing.splitRecipients(""), [])
+        XCTAssertEqual(TokenAddressEditing.splitRecipients("half, text; more"), [])
+        XCTAssertEqual(TokenAddressEditing.splitRecipients("a@x.com, half"), ["a@x.com"])
+        // An unquoted comma in a name is a separator by RFC 5322; the
+        // address part survives.
+        XCTAssertEqual(TokenAddressEditing.splitRecipients("Boger, Ron <r@x.com>"),
+                       ["Ron <r@x.com>"])
+    }
+
+    /// Unbalanced quote: nothing after it can be split with confidence, so
+    /// the text stays one token (the pre-splitter behaviour).
+    func testSplitDoesNotGuessInsideAnUnterminatedQuote() {
+        XCTAssertEqual(TokenAddressEditing.splitRecipients("\"Boger, Ron <r@x.com>, b@y.com"),
+                       ["\"Boger, Ron <r@x.com>, b@y.com"])
+        XCTAssertEqual(TokenAddressEditing.splitRecipients("\"a@x.com, "), ["\"a@x.com"])
+    }
+
+    func testAddressKeyIsTheLowercasedBareAddress() {
+        XCTAssertEqual(TokenAddressEditing.addressKey("A@X.com"), "a@x.com")
+        XCTAssertEqual(TokenAddressEditing.addressKey("Ann <A@x.com>"), "a@x.com")
+        XCTAssertEqual(TokenAddressEditing.addressKey("\"x <no@x.com> y\" <real@x.com>"),
+                       "real@x.com")
+        XCTAssertEqual(TokenAddressEditing.addressKey("a+tag@x.com"), "a+tag@x.com")
+    }
+
+    // MARK: - commit of a list
+
+    func testCommitSplitsAPastedSemicolonList() {
+        let result = TokenAddressEditing.commit(tokens: [], draft: "a@x.com; b@y.com")
+        XCTAssertEqual(result.tokens, ["a@x.com", "b@y.com"])
+        XCTAssertEqual(result.draft, "")
+    }
+
+    func testCommitSplitsAListWithAQuotedCommaName() {
+        let result = TokenAddressEditing.commit(
+            tokens: [], draft: "Ann <a@x.com>, \"Boger, Ron\" <r@x.com>")
+        XCTAssertEqual(result.tokens, ["Ann <a@x.com>", "\"Boger, Ron\" <r@x.com>"])
+    }
+
+    /// Dedup is by address: the same mailbox in another case or with a
+    /// display name is not a second recipient.
+    func testCommitDedupsAPastedListByAddress() {
+        let result = TokenAddressEditing.commit(
+            tokens: ["a@x.com"],
+            draft: "Ann <A@x.com>, b@y.com, B@Y.com, c@z.com")
+        XCTAssertEqual(result.tokens, ["a@x.com", "b@y.com", "c@z.com"])
+    }
+
+    // MARK: - shouldCommitOnSeparator (typing , or ;)
+
+    func testTypedSeparatorCommitsOutsideQuotesAndBrackets() {
+        XCTAssertTrue(TokenAddressEditing.shouldCommitOnSeparator("a@x.com,"))
+        XCTAssertTrue(TokenAddressEditing.shouldCommitOnSeparator("a@x.com;"))
+        XCTAssertTrue(TokenAddressEditing.shouldCommitOnSeparator("\"Boger, Ron\" <r@x.com>,"))
+        XCTAssertTrue(TokenAddressEditing.shouldCommitOnSeparator("a@x.com, b@y.com,"))
+    }
+
+    /// Typing `"Boger, Ron" <r@x.com>`: the comma inside the quotes used to
+    /// commit — no "@" yet, so the text was erased.
+    func testTypedSeparatorInsideQuotesOrBracketsDoesNotCommit() {
+        XCTAssertFalse(TokenAddressEditing.shouldCommitOnSeparator("\"Boger,"))
+        XCTAssertFalse(TokenAddressEditing.shouldCommitOnSeparator("\"Lee;"))
+        XCTAssertFalse(TokenAddressEditing.shouldCommitOnSeparator("\"A \\\"B\\\","))
+        XCTAssertFalse(TokenAddressEditing.shouldCommitOnSeparator("Ann <a@x.com,"))
+        XCTAssertFalse(TokenAddressEditing.shouldCommitOnSeparator("a@x.com"))
+        XCTAssertFalse(TokenAddressEditing.shouldCommitOnSeparator("a@x.com, "))
+        XCTAssertFalse(TokenAddressEditing.shouldCommitOnSeparator(""))
+    }
+
     // MARK: - persistSnapshot (draft save)
 
     /// A silent autosave fires on a 1.5 s timer while the user may still be

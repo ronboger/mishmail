@@ -507,14 +507,15 @@ struct ThreadAICategory: Codable, Identifiable, Hashable, FetchableRecord, Persi
 }
 
 /// Persisted AI thread summary (MCP `set_thread_summary` / reading pane).
-/// Survives restarts; local Ollama Summarize is ephemeral and takes precedence
-/// when both exist.
+/// Survives restarts. A fingerprint records which sent messages it covers.
 struct ThreadSummaryRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRecord {
     static let databaseTableName = "threadSummary"
     var threadId: String
     var summary: String
     var model: String
     var updatedAt: Date
+    /// Nil for older or externally supplied summaries whose coverage is unknown.
+    var contentFingerprint: String? = nil
     var id: String { threadId }
 }
 
@@ -2149,6 +2150,14 @@ final class AppDatabase: @unchecked Sendable {
                         MessageParser.displayName(fromHeader: newest),
                         threadKey,
                     ])
+            }
+        }
+
+        // v46: cached reading-pane summaries can detect new replies without
+        // expiring on a mark-read, label update, or draft autosave.
+        m.registerMigration("v46") { db in
+            try db.alter(table: "threadSummary") { t in
+                t.add(column: "contentFingerprint", .text)
             }
         }
         return m
