@@ -44,8 +44,8 @@ def insert_after(filename, anchor, addition):
     text = path.read_text()
     assert text.count(anchor) == 1, anchor
     path.write_text(text.replace(anchor, anchor + addition))
-insert_after("ThreadListView.swift", '.accessibilityIdentifier("threadRow.\\(thread.id)")',
-             '\n                        .background { if thread.id == "you@example.com:t1" { MailLatencyProbe(name: "inbox") } }')
+insert_after("ThreadListView.swift", ".onAppear { recomputeLayout(scrollProxy: proxy) }",
+             '\n            .background { if !grouped.isEmpty { MailLatencyProbe(name: "inbox") } }')
 insert_after("ThreadDetailView.swift", "Text(PlainTextLinks.attributed(text))",
              '\n            .background { MailLatencyProbe(name: text.contains("Scroll benchmark paragraph") ? "long" : "short") }')
 

@@ -9,7 +9,7 @@ final class InboxLatencyTests: XCTestCase {
         app.launchEnvironment = ["MISHMAIL_DEMO": "1", "MISHMAIL_UI_TEST": "1",
                                  "MISHMAIL_DEMO_AMPLIFY": "20"]
         app.launchArguments = ["-ApplePersistenceIgnoreState", "YES", "-NSQuitAlwaysKeepsWindows", "NO",
-                               "-threadOpenStyle", "fullWindow", "-priorityMode", "off",
+                               "-threadOpenStyle", "readingPane", "-readingPaneHidden", "NO", "-priorityMode", "off",
                                "-groupBy", "date", "-AppleShowScrollBars", "Always"]
         addTeardownBlock { app.terminate() }
 
@@ -18,7 +18,7 @@ final class InboxLatencyTests: XCTestCase {
         }
         func untilVisible(_ element: XCUIElement) {
             XCTAssertTrue(element.waitForExistence(timeout: 15))
-            XCTAssertTrue(element.frame.intersects(app.windows.firstMatch.frame))
+            XCTAssertTrue(element.frame.intersects(app.windows.firstMatch.frame), "Expected visible element: \(element.debugDescription)")
         }
         func time(_ operation: () throws -> Void) rethrows -> Double {
             let start = ProcessInfo.processInfo.systemUptime
@@ -29,7 +29,16 @@ final class InboxLatencyTests: XCTestCase {
             let body = app.staticTexts.matching(NSPredicate(
                 format: "value CONTAINS %@ OR label CONTAINS %@", text, text)).firstMatch
             let target = row(id)
-            untilVisible(target)
+            XCTAssertTrue(target.waitForExistence(timeout: 10))
+            let window = app.windows.firstMatch
+            let listPoint = window.coordinate(withNormalizedOffset: CGVector(dx: 0.65, dy: 0.5))
+            // SwiftUI can initially anchor a long list below its first rows.
+            // Position the fixture outside the timed interval.
+            for _ in 0..<3 {
+                let frame = target.frame
+                if frame.height > 0, window.frame.insetBy(dx: 0, dy: 60).contains(CGPoint(x: frame.midX, y: frame.midY)) { break }
+                listPoint.scroll(byDeltaX: 0, deltaY: 3500)
+            }
             let duration = time {
                 target.click()
                 untilVisible(body)
@@ -46,7 +55,9 @@ final class InboxLatencyTests: XCTestCase {
             let launchStart = ProcessInfo.processInfo.systemUptime
             let launch = time {
                 app.launch()
-                untilVisible(row("t1"))
+                app.activate()
+                XCTAssertTrue(row("t1").waitForExistence(timeout: 15))
+                untilVisible(app.scrollViews.containing(.any, identifier: "threadRow.you@example.com:t1").firstMatch)
             }
             let (_, short) = open("t1", bodyContains: "Are the keyboard shortcuts final")
             app.typeKey(.escape, modifierFlags: [])
