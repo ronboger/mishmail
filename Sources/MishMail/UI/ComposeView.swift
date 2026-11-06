@@ -43,8 +43,6 @@ struct ComposeView: View {
     @State private var prefilledAttachmentNames: [String] = []
     /// Original attachments still downloading (forwards) — send waits.
     @State private var loadingAttachments = false
-    @State private var showFilePicker = false
-    @State private var showSnippets = false
     /// Slash trigger: highlighted row in the `/` picker (by stable list id),
     /// and whether the user Esc-dismissed the current token (cleared when the
     /// token goes away).
@@ -61,22 +59,46 @@ struct ComposeView: View {
     /// picker is up — the NSTextView behind TextEditor consumes those keys
     /// before SwiftUI's onKeyPress ever sees them.
     @State private var slashKeyMonitor: Any?
-    @State private var showScheduleSheet = false
+    private enum Accessory { case files, snippets, link, schedule }
+    @State private var accessory: Accessory?
+
+    private func presenting(_ item: Accessory) -> Binding<Bool> {
+        Binding(get: { accessory == item }, set: { visible in
+            if visible { accessory = item }
+            else if accessory == item { accessory = nil }
+        })
+    }
+
     @State private var showingDiscardConfirmation = false
     /// ⌘K link sheet — UTF-16 offsets into `body_` captured when the sheet opens.
-    @State private var showLinkSheet = false
     @State private var linkSelLocation = 0
     @State private var linkSelLength = 0
     @State private var linkInitialText = ""
     @State private var linkInitialURL = ""
     @State private var linkIsEditing = false
-    @State private var drafting = false
+    private enum ProposalPhase {
+        case idle, generating(ComposeAIProposal), ready(ComposeAIProposal), interrupted(ComposeAIProposal)
+
+        var proposal: ComposeAIProposal? {
+            switch self {
+            case .idle: return nil
+            case .generating(let value), .ready(let value), .interrupted(let value): return value
+            }
+        }
+    }
+    @State private var proposalPhase: ProposalPhase = .idle
+    private var drafting: Bool {
+        if case .generating = proposalPhase { return true }
+        return false
+    }
+    private var canApplyProposal: Bool {
+        if case .ready = proposalPhase { return aiRequestFingerprint == aiInputFingerprint }
+        return false
+    }
     @State private var inlineEditUndo: InlineAIEdit?
     @State private var showAIInstructions = false
     @State private var aiInstructions = ""
     @FocusState private var aiInstructionsFocused: Bool
-    @State private var aiProposal: ComposeAIProposal?
-    @State private var aiProposalComplete = false
     @State private var aiRequestFingerprint = ""
     @State private var aiTask: Task<Void, Never>?
     @State private var aiGeneration = 0
@@ -84,16 +106,20 @@ struct ComposeView: View {
     @State private var aiRequestInstructions = ""
     @State private var error: String?
     /// Suggested replies for an empty reply body (chips above the quote pill).
-    @State private var suggestedReplies: [String] = []
-    @State private var suggestionsLoading = false
-    @State private var suggestionsError: String?
+    private enum ReplySuggestions: Equatable {
+        case idle, loading([String]), ready([String]), failed(String), dismissed
+
+        var replies: [String] {
+            switch self {
+            case .loading(let replies), .ready(let replies): return replies
+            default: return []
+            }
+        }
+        var loading: Bool { if case .loading = self { return true }; return false }
+        var error: String? { if case .failed(let error) = self { return error }; return nil }
+    }
+    @State private var suggestions: ReplySuggestions = .idle
     @State private var suggestionsTask: Task<Void, Never>?
-    /// User closed the strip for this compose (also set by picking a chip).
-    @State private var suggestionsDismissed = false
-    /// Set once per compose so the auto-trigger never re-fires; the strip's
-    /// refresh button calls suggestReplies() directly instead.
-    @State private var suggestionsRequested = false
-    /// Guards late MainActor writes from a cancelled stream (regenerate).
     @State private var suggestionsGeneration = 0
     /// Captured when a generation starts — resolving per render would re-read
     /// and re-decode the provider list from UserDefaults on every keystroke.
@@ -112,18 +138,10 @@ struct ComposeView: View {
     @State private var initialBody = ""
     @State private var initialSubject = ""
     @State private var initialRecipients: [String] = []
-    /// Collapsed to a title strip — draft fields stay mounted (state preserved).
-    @State private var isMinimized = false
-    /// Set by every explicit exit (send, schedule, discard, close). When the
-    /// card unmounts without it — a new compose/reply request replaced this
-    /// one, which single-key shortcuts allow while minimized — onDisappear
-    /// saves the draft instead of silently dropping it.
-    @State private var didFinish = false
-    /// Which explicit exit claimed `didFinish`. Decides whether a draft save
-    /// that is still queued / on the wire may land (`ComposeFinish`): Send,
-    /// Schedule, and Discard drop it; save-and-close must not, or Esc / ✕
-    /// would lose the text. Nil while editing and on a replaced-card unmount.
+    private var isMinimized: Bool { store.composeMinimized }
+    /// Claimed synchronously before an exit can suspend. Nil while editing.
     @State private var finish: ComposeFinish?
+    private var didFinish: Bool { finish != nil }
     /// Live draft Gmail message to replace on the next save (starts as
     /// `editDraft` / undo restore, then tracks each successful autosave).
     /// Thread this into Send, Discard, and replace — never only into autosave.
@@ -172,17 +190,14 @@ struct ComposeView: View {
     /// that wait.
     @discardableResult
     private func beginFinish(_ kind: ComposeFinish) -> Bool {
-        guard !didFinish else { return false }
-        didFinish = true
+        guard !didFinish, store.composeRequest?.id == request.id else { return false }
         finish = kind
         stopAIProposal()
         autosaveTask?.cancel()
         autosaveTask = nil
         bodyFocused = false
-        showSnippets = false
-        showLinkSheet = false
-        showScheduleSheet = false
-        store.composeFinishing = true
+        accessory = nil
+        store.composeMode = .finishing
         store.slashPickerVisible = false
         NSApp.keyWindow?.makeFirstResponder(nil)
         return true
@@ -190,13 +205,11 @@ struct ComposeView: View {
 
     /// Undo `beginFinish` when the action can't complete (e.g. empty To:).
     private func abortFinish() {
-        didFinish = false
         finish = nil
         // Only clear the flag if this card is still the mounted request —
         // a newer compose opened during finish already reset it.
-        if store.composeRequest?.id == request.id {
-            store.composeFinishing = false
-        }
+        guard store.composeRequest?.id == request.id else { return }
+        store.composeMode = .expanded
         // Send cancels autosave before packaging; re-arm so unsaved content
         // still lands in Drafts if the user keeps editing after abort.
         if hasContent { scheduleAutosave() }
@@ -210,7 +223,6 @@ struct ComposeView: View {
     /// compose via `g i` + reply (or `c`) during the finish window — a bare
     /// clear would yank the new card mid-typing.
     private func close() {
-        didFinish = true
         autosaveTask?.cancel()
         autosaveTask = nil
         guard store.composeRequest?.id == request.id else { return }
@@ -231,14 +243,11 @@ struct ComposeView: View {
     /// Collapse or restore the compose card. Resigns text focus when
     /// minimizing so mailbox shortcuts (j/k, archive, …) work again.
     private func setMinimized(_ value: Bool) {
-        guard isMinimized != value else { return }
-        isMinimized = value
-        store.composeMinimized = value
+        guard !didFinish, store.composeRequest?.id == request.id, isMinimized != value else { return }
+        store.composeMode = value ? .minimized : .expanded
         if value {
             bodyFocused = false
-            showSnippets = false
-            showLinkSheet = false
-            showScheduleSheet = false
+            accessory = nil
             NSApp.keyWindow?.makeFirstResponder(nil)
         }
     }
@@ -291,7 +300,7 @@ struct ComposeView: View {
     /// keys (post-Send archive) until the card unmounts.
     private func focusBody() {
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) {
-            guard !didFinish else { return }
+            guard !didFinish, store.composeRequest?.id == request.id, !isMinimized else { return }
             bodyFocused = true
         }
     }
@@ -387,6 +396,7 @@ struct ComposeView: View {
         // the last-saved fingerprint, so a stale timer can't flip status later.
         autosaveTask?.cancel()
         autosaveTask = nil
+        guard !didFinish else { return }
         // Demo has nowhere to persist; don't claim "Draft saved".
         guard !store.demoMode else {
             draftStatus = .idle
@@ -451,7 +461,7 @@ struct ComposeView: View {
         }
         let fingerprint = contentFingerprint
         if fingerprint == lastSavedFingerprint {
-            if silent { draftStatus = localDraft != nil ? .savedOffline : .saved }
+            draftStatus = localDraft != nil ? .savedOffline : .saved
             // Already on the server — still sync on dismiss so Drafts/thread UI
             // pick up a silent autosave that never called sync().
             if syncAfter, didSilentSave || liveDraft != nil {
@@ -492,14 +502,12 @@ struct ComposeView: View {
         for source in pendingSources {
             atts = ((try? await store.loadAttachments(for: source)) ?? []) + atts
         }
-        // Send unmounts without awaiting this task; drop a late createDraft so
-        // we don't upload a draft the user already sent. Save-and-close also
-        // sets `didFinish` but must still save — ask the exit kind, not the flag.
+        // Send, schedule, or discard can claim this draft while attachments load.
         if ComposeFinish.dropsLateDraftSave(finish) { return }
         // Demo: never claim "Draft saved" — close uses non-silent for the notice.
         if store.demoMode {
             if !silent {
-                _ = await store.saveDraft(from: apiAccount, fromEmail: identity,
+                _ = try? await store.saveDraft(from: apiAccount, fromEmail: identity,
                                           to: to, cc: cc, bcc: bcc, subject: subj,
                                           body: body, replyTo: reply, forward: isForward,
                                           attachments: atts, replacing: old,
@@ -518,6 +526,10 @@ struct ComposeView: View {
                                                syncAfter: syncAfter)
         switch outcome {
         case .keptLocally(let row):
+            if ComposeFinish.dropsLateDraftSave(finish) {
+                store.deleteLocalDraft(row, silent: true)
+                return
+            }
             // On a plane: the text is safe in the Outbox. Keep the editor
             // bound to that row so further typing updates it instead of
             // stacking copies; the reconnect flush uploads it after close.
@@ -538,7 +550,7 @@ struct ComposeView: View {
             // A save that reached Gmail retires the Outbox copy.
             if localDraft != nil {
                 localDraft = nil
-                store.composingLocalDraftId = nil
+                if store.composeRequest?.id == request.id { store.composingLocalDraftId = nil }
             }
             // createDraft was already on the wire when Send cancelled the task:
             // delete the just-created draft so Gmail Drafts doesn't keep sent
@@ -585,6 +597,10 @@ struct ComposeView: View {
         guard beginFinish(.saveAndClose) else { return }
         Task { @MainActor in
             await enqueuePersist(silent: false, syncAfter: true)
+            if draftStatus == .failed, store.composeRequest?.id == request.id {
+                abortFinish()
+                return
+            }
             close()
         }
     }
@@ -592,10 +608,7 @@ struct ComposeView: View {
     /// Esc from ContentView while this card is expanded: dismiss compose
     /// sheets first, then the same path as the header ✕ / `.cancelAction`.
     private func handleComposeEsc() {
-        if showLinkSheet { showLinkSheet = false; return }
-        if showScheduleSheet { showScheduleSheet = false; return }
-        if showSnippets { showSnippets = false; return }
-        if showFilePicker { showFilePicker = false; return }
+        if accessory != nil { accessory = nil; return }
         if isMinimized { return }
         saveAndClose()
     }
@@ -649,7 +662,7 @@ struct ComposeView: View {
             }
         }
         .padding(isMinimized ? EdgeInsets(top: 0, leading: 12, bottom: 0, trailing: 8)
-                             : EdgeInsets(top: 14, leading: 14, bottom: 14, trailing: 14))
+                             : EdgeInsets(top: 16, leading: 18, bottom: 16, trailing: 18))
         .accessibilityIdentifier(isSplit ? "composeSplit"
                                  : isInline ? "composeInline" : "composeCard")
         .confirmationDialog(
@@ -664,8 +677,6 @@ struct ComposeView: View {
             Text("This deletes the saved draft from Gmail and closes compose.")
         }
         .onAppear {
-            store.composeMinimized = false
-            isMinimized = false
             // Seed the replace chain before prefill so undo-send restores any
             // draft that Send was about to delete.
             replacingDraft = editingDraft ?? request.restore?.replacingDraft
@@ -713,8 +724,7 @@ struct ComposeView: View {
             if let id = localDraft?.id, store.composingLocalDraftId == id {
                 store.composingLocalDraftId = nil
             }
-            store.composeMinimized = false
-            store.slashPickerVisible = false
+            if store.composeRequest?.id == request.id { store.slashPickerVisible = false }
             autosaveTask?.cancel()
             suggestionsTask?.cancel()
             if let monitor = slashKeyMonitor {
@@ -724,16 +734,15 @@ struct ComposeView: View {
         }
         // Publish `/` picker visibility for ContentView's Esc ladder (explicit
         // gate — local monitors fire FIFO and must not rely on order).
-        .onChange(of: slashActive) { store.slashPickerVisible = slashActive }
+        .onChange(of: slashActive) {
+            if store.composeRequest?.id == request.id { store.slashPickerVisible = slashActive }
+        }
         // Minimize keeps the card mounted (no onDisappear) — stop a live
         // suggestion stream instead of paying for chips nobody can see.
         .onChange(of: isMinimized) { _, minimized in
             if minimized, drafting { stopAIProposal() }
-            guard minimized, suggestionsLoading else { return }
-            suggestionsGeneration &+= 1
-            suggestionsTask?.cancel()
-            suggestionsLoading = false
-            suggestedReplies = []
+            guard minimized, suggestions.loading else { return }
+            dismissSuggestions()
         }
         .onChange(of: store.slashPickerDismissToken) {
             slashDismissed = true
@@ -767,7 +776,7 @@ struct ComposeView: View {
             // with the primary just because identities loaded late).
             ensureFromSelection(preferCurrent: true)
         }
-        .sheet(isPresented: $showScheduleSheet) {
+        .sheet(isPresented: presenting(.schedule)) {
             // Same natural-language picker as snooze (type "tomorrow 9am"),
             // with send-time presets. Past dates are filtered out.
             DatePickSheet(
@@ -779,7 +788,7 @@ struct ComposeView: View {
                 if let date { scheduleSend(at: date) }
             }
         }
-        .sheet(isPresented: $showLinkSheet) {
+        .sheet(isPresented: presenting(.link)) {
             ComposeLinkSheet(
                 initialText: linkInitialText,
                 initialURL: linkInitialURL,
@@ -788,7 +797,7 @@ struct ComposeView: View {
                 onRemove: { removeLinkAtSelection() }
             )
         }
-        .fileImporter(isPresented: $showFilePicker,
+        .fileImporter(isPresented: presenting(.files),
                       allowedContentTypes: [.data], allowsMultipleSelection: true) { result in
             if case .success(let urls) = result { appendAttachmentURLs(urls) }
         }
@@ -892,7 +901,6 @@ struct ComposeView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .contentShape(Rectangle())
         .onTapGesture { setMinimized(false) }
-        .help("Expand compose")
     }
 
     /// Expanded title bar: click chrome (title / empty space) to minimize,
@@ -928,24 +936,7 @@ struct ComposeView: View {
                               : "View side by side with the conversation (⇧⌘↩)")
                 .accessibilityLabel(isSplit ? "Exit side by side" : "View side by side")
             }
-            if isSplit {
-                // Split owns the full window; exit is the button above. The
-                // card still minimizes — it docks like floating (ContentView
-                // forces floating chrome while minimized) and restores to split.
-                Button {
-                    setMinimized(true)
-                } label: {
-                    Image(systemName: "minus")
-                        .font(.system(size: 12, weight: .semibold))
-                        .foregroundStyle(.secondary)
-                        .frame(width: 18, height: 18)
-                        .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .help("Minimize")
-                .pmHitTarget()
-                .accessibilityLabel("Minimize")
-            } else if isInline {
+            if isInline {
                 Button {
                     store.popOutCompose()
                 } label: {
@@ -981,32 +972,16 @@ struct ComposeView: View {
         .onTapGesture {
             if !isInline && !isSplit { setMinimized(true) }
         }
-        .help(isInline || isSplit ? "Reply" : "Minimize compose")
     }
 
-    @ViewBuilder
     private var closeButton: some View {
-        // Esc closes only while expanded — minimized compose yields Esc to the
-        // mailbox (reading-pane / multi-select ladder in ContentView), and
-        // split yields it to the exit-split button (see expandedHeader).
-        if isMinimized || isSplit {
-            Button(action: saveAndClose) {
-                closeGlyph
-            }
+        // Split uses Esc to exit side by side. Minimized compose yields Esc to the mailbox.
+        Button(action: saveAndClose) { closeGlyph }
             .buttonStyle(.plain)
+            .keyboardShortcut(isMinimized || isSplit ? nil : .cancelAction)
             .help(hasContent ? "Save draft & close" : "Close")
             .pmHitTarget()
             .accessibilityLabel(hasContent ? "Save draft and close" : "Close")
-        } else {
-            Button(action: saveAndClose) {
-                closeGlyph
-            }
-            .buttonStyle(.plain)
-            .keyboardShortcut(.cancelAction)
-            .help(hasContent ? "Save draft & close" : "Close")
-            .pmHitTarget()
-            .accessibilityLabel(hasContent ? "Save draft and close" : "Close")
-        }
     }
 
     @ViewBuilder
@@ -1095,7 +1070,7 @@ struct ComposeView: View {
                     .frame(width: 30, alignment: .leading)
                 // Focusable, keyboard-first control: ⇧Tab from To lands here;
                 // ↑↓ change the sender, Space/↩ open the list, Esc closes it.
-                FromIdentityPicker(identities: availableFromIdentities,
+                FromIdentityPicker(requestID: request.id, identities: availableFromIdentities,
                                    selectedId: fromIdentityBinding,
                                    closedLabel: fromClosedLabel,
                                    rowTitle: { menuTitle($0) })
@@ -1170,11 +1145,8 @@ struct ComposeView: View {
                     // Typing makes the suggestions stale — stop paying for
                     // them, and drop any half-streamed chips so deleting back
                     // to empty never presents a truncated set as finished.
-                    if suggestionsLoading, !authoredHeadIsEmpty {
-                        suggestionsGeneration &+= 1
-                        suggestionsTask?.cancel()
-                        suggestionsLoading = false
-                        suggestedReplies = []
+                    if suggestions.loading, !authoredHeadIsEmpty {
+                        dismissSuggestions()
                     }
                 }
                 .onChange(of: bodyCaretUTF16) {
@@ -1210,18 +1182,15 @@ struct ComposeView: View {
             // draft. Hidden the moment the user types (they'd be stale).
             if suggestionsStripVisible {
                 SuggestedRepliesStrip(
-                    suggestions: suggestedReplies,
-                    loading: suggestionsLoading,
+                    suggestions: suggestions.replies,
+                    loading: suggestions.loading,
                     modelName: suggestionsModelName,
-                    error: suggestionsError,
+                    error: suggestions.error,
                     pick: { insertSuggestedReply($0) },
                     regenerate: { suggestReplies() },
                     dismiss: {
-                        suggestionsGeneration &+= 1
-                        suggestionsTask?.cancel()
-                        suggestionsLoading = false
                         withAnimation(.spring(duration: 0.25, bounce: 0)) {
-                            suggestionsDismissed = true
+                            dismissSuggestions()
                         }
                     })
                 .padding(.bottom, 8)
@@ -1327,7 +1296,7 @@ struct ComposeView: View {
                     .padding(.bottom, 4)
             }
 
-            if showAIInstructions || aiProposal != nil {
+            if showAIInstructions || proposalPhase.proposal != nil {
                 composeAIProposalPanel
                     .padding(.bottom, 6)
             }
@@ -1339,14 +1308,14 @@ struct ComposeView: View {
 
             // Snippets live in an inline panel, not a popover — always
             // visible where you write, reliable inside the docked card.
-            if showSnippets {
+            if accessory == .snippets {
                 SnippetsPanel(insert: { snippet in
                     insertSnippet(snippet)
-                    withAnimation(.easeOut(duration: 0.12)) { showSnippets = false }
+                    withAnimation(.easeOut(duration: 0.12)) { accessory = nil }
                 }, saveDraftAsSnippet: {
                     saveCurrentAsSnippet()
                 }, close: {
-                    withAnimation(.easeOut(duration: 0.12)) { showSnippets = false }
+                    withAnimation(.easeOut(duration: 0.12)) { accessory = nil }
                 }, accountId: fromAccountId)
                 .environment(store)
                 .padding(.bottom, 8)
@@ -1361,7 +1330,7 @@ struct ComposeView: View {
             HStack(spacing: 10) {
                 HStack(spacing: 10) {
                     if composeToolVisible(.attach) {
-                        footerButton(ComposeToolbarItem.attach) { showFilePicker = true }
+                        footerButton(ComposeToolbarItem.attach) { accessory = .files }
                     }
 
                     if composeToolVisible(.link) {
@@ -1372,7 +1341,7 @@ struct ComposeView: View {
 
                     if composeToolVisible(.snippets) {
                         Button {
-                            withAnimation(.easeOut(duration: 0.12)) { showSnippets.toggle() }
+                            withAnimation(.easeOut(duration: 0.12)) { accessory = accessory == .snippets ? nil : .snippets }
                         } label: {
                             HStack(spacing: 4) {
                                 Image(systemName: ComposeToolbarItem.snippets.systemImage)
@@ -1380,7 +1349,7 @@ struct ComposeView: View {
                                     .font(.system(size: 12))
                                     .lineLimit(1)
                             }
-                            .foregroundStyle(showSnippets ? Color.notionAccent : Color.secondary)
+                            .foregroundStyle(accessory == .snippets ? Color.notionAccent : Color.secondary)
                         }
                         .buttonStyle(.plain)
                         // Same as Send: never wrap/compress when "Draft saved" appears.
@@ -1392,7 +1361,7 @@ struct ComposeView: View {
                         // Keep ⌘/ even when the button is hidden (Settings only
                         // hides chrome; slash insert and the panel still work).
                         Button {
-                            withAnimation(.easeOut(duration: 0.12)) { showSnippets.toggle() }
+                            withAnimation(.easeOut(duration: 0.12)) { accessory = accessory == .snippets ? nil : .snippets }
                         } label: { EmptyView() }
                         .frame(width: 0, height: 0)
                         .accessibilityHidden(true)
@@ -1516,7 +1485,7 @@ struct ComposeView: View {
                         // Opens the same natural-language picker as snooze —
                         // presets plus "type a date" — instead of a menu.
                         Button {
-                            showScheduleSheet = true
+                            accessory = .schedule
                         } label: {
                             Image(systemName: "chevron.down")
                                 .font(.system(size: 9, weight: .bold))
@@ -1926,16 +1895,16 @@ struct ComposeView: View {
     }
 
     private var suggestionsStripVisible: Bool {
-        suggestionsEligible && !suggestionsDismissed && !slashActive
+        suggestionsEligible && !slashActive
             && authoredHeadIsEmpty
-            && (suggestionsLoading || !suggestedReplies.isEmpty
-                || suggestionsError != nil)
+            && (suggestions.loading || !suggestions.replies.isEmpty
+                || suggestions.error != nil)
     }
 
     /// Auto-start on open for a fresh reply — the chips appear where the reply
     /// is written, so there's no separate button to find (or wait on).
     private func suggestRepliesIfEligible() {
-        guard suggestionsEligible, !suggestionsRequested,
+        guard suggestionsEligible, suggestions == .idle,
               request.prefillBody == nil, authoredHeadIsEmpty else { return }
         suggestReplies()
     }
@@ -1952,17 +1921,19 @@ struct ComposeView: View {
         }) ?? original
     }
 
+    private func dismissSuggestions() {
+        suggestionsGeneration &+= 1
+        suggestionsTask?.cancel()
+        suggestions = .dismissed
+    }
+
     private func suggestReplies() {
         guard suggestionsEligible, let source = suggestionSourceMessage
         else { return }
-        suggestionsRequested = true
-        suggestionsDismissed = false
         suggestionsGeneration &+= 1
         let generation = suggestionsGeneration
         suggestionsTask?.cancel()
-        suggestedReplies = []
-        suggestionsError = nil
-        suggestionsLoading = true
+        suggestions = .loading([])
         suggestionsModelName = LLMTaskRunner.resolve(.triage)?.model
 
         // Thread payloads load headers + snippets only; hydrate the body the
@@ -2004,7 +1975,7 @@ struct ComposeView: View {
                         let snapshot = partial
                         await MainActor.run {
                             guard suggestionsGeneration == generation else { return }
-                            suggestedReplies = snapshot
+                            suggestions = .loading(snapshot)
                         }
                     }
                 }
@@ -2012,10 +1983,7 @@ struct ComposeView: View {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard suggestionsGeneration == generation else { return }
-                    suggestedReplies = parsed
-                    suggestionsError = parsed.isEmpty
-                        ? "No replies were suggested." : nil
-                    suggestionsLoading = false
+                    suggestions = parsed.isEmpty ? .failed("No replies were suggested.") : .ready(parsed)
                 }
             } catch is CancellationError {
                 return
@@ -2023,9 +1991,7 @@ struct ComposeView: View {
                 guard !Task.isCancelled else { return }
                 await MainActor.run {
                     guard suggestionsGeneration == generation else { return }
-                    suggestionsError = LLMTaskRunner.errorMessage(
-                        error, task: .triage)
-                    suggestionsLoading = false
+                    suggestions = .failed(LLMTaskRunner.errorMessage(error, task: .triage))
                 }
             }
         }
@@ -2037,7 +2003,7 @@ struct ComposeView: View {
         let tail = String(body_[authoredHeadEnd...])
         setBody(text + tail, caretUTF16: (text as NSString).length)
         withAnimation(.spring(duration: 0.25, bounce: 0)) {
-            suggestionsDismissed = true
+            dismissSuggestions()
         }
         focusBody()
     }
@@ -2118,22 +2084,17 @@ struct ComposeView: View {
                                  resolved: LLMTaskRunner.Resolved?) {
         guard let proposal = ComposeAIProposal(body: body_, range: range) else { return }
         stopAIProposal()
-        suggestionsGeneration &+= 1
-        suggestionsTask?.cancel()
-        suggestionsLoading = false
-        suggestionsDismissed = true
-        aiProposal = proposal
+        dismissSuggestions()
         aiRequestFingerprint = aiInputFingerprint
         aiRequestInstructions = aiInstructions
-        aiProposalComplete = false
         let generation = aiGeneration
         showAIInstructions = true
         aiInstructionsFocused = false
-        drafting = true
+        proposalPhase = .generating(proposal)
         error = nil
         inlineEditUndo = nil
         aiTask = Task { @MainActor in
-            var accumulated = ""
+            var preview = proposal
             do {
                 for try await piece in LLMTaskRunner.stream(
                     task: .drafts, prompt: prompt, using: resolved,
@@ -2141,21 +2102,21 @@ struct ComposeView: View {
                         if aiGeneration == generation { error = notice }
                     }) {
                     guard !Task.isCancelled, aiGeneration == generation, !didFinish else { return }
-                    accumulated += piece
-                    aiProposal?.text = accumulated
+                    preview.text += piece
+                    proposalPhase = .generating(preview)
                 }
                 guard !Task.isCancelled, aiGeneration == generation, !didFinish else { return }
-                if accumulated.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                    aiProposal = nil
+                if preview.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    proposalPhase = .idle
                     if error == nil { error = "The model returned no draft. Your text is unchanged." }
                 } else {
-                    aiProposalComplete = error == nil
+                    proposalPhase = error == nil ? .ready(preview) : .interrupted(preview)
                 }
             } catch {
                 guard !Task.isCancelled, aiGeneration == generation, !didFinish else { return }
+                proposalPhase = .interrupted(preview)
                 self.error = LLMTaskRunner.errorMessage(error, task: .drafts)
             }
-            drafting = false
             aiTask = nil
         }
     }
@@ -2164,20 +2125,17 @@ struct ComposeView: View {
         aiGeneration &+= 1
         aiTask?.cancel()
         aiTask = nil
-        drafting = false
-        aiProposalComplete = false
+        if case .generating(let preview) = proposalPhase { proposalPhase = .interrupted(preview) }
     }
 
     private func applyAIProposal() {
-        guard aiProposalComplete, aiRequestFingerprint == aiInputFingerprint,
-              let proposal = aiProposal, let updated = proposal.applying(to: body_) else { return }
+        guard canApplyProposal, case .ready(let proposal) = proposalPhase, let updated = proposal.applying(to: body_) else { return }
         let edit = InlineAIEdit(originalBody: proposal.originalBody,
                                 originalCaret: proposal.range.location + proposal.range.length,
                                 appliedBody: updated)
         setBody(updated, caretUTF16: proposal.caretUTF16)
         inlineEditUndo = edit
-        aiProposal = nil
-        aiProposalComplete = false
+        proposalPhase = .idle
         showAIInstructions = false
         aiInstructions = ""
         focusBody()
@@ -2200,13 +2158,13 @@ struct ComposeView: View {
                     }
                     .buttonStyle(.plain)
                 } else {
-                    Button(aiProposal == nil ? "Draft" : "Regenerate") { regenerateAIProposal() }
+                    Button(proposalPhase.proposal == nil ? "Draft" : "Regenerate") { regenerateAIProposal() }
                         .buttonStyle(.plain)
                         .foregroundStyle(Color.notionAccent)
                 }
                 Button {
                     stopAIProposal()
-                    aiProposal = nil
+                    proposalPhase = .idle
                     showAIInstructions = false
                     focusBody()
                 } label: { Image(systemName: "xmark") }
@@ -2216,7 +2174,7 @@ struct ComposeView: View {
                 .accessibilityLabel("Dismiss AI preview")
             }
             .font(.system(size: 12))
-            if let proposal = aiProposal, !proposal.text.isEmpty {
+            if let proposal = proposalPhase.proposal, !proposal.text.isEmpty {
                 ScrollView {
                     Text(proposal.text)
                         .font(.system(size: 12.5 * fontScale))
@@ -2229,7 +2187,7 @@ struct ComposeView: View {
                         Button("Use draft") { applyAIProposal() }
                             .buttonStyle(PressScaleButtonStyle())
                             .foregroundStyle(Color.notionAccent)
-                            .disabled(!aiProposalComplete || aiRequestFingerprint != aiInputFingerprint)
+                            .disabled(!canApplyProposal)
                             .accessibilityIdentifier("compose.aiApply")
                         Button("Copy") {
                             NSPasteboard.general.clearContents()
@@ -2261,7 +2219,7 @@ struct ComposeView: View {
     }
 
     private func regenerateAIProposal() {
-        guard aiProposal != nil, aiInstructions == aiRequestInstructions else {
+        guard proposalPhase.proposal != nil, aiInstructions == aiRequestInstructions else {
             draftWithAI()
             return
         }
@@ -2269,7 +2227,7 @@ struct ComposeView: View {
         case .draft:
             draftWithAI()
         case .edit(let edit, let tone):
-            let range = aiProposal.flatMap { $0.originalBody == body_ ? $0.range : nil }
+            let range = proposalPhase.proposal.flatMap { $0.originalBody == body_ ? $0.range : nil }
             inlineEdit(edit, tone: tone, range: range)
         }
     }
@@ -2506,7 +2464,7 @@ struct ComposeView: View {
             linkInitialText = existing.text
             linkInitialURL = existing.url
             linkIsEditing = true
-            showLinkSheet = true
+            accessory = .link
             return
         }
 
@@ -2535,7 +2493,7 @@ struct ComposeView: View {
         linkInitialText = length > 0 ? nsBody.substring(with: sel) : ""
         linkInitialURL = ""
         linkIsEditing = false
-        showLinkSheet = true
+        accessory = .link
     }
 
     /// True when `range` overlaps an existing markdown link's span but
@@ -2747,7 +2705,6 @@ struct ComposeView: View {
         // (that made post-Send `e` archive feel stuck behind Gmail). Body comes
         // from the editor; liveDraft is the last *completed* autosave id.
         guard beginFinish(.send) else { return }
-        cancelInFlightPersist()
         guard let pending = buildPendingSend() else {
             // Not sendable (empty To:) — re-enable the card.
             abortFinish()
@@ -2768,25 +2725,13 @@ struct ComposeView: View {
 
     private func scheduleSend(at date: Date) {
         guard beginFinish(.schedule) else { return }
-        cancelInFlightPersist()
-        guard let pending = buildPendingSend() else {
+        guard let pending = buildPendingSend(),
+              store.scheduleSend(pending, at: date, retiringLocalID: localDraft?.id) else {
             abortFinish()
             return
         }
-        retireLocalDraft()
-        store.scheduleSend(pending, at: date)
+        localDraft = nil
         close()
-    }
-
-    /// Drop a *debounced* autosave when Send packages content from the editor.
-    /// Do not cancel an in-flight `persistTask`: `createDraft` may still land
-    /// at Gmail after cancel, leaving an orphan with no delete path. Leave the
-    /// task running; `performPersist` checks `finish` and deletes a late
-    /// draft (or skips the upload if finish landed first). Discard still awaits
-    /// idle so it can delete the real draft id.
-    private func cancelInFlightPersist() {
-        autosaveTask?.cancel()
-        autosaveTask = nil
     }
 }
 

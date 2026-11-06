@@ -3,191 +3,6 @@ import SwiftUI
 import AppKit
 import GRDB
 
-enum MailboxView: Hashable {
-    case inbox          // unified inbox, minus Promotions/Social
-    case promotions
-    case social
-    case starred
-    case snoozed
-    case labels         // all labeled mail, one section per label (Notion-style)
-    case reminders
-    case drafts
-    case scheduled      // locally scheduled sends (not Gmail threads)
-    case outbox         // drafts saved offline, waiting to upload (not Gmail threads)
-    case sent
-    case allMail
-    case trash
-    case account(String)          // one account's inbox
-    case label(account: String, labelId: String, name: String)
-    case saved(Int64, String)     // custom view id + name
-
-    var title: String {
-        switch self {
-        case .inbox: return "Inbox"
-        case .promotions: return "Promotions"
-        case .social: return "Social"
-        case .starred: return "Starred"
-        case .snoozed: return "Snoozed"
-        case .labels: return "Labels"
-        case .reminders: return "Reminders"
-        case .drafts: return "Drafts"
-        case .scheduled: return "Scheduled"
-        case .outbox: return "Outbox"
-        case .sent: return "Sent"
-        case .allMail: return "All Mail"
-        case .trash: return "Trash"
-        case .account(let a): return a
-        case .label(_, _, let name): return name
-        case .saved(_, let name): return name
-        }
-    }
-
-    /// Stable key for persisting per-view preferences (category picks).
-    /// nil = the view doesn't persist them (saved views carry their own
-    /// filters; scheduled isn't a mail list).
-    var prefsKey: String? {
-        switch self {
-        case .inbox, .account: return "inbox"
-        case .promotions: return "promotions"
-        case .social: return "social"
-        case .starred: return "starred"
-        case .snoozed: return "snoozed"
-        case .labels: return "labels"
-        case .reminders: return "reminders"
-        case .drafts: return "drafts"
-        case .sent: return "sent"
-        case .allMail: return "allMail"
-        case .trash: return "trash"
-        // Keyed per account: Gmail label IDs (Label_1, Label_2…) are only
-        // unique within an account, so two accounts' labels must not share
-        // a preference slot.
-        case .label(let account, let labelId, _): return "label.\(account).\(labelId)"
-        case .scheduled, .outbox, .saved: return nil
-        }
-    }
-}
-
-/// Notion Mail-style category filter: a set of Gmail categories that the
-/// inbox either must not contain (default) or must contain.
-struct CategoryFilter: Equatable, Codable {
-    var exclude = true                 // which set the Categories popover edits
-    var show: Set<String> = []         // must contain any of these
-    var hide: Set<String> = []         // must contain none of these
-
-    static let names = [
-        "CATEGORY_PROMOTIONS": "Promotions",
-        "CATEGORY_SOCIAL": "Social",
-        "CATEGORY_UPDATES": "Updates",
-        "CATEGORY_FORUMS": "Forums",
-    ]
-
-    var isActive: Bool { !show.isEmpty || !hide.isEmpty }
-
-    /// The set the Categories popover is currently editing.
-    var categories: Set<String> {
-        get { exclude ? hide : show }
-        set { if exclude { hide = newValue } else { show = newValue } }
-    }
-
-    var title: String {
-        guard isActive else { return "All" }
-        var parts: [String] = []
-        if !show.isEmpty {
-            parts.append(show.map { Self.names[$0] ?? $0 }.sorted().joined(separator: ", "))
-        }
-        if !hide.isEmpty {
-            parts.append("Not " + hide.map { Self.names[$0] ?? $0 }.sorted().joined(separator: ", "))
-        }
-        return parts.joined(separator: "; ")
-    }
-}
-
-/// Relative received-date window for the filter bar.
-enum DateWindow: Int, CaseIterable, Codable {
-    case today = 1, week = 7, month = 30
-
-    var title: String {
-        switch self {
-        case .today: return "Today"
-        case .week: return "Last 7 days"
-        case .month: return "Last 30 days"
-        }
-    }
-}
-
-/// Transient filter chips layered on top of the current view (the bar above
-/// the thread list). Reset when the view changes.
-struct FilterChips: Equatable, Codable {
-    var category = CategoryFilter()
-    var unreadOnly = false
-    var showArchived = false
-    var labelId: String?
-    var labelName: String?
-    var labelExclude = false      // "does not contain" mode for the label
-    var senderContains = ""
-    var senderExclude = false     // "does not contain" mode for the sender
-    /// Matches against message From headers (email address or "@domain"),
-    /// unlike senderContains which matches display names. Optional so views
-    /// saved before this field existed still decode. Powers "Split from Inbox".
-    var fromEmailContains: String? = nil
-    var hasAttachmentOnly = false
-    var noAttachmentOnly = false
-    var readOnly = false          // isUnread == false
-    var showSent = false          // widen inbox to include SENT threads
-    var toContains = ""
-    var ccContains = ""
-    var bccContains = ""
-    var subjectContains = ""
-    var dateWindow: DateWindow?   // received within the last N days
-    var calendarOnly = false      // only threads with a calendar invite (.ics)
-    var hideCalendar = false      // hide threads with a calendar invite
-
-    /// Built-in factory default chips for a view (inbox hides
-    /// Promotions/Social). Pure — never reads persisted state, so
-    /// "changed vs default" comparisons and Clear all mean the factory
-    /// default, and Clear all is always a way back to it.
-    static func defaults(for view: MailboxView) -> FilterChips {
-        var chips = FilterChips()
-        switch view {
-        case .inbox, .account:
-            chips.category = CategoryFilter(
-                exclude: true,
-                hide: ["CATEGORY_PROMOTIONS", "CATEGORY_SOCIAL"])
-        default:
-            break
-        }
-        return chips
-    }
-
-    /// What a view opens with: the factory defaults, plus the category pick
-    /// the user made earlier (persisted per view) so it survives view
-    /// switches and relaunch.
-    static func initial(for view: MailboxView) -> FilterChips {
-        var chips = defaults(for: view)
-        if let saved = savedCategory(for: view) { chips.category = saved }
-        return chips
-    }
-
-    static func savedCategory(for view: MailboxView) -> CategoryFilter? {
-        guard let key = view.prefsKey,
-              let data = UserDefaults.standard.data(forKey: "categoryFilter.\(key)")
-        else { return nil }
-        return try? JSONDecoder().decode(CategoryFilter.self, from: data)
-    }
-
-    static func saveCategory(_ category: CategoryFilter, for view: MailboxView) {
-        guard let key = view.prefsKey,
-              let data = try? JSONEncoder().encode(category) else { return }
-        // Persisting the factory default is the same as having no pick;
-        // drop the key so future built-in default changes reach the user.
-        if category == defaults(for: view).category {
-            UserDefaults.standard.removeObject(forKey: "categoryFilter.\(key)")
-        } else {
-            UserDefaults.standard.set(data, forKey: "categoryFilter.\(key)")
-        }
-    }
-}
-
 /// Per-keystroke label picker state, split out of MailStore so typing and
 /// arrow keys only re-render the picker — the rest of the window observes
 /// MailStore and must not churn on every character.
@@ -340,12 +155,14 @@ final class MailStore {
     private var contactsRebuildTask: Task<Void, Never>?
     /// Once true, no new background database work is started. Set by
     /// `prepareForTermination()` on app quit.
-    private(set) var isShuttingDown = false
+    private enum Termination { case active, stopping, finished }
+    private var termination: Termination = .active
+    var isShuttingDown: Bool { termination != .active }
     /// True once `prepareForTermination()` has fully finished. The delegate's
     /// `applicationShouldTerminate` answers `.terminateNow` from then on —
     /// there is nothing left to wait for, and waiting would deadlock the
     /// updater's quit (see the delegate for the mechanics).
-    private(set) var hasCompletedTermination = false
+    var hasCompletedTermination: Bool { termination == .finished }
     /// Single-flight quit work so a second Cmd-Q / re-entrant
     /// `applicationShouldTerminate` awaits the same shutdown instead of
     /// replying `true` while the first close is still in flight.
@@ -481,33 +298,15 @@ final class MailStore {
         suppressChipPersistence = false
     }
     var activeAccountId: String?   // nil = all accounts (unified)
-    var syncStatus: String = ""
+    var mailProgress = MailProgress()
+    var syncStatus: String { mailProgress.message }
     var presentedError: PresentedError?
     /// Existing callers can continue assigning plain messages; they show an
     /// informational banner. Sync failures use `setSyncFailureError` so only
     /// those banners offer a retry action.
     var lastError: String? {
         get { presentedError?.message }
-        set {
-            presentedError = newValue.map(ErrorRecovery.none)
-            // Direct assignments (send, draft, …) are not tracked sync failures.
-            // `setSyncFailureError` re-stamps `lastErrorSyncAccountId` after set.
-            lastErrorSyncAccountId = nil
-        }
-    }
-    /// Account id whose sync failure is currently shown in `lastError`, if any.
-    /// Success for that account clears the banner; other errors leave it alone.
-    @ObservationIgnored var lastErrorSyncAccountId: String? {
-        didSet {
-            // `setSyncFailureError` stamps the account immediately after the
-            // plain-message setter. Promote that structured path back to a
-            // retry action without making ordinary errors retryable.
-            if let accountId = lastErrorSyncAccountId,
-               let message = presentedError?.message,
-               accountId != oldValue {
-                presentedError = ErrorRecovery.retry(message)
-            }
-        }
+        set { presentedError = newValue.map(ErrorRecovery.none) }
     }
     var lastErrorRecovery: ErrorRecoveryAction {
         presentedError?.recovery ?? .none
@@ -517,6 +316,8 @@ final class MailStore {
     /// refresh token); the Accounts settings pane offers a "Reauthorize"
     /// button for these.
     var accountsNeedingReauth: Set<String> = []
+    var accountSignInTask: Task<Void, Never>?
+    var connectingAccount: Bool { accountSignInTask != nil }
     /// True once a Gmail call failed for want of a network, or the path
     /// monitor reports none. Cleared by the next request that succeeds. Drives
     /// the "Offline" sync control and routes edits/drafts/sends into the
@@ -534,19 +335,26 @@ final class MailStore {
     @ObservationIgnored var pendingOpsFlushInFlight = false
     @ObservationIgnored var localDraftFlushInFlight = false
     @ObservationIgnored var scheduledSendFlushInFlight = false
-    /// Why the last `saveDraft` returned nil, for the offline fallback.
-    @ObservationIgnored var lastDraftSaveError: Error?
     /// The Outbox draft open in compose right now — the reconnect flush must
     /// not upload it underneath the editor.
     @ObservationIgnored var composingLocalDraftId: Int64?
-    var composeRequest: ComposeRequest?
+    var composeRequest: ComposeRequest? {
+        didSet {
+            guard oldValue?.id != composeRequest?.id else { return }
+            composeMode = .expanded
+            slashPickerVisible = false
+            fromPickerOpen = false
+        }
+    }
+    enum ComposeMode { case expanded, minimized, finishing }
+    var composeMode: ComposeMode = .expanded
     /// Compose card is collapsed to a title strip (Notion Mail-style). Draft
     /// state stays mounted; inbox shortcuts work again while minimized.
-    var composeMinimized = false
+    var composeMinimized: Bool { composeMode == .minimized }
     /// Send / discard / save-and-close claimed the card. Send unmounts in the
     /// same turn; discard/save may still await draft persist. UI is locked;
     /// mailbox keys (`e`, `g i`, …) work again and bypass a lagging text focus.
-    var composeFinishing = false
+    var composeFinishing: Bool { composeMode == .finishing }
     /// ComposeView publishes whether the `/` snippet picker is showing so the
     /// ContentView Esc ladder can dismiss it without relying on local-monitor
     /// install order (monitors fire FIFO; an early `return nil` starves later ones).
@@ -576,19 +384,22 @@ final class MailStore {
     /// ContentView mirrors its AppStorage pane flag here so keyboard reply
     /// can choose inline vs floating without reading UserDefaults itself.
     var readingPaneHiddenForCompose = false
-    var undoAction: UndoAction?
+    var triageUndo: UndoAction?
+    var undoAction: UndoAction? { UndoToast.visible(mailbox: triageUndo, send: sendWindow?.undo) }
     var editingView: SavedView?
     var editingAccountLabels = false
-    var showLabelPicker = false
     var showLabelOrganizer = false
-    var snoozingThread: MailThread?   // custom snooze date overlay
-    /// True while the snooze-date overlay is open for the current
-    /// multi-select (`checkedThreadIds`) rather than a single thread.
-    /// Mutually exclusive with `snoozingThread` — only one snooze overlay is
-    /// ever shown, enforced by ContentView's key-monitor ordering and the
-    /// sheet's click-blocking scrim (see the overlay in ContentView.swift),
-    /// not by anything here.
-    var snoozingChecked = false
+    enum MailboxOverlay {
+        case commands, labels, snoozeThread(MailThread), snoozeChecked
+    }
+    var mailboxOverlay: MailboxOverlay?
+    var showLabelPicker: Bool { if case .labels = mailboxOverlay { return true }; return false }
+    var showCommandPalette: Bool { if case .commands = mailboxOverlay { return true }; return false }
+    var snoozingThread: MailThread? {
+        if case .snoozeThread(let thread) = mailboxOverlay { return thread }
+        return nil
+    }
+    var snoozingChecked: Bool { if case .snoozeChecked = mailboxOverlay { return true }; return false }
     /// Draft message pending the "Delete this draft?" alert (per-message so
     /// multi-draft threads discard the card that was clicked, not always the newest).
     var confirmingDraftDelete: Message?
@@ -604,9 +415,8 @@ final class MailStore {
         labelPicker.query = ""
         labelPicker.highlight = 0
         labelPicker.navigated = false
-        showLabelPicker = true
+        mailboxOverlay = .labels
     }
-    var showCommandPalette = false
     var showFilterMenu = false   // "+ Filter" popover (Ctrl-F)
 
     /// Ask Mish side panel visibility.
@@ -639,15 +449,20 @@ final class MailStore {
     func showNotice(_ text: String) {
         notice = text
         noticeTimer?.invalidate()
-        noticeTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.notice = nil }
+        noticeTimer = Timer.scheduledTimer(withTimeInterval: 3.5, repeats: false) { [weak self] timer in
+            Task { @MainActor in
+                guard let self, self.noticeTimer === timer else { return }
+                self.notice = nil
+                self.noticeTimer = nil
+            }
         }
     }
 
     // MARK: - On-device AI triage
 
     var aiCategories: [String: String] = [:]   // threadId → category
-    var classifying = false
+    var classificationTask: Task<Void, Never>?
+    var classifying: Bool { classificationTask != nil }
     /// Single-flight load of the persisted map. Stored for the process lifetime
     /// so later calls are no-ops; concurrent callers await the same task
     /// instead of racing an empty map (which would re-classify already-sorted
@@ -1363,8 +1178,6 @@ struct ComposeRequest: Identifiable {
             forward: req.forward,
             selectedThreadId: selectedThreadId,
             readingPaneHidden: paneHidden)
-        composeMinimized = false
-        composeFinishing = false
         composeRequest = req
     }
 
@@ -1526,8 +1339,6 @@ struct ComposeRequest: Identifiable {
     /// browser handoff still lands after the user closes their draft.
     func clearComposeRequest() {
         composeRequest = nil
-        composeMinimized = false
-        composeFinishing = false
         slashPickerVisible = false
         fromPickerOpen = false
         guard let mail = pendingMailto else { return }
@@ -1540,7 +1351,7 @@ struct ComposeRequest: Identifiable {
         guard var req = composeRequest else { return }
         req.presentation = .floating
         composeRequest = req
-        composeMinimized = false
+        if !composeFinishing { composeMode = .expanded }
     }
 
     /// Full-window side by side: the source conversation left, the draft
@@ -1580,7 +1391,7 @@ struct ComposeRequest: Identifiable {
         guard var req = composeRequest, req.id == requestId else { return }
         req.presentation = .split
         composeRequest = req
-        composeMinimized = false
+        if !composeFinishing { composeMode = .expanded }
     }
 
     /// Leave split without closing the draft — recompute the normal placement
@@ -1644,7 +1455,7 @@ struct ComposeRequest: Identifiable {
     }
 
     struct UndoAction: Identifiable {
-        let id = UUID()
+        var id = UUID()
         let label: String
         let undo: () -> Void
     }
@@ -1927,15 +1738,9 @@ struct ComposeRequest: Identifiable {
     /// Default fixed port so client configs survive app relaunches.
     static let mcpDefaultPort = 41888
 
-    /// In-process Streamable HTTP MCP server (nil when stopped).
-    @ObservationIgnored
-    private var mcpServer: MCPServer?
-
-    /// Bound loopback port while the server is running; nil when stopped.
-    private(set) var mcpPort: UInt16?
-
-    /// True while the MCP server is accepting connections.
-    private(set) var mcpRunning = false
+    private var mcpListener: (server: MCPServer, port: UInt16)?
+    var mcpPort: UInt16? { mcpListener?.port }
+    var mcpRunning: Bool { mcpListener != nil }
 
     /// Cached bearer token for Settings copy snippet (Keychain-backed).
     private(set) var mcpToken: String?
@@ -1995,23 +1800,16 @@ struct ComposeRequest: Identifiable {
             let bridge = MCPBridge(store: self)
             let server = MCPServer(tools: bridge)
             let port = try server.start(token: token, preferredPort: UInt16(mcpPreferredPort))
-            mcpServer = server
-            mcpPort = port
-            mcpRunning = true
+            mcpListener = (server, port)
             writeMCPDiscovery(port: port)
         } catch {
-            mcpServer = nil
-            mcpPort = nil
-            mcpRunning = false
             showNotice("MCP server failed to start: \(error.localizedDescription)")
         }
     }
 
     func stopMCPServer() {
-        mcpServer?.stop()
-        mcpServer = nil
-        mcpPort = nil
-        mcpRunning = false
+        mcpListener?.server.stop()
+        mcpListener = nil
         removeMCPDiscovery()
     }
 
@@ -2134,8 +1932,6 @@ struct ComposeRequest: Identifiable {
         lastDeepLink = nil
         lastDeepLinkThreadId = nil
         composeRequest = nil
-        composeMinimized = false
-        composeFinishing = false
         reloadAccounts()
         reloadSavedViews()
         loadVIPs()
@@ -2446,11 +2242,12 @@ struct ComposeRequest: Identifiable {
     func prepareForTermination() async {
         // Gate new DB work before the first suspension point so a MainActor
         // hop cannot start rebuildContacts between here and executeTermination.
-        isShuttingDown = true
+        guard !hasCompletedTermination else { return }
+        termination = .stopping
         await DatabaseLifecycle.singleFlight(slot: terminationSlot) { [self] in
             await self.executeTermination()
         }
-        hasCompletedTermination = true
+        termination = .finished
     }
 
     private func executeTermination() async {
@@ -2483,8 +2280,7 @@ struct ComposeRequest: Identifiable {
         undoTimer = nil
         noticeTimer?.invalidate()
         noticeTimer = nil
-        pendingSendTimer?.invalidate()
-        pendingSendTimer = nil
+        sendWindow?.timer.invalidate()
         scheduledSendTimer?.invalidate()
         scheduledSendTimer = nil
 
@@ -2501,6 +2297,9 @@ struct ComposeRequest: Identifiable {
             startupTask,
             syncTickTask,
             dueSweepTask,
+            accountSignInTask,
+            serverSearchTask,
+            classificationTask,
         ].compactMap { $0 }
         contactsRebuildTask = nil
         threadReloadTask = nil
@@ -2511,6 +2310,7 @@ struct ComposeRequest: Identifiable {
         startupTask = nil
         syncTickTask = nil
         dueSweepTask = nil
+        accountSignInTask?.cancel()
 
         // Flush while the pool is still open (may write / send).
         if pendingSend != nil {
@@ -2968,12 +2768,11 @@ struct ComposeRequest: Identifiable {
                 }
                 // Keep expanded window across sync/star reloads; search never pages.
                 let hasMore = search.isEmpty ? payload.hasMore : false
-                let cursor = search.isEmpty ? payload.nextCursor : nil
+                let cursor = hasMore ? payload.nextCursor : nil
                 if search.isEmpty {
                     let limit = max(self.listWindowLimit, list.count)
                     if limit != self.listWindowLimit { self.listWindowLimit = limit }
                 }
-                if hasMore != self.hasMoreThreads { self.hasMoreThreads = hasMore }
                 if cursor != self.listCursor { self.listCursor = cursor }
                 if payload.vipHits != self.vipThreadIds { self.vipThreadIds = payload.vipHits }
                 // Local sidebar counts only: they use the same denorm filters as
@@ -3023,11 +2822,10 @@ struct ComposeRequest: Identifiable {
     }
 
     /// Whether the current list window may have older rows past the loaded depth.
-    private(set) var hasMoreThreads = false
-    private(set) var isLoadingMore = false
+    var hasMoreThreads: Bool { listCursor != nil }
+    var isLoadingMore: Bool { loadMoreTask != nil }
     /// Cursor after the last loaded thread (for `loadMoreThreads`).
     private var listCursor: ThreadListCursor?
-    @ObservationIgnored
     private var loadMoreTask: Task<Void, Never>?
     /// Identifies the in-flight load-more so a cancelled task cannot nil a newer one.
     private var loadMoreToken = UUID()
@@ -3038,12 +2836,9 @@ struct ComposeRequest: Identifiable {
     private func resetListWindow() {
         listWindowLimit = ThreadListPaging.pageSize
         listCursor = nil
-        hasMoreThreads = false
         loadMoreTask?.cancel()
         loadMoreTask = nil
         loadMoreToken = UUID()
-        // The cancelled task's defer is token-guarded and won't clear this.
-        isLoadingMore = false
     }
 
     /// Append the next page of threads older than the current window.
@@ -3051,7 +2846,7 @@ struct ComposeRequest: Identifiable {
     func loadMoreThreads() {
         guard !isShuttingDown else { return }
         let search = committedSearch.trimmingCharacters(in: .whitespaces)
-        guard search.isEmpty, hasMoreThreads, let cursor = listCursor, loadMoreTask == nil else { return }
+        guard search.isEmpty, let cursor = listCursor, loadMoreTask == nil else { return }
         let generation = threadReloadGeneration
         let token = UUID()
         loadMoreToken = token
@@ -3063,13 +2858,11 @@ struct ComposeRequest: Identifiable {
         let savedViewsSnapshot = savedViews
         let activeVIP = activeVIPEmails
         let pool = db
-        isLoadingMore = true
         loadMoreTask = Task { [weak self] in
             defer {
                 Task { @MainActor in
                     guard let self, self.loadMoreToken == token else { return }
                     self.loadMoreTask = nil
-                    self.isLoadingMore = false
                 }
             }
             let split: (page: [MailThread], hasMore: Bool)? = try? await PerfMetrics.measureAsync(
@@ -3091,10 +2884,11 @@ struct ComposeRequest: Identifiable {
                     return ThreadListPaging.splitPage(rows)
                 }
             }
-            guard let split, !split.page.isEmpty else {
+            guard let split else { return }
+            guard !split.page.isEmpty else {
                 await MainActor.run {
                     guard let self, generation == self.threadReloadGeneration else { return }
-                    self.hasMoreThreads = false
+                    self.listCursor = nil
                 }
                 return
             }
@@ -3112,13 +2906,12 @@ struct ComposeRequest: Identifiable {
                 self.threads.append(contentsOf: fresh)
                 self.vipThreadIds.formUnion(vipHits)
                 self.listWindowLimit = max(self.listWindowLimit, self.threads.count)
-                self.hasMoreThreads = split.hasMore
                 // Cursor from this fetched page only — not self.threads, which
                 // may still hold older Priority-merged candidates past the
                 // true page bottom.
                 let inbound = MailStore.usesInboundSort(for: self.selectedView)
-                self.listCursor = ThreadListPaging.nextCursor(
-                    after: page, inboundSort: inbound)
+                self.listCursor = split.hasMore ? ThreadListPaging.nextCursor(
+                    after: page, inboundSort: inbound) : nil
             }
         }
     }
@@ -3133,7 +2926,8 @@ struct ComposeRequest: Identifiable {
 
     // MARK: - Server-side search
 
-    var serverSearching = false
+    private var serverSearchTask: Task<Void, Never>?
+    var serverSearching: Bool { serverSearchTask != nil }
 
     /// Local search only covers cached mail (within the sync window). This
     /// pulls matching messages straight from Gmail so a search can reach older
@@ -3141,17 +2935,17 @@ struct ComposeRequest: Identifiable {
     /// the raw search text is passed through as the query.
     func searchAllGmail() {
         let query = committedSearch.trimmingCharacters(in: .whitespaces)
-        guard !query.isEmpty, !serverSearching else { return }
-        serverSearching = true
-        syncStatus = "Searching all mail…"
-        Task {
-            _ = await self.pullServerSearchMatches(query: query)
-            await MainActor.run {
-                serverSearching = false
-                syncStatus = ""
-                reloadThreads()
-                rebuildContacts()
+        guard !isShuttingDown, !query.isEmpty, !serverSearching else { return }
+        let progress = makeSyncStatusSink("Searching all mail…")
+        serverSearchTask = Task {
+            defer {
+                endSyncStatus(progress)
+                serverSearchTask = nil
             }
+            _ = await pullServerSearchMatches(query: query)
+            guard !Task.isCancelled, !isShuttingDown else { return }
+            reloadThreads()
+            rebuildContacts()
         }
     }
 
@@ -3165,13 +2959,14 @@ struct ComposeRequest: Identifiable {
     @discardableResult
     func pullServerSearchMatches(query: String, limit: Int = 50) async -> [String] {
         let q = query.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !q.isEmpty, !demoMode else { return [] }
+        guard !isShuttingDown, !q.isEmpty, !demoMode else { return [] }
         let targets = activeAccountId.map { [$0] } ?? accounts.map(\.id)
         guard !targets.isEmpty else { return [] }
 
         var ordered: [String] = []
         var seen = Set<String>()
         for accountId in targets {
+            guard !Task.isCancelled, !isShuttingDown else { break }
             let engine = engines[accountId] ?? SyncEngine(accountId: accountId)
             engines[accountId] = engine
             do {
@@ -3181,7 +2976,7 @@ struct ComposeRequest: Identifiable {
                     ordered.append(id)
                 }
             } catch {
-                lastError = error.localizedDescription
+                if !Task.isCancelled { lastError = error.localizedDescription }
             }
         }
         return Array(ordered.prefix(max(limit, 0)))
@@ -3729,9 +3524,11 @@ struct ComposeRequest: Identifiable {
             chips.labelName = SavedViewFold.labelName(
                 current: chips.labelName, oldLabelId: chips.labelId, newLabelId: v.labelId)
             chips.labelId = v.labelId
-            chips.unreadOnly = v.unreadOnly
+            if v.unreadOnly { chips.read = .unread }
+            else if chips.unreadOnly { chips.read = .any }
             chips.showArchived = v.showArchived
-            chips.hasAttachmentOnly = v.hasAttachmentOnly
+            if v.hasAttachmentOnly { chips.attachments = .present }
+            else if chips.hasAttachmentOnly { chips.attachments = .any }
             chips.senderContains = v.senderContains
             // Both directions: the editor must be able to turn these OFF too.
             let categories = SavedViewFold.categories(
@@ -3845,8 +3642,8 @@ struct ComposeRequest: Identifiable {
             if !checkedThreadIds.isEmpty { toggleReadChecked() }
             else if let t = selectedThread { setRead(t, read: t.isUnread) }
         case .snooze:
-            if !checkedThreadIds.isEmpty { snoozingChecked = true }
-            else if let t = selectedThread { snoozingThread = t }
+            if !checkedThreadIds.isEmpty { mailboxOverlay = .snoozeChecked }
+            else if let t = selectedThread { mailboxOverlay = .snoozeThread(t) }
         case .markSpam:
             if !checkedThreadIds.isEmpty { markSpamChecked() }
             else if let t = selectedThread {
@@ -4306,9 +4103,13 @@ struct ComposeRequest: Identifiable {
     /// apply many optimistic updates and reload once at the end.
     var suppressThreadReload = false
 
-    var pendingSend: PendingSend?
-    @ObservationIgnored
-    var pendingSendTimer: Timer?
+    struct SendWindow {
+        let message: PendingSend
+        let undo: UndoAction
+        let timer: Timer
+    }
+    var sendWindow: SendWindow?
+    var pendingSend: PendingSend? { sendWindow?.message }
     static let undoSendWindow = ComposeDrafts.undoSendWindow
     var scheduledSends: [ScheduledSend] = []
     @ObservationIgnored

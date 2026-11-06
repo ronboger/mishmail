@@ -257,7 +257,7 @@ struct ThreadDetailToolbar: ViewModifier {
                                     ? "envelope.open" : "envelope.badge")
                         }
                         Button {
-                            store.snoozingThread = thread
+                            store.mailboxOverlay = .snoozeThread(thread)
                         } label: {
                             Label("Snooze", systemImage: "clock")
                         }

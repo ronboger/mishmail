@@ -163,13 +163,12 @@ final class OAuthService {
         let authURL = comps.url!
         _ = await MainActor.run { NSWorkspace.shared.open(authURL) }
 
-        let code: String
-        do {
-            code = try await codeTask.value
-        } catch {
-            // Listener is cancelled via stream termination; rethrow as-is.
-            throw error
+        let code = try await withTaskCancellationHandler {
+            try await codeTask.value
+        } onCancel: {
+            codeTask.cancel()
         }
+        try Task.checkCancellation()
         let token = try await exchange(code: code, verifier: verifier, redirectURI: redirectURI)
         guard let refresh = token.refresh_token else {
             throw OAuthError.tokenExchangeFailed("no refresh_token returned")

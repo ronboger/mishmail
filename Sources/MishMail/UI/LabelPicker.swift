@@ -31,7 +31,7 @@ struct LabelPicker: View {
         ZStack(alignment: .top) {
             Color.black.opacity(0.2)
                 .ignoresSafeArea()
-                .onTapGesture { store.showLabelPicker = false }
+                .onTapGesture { store.mailboxOverlay = nil }
 
             if let thread = store.selectedThread {
                 let labels = store.labelPickerLabels(for: thread)

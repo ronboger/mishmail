@@ -24,8 +24,10 @@ final class UpdateChecker: ObservableObject {
 
     /// Set only when the latest release is newer than the running version.
     @Published var available: Release?
-    @Published var checking = false
-    @Published var installing = false
+    enum Activity: Equatable { case idle, checking(quietly: Bool), installing }
+    @Published private(set) var activity: Activity = .idle
+    var checking: Bool { if case .checking = activity { return true }; return false }
+    var installing: Bool { activity == .installing }
     @Published var lastChecked: Date?
     /// Outcome of an explicit check ("You're up to date.", errors).
     @Published var status: String?
@@ -86,13 +88,17 @@ final class UpdateChecker: ObservableObject {
     }
 
     func check(quietly: Bool = false) async {
-        // Quiet checks yield to one already in flight; an explicit click
-        // still runs (and reports) even if a quiet check is racing it. Nothing
-        // checks during an install — it would overwrite the progress status
-        // and could clear `available` out from under the running install.
-        guard !(checking && quietly), !installing else { return }
-        checking = true
-        defer { checking = false; lastChecked = Date() }
+        if checking {
+            // A click during the background check should report its outcome.
+            if !quietly { activity = .checking(quietly: false) }
+            return
+        }
+        guard activity == .idle else { return }
+        activity = .checking(quietly: quietly)
+        defer {
+            activity = .idle
+            lastChecked = Date()
+        }
         do {
             var req = URLRequest(
                 url: URL(string: "https://api.github.com/repos/\(Self.repo)/releases/latest")!)
@@ -102,8 +108,8 @@ final class UpdateChecker: ObservableObject {
             guard code == 200 else {
                 if code == 404 {
                     available = nil
-                    if !quietly { status = "No releases have been published on GitHub yet." }
-                } else if !quietly {
+                    if activity == .checking(quietly: false) { status = "No releases have been published on GitHub yet." }
+                } else if activity == .checking(quietly: false) {
                     status = "GitHub returned an error (HTTP \(code)). Try again later."
                 }
                 return
@@ -131,10 +137,10 @@ final class UpdateChecker: ObservableObject {
                 status = nil
             } else {
                 available = nil
-                if !quietly { status = "You're up to date." }
+                if activity == .checking(quietly: false) { status = "You're up to date." }
             }
         } catch {
-            if !quietly { status = error.localizedDescription }
+            if activity == .checking(quietly: false) { status = error.localizedDescription }
         }
     }
 
@@ -187,7 +193,7 @@ final class UpdateChecker: ObservableObject {
     }
 
     private func installOrOpenReleasePage(_ release: Release) async {
-        guard !installing else { return }
+        guard activity == .idle else { return }
         guard let assetURL = release.assetURL else {
             NSWorkspace.shared.open(release.htmlURL)
             return
@@ -195,8 +201,8 @@ final class UpdateChecker: ObservableObject {
         // Claim the flow before the confirmation runs: a modal spins its own
         // run loop, so a second click during it would otherwise pass the
         // guard above and stack another alert.
-        installing = true
-        defer { installing = false }
+        activity = .installing
+        defer { activity = .idle }
         // Remembered so a draft opened *during* the download still gets its
         // own question: one answer shouldn't cover a draft that didn't exist
         // when it was given.

@@ -20,9 +20,8 @@ enum UndoToast {
         action != nil
     }
 
-    /// After a short triage toast expires, restore "Sending…" if undo-send
-    /// is still live so cancel-send is not orphaned by an intervening archive.
-    static func shouldRestoreSendUndo(pendingSend: Bool) -> Bool {
-        pendingSend
+    /// A newer mailbox action temporarily takes precedence over undo-send.
+    static func visible<Action>(mailbox: Action?, send: Action?) -> Action? {
+        mailbox ?? send
     }
 }

@@ -566,7 +566,7 @@ private struct ThreadListSections: View, Equatable {
                         onOpenIfFocused: { store.requestOpenSelected() },
                         onStar: { store.toggleStar(thread) },
                         onArchive: { store.archive(thread) },
-                        onSnooze: { store.snoozingThread = thread },
+                        onSnooze: { store.mailboxOverlay = .snoozeThread(thread) },
                         onTrash: { store.trash(thread) }
                     )
                         .tag(thread.id)
@@ -696,7 +696,7 @@ private struct ThreadListSections: View, Equatable {
             // per preset) are computed when the submenu is materialized,
             // not for every row whenever the section body runs.
             SnoozePresetMenuItems(thread: thread)
-            Button("Pick date & time…") { store.snoozingThread = thread }
+            Button("Pick date & time…") { store.mailboxOverlay = .snoozeThread(thread) }
             if thread.snoozeUntil != nil {
                 Button("Unsnooze") { store.snooze(thread, until: nil) }
             }
@@ -848,8 +848,7 @@ struct FilterBar: View {
                     labelsChip
                     quickChip("Is unread", icon: "envelope.badge",
                               active: store.chips.unreadOnly) {
-                        store.chips.unreadOnly.toggle()
-                        if store.chips.unreadOnly { store.chips.readOnly = false }
+                        store.chips.read = store.chips.unreadOnly ? .any : .unread
                     }
                     quickChip("Show archived", icon: "archivebox",
                               active: store.chips.showArchived) {
@@ -857,12 +856,12 @@ struct FilterBar: View {
                     }
 
                     // Chips for whatever other filters are active, each removable.
-                    if store.chips.readOnly { activeChip("Read") { store.chips.readOnly = false } }
+                    if store.chips.readOnly { activeChip("Read") { store.chips.read = .any } }
                     if store.chips.showSent { activeChip("Sent") { store.chips.showSent = false } }
-                    if store.chips.hasAttachmentOnly { activeChip("Attachment") { store.chips.hasAttachmentOnly = false } }
-                    if store.chips.noAttachmentOnly { activeChip("No attachment") { store.chips.noAttachmentOnly = false } }
-                    if store.chips.calendarOnly { activeChip("Calendar events") { store.chips.calendarOnly = false } }
-                    if store.chips.hideCalendar { activeChip("No calendar events") { store.chips.hideCalendar = false } }
+                    if store.chips.hasAttachmentOnly { activeChip("Attachment") { store.chips.attachments = .any } }
+                    if store.chips.noAttachmentOnly { activeChip("No attachment") { store.chips.attachments = .any } }
+                    if store.chips.calendarOnly { activeChip("Calendar events") { store.chips.calendar = .any } }
+                    if store.chips.hideCalendar { activeChip("No calendar events") { store.chips.calendar = .any } }
                     if let window = store.chips.dateWindow {
                         activeChip("Date: \(window.title)") { store.chips.dateWindow = nil }
                     }
@@ -947,7 +946,7 @@ struct FilterBar: View {
             .keyboardShortcut("r", modifiers: [.command, .shift])
             .disabled(store.demoMode)
         }
-        .padding(.horizontal, 10).padding(.vertical, 7)
+        .padding(.horizontal, 14).padding(.vertical, 9)
     }
 
     /// The "+ Filter" chip. Rendered as an invisible anchor when hidden so
@@ -1013,10 +1012,10 @@ struct FilterBar: View {
         [
             .init(icon: "person.crop.circle", title: "From", primary: true, kind: .field(.from)),
             .init(icon: "paperclip", title: "Has attachments", primary: true,
-                  kind: .mutate { $0.hasAttachmentOnly = true; $0.noAttachmentOnly = false }),
+                  kind: .mutate { $0.attachments = .present }),
             .init(icon: "calendar", title: "Date", primary: true, kind: .date("Date")),
             .init(icon: "calendar.badge.clock", title: "Only show calendar events", primary: true,
-                  kind: .mutate { $0.calendarOnly = true; $0.hideCalendar = false }),
+                  kind: .mutate { $0.calendar = .present }),
             .init(icon: "person.2", title: "Show \"social\" emails", primary: true,
                   kind: .showCategory("CATEGORY_SOCIAL")),
             .init(icon: "megaphone", title: "Show \"promotional\" emails", primary: true,
@@ -1034,13 +1033,13 @@ struct FilterBar: View {
             .init(icon: "archivebox", title: "Show archived", primary: false,
                   kind: .mutate { $0.showArchived = true }),
             .init(icon: "envelope.open", title: "Is read", primary: false,
-                  kind: .mutate { $0.readOnly = true; $0.unreadOnly = false }),
+                  kind: .mutate { $0.read = .read }),
             .init(icon: "envelope.badge", title: "Is unread", primary: false,
-                  kind: .mutate { $0.unreadOnly = true; $0.readOnly = false }),
+                  kind: .mutate { $0.read = .unread }),
             .init(icon: "paperclip.badge.ellipsis", title: "No attachments", primary: false,
-                  kind: .mutate { $0.noAttachmentOnly = true; $0.hasAttachmentOnly = false }),
+                  kind: .mutate { $0.attachments = .absent }),
             .init(icon: "calendar.badge.minus", title: "Hide calendar events", primary: false,
-                  kind: .mutate { $0.hideCalendar = true; $0.calendarOnly = false }),
+                  kind: .mutate { $0.calendar = .absent }),
             .init(icon: "bubble.left.and.bubble.right", title: "Show \"forums\" emails", primary: false,
                   kind: .showCategory("CATEGORY_FORUMS")),
             .init(icon: "bubble.left.and.bubble.right", title: "Hide \"forums\" emails", primary: false,
@@ -1592,7 +1591,7 @@ struct FilterRowHoverTint: ViewModifier {
 
     func body(content: Content) -> some View {
         content
-            .background(hovering ? Color.primary.opacity(0.07) : Color.clear,
+            .background(hovering ? Color.primary.opacity(0.05) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 5))
             .onHover { hovering = $0 }
     }
@@ -1627,7 +1626,7 @@ struct FilterMenuRow: View {
                 }
             }
             .padding(.horizontal, 6).padding(.vertical, 4)
-            .background(hovering ? Color.primary.opacity(0.07) : Color.clear,
+            .background(hovering ? Color.primary.opacity(0.05) : Color.clear,
                         in: RoundedRectangle(cornerRadius: 5))
             .contentShape(Rectangle())
         }
@@ -1870,9 +1869,9 @@ struct ThreadRow: View, Equatable {
             .frame(height: 18 * fontScale)
             .animation(.easeOut(duration: 0.12), value: hovering)
         }
-        .padding(.vertical, 3 * fontScale)
+        .padding(.vertical, 6 * fontScale)
         .padding(.horizontal, 6)
-        .background(hovering ? Color.primary.opacity(0.07) : .clear,
+        .background(hovering ? Color.primary.opacity(0.05) : .clear,
                     in: RoundedRectangle(cornerRadius: PMRadius.sm))
         .padding(.horizontal, -6)
         // No contentShape here: it hijacks the List row's click handling on

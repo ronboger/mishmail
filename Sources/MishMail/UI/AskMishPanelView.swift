@@ -255,8 +255,8 @@ struct AskMishPanelView: View {
     }
 
     private func declinePendingConfirmation() {
-        if controller.pendingConfirmation != nil {
-            controller.confirmPendingTool(allow: false)
+        if let pending = controller.pendingConfirmation {
+            controller.confirmPendingTool(id: pending.id, allow: false)
         }
     }
 
@@ -539,9 +539,9 @@ struct AskMishPanelView: View {
                         }
                         .buttonStyle(.plain)
                     }
-                    if tool.canUndoSend, store.pendingSend != nil {
+                    if let messageID = tool.queuedMessageID, store.pendingSend?.messageId == messageID {
                         Button("Undo send") {
-                            controller.undoQueuedSend()
+                            controller.undoQueuedSend(messageID: messageID)
                         }
                         .font(.caption2)
                         .buttonStyle(.plain)
@@ -701,7 +701,7 @@ struct AskMishPanelView: View {
             }
             HStack(spacing: 8) {
                 Button(isSend ? "Send" : (isCreate ? "Create draft" : "Allow")) {
-                    controller.confirmPendingTool(allow: true)
+                    controller.confirmPendingTool(id: pending.id, allow: true)
                 }
                 .buttonStyle(.borderedProminent)
                 .tint(isSend ? .red : Color.notionAccent)
@@ -710,12 +710,12 @@ struct AskMishPanelView: View {
                 .keyboardShortcut(nil)
                 .disabled(bodyNeedsReview && !expanded)
                 Button("Don't allow") {
-                    controller.confirmPendingTool(allow: false)
+                    controller.confirmPendingTool(id: pending.id, allow: false)
                 }
                 .keyboardShortcut(.cancelAction)
                 if controller.canOpenPendingInCompose {
                     Button("Open in compose") {
-                        controller.openPendingInCompose()
+                        controller.openPendingInCompose(id: pending.id)
                     }
                     .buttonStyle(.borderless)
                 }

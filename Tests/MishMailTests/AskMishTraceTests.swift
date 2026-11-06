@@ -5,7 +5,7 @@ final class AskMishTraceTests: XCTestCase {
     func testStatusLabelPresentAndPast() {
         let running = AskMishTrace.Tool(
             id: "1", name: "search_threads", status: .running,
-            argumentsJSON: "{}", resultPreview: nil, threads: [], canUndoSend: false)
+            argumentsJSON: "{}", resultPreview: nil, threads: [], queuedMessageID: nil)
         XCTAssertEqual(AskMishTrace.statusLabel(running), "Searching mail…")
         var done = running
         done.status = .done
@@ -48,15 +48,17 @@ final class AskMishTraceTests: XCTestCase {
         let done = AskMishTrace.finished(
             from: running,
             result: LLMToolResult(callID: "c1",
-                                  content: #"{"status":"queued","undoSeconds":10}"#,
+                                  content: #"{"status":"queued","undoSeconds":10,"messageId":"send-1"}"#,
                                   isError: false))
         XCTAssertEqual(done.status, .done)
-        XCTAssertTrue(done.canUndoSend)
+        XCTAssertEqual(done.queuedMessageID, "send-1")
+        let oldReceipt = LLMToolResult(callID: "c1", content: #"{"status":"queued"}"#, isError: false)
+        XCTAssertNil(AskMishTrace.finished(from: running, result: oldReceipt).queuedMessageID)
         let failed = AskMishTrace.finished(
             from: running,
             result: LLMToolResult(callID: "c1", content: "nope", isError: true))
         XCTAssertEqual(failed.status, .failed)
-        XCTAssertFalse(failed.canUndoSend)
+        XCTAssertNil(failed.queuedMessageID)
     }
 
     func testAuditLineCountsThreadsDraftsAndSends() {
@@ -66,10 +68,10 @@ final class AskMishTraceTests: XCTestCase {
                 resultPreview: nil,
                 threads: [AskMishTrace.ThreadRef(id: "t1", subject: "A"),
                           AskMishTrace.ThreadRef(id: "t2", subject: "B")],
-                canUndoSend: false),
+                queuedMessageID: nil),
             AskMishTrace.Tool(
                 id: "2", name: "create_draft", status: .done, argumentsJSON: "{}",
-                resultPreview: nil, threads: [], canUndoSend: false),
+                resultPreview: nil, threads: [], queuedMessageID: nil),
         ]
         XCTAssertEqual(AskMishTrace.auditLine(tools: tools),
                        "Read 2 threads. Created 1 draft. Sent nothing.")

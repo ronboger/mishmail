@@ -4,6 +4,21 @@ import XCTest
 /// `StatusThrottle` drops repeats and caps deliveries at ~4 Hz while always
 /// delivering the newest value of a burst.
 final class StatusThrottleTests: XCTestCase {
+    func testOverlappingMailProgressRestoresTheStillActiveOperation() {
+        var progress = MailProgress()
+        let sync = UUID()
+        let search = UUID()
+        progress.begin(sync, message: "Sync")
+        progress.begin(search, message: "Search")
+        progress.update(sync, message: "Page 2")
+        XCTAssertEqual(progress.message, "Search")
+        progress.end(search)
+        progress.update(search, message: "Late result")
+        XCTAssertEqual(progress.message, "Page 2")
+        progress.end(sync)
+        XCTAssertEqual(progress.message, "")
+    }
+
     func testFirstChangeDeliversImmediately() {
         var t = StatusThrottle(interval: 0.25)
         XCTAssertEqual(t.submit("a", now: 0), .deliver("a"))

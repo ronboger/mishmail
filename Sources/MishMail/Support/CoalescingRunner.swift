@@ -16,10 +16,12 @@ import Foundation
 actor CoalescingRunner<Value: Sendable> {
     typealias Operation = @Sendable () async throws -> Value
 
-    private var running: Task<Value, Error>?
-    private var runningId: UUID?
-    private var queued: Task<Value, Error>?
-    private var queuedId: UUID?
+    private struct Pass {
+        let id: UUID
+        let task: Task<Value, Error>
+    }
+    private var running: Pass?
+    private var queued: Pass?
 
     /// True when no pass is running or queued.
     var isIdle: Bool { running == nil && queued == nil }
@@ -29,11 +31,11 @@ actor CoalescingRunner<Value: Sendable> {
     /// one that queues the follow-up; later joiners share it as is.
     func run(_ operation: @escaping Operation) async throws -> Value {
         if let queued {
-            return try await queued.value
+            return try await queued.task.value
         }
         if let running {
             let id = UUID()
-            let previous = running
+            let previous = running.task
             let task = Task<Value, Error> {
                 // The follow-up must start after the pass it follows, whatever
                 // that pass's outcome.
@@ -44,16 +46,14 @@ actor CoalescingRunner<Value: Sendable> {
                     return try await operation()
                 })
             }
-            queued = task
-            queuedId = id
+            queued = Pass(id: id, task: task)
             return try await task.value
         }
         let id = UUID()
         let task = Task<Value, Error> {
             try await self.execute(id, operation: operation)
         }
-        running = task
-        runningId = id
+        running = Pass(id: id, task: task)
         // An unstructured task does not inherit the caller's cancellation.
         // Forward it: this caller is the pass's only waiter.
         return try await withTaskCancellationHandler {
@@ -65,7 +65,7 @@ actor CoalescingRunner<Value: Sendable> {
 
     /// Cancels the running and queued passes and waits until both end.
     func cancelAll() async {
-        let tasks = [running, queued].compactMap { $0 }
+        let tasks = [running, queued].compactMap { $0?.task }
         for task in tasks { task.cancel() }
         for task in tasks { _ = try? await task.value }
     }
@@ -73,28 +73,19 @@ actor CoalescingRunner<Value: Sendable> {
     /// Runs the pass and clears it before its task completes, so a caller
     /// that arrives afterwards never joins a pass that already ended.
     private func execute(_ id: UUID, operation: Operation) async throws -> Value {
-        do {
-            let value = try await operation()
-            finish(id)
-            return value
-        } catch {
-            finish(id)
-            throw error
-        }
+        defer { finish(id) }
+        return try await operation()
     }
 
     /// The queued pass becomes the running one once its predecessor ends.
     private func promote(_ id: UUID) {
-        guard queuedId == id, let task = queued else { return }
-        running = task
-        runningId = id
+        guard let next = queued, next.id == id else { return }
+        running = next
         queued = nil
-        queuedId = nil
     }
 
     private func finish(_ id: UUID) {
-        guard runningId == id else { return }
+        guard running?.id == id else { return }
         running = nil
-        runningId = nil
     }
 }

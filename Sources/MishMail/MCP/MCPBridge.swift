@@ -335,7 +335,7 @@ final class MCPBridge: MCPToolProvider, @unchecked Sendable {
         }
 
         // saveDraft is MainActor-isolated on MailStore.
-        let draft = await store.saveDraft(
+        let draft = try await store.saveDraft(
             from: accountId,
             to: toHeader,
             cc: ccHeader,
@@ -650,7 +650,7 @@ extension MailStore {
         // quoted HTML survive — the same resolution `editDraft(_:)` uses.
         let parent = Self.replyParent(
             forDraft: draft, inThread: messages(inThread: draft.threadId))
-        queueSend(PendingSend(
+        let pending = PendingSend(
             accountId: draft.accountId,
             // Send-as identity written on the draft; empty falls back to the
             // account's primary address.
@@ -663,7 +663,8 @@ extension MailStore {
             replyTo: parent,
             forward: false,
             attachments: [],
-            replacingDraft: draft))
+            replacingDraft: draft)
+        queueSend(pending)
 
         // "queued", never "sent": the undo window still has to elapse.
         let data = try JSONSerialization.data(
@@ -672,6 +673,7 @@ extension MailStore {
                 "draftId": draft.id,
                 "threadId": draft.threadId,
                 "undoSeconds": Int(MailStore.undoSendWindow),
+                "messageId": pending.messageId,
             ] as [String: Any],
             options: [.sortedKeys])
         guard let receipt = String(data: data, encoding: .utf8) else {

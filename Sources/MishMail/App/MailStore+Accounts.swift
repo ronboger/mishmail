@@ -17,7 +17,9 @@ extension MailStore {
             lastError = AccountLifecycle.demoConnectBlockedMessage
             return
         }
-        Task {
+        guard !isShuttingDown, !connectingAccount else { return }
+        accountSignInTask = Task {
+            defer { accountSignInTask = nil }
             do {
                 let (refresh, access) = try await OAuthService().signIn(loginHint: hint)
                 var req = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v2/userinfo")!)
@@ -26,6 +28,7 @@ extension MailStore {
                 let (data, _) = try await URLSession.shared.data(for: req)
                 let info = try JSONDecoder().decode(UserInfo.self, from: data)
 
+                try Task.checkCancellation()
                 // A successful connection replaces the fictional mailbox.
                 // Exit only after OAuth succeeds, so cancelling sign-in leaves
                 // the user's demo session intact.
@@ -54,7 +57,7 @@ extension MailStore {
                 rerankContacts()
                 await sync(accountId: info.email)
             } catch {
-                lastError = error.localizedDescription
+                if !Task.isCancelled { lastError = error.localizedDescription }
             }
         }
     }
@@ -140,7 +143,6 @@ extension MailStore {
         let newlyFlagged = accountsNeedingReauth.insert(accountID).inserted
         guard AccountLifecycle.presentsReauthBanner(
             newlyFlagged: newlyFlagged, interactive: interactive) else { return }
-        lastErrorSyncAccountId = nil
         presentedError = ErrorRecovery.reauthorizationRequired(for: accountID)
     }
 
@@ -148,8 +150,7 @@ extension MailStore {
     /// later success for that account can clear it without wiping send errors.
     func setSyncFailureError(_ message: String, accountId: String) {
         guard isKnownAccount(accountId) else { return }
-        lastError = message
-        lastErrorSyncAccountId = accountId
+        presentedError = ErrorRecovery.retry(message, accountID: accountId)
     }
 
     /// True while `accountId` is still in `accounts`. Late results for a
@@ -159,8 +160,7 @@ extension MailStore {
     }
 
     func clearSyncFailureErrorIfNeeded(for accountId: String) {
-        guard lastErrorSyncAccountId == accountId else { return }
+        guard presentedError?.accountID == accountId else { return }
         lastError = nil
-        lastErrorSyncAccountId = nil
     }
 }

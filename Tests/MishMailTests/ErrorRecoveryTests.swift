@@ -12,7 +12,8 @@ final class ErrorRecoveryTests: XCTestCase {
 
     func testRetryPresentationDoesNotInferRecoveryFromMessageWording() {
         let message = "person@example.org: needs to be reauthorized someday."
-        let error = ErrorRecovery.retry(message)
+        let error = ErrorRecovery.retry(message, accountID: "work")
+        XCTAssertEqual(error.accountID, "work")
 
         XCTAssertEqual(error.message, message)
         XCTAssertEqual(error.recovery, .retrySync)

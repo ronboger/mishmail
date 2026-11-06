@@ -32,6 +32,22 @@ extension MailStore {
         var effectiveFromEmail: String {
             fromEmail.isEmpty ? accountId : fromEmail
         }
+
+        var restoredCompose: ComposeRequest {
+            ComposeRequest(replyTo: replyTo, forward: forward, forwardAll: forwardAll,
+                           editDraft: replacingDraft, restore: self)
+        }
+
+        func scheduled(at date: Date) -> ScheduledSend {
+            ScheduledSend(
+                id: nil, accountId: accountId, fromEmail: effectiveFromEmail,
+                toHeader: to, ccHeader: cc,
+                bccHeader: bcc, subject: subject, body: body, sendAt: date,
+                replyToMessageId: replyTo?.id, forward: forward,
+                replacingDraftId: replacingDraft?.id,
+                attachmentsJSON: ScheduledSend.encodeAttachments(attachments),
+                createdAt: Date(), messageId: messageId)
+        }
     }
 
     /// Queue a message: it actually sends after `undoSendWindow` unless undone.
@@ -44,38 +60,43 @@ extension MailStore {
         if let previous = takePendingSend() {
             Task { await self.performSend(previous) }
         }
-        pendingSend = pending
         setPendingDraftSuppressed(pending.replacingDraft, suppressed: true)
         undoTimer?.invalidate()
-        undoAction = UndoAction(label: "Sending…") { [weak self] in self?.cancelPendingSend() }
-        pendingSendTimer = Timer.scheduledTimer(withTimeInterval: Self.undoSendWindow,
-                                                repeats: false) { [weak self] _ in
-            Task { @MainActor in await self?.flushPendingSend() }
+        undoTimer = nil
+        triageUndo = nil
+        let id = UUID()
+        let undo = UndoAction(id: id, label: "Sending…") { [weak self] in
+            guard self?.sendWindow?.undo.id == id else { return }
+            self?.cancelPendingSend()
         }
+        let timer = Timer.scheduledTimer(withTimeInterval: Self.undoSendWindow,
+                                         repeats: false) { [weak self] _ in
+            Task { @MainActor in
+                guard let self, self.sendWindow?.undo.id == id else { return }
+                await self.flushPendingSend()
+            }
+        }
+        sendWindow = SendWindow(message: pending, undo: undo, timer: timer)
     }
 
     /// Undo: pull the message back into compose, nothing sent.
     func cancelPendingSend() {
         guard let p = takePendingSend() else { return }
-        undoAction = nil
         setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
-        composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
-                                        forwardAll: p.forwardAll,
-                                        editDraft: p.replacingDraft, restore: p)
+        composeRequest = p.restoredCompose
     }
 
     /// Send the queued message now (window elapsed, or the app is quitting).
     func flushPendingSend() async {
         guard let p = takePendingSend() else { return }
-        undoAction = nil
         await performSend(p)
     }
 
     private func takePendingSend() -> PendingSend? {
-        pendingSendTimer?.invalidate()
-        pendingSendTimer = nil
-        defer { pendingSend = nil }
-        return pendingSend
+        let window = sendWindow
+        window?.timer.invalidate()
+        sendWindow = nil
+        return window?.message
     }
 
     private enum SendOutcome {
@@ -132,9 +153,7 @@ extension MailStore {
     private func restoreFailedSend(_ p: PendingSend, error: Error) {
         setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
         lastError = "Send failed: \(error.localizedDescription)"
-        composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
-                                        forwardAll: p.forwardAll,
-                                        editDraft: p.replacingDraft, restore: p)
+        composeRequest = p.restoredCompose
     }
 
     /// Mailbox whose Gmail API actually carries `p` — the same resolution
@@ -150,26 +169,16 @@ extension MailStore {
     /// Park a send that found no network: a scheduled row due *now*, which
     /// the reconnect flush and the poll backstop both pick up.
     private func queueSendForReconnect(_ p: PendingSend) {
-        let row = ScheduledSend(
-            id: nil, accountId: p.accountId, fromEmail: p.effectiveFromEmail,
-            toHeader: p.to, ccHeader: p.cc,
-            bccHeader: p.bcc, subject: p.subject, body: p.body, sendAt: Date(),
-            replyToMessageId: p.replyTo?.id, forward: p.forward,
-            replacingDraftId: p.replacingDraft?.id,
-            attachmentsJSON: ScheduledSend.encodeAttachments(p.attachments),
-            createdAt: Date(), messageId: p.messageId)
+        let row = p.scheduled(at: Date())
         do {
             try db.write { db in try row.insert(db) }
         } catch {
-            // Last resort: back into compose rather than into the void.
-            setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
-            lastError = "Send failed: \(error.localizedDescription)"
-            composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
-                                            forwardAll: p.forwardAll,
-                                            editDraft: p.replacingDraft, restore: p)
+            restoreFailedSend(p, error: error)
             return
         }
         reloadScheduledSends()
+        // The scheduled row now owns this draft until it is sent, edited, or discarded.
+        setPendingDraftSuppressed(p.replacingDraft, suppressed: false)
         showNotice(OfflinePolicy.queuedSendNotice)
     }
 
@@ -301,20 +310,25 @@ extension MailStore {
 
     /// Persist a composed message to go out at `date`. Survives relaunch;
     /// anything overdue sends on next launch.
-    func scheduleSend(_ p: PendingSend, at date: Date) {
+    func scheduleSend(_ p: PendingSend, at date: Date, retiringLocalID: Int64?) -> Bool {
         guard !demoMode else {
             showNotice("Scheduled sending is disabled in the demo inbox")
-            return
+            return false
         }
-        let row = ScheduledSend(
-            id: nil, accountId: p.accountId, fromEmail: p.effectiveFromEmail,
-            toHeader: p.to, ccHeader: p.cc,
-            bccHeader: p.bcc, subject: p.subject, body: p.body, sendAt: date,
-            replyToMessageId: p.replyTo?.id, forward: p.forward,
-            replacingDraftId: p.replacingDraft?.id,
-            attachmentsJSON: ScheduledSend.encodeAttachments(p.attachments),
-            createdAt: Date(), messageId: p.messageId)
-        try? db.write { db in try row.insert(db) }
+        let row = p.scheduled(at: date)
+        do {
+            try db.write { db in
+                try row.insert(db)
+                if let retiringLocalID { _ = try LocalDraft.deleteOne(db, key: retiringLocalID) }
+            }
+        } catch {
+            lastError = "Couldn’t schedule this message: \(error.localizedDescription)"
+            return false
+        }
+        if let retiringLocalID {
+            if composingLocalDraftId == retiringLocalID { composingLocalDraftId = nil }
+            reloadLocalDrafts()
+        }
         reloadScheduledSends()
         // The autosaved draft may not be in the message table yet; hand over
         // its thread so the Drafts row hides as well as the draft card.
@@ -322,33 +336,38 @@ extension MailStore {
             applyDraftSuppression(threadHints: [draft.id: draft.threadId])
         }
         showNotice("Scheduled — sends \(SendSchedule.describe(date))")
+        return true
     }
 
     /// Pull a scheduled message back into compose (nothing is lost).
     func editScheduledSend(_ s: ScheduledSend) {
-        guard !isScheduledSendInFlight(s) else { return }
+        guard takeScheduledSend(s) else { return }
         let p = pendingSend(from: s)
-        try? db.write { db in _ = try ScheduledSend.deleteOne(db, key: s.id) }
-        reloadScheduledSends()
-        composeRequest = ComposeRequest(replyTo: p.replyTo, forward: p.forward,
-                                        forwardAll: p.forwardAll,
-                                        editDraft: p.replacingDraft, restore: p)
+        composeRequest = p.restoredCompose
     }
 
     /// Skip the wait: goes through the normal undo-send window.
     func sendScheduledNow(_ s: ScheduledSend) {
-        guard !isScheduledSendInFlight(s) else { return }
+        guard takeScheduledSend(s) else { return }
         let p = pendingSend(from: s)
-        try? db.write { db in _ = try ScheduledSend.deleteOne(db, key: s.id) }
-        reloadScheduledSends()
         queueSend(p)
     }
 
     func discardScheduledSend(_ s: ScheduledSend) {
-        guard !isScheduledSendInFlight(s) else { return }
-        try? db.write { db in _ = try ScheduledSend.deleteOne(db, key: s.id) }
-        reloadScheduledSends()
-        showNotice("Scheduled message discarded")
+        if takeScheduledSend(s) { showNotice("Scheduled message discarded") }
+    }
+
+    /// Only hand off a message after claiming its durable queue row.
+    private func takeScheduledSend(_ s: ScheduledSend) -> Bool {
+        guard !isScheduledSendInFlight(s), let id = s.id else { return false }
+        do {
+            let removed = try db.write { db in try ScheduledSend.deleteOne(db, key: id) }
+            reloadScheduledSends()
+            return removed
+        } catch {
+            lastError = error.localizedDescription
+            return false
+        }
     }
 
     private func pendingSend(from s: ScheduledSend) -> PendingSend {
@@ -640,7 +659,7 @@ extension MailStore {
                    attachments: [MIMEBuilder.Attachment] = [],
                    replacing draft: Message? = nil,
                    silent: Bool = false,
-                   syncAfter: Bool? = nil) async -> Message? {
+                   syncAfter: Bool? = nil) async throws -> Message? {
         let shouldSync = syncAfter ?? !silent
         guard !demoMode else {
             if !silent { showNotice("Drafts aren't saved in the demo inbox") }
@@ -715,7 +734,6 @@ extension MailStore {
                 messageIdHeader: "", referencesHeader: "",
                 labelIds: "DRAFT", isUnread: false, hasAttachment: !attachments.isEmpty)
         } catch {
-            lastDraftSaveError = error
             // Always surface close-path failures (silent=false). Autosave keeps
             // lastError clean and uses the in-card "Draft not saved" status.
             // Connectivity failures never reach the banner: the caller keeps
@@ -723,7 +741,7 @@ extension MailStore {
             if !silent, OfflinePolicy.surfacesSyncFailure(error) {
                 lastError = "Draft not saved: \(error.localizedDescription)"
             }
-            return nil
+            throw error
         }
     }
 
@@ -754,26 +772,20 @@ extension MailStore {
         // Set when Gmail was reachable but refused the save on the close path.
         var rejection: Error?
         if !isOffline {
-            lastDraftSaveError = nil
-            if let saved = await saveDraft(from: accountId, fromEmail: fromEmail,
-                                           to: to, cc: cc, bcc: bcc, subject: subject,
-                                           body: body, replyTo: message, forward: forward,
-                                           attachments: attachments, replacing: draft,
-                                           silent: silent, syncAfter: syncAfter) {
+            do {
+                guard let saved = try await saveDraft(
+                    from: accountId, fromEmail: fromEmail, to: to, cc: cc, bcc: bcc,
+                    subject: subject, body: body, replyTo: message, forward: forward,
+                    attachments: attachments, replacing: draft, silent: silent,
+                    syncAfter: syncAfter) else { return .failed }
                 if let local { deleteLocalDraft(local, silent: true) }
                 isOffline = false
                 return .uploaded(saved)
-            }
-            // Closing with a save Gmail refused (re-auth, 429, 5xx) must not
-            // drop the text: keep it in the Outbox like the offline case.
-            guard let error = lastDraftSaveError,
-                  DraftSavePolicy.keepsDraftLocally(error: error, closing: !silent) else {
-                return .failed
-            }
-            if DraftSavePolicy.marksOffline(error) {
-                isOffline = true
-            } else {
-                rejection = error
+            } catch {
+                guard DraftSavePolicy.keepsDraftLocally(error: error, closing: !silent)
+                else { return .failed }
+                if DraftSavePolicy.marksOffline(error) { isOffline = true }
+                else { rejection = error }
             }
         }
         let now = Date()
@@ -886,31 +898,26 @@ extension MailStore {
             guard !isShuttingDown else { break }
             let replyTo = local.replyToMessageId.flatMap { messageBody(id: $0) }
             let draft = local.replacingDraftId.flatMap { messageBody(id: $0) }
-            lastDraftSaveError = nil
-            let saved = await saveDraft(from: local.accountId, fromEmail: local.fromEmail,
-                                        to: local.toHeader, cc: local.ccHeader,
-                                        bcc: local.bccHeader, subject: local.subject,
-                                        body: local.body, replyTo: replyTo,
-                                        forward: local.forward,
-                                        attachments: local.attachments, replacing: draft,
-                                        silent: true, syncAfter: false)
-            if saved != nil {
+            do {
+                guard try await saveDraft(
+                    from: local.accountId, fromEmail: local.fromEmail, to: local.toHeader,
+                    cc: local.ccHeader, bcc: local.bccHeader, subject: local.subject,
+                    body: local.body, replyTo: replyTo, forward: local.forward,
+                    attachments: local.attachments, replacing: draft, silent: true,
+                    syncAfter: false) != nil else { continue }
                 isOffline = false
                 uploadedAccounts.insert(local.accountId)
                 uploadedCount += 1
                 deleteLocalDraft(local, silent: true)
-                continue
-            }
-            if let error = lastDraftSaveError, OfflinePolicy.shouldDefer(error) {
-                isOffline = true
-                break
-            }
-            if let error = lastDraftSaveError, AccountLifecycle.isReauthRequired(error) {
-                requireReauthorization(for: local.accountId)
-                break
-            }
-            // Rejected outright: keep the row so the user can open and fix it.
-            if let error = lastDraftSaveError {
+            } catch {
+                if OfflinePolicy.shouldDefer(error) {
+                    isOffline = true
+                    break
+                }
+                if AccountLifecycle.isReauthRequired(error) {
+                    requireReauthorization(for: local.accountId)
+                    break
+                }
                 lastError = "Couldn't upload an offline draft: \(error.localizedDescription)"
             }
         }

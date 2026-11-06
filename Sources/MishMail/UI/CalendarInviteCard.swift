@@ -13,24 +13,27 @@ struct CalendarInviteCard: View {
     var fontScale: Double = 1.0
 
     /// All VEVENTs from the ICS (multi-slot / series+exception files).
-    @State private var invites: [CalendarInvite] = []
-    @State private var loadError: String?
-    @State private var loading = true
-    /// Per-UID(+RECURRENCE-ID) in-flight and local RSVP state.
-    @State private var sendingKey: String?
+    private enum InviteLoad { case loading, loaded([CalendarInvite]), failed(String) }
+    @State private var load: InviteLoad = .loading
+    private struct PendingResponse {
+        let key: String
+        let status: CalendarInvite.RSVP
+    }
+    @State private var sending: PendingResponse?
     @State private var localRSVPByKey: [String: CalendarInvite.RSVP] = [:]
 
     var body: some View {
         Group {
-            if loading {
+            switch load {
+            case .loading:
                 loadingRow
-            } else if !invites.isEmpty {
+            case .loaded(let invites):
                 VStack(alignment: .leading, spacing: 8) {
                     ForEach(Array(invites.enumerated()), id: \.offset) { _, invite in
                         inviteBody(invite)
                     }
                 }
-            } else if let loadError {
+            case .failed(let loadError):
                 Text(loadError)
                     .font(PMFont.caption(fontScale))
                     .foregroundStyle(.secondary)
@@ -218,10 +221,11 @@ struct CalendarInviteCard: View {
                             invite: CalendarInvite) -> some View {
         let key = rsvpKey(invite)
         let selected = localRSVPByKey[key] == status
-        let busy = sendingKey != nil
-        let thisSending = sendingKey == key
+        let busy = sending != nil
+        let thisSending = sending?.key == key && sending?.status == status
         return Button {
-            guard !busy else { return }
+            guard sending == nil else { return }
+            sending = PendingResponse(key: key, status: status)
             Task { await respond(status, invite: invite) }
         } label: {
             HStack(spacing: 5) {
@@ -291,17 +295,16 @@ struct CalendarInviteCard: View {
     // MARK: - Load / respond
 
     private func loadInvite() async {
-        loading = true
-        loadError = nil
-        defer { loading = false }
+        load = .loading
         do {
             let data = try await store.downloadAttachment(attachment, message: message)
+            guard !Task.isCancelled else { return }
             let parsed = CalendarInvite.parseAll(data)
             guard !parsed.isEmpty else {
-                loadError = "Couldn't read this calendar invite."
+                load = .failed("Couldn't read this calendar invite.")
                 return
             }
-            invites = parsed
+            load = .loaded(parsed)
             var map: [String: CalendarInvite.RSVP] = [:]
             for inv in parsed {
                 if let stored = CalendarInvite.storedRSVP(
@@ -312,15 +315,15 @@ struct CalendarInviteCard: View {
             }
             localRSVPByKey = map
         } catch {
-            loadError = error.localizedDescription
+            guard !Task.isCancelled else { return }
+            load = .failed(error.localizedDescription)
         }
     }
 
     private func respond(_ status: CalendarInvite.RSVP,
                          invite: CalendarInvite) async {
         let key = rsvpKey(invite)
-        sendingKey = key
-        defer { sendingKey = nil }
+        defer { sending = nil }
         await store.rsvpToInvite(invite, status: status, message: message)
         // Re-read stored state — only updates on success.
         if let stored = CalendarInvite.storedRSVP(

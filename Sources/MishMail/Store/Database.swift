@@ -621,21 +621,15 @@ struct LabelRow: Codable, Identifiable, Hashable, FetchableRecord, PersistableRe
 
 /// Shared by design: SyncEngine actors, the MainActor store and background
 /// maintenance all reach the same pool. `dbPool` is itself thread-safe and the
-/// mutable lifecycle flags (`isClosed`, `isShuttingDown`) are guarded by
-/// `closeLock`.
+/// pool lifecycle is guarded by `closeLock`.
 final class AppDatabase: @unchecked Sendable {
     static let shared = try! AppDatabase()
     // A pool (WAL), not a serial queue: concurrent readers (e.g. the live
     // search dropdown's per-keystroke FTS lookup) run on their own snapshot
     // connections instead of queuing behind a sync-engine write transaction.
     let dbPool: DatabasePool
-    /// True after `close()` — no further access is valid (process is quitting).
-    private(set) var isClosed = false
-    /// True once termination has begun. Maintenance refuses to *start* while
-    /// set, so a deferred VACUUM cannot open after tracked tasks are cancelled
-    /// but before the pool closes. The quit-path checkpoint uses
-    /// `checkpoint(force: true)` to bypass this gate.
-    private(set) var isShuttingDown = false
+    private enum Phase { case open, shuttingDown, closed }
+    private var phase: Phase = .open
     private let closeLock = NSLock()
     /// On-disk location, kept so the WAL sidecar can be sized without asking
     /// SQLite (see `checkpointIfNeeded`).
@@ -718,9 +712,8 @@ final class AppDatabase: @unchecked Sendable {
     /// statements and retry.
     func interrupt() {
         closeLock.lock()
-        let closed = isClosed
-        closeLock.unlock()
-        guard !closed else { return }
+        defer { closeLock.unlock() }
+        guard phase != .closed else { return }
         dbPool.interrupt()
     }
 
@@ -729,7 +722,7 @@ final class AppDatabase: @unchecked Sendable {
     /// before cancelling tracked tasks.
     func beginShutdown() {
         closeLock.lock()
-        isShuttingDown = true
+        if phase == .open { phase = .shuttingDown }
         closeLock.unlock()
     }
 
@@ -737,17 +730,14 @@ final class AppDatabase: @unchecked Sendable {
     /// and awaited. Must run before process exit so SQLCipher's atexit teardown
     /// (`sqlcipher_extra_shutdown`) does not race live reader connections.
     ///
-    /// Only flips `isClosed` after a successful `close()`. GRDB can throw
-    /// `SQLITE_BUSY` when live statements block close (zombie-ish state);
-    /// swallowing that while marking closed would block interrupt/retry and
-    /// hide the residual atexit race.
+    /// A busy pool stays eligible for interrupt and retry until close succeeds.
     func close() {
         closeLock.lock()
         defer { closeLock.unlock() }
-        guard !isClosed else { return }
+        guard phase != .closed else { return }
         do {
             try dbPool.close()
-            isClosed = true
+            phase = .closed
         } catch {
             NSLog("MishMail: dbPool.close failed: %@", "\(error)")
         }
@@ -835,7 +825,7 @@ final class AppDatabase: @unchecked Sendable {
     /// task once the app is up (`MailStore.runDeferredStartupWork`).
     func reclaimSpaceIfNeeded() {
         closeLock.lock()
-        let blocked = isClosed || isShuttingDown
+        let blocked = phase != .open
         closeLock.unlock()
         guard !blocked else { return }
         do {
@@ -876,7 +866,7 @@ final class AppDatabase: @unchecked Sendable {
     /// it needs no timer of its own.
     func checkpointIfNeeded() {
         closeLock.lock()
-        let blocked = isClosed || isShuttingDown
+        let blocked = phase != .open
         closeLock.unlock()
         guard !blocked else { return }
         guard walSizeBytes >= Self.checkpointThresholdBytes else { return }
@@ -910,10 +900,8 @@ final class AppDatabase: @unchecked Sendable {
     /// `TRUNCATE` blocks until it can checkpoint everything, so this is only
     /// called when nothing else should be running: at idle and on the way out.
     ///
-    /// - Parameter force: When true, bypass the `isShuttingDown` gate. Used
-    ///   only from the quit-path `close:` closure after tracked tasks have
-    ///   been awaited — that checkpoint must still run even though
-    ///   `beginShutdown` has already closed idle maintenance.
+    /// - Parameter force: Allow the final checkpoint during shutdown, after
+    ///   the tracked tasks finish and before the pool closes.
     func checkpoint(force: Bool = false) {
         // Check-then-act deliberately releases closeLock before the write.
         // Holding closeLock across the write would deadlock against
@@ -922,11 +910,9 @@ final class AppDatabase: @unchecked Sendable {
         // The microsecond window where a maintenance write can straddle
         // close() is knowingly accepted.
         closeLock.lock()
-        let closed = isClosed
-        let shuttingDown = isShuttingDown
+        let current = phase
         closeLock.unlock()
-        guard !closed else { return }
-        guard force || !shuttingDown else { return }
+        guard current != .closed, force || current == .open else { return }
         do {
             try dbPool.writeWithoutTransaction { db in
                 // Order matters: `incremental_vacuum` is itself a write, so

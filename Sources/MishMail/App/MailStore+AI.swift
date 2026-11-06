@@ -58,54 +58,43 @@ extension MailStore {
     }
 
     private func classify(_ targets: [MailThread], quiet: Bool) {
-        guard !classifying, !targets.isEmpty else { return }
-        classifying = true
+        guard !isShuttingDown, !classifying, !targets.isEmpty else { return }
         // One status write per classified thread republished the FilterBar
         // each time; throttle like sync progress (newest count still lands).
-        let progress = makeSyncStatusSink()
-        Task {
+        let progress = makeSyncStatusSink("Sorting with AI…")
+        classificationTask = Task {
+            defer {
+                endSyncStatus(progress)
+                classificationTask = nil
+            }
             var done = 0
             for thread in targets {
+                guard !Task.isCancelled, !isShuttingDown else { return }
                 let from = thread.participants.isEmpty ? thread.fromDisplay : thread.participants
                 let prompt = LLMPrompts.classify(subject: thread.subject, from: from,
                                                  snippet: thread.snippet, categories: Classifier.categories)
                 do {
                     let raw = try await LLMTaskRunner.generate(task: .triage, prompt: prompt)
+                    try Task.checkCancellation()
                     let category = Classifier.normalize(raw)
-                    try? await db.write { database in
+                    try await db.write { database in
                         try ThreadAICategory(threadId: thread.id, category: category).save(database)
                     }
-                    await MainActor.run {
-                        aiCategories[thread.id] = category
-                        done += 1
-                        progress.submit("Sorting with AI… \(done)/\(targets.count)")
-                    }
+                    aiCategories[thread.id] = category
+                    done += 1
+                    progress.submit("Sorting with AI… \(done)/\(targets.count)")
                 } catch {
-                    await MainActor.run {
-                        classifying = false
-                        progress.close()
-                        syncStatus = ""
-                        if quiet {
-                            // The old Ollama client collapsed missing-model,
-                            // HTTP, and URL-session failures into
-                            // `.unreachable`; the provider layer surfaces
-                            // those as LLMClientError.missingCredential/http
-                            // or URLError. Keep all of them silent here.
-                            autoClassifyPausedUntil = Date().addingTimeInterval(AITriage.failurePause)
-                        } else {
-                            showNotice(LLMTaskRunner.errorMessage(error, task: .triage))
-                        }
+                    guard !Task.isCancelled else { return }
+                    if quiet {
+                        autoClassifyPausedUntil = Date().addingTimeInterval(AITriage.failurePause)
+                    } else {
+                        showNotice(LLMTaskRunner.errorMessage(error, task: .triage))
                     }
                     return
                 }
             }
-            await MainActor.run {
-                classifying = false
-                progress.close()
-                syncStatus = ""
-                if !quiet {
-                    showNotice("Sorted \(done) thread\(done == 1 ? "" : "s") with AI.")
-                }
+            if !quiet {
+                showNotice("Sorted \(done) thread\(done == 1 ? "" : "s") with AI.")
             }
         }
     }

@@ -19,7 +19,7 @@ enum AskMishTrace {
         var argumentsJSON: String
         var resultPreview: String?
         var threads: [ThreadRef]
-        var canUndoSend: Bool
+        var queuedMessageID: String?
     }
 
     struct PromptChip: Equatable, Identifiable {
@@ -40,7 +40,7 @@ enum AskMishTrace {
     static func running(_ call: LLMToolCall) -> Tool {
         Tool(id: call.id, name: call.name, status: .running,
              argumentsJSON: call.argumentsJSON, resultPreview: nil,
-             threads: [], canUndoSend: false)
+             threads: [], queuedMessageID: nil)
     }
 
     /// One short live line. Present tense while running, past when done.
@@ -111,9 +111,11 @@ enum AskMishTrace {
         next.threads = threads(name: running.name,
                                argumentsJSON: running.argumentsJSON,
                                result: result.content)
-        next.canUndoSend = running.name == AskMishTools.sendDraftToolName
-            && !result.isError
-            && result.content.contains("\"status\":\"queued\"")
+        if running.name == AskMishTools.sendDraftToolName, !result.isError,
+           let receipt = try? JSONSerialization.jsonObject(with: Data(result.content.utf8)) as? [String: Any],
+           receipt["status"] as? String == "queued" {
+            next.queuedMessageID = receipt["messageId"] as? String
+        }
         return next
     }
 

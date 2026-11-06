@@ -1076,7 +1076,7 @@ private extension ContentView {
                     store.dismissSlashPicker()
                     return nil
                 case .closeCommandPalette:
-                    store.showCommandPalette = false
+                    store.mailboxOverlay = nil
                     return nil
                 case .dismissSearchFocus:
                     // Keep the draft; drop search focus/panel (three-pane +
@@ -1109,7 +1109,7 @@ private extension ContentView {
             }
             let mods = event.modifierFlags.intersection([.command, .option, .control])
             if mods == .command, event.charactersIgnoringModifiers == "k" {
-                store.showCommandPalette.toggle()
+                store.mailboxOverlay = store.showCommandPalette ? nil : .commands
                 return nil
             }
             // ⌘↩: Send when expanded compose owns the chord (button shortcut).
@@ -1240,7 +1240,7 @@ private extension ContentView {
                 return nil
             }
             if store.showCommandPalette, event.keyCode == 53 {  // esc
-                store.showCommandPalette = false
+                store.mailboxOverlay = nil
                 return nil
             }
             if store.showShortcutsHelp, event.keyCode == 53 {  // esc
@@ -1260,7 +1260,7 @@ private extension ContentView {
                 let picker = store.labelPicker
                 switch event.keyCode {
                 case 53:  // esc
-                    store.showLabelPicker = false
+                    store.mailboxOverlay = nil
                     return nil
                 case 125:  // down — picker clamps to the filtered list
                     picker.highlight += 1
@@ -1717,7 +1717,9 @@ struct Sidebar: View {
                     store.openCompose(.init(replyTo: nil))
                 } label: {
                     Image(systemName: "square.and.pencil")
-                        .font(.system(size: 14))
+                        .font(.system(size: 15))
+                        .frame(width: 30, height: 30)
+                        .contentShape(Rectangle())
                 }
                 .buttonStyle(.borderless)
                 .keyboardShortcut("n", modifiers: .command)
@@ -1786,6 +1788,7 @@ struct Sidebar: View {
                 }
             }
             .listStyle(.sidebar)
+            .environment(\.defaultMinListRowHeight, 30)
             .scrollContentBackground(.hidden)
 
             // Settings pinned at the bottom (also Cmd-, from anywhere).
@@ -1823,6 +1826,7 @@ struct Sidebar: View {
                 }
                 .buttonStyle(.plain)
                 .padding(.horizontal, 12).padding(.top, 8)
+                .disabled(updates.activity != .idle)
                 .help("Install MishMail \(release.version) and relaunch")
             }
             SettingsLink {
@@ -2317,10 +2321,11 @@ struct AccountSwitcher: View {
                         .padding(.bottom, 2)
                 }
                 Divider().padding(.vertical, 4)
-                FilterMenuRow(icon: "plus", title: "Add Google Account…") {
+                FilterMenuRow(icon: "plus", title: store.connectingAccount ? "Connecting…" : "Add Google Account…") {
                     showMenu = false
                     store.addAccount()
                 }
+                .disabled(store.connectingAccount)
                 FilterMenuRow(icon: "pencil", title: "Edit Account Labels…") {
                     showMenu = false
                     store.editingAccountLabels = true
@@ -2387,7 +2392,7 @@ struct AccountSwitcher: View {
                     Text(account.map(displayTitle) ?? "All accounts")
                         .font(.system(size: 12.5, weight: .medium))
                         .lineLimit(1)
-                    Text(account?.id ?? "\(store.accounts.count) inboxes")
+                    Text(account?.id ?? inboxCountLabel)
                         .font(.system(size: 10.5)).foregroundStyle(.secondary)
                         .lineLimit(1)
                 }
@@ -2467,8 +2472,12 @@ struct AccountSwitcher: View {
         activeAccount.map(displayTitle) ?? "All accounts"
     }
 
+    private var inboxCountLabel: String {
+        store.accounts.count == 1 ? "1 inbox" : "\(store.accounts.count) inboxes"
+    }
+
     private var subtitle: String {
-        store.activeAccountId ?? "\(store.accounts.count) inboxes"
+        store.activeAccountId ?? inboxCountLabel
     }
 }
 

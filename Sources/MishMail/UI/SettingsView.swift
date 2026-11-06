@@ -259,7 +259,7 @@ struct UpdatesSettings: View {
                                 }
                             }
                             .buttonStyle(.borderedProminent)
-                            .disabled(updates.installing)
+                            .disabled(updates.activity != .idle)
                             Button("View on GitHub") { updates.openReleasePage() }
                         }
                     }
@@ -334,6 +334,7 @@ struct AccountsSettings: View {
                             Spacer()
                             if store.accountsNeedingReauth.contains(account.id) {
                                 Button("Reauthorize…") { store.addAccount(reauthorizing: account.id) }
+                                    .disabled(store.connectingAccount)
                             }
                             if store.demoMode, account.id == DemoSeed.account {
                                 Button("Exit Demo") { store.exitDemoMode() }
@@ -347,10 +348,11 @@ struct AccountsSettings: View {
                     }
                 }
                 Section {
-                    Button(store.demoMode ? "Connect Google and exit demo…"
+                    Button(store.connectingAccount ? "Connecting…" : store.demoMode ? "Connect Google and exit demo…"
                                           : "Add Google Account…") {
                         store.addAccount()
                     }
+                    .disabled(store.connectingAccount)
                 } footer: {
                     Text(store.demoMode
                          ? "After Google sign-in succeeds, MishMail removes the fictional inbox and starts syncing your account."
@@ -1581,8 +1583,15 @@ struct AISettings: View {
     @AppStorage(AIWritingPreferences.storageKey) private var writingInstructions = ""
     @AppStorage(ThreadSummaryPolicy.autoSummarizeKey) private var autoSummarizeLocal = false
     @State private var providers: [LLMProviderConfig] = LLMProviderStore.load()
-    @State private var editingProvider: LLMProviderConfig?
-    @State private var addingProvider = false
+    private enum ProviderEditor: Identifiable {
+        case add, edit(LLMProviderConfig)
+        var provider: LLMProviderConfig? {
+            if case .edit(let config) = self { return config }
+            return nil
+        }
+        var id: String { provider?.id.uuidString ?? "add" }
+    }
+    @State private var providerEditor: ProviderEditor?
     @State private var usage: [LLMUsageLog.TaskSpend] = []
     @State private var showingClearUsageAlert = false
     /// Models installed in the local Ollama, from /api/tags. Empty when
@@ -1593,6 +1602,8 @@ struct AISettings: View {
     /// Per-vendor sign-in progress line ("Waiting for browser…", errors).
     @State private var vendorStatus: [LLMOAuthVendor: String] = [:]
     @State private var connectingVendor: LLMOAuthVendor?
+    @State private var refreshingProviders: Set<UUID> = []
+    @State private var ollamaLoadID: UUID?
     @State private var providerToRemove: LLMProviderConfig?
 
     private var confirmingProviderRemoval: Binding<Bool> {
@@ -1704,7 +1715,7 @@ struct AISettings: View {
                             }
                             Spacer()
                             if provider.id != LLMProviderStore.builtInOllamaID {
-                                Button("Edit") { editingProvider = provider }
+                                Button("Edit") { providerEditor = .edit(provider) }
                                     .buttonStyle(.borderless)
                                 Button(role: .destructive) { providerToRemove = provider } label: {
                                     Image(systemName: "xmark.circle.fill")
@@ -1716,7 +1727,7 @@ struct AISettings: View {
                             }
                         }
                     }
-                    Button { addingProvider = true } label: {
+                    Button { providerEditor = .add } label: {
                         Label("Add provider", systemImage: "plus")
                     }
                     .buttonStyle(.borderless)
@@ -1816,13 +1827,8 @@ struct AISettings: View {
                 MCPSettingsSection()
             }
             .formStyle(.grouped)
-            .sheet(isPresented: $addingProvider) {
-                ProviderEditSheet(provider: nil) { _ in
-                    providers = LLMProviderStore.load()
-                }
-            }
-            .sheet(item: $editingProvider) { provider in
-                ProviderEditSheet(provider: provider) { _ in
+            .sheet(item: $providerEditor) { editor in
+                ProviderEditSheet(provider: editor.provider) { _ in
                     providers = LLMProviderStore.load()
                 }
             }
@@ -1877,8 +1883,11 @@ struct AISettings: View {
             if connectingVendor == vendor {
                 ProgressView().controlSize(.small)
             } else if let connected {
-                Button("Refresh models") { Task { await refreshModels(for: connected) } }
-                    .buttonStyle(.borderless)
+                Button(refreshingProviders.contains(connected.id) ? "Refreshing…" : "Refresh models") {
+                    Task { await refreshModels(for: connected) }
+                }
+                .buttonStyle(.borderless)
+                .disabled(refreshingProviders.contains(connected.id))
                 Button("Sign out") { disconnect(connected) }
                     .buttonStyle(.borderless)
             } else {
@@ -1894,6 +1903,7 @@ struct AISettings: View {
     /// list. A failed listing falls back to known model names — the sign-in
     /// itself must still land.
     private func connect(_ vendor: LLMOAuthVendor) async {
+        guard connectingVendor == nil else { return }
         let preset = LLMProviderStore.subscriptionPreset(for: vendor)
         connectingVendor = vendor
         vendorStatus[vendor] = vendor == .grok
@@ -1926,7 +1936,9 @@ struct AISettings: View {
     }
 
     private func refreshModels(for provider: LLMProviderConfig) async {
-        guard case .oauth(let vendor) = provider.authMode else { return }
+        guard case .oauth(let vendor) = provider.authMode,
+              refreshingProviders.insert(provider.id).inserted else { return }
+        defer { refreshingProviders.remove(provider.id) }
         let preset = LLMProviderStore.subscriptionPreset(for: vendor)
         vendorStatus[vendor] = "Fetching models…"
         var allModels = Set(preset.fallbackModels)
@@ -1940,6 +1952,15 @@ struct AISettings: View {
             allModels.formUnion(provider.models ?? [])
             fetchError = error.localizedDescription
         }
+        var list = LLMProviderStore.load()
+        // A refresh may outlive sign-out, editing, or removal. Never put a
+        // deleted provider back or overwrite settings edited during the fetch.
+        guard let index = list.firstIndex(where: { $0.id == provider.id }),
+              list[index] == provider else {
+            providers = list
+            vendorStatus[vendor] = ""
+            return
+        }
         var updated = provider
         // A failed fetch must not reassign the default: the stored model may
         // simply be missing from the fallback list, and silently switching it
@@ -1951,8 +1972,7 @@ struct AISettings: View {
         if fetchError == nil {
             updated.defaultModel = AskMishModelMenu.preferredDefault(for: updated)
         }
-        var list = LLMProviderStore.load().filter { $0.id != provider.id }
-        list.append(updated)
+        list[index] = updated
         LLMProviderStore.save(list)
         providers = LLMProviderStore.load()
         vendorStatus[vendor] = fetchError.map { "Live model list failed (\($0)). Showing known models." } ?? ""
@@ -1964,12 +1984,17 @@ struct AISettings: View {
     }
 
     private func loadOllamaModels() async {
+        let id = UUID()
+        ollamaLoadID = id
+        defer { if ollamaLoadID == id { ollamaLoadID = nil } }
         do {
             let installed = try await Ollama.installedModels()
+            guard ollamaLoadID == id else { return }
             ollamaModels = installed
             ollamaListError = installed.isEmpty
                 ? "Ollama has no models installed. Run: ollama pull llama3.2" : ""
         } catch {
+            guard ollamaLoadID == id else { return }
             ollamaModels = []
             ollamaListError = "Couldn't reach Ollama at \(Ollama.baseURL)."
         }
@@ -2038,7 +2063,7 @@ struct AISettings: View {
             Keychain.delete(LLMProviderStore.keychainKey(for: provider.id))
             Keychain.delete(LLMProviderStore.oauthKeychainKey(for: provider.id))
         }
-        var list = providers
+        var list = LLMProviderStore.load()
         list.removeAll { $0.id == provider.id }
         LLMProviderStore.save(list)
         providers = LLMProviderStore.load()

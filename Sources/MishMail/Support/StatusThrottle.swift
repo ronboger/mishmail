@@ -76,6 +76,29 @@ struct StatusThrottle: Equatable {
     }
 }
 
+/// Most recently started activity has the status line until it finishes.
+struct MailProgress {
+    private struct Entry {
+        let id: UUID
+        var message: String
+    }
+    private var entries: [Entry] = []
+    var message: String { entries.last?.message ?? "" }
+
+    mutating func begin(_ id: UUID, message: String) {
+        entries.append(Entry(id: id, message: message))
+    }
+
+    mutating func update(_ id: UUID, message: String) {
+        guard let index = entries.firstIndex(where: { $0.id == id }) else { return }
+        entries[index].message = message
+    }
+
+    mutating func end(_ id: UUID) {
+        entries.removeAll { $0.id == id }
+    }
+}
+
 /// Thread-safe front for `StatusThrottle`. Sync engines report progress from
 /// their own actors, so the throttle decision is made on the caller's side —
 /// a dropped report costs a lock, not a main-actor hop.
@@ -86,6 +109,7 @@ struct StatusThrottle: Equatable {
 /// the final value — the old unthrottled `Task { @MainActor … }` per report
 /// had exactly that race.
 final class ThrottledStatusSink: @unchecked Sendable {
+    let id: UUID
     private let lock = NSLock()
     private var core: StatusThrottle
     private var closed = false
@@ -96,10 +120,11 @@ final class ThrottledStatusSink: @unchecked Sendable {
     ///   - shown: what the status reads right now, so an identical first
     ///     report is dropped.
     ///   - deliver: applies a value on the main actor.
-    init(interval: TimeInterval = 0.25,
+    init(id: UUID = UUID(), interval: TimeInterval = 0.25,
          shown: String? = nil,
          clock: @escaping @Sendable () -> TimeInterval = { ProcessInfo.processInfo.systemUptime },
          deliver: @escaping @MainActor @Sendable (String) -> Void) {
+        self.id = id
         self.core = StatusThrottle(interval: interval, shown: shown)
         self.clock = clock
         self.deliver = deliver
@@ -134,7 +159,7 @@ final class ThrottledStatusSink: @unchecked Sendable {
     var isClosed: Bool { lock.withLock { closed } }
 
     @MainActor private func apply(_ value: String) {
-        guard !isClosed else { return }
+        guard lock.withLock({ !closed && core.shown == value }) else { return }
         deliver(value)
     }
 }

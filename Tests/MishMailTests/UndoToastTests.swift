@@ -32,8 +32,10 @@ final class UndoToastTests: XCTestCase {
     /// Send-then-archive: when the short toast ends, cancel-send must return
     /// if the 10s window is still open.
     func testRestoreSendUndoWhenPending() {
-        XCTAssertTrue(UndoToast.shouldRestoreSendUndo(pendingSend: true))
-        XCTAssertFalse(UndoToast.shouldRestoreSendUndo(pendingSend: false))
+        XCTAssertEqual(UndoToast.visible(mailbox: "Archive", send: "Send"), "Archive")
+        XCTAssertEqual(UndoToast.visible(mailbox: nil, send: "Send"), "Send")
+        XCTAssertEqual(UndoToast.visible(mailbox: "Archive", send: nil), "Archive")
+        XCTAssertNil(UndoToast.visible(mailbox: nil as String?, send: nil))
     }
 }
 

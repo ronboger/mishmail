@@ -11,14 +11,13 @@ struct AccessTokenCache {
     /// Advances each time the account's sign-in changes (reauthorized or
     /// removed). A refresh captures it before it starts; see `store`.
     private(set) var generation = 0
-    private var token: String?
-    private var expiry: Date = .distantPast
+    private var cached: (token: String, expiry: Date)?
 
     func token(now: Date) -> String? {
-        guard let token, expiry > now.addingTimeInterval(Self.expiryMargin) else {
+        guard let cached, cached.expiry > now.addingTimeInterval(Self.expiryMargin) else {
             return nil
         }
-        return token
+        return cached.token
     }
 
     /// Caches a refresh result. Returns false, and stores nothing, when
@@ -28,16 +27,14 @@ struct AccessTokenCache {
     mutating func store(_ token: String, expiresIn: Int, now: Date,
                         generation: Int) -> Bool {
         guard generation == self.generation else { return false }
-        self.token = token
-        expiry = now.addingTimeInterval(TimeInterval(expiresIn))
+        cached = (token, now.addingTimeInterval(TimeInterval(expiresIn)))
         return true
     }
 
     /// The server rejected the token (401). Same sign-in, so the generation
     /// stays and the refresh that follows is accepted.
     mutating func expire() {
-        token = nil
-        expiry = .distantPast
+        cached = nil
     }
 
     /// The sign-in changed. Drops the token and rejects every refresh that

@@ -36,7 +36,7 @@ struct CommandPalette: View {
         ZStack(alignment: .top) {
             Color.black.opacity(0.2)
                 .ignoresSafeArea()
-                .onTapGesture { store.showCommandPalette = false }
+                .onTapGesture { store.mailboxOverlay = nil }
 
             VStack(spacing: 0) {
                 TextField("Search mail (from: to: subject: is:unread…) or type a command…", text: $query)
@@ -147,7 +147,7 @@ struct CommandPalette: View {
             UserDefaults.standard.set(SettingsView.Pane.notionMail.rawValue,
                                       forKey: "settingsPane")
             openSettings()
-            store.showCommandPalette = false
+            store.mailboxOverlay = nil
         case .perform(let command):
             store.perform(command)
         case .snoozeTomorrow:
@@ -233,7 +233,7 @@ struct CommandPalette: View {
 
     private func run(_ cmd: Command?) {
         guard let cmd else { return }
-        store.showCommandPalette = false
+        store.mailboxOverlay = nil
         cmd.action(store)
     }
 }

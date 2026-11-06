@@ -100,7 +100,7 @@ struct ThreadDetailView: View {
     @State private var summaryFingerprint = ""
     @State private var summaryEligible = false
     @State private var summarySourceFingerprint = ""
-    @State private var summarizing = false
+    private var summarizing: Bool { summaryRequestId != nil }
     @State private var summaryError: String?
     @AppStorage(ThreadSummaryPolicy.autoSummarizeKey) private var autoSummarizeLocal = false
     /// Completed summaries are cached locally and carry their source fingerprint.
@@ -133,7 +133,7 @@ struct ThreadDetailView: View {
     @State private var lastPinnedTargetHeight: CGFloat = 0
     @State private var autoPinInlineScroll = false
     @State private var pinnedComposeRequestId: UUID?
-    @State private var writingScrollOffset = false
+    @State private var scrollWrite: UUID?
     @State private var pinnedScrollOffsetY: CGFloat?
     @State private var scrollDisarmGate = InlineScrollDisarmGate()
     @State private var refreshTask: Task<Void, Never>?
@@ -147,8 +147,11 @@ struct ThreadDetailView: View {
     @State private var unsubscribeTarget: Message?
     /// Sender block confirmation target; blocking moves matching threads to
     /// Spam, so it should never be a one-click destructive menu item.
-    @State private var blockConfirmationEmail: String?
-    @State private var blockConfirmationThread: MailThread?
+    private struct BlockTarget {
+        let email: String
+        let thread: MailThread?
+    }
+    @State private var blockTarget: BlockTarget?
     /// Message ids we already tried to backfill List-Unsubscribe for.
     @State private var unsubscribeRefreshAttempted: Set<String> = []
 
@@ -304,6 +307,7 @@ struct ThreadDetailView: View {
                 expandedMessageIds = []
                 neighborPrerenderArmed = false
                 unsubscribeTarget = nil
+                blockTarget = nil
                 unsubscribeRefreshAttempted = []
                 // Cancel any in-flight neighbor paints from the previous open.
                 HTMLBodyNeighborPrerender.cancel()
@@ -405,14 +409,15 @@ struct ThreadDetailView: View {
                           saveMarkdown: { saveThreadAsMarkdown() },
                           unsubscribe: { unsubscribeTarget = $0 },
                           confirmBlock: { email, thread in
-                              blockConfirmationEmail = email
-                              blockConfirmationThread = thread
+                              blockTarget = BlockTarget(email: email, thread: thread)
                           }),
                     threadId: thread.id)
             }
             .onDisappear {
                 toolbarModel.uninstall(threadId: thread.id)
                 cancelSummary()
+                disarmAutoPin()
+                scrollWrite = nil
                 scrollDisarmGate.setWheelArmed(false)
                 detailLoadGeneration &+= 1
                 refreshTask?.cancel()
@@ -457,24 +462,20 @@ struct ThreadDetailView: View {
             .confirmationDialog(
                 "Block sender?",
                 isPresented: Binding(
-                    get: { blockConfirmationEmail != nil },
-                    set: { if !$0 { blockConfirmationEmail = nil; blockConfirmationThread = nil } })
-            ) {
+                    get: { blockTarget != nil },
+                    set: { if !$0 { blockTarget = nil } }),
+                presenting: blockTarget
+            ) { target in
                 Button("Block Sender", role: .destructive) {
-                    if let thread = blockConfirmationThread {
+                    if let thread = target.thread {
                         store.blockThreadSender(thread)
-                    } else if let email = blockConfirmationEmail {
-                        store.blockSender(email)
+                    } else {
+                        store.blockSender(target.email)
                     }
-                    blockConfirmationEmail = nil
-                    blockConfirmationThread = nil
                 }
-                Button("Cancel", role: .cancel) {
-                    blockConfirmationEmail = nil
-                    blockConfirmationThread = nil
-                }
-            } message: {
-                Text("New threads from \(blockConfirmationEmail ?? "this sender") will move to Spam.")
+                Button("Cancel", role: .cancel) {}
+            } message: { target in
+                Text("New threads from \(target.email) will move to Spam.")
             }
         }
     }
@@ -493,7 +494,7 @@ struct ThreadDetailView: View {
                 guard changed else { return }
                 DispatchQueue.main.async {
                     guard inlineComposeActive, autoPinInlineScroll,
-                          !writingScrollOffset else { return }
+                          scrollWrite == nil else { return }
                     disarmAutoPin()
                 }
             })
@@ -503,10 +504,11 @@ struct ThreadDetailView: View {
     /// after the freshly assigned `messages` have produced rows to target.
     /// (`scrollAnchor` writes alone no longer re-render anything, so the old
     /// binding-driven post-layout anchoring must be an explicit `scrollTo`.)
-    private func applyScrollAnchor(_ id: String?, proxy: ScrollViewProxy) {
+    private func applyScrollAnchor(_ id: String?, proxy: ScrollViewProxy, write: UUID? = nil) {
         scrollAnchor.id = id
         guard let id else { return }
         DispatchQueue.main.async {
+            if let write, scrollWrite != write { return }
             var t = Transaction()
             t.animation = nil
             withTransaction(t) {
@@ -552,8 +554,7 @@ struct ThreadDetailView: View {
                     loadImagesForThread: $loadRemoteImagesForThread,
                     onReply: { onReply(message) },
                     onBlockSender: { email in
-                        blockConfirmationEmail = email
-                        blockConfirmationThread = nil
+                        blockTarget = BlockTarget(email: email, thread: nil)
                     },
                     onNeedBody: { loadBodyIfNeeded(id: message.id) },
                     onBodySettled: { armNeighborPrerenderIfNeeded() },
@@ -585,10 +586,11 @@ struct ThreadDetailView: View {
         guard autoPinInlineScroll else { return }
         autoPinInlineScroll = false
         pinnedScrollOffsetY = nil
+        scrollWrite = nil
     }
 
     private func noteScrollOffsetChange(from oldY: CGFloat, to newY: CGFloat) {
-        if writingScrollOffset {
+        if scrollWrite != nil {
             pinnedScrollOffsetY = newY
             return
         }
@@ -601,9 +603,7 @@ struct ThreadDetailView: View {
     }
 
     private func beginInlineComposeScroll(proxy: ScrollViewProxy) {
-        if pinnedComposeRequestId == store.composeRequest?.id {
-            return
-        }
+        guard let requestID = store.composeRequest?.id, pinnedComposeRequestId != requestID else { return }
         if inlineScrollRestore == .unset {
             if let id = scrollAnchor.id {
                 inlineScrollRestore = .message(id)
@@ -612,12 +612,12 @@ struct ThreadDetailView: View {
             }
         }
         autoPinInlineScroll = true
-        pinnedComposeRequestId = store.composeRequest?.id
+        pinnedComposeRequestId = requestID
         pinnedScrollOffsetY = nil
         lastPinnedTargetHeight = 0
         scrollInlineComposeTarget(proxy, releaseTopPin: true)
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.35) {
-            guard inlineComposeActive, autoPinInlineScroll else { return }
+            guard inlineComposeActive, autoPinInlineScroll, pinnedComposeRequestId == requestID else { return }
             scrollInlineComposeTarget(proxy, releaseTopPin: false)
         }
     }
@@ -630,26 +630,28 @@ struct ThreadDetailView: View {
         autoPinInlineScroll = false
         pinnedComposeRequestId = nil
         pinnedScrollOffsetY = nil
-        writingScrollOffset = true
+        let write = UUID()
+        scrollWrite = write
         var t = Transaction()
         t.animation = nil
         withTransaction(t) {
             switch restore {
             case .unset:
-                writingScrollOffset = false
+                scrollWrite = nil
             case .threadTop:
                 scrollAnchor.id = nil
                 DispatchQueue.main.async {
+                    guard scrollWrite == write else { return }
                     var inner = Transaction()
                     inner.animation = nil
                     withTransaction(inner) {
                         proxy.scrollTo(ComposePlacement.threadTopScrollId, anchor: .top)
                     }
-                    DispatchQueue.main.async { writingScrollOffset = false }
+                    DispatchQueue.main.async { if scrollWrite == write { scrollWrite = nil } }
                 }
             case .message(let id):
-                applyScrollAnchor(id, proxy: proxy)
-                DispatchQueue.main.async { writingScrollOffset = false }
+                applyScrollAnchor(id, proxy: proxy, write: write)
+                DispatchQueue.main.async { if scrollWrite == write { scrollWrite = nil } }
             }
         }
     }
@@ -665,19 +667,21 @@ struct ThreadDetailView: View {
             inlineScrollTargetId = target
             lastPinnedTargetHeight = 0
         }
-        writingScrollOffset = true
+        let write = UUID()
+        scrollWrite = write
         var t = Transaction()
         t.animation = nil
         withTransaction(t) {
             if releaseTopPin { scrollAnchor.id = nil }
             DispatchQueue.main.async {
+                guard scrollWrite == write else { return }
                 var inner = Transaction()
                 inner.animation = nil
                 withTransaction(inner) {
                     proxy.scrollTo(target, anchor: .bottom)
                 }
                 DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-                    writingScrollOffset = false
+                    if scrollWrite == write { scrollWrite = nil }
                 }
             }
         }
@@ -1197,7 +1201,6 @@ struct ThreadDetailView: View {
         summaryRequestId = nil
         summaryTask?.cancel()
         summaryTask = nil
-        summarizing = false
     }
 
     private func loadPersistedSummary() async {
@@ -1214,7 +1217,6 @@ struct ThreadDetailView: View {
 
     private func summarizeThread(quiet: Bool = false) {
         guard !summarizing, !summaryFingerprint.isEmpty else { return }
-        summarizing = true
         summaryError = nil
         aiSummary = nil
         let fingerprint = summaryFingerprint
@@ -1239,6 +1241,12 @@ struct ThreadDetailView: View {
         let requestId = UUID()
         summaryRequestId = requestId
         summaryTask = Task { @MainActor in
+            defer {
+                if summaryRequestId == requestId {
+                    summaryRequestId = nil
+                    summaryTask = nil
+                }
+            }
             var accumulated = ""
             do {
                 for try await piece in LLMTaskRunner.stream(
@@ -1296,8 +1304,6 @@ struct ThreadDetailView: View {
                 aiSummary = nil
                 summaryError = nil
             }
-            summarizing = false
-            summaryTask = nil
         }
     }
 
@@ -1447,7 +1453,7 @@ struct DraftMessageCard: View {
                     Text(preview)
                         .font(.system(size: 14 * fontScale))
                         .foregroundStyle(.secondary)
-                        .lineSpacing(3)
+                        .lineSpacing(4)
                         .lineLimit(8)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -1477,7 +1483,7 @@ struct DraftMessageCard: View {
             }
             .padding(.top, 2)
         }
-        .padding(12)
+        .padding(16)
         .padding(.leading, 4) // room for the accent bar inside the card
         .background(
             RoundedRectangle(cornerRadius: PMRadius.md)
@@ -2057,7 +2063,7 @@ struct MessageCard: View {
                     .font(.system(size: 12.5 * fontScale)).foregroundStyle(.secondary).lineLimit(1)
             }
         }
-        .padding(12)
+        .padding(16)
         .background(RoundedRectangle(cornerRadius: PMRadius.md).fill(Color(nsColor: .controlBackgroundColor)))
         // Layered elevation reads cleaner than a hard separator ring on varied
         // backgrounds (light/dark, reading-pane chrome).
@@ -2112,7 +2118,7 @@ struct MessageCard: View {
             }
             .buttonStyle(.bordered)
         }
-        .padding(12)
+        .padding(16)
         .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
     }
 
@@ -2409,7 +2415,7 @@ private struct PlainTextBody: View {
     var body: some View {
         Text(PlainTextLinks.attributed(text))
             .font(.system(size: 14.5 * fontScale))
-            .lineSpacing(3)
+            .lineSpacing(4)
             .textSelection(.enabled)
             .tint(Color.notionAccent)
             .environment(\.openURL, OpenURLAction { url in

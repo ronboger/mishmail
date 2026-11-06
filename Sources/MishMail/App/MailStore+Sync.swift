@@ -155,7 +155,6 @@ extension MailStore {
     ///   blips do not leave a sticky error banner.
     func syncAll(interactive: Bool = true) async {
         guard !demoMode else {
-            syncStatus = ""
             showNotice("Demo inbox is offline")
             return
         }
@@ -188,16 +187,14 @@ extension MailStore {
         let pairs: [(String, SyncEngine)] = syncIds.compactMap { id in
             engines[id].map { (id, $0) }
         }
-        if !syncIds.isEmpty {
-            syncStatus = syncIds.count == 1
-                ? "Syncing \(syncIds[0])…"
-                : "Syncing \(syncIds.count) accounts…"
+        guard !pairs.isEmpty else {
+            await reloadAccountsOffMain()
+            await AppDatabase.shared.checkpointIfNeededOffMain()
+            return
         }
-        // Engines report progress per page from their own actors. Throttled
-        // (drop repeats, ≤ ~4 Hz, newest value always lands) so a first sync
-        // doesn't republish the FilterBar dozens of times a second; closed
-        // before the final "" so a late hop can't overwrite it.
-        let progress = makeSyncStatusSink()
+        let message = syncIds.count == 1
+            ? "Syncing \(syncIds[0])…" : "Syncing \(syncIds.count) accounts…"
+        let progress = makeSyncStatusSink(message)
 
         // Whether any account actually rewrote thread rows this pass.
         // `deriveThreads` is the single choke point for message-row writes and
@@ -261,8 +258,7 @@ extension MailStore {
                 }
             }
         }
-        progress.close()
-        syncStatus = ""
+        endSyncStatus(progress)
         // Always: `syncLabels` can rename/add a Gmail label without touching a
         // single thread row, and the sidebar renders from this.
         await reloadAccountsOffMain()
@@ -284,25 +280,23 @@ extension MailStore {
 
     func sync(accountId: String) async {
         guard !demoMode else {
-            syncStatus = ""
             return
         }
         // A follow-up sync (after a send or failed edit) must not restart a
         // pass for an account that is being removed.
-        guard isKnownAccount(accountId) else { return }
+        guard !isShuttingDown, isKnownAccount(accountId) else { return }
         let engine = engines[accountId] ?? SyncEngine(accountId: accountId)
         engines[accountId] = engine
-        syncStatus = "Syncing \(accountId)…"
+
         // Throttled like syncAll's; both exits close it before writing the
         // final "" so a queued progress hop can't land on top of it.
-        let progress = makeSyncStatusSink()
+        let progress = makeSyncStatusSink("Syncing \(accountId)…")
         do {
             let change = try await engine.syncNow { status in
                 progress.submit(status)
             }
-            progress.close()
+            endSyncStatus(progress)
             applyThreadContentChange(change)
-            syncStatus = ""
             isOffline = false
             accountsNeedingReauth.remove(accountId)
             clearSyncFailureErrorIfNeeded(for: accountId)
@@ -311,8 +305,7 @@ extension MailStore {
             reloadAccounts()
             reloadThreads()
         } catch {
-            progress.close()
-            syncStatus = ""
+            endSyncStatus(progress)
             // Removed while this pass ran: ignore its failure (the refresh
             // token is gone and the pass was cancelled on purpose).
             guard isKnownAccount(accountId) else { return }
@@ -429,13 +422,16 @@ extension MailStore {
         }
     }
 
-    /// Throttled writer for per-page sync progress. See `ThrottledStatusSink`.
-    /// Seeded with the status already on screen so an identical first report
-    /// is dropped; only writes when the value actually differs.
-    func makeSyncStatusSink() -> ThrottledStatusSink {
-        ThrottledStatusSink(shown: syncStatus) { [weak self] status in
-            guard let self, self.syncStatus != status else { return }
-            self.syncStatus = status
+    func makeSyncStatusSink(_ message: String) -> ThrottledStatusSink {
+        let id = UUID()
+        mailProgress.begin(id, message: message)
+        return ThrottledStatusSink(id: id, shown: message) { [weak self] status in
+            self?.mailProgress.update(id, message: status)
         }
+    }
+
+    func endSyncStatus(_ sink: ThrottledStatusSink) {
+        sink.close()
+        mailProgress.end(sink.id)
     }
 }

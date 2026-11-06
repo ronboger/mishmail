@@ -62,9 +62,25 @@ final class AskMishController {
     // MARK: - Rendered state
 
     private(set) var bubbles: [Bubble] = []
-    private(set) var isRunning = false
+    private enum Turn {
+        case idle, running(Task<Void, Never>), stopping(Task<Void, Never>), shutDown
+
+        var task: Task<Void, Never>? {
+            switch self {
+            case .running(let task), .stopping(let task): return task
+            case .idle, .shutDown: return nil
+            }
+        }
+    }
+    private var turn: Turn = .idle
+    var isRunning: Bool { turn.task != nil }
     private(set) var conversationID: String?
-    private(set) var pendingConfirmation: PendingToolConfirmation?
+    private struct Confirmation {
+        let card: PendingToolConfirmation
+        let answer: CheckedContinuation<Bool, Never>
+    }
+    private var confirmation: Confirmation?
+    var pendingConfirmation: PendingToolConfirmation? { confirmation?.card }
 
     /// Context chip: send the open thread with the conversation. On by default —
     /// "summarize this" is the common ask.
@@ -99,8 +115,6 @@ final class AskMishController {
     private weak var store: MailStore?
     private let bridge: MCPBridge
 
-    @ObservationIgnored private var turnTask: Task<Void, Never>?
-    @ObservationIgnored private var confirmContinuation: CheckedContinuation<Bool, Never>?
     /// Wire history for this conversation, including the injected thread
     /// context. Rebuilt from the database on `loadConversation`.
     @ObservationIgnored private var history: [LLMMessage] = []
@@ -152,12 +166,20 @@ final class AskMishController {
     /// Starts one user turn. Ignored while a turn is running or the text is blank.
     func send(_ text: String) {
         let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !isRunning, !trimmed.isEmpty else { return }
-        isRunning = true
-        turnTask = Task { [weak self] in
-            await self?.runTurn(userText: trimmed, shouldAppendUser: true)
-            self?.isRunning = false
-        }
+        guard !trimmed.isEmpty else { return }
+        startTurn(trimmed, appendUser: true)
+    }
+
+    private func startTurn(_ text: String, appendUser: Bool) {
+        guard case .idle = turn else { return }
+        turn = .running(Task { [weak self] in
+            guard let self else { return }
+            if !Task.isCancelled {
+                await self.runTurn(userText: text, shouldAppendUser: appendUser)
+            }
+            if case .shutDown = self.turn { return }
+            self.turn = .idle
+        })
     }
 
     /// Re-runs the last turn against the already persisted history. The user
@@ -173,11 +195,7 @@ final class AskMishController {
         case .rerun:
             guard let text = bubbles.last(where: { $0.role == .user })?.text
                     ?? history.last(where: { $0.role == .user })?.text else { return }
-            isRunning = true
-            turnTask = Task { [weak self] in
-                await self?.runTurn(userText: text, shouldAppendUser: false)
-                self?.isRunning = false
-            }
+            startTurn(text, appendUser: false)
         case .resend(let text):
             send(text)
         case .nothing:
@@ -199,11 +217,14 @@ final class AskMishController {
     /// Cancels the in-flight turn. A parked confirm card counts as declined,
     /// otherwise the loop would wait for an answer that can no longer come.
     func stop() {
+        guard let task = turn.task else { return }
+        turn = .stopping(task)
+        task.cancel()
         resolvePendingConfirmation(allow: false)
-        turnTask?.cancel()
     }
 
-    func confirmPendingTool(allow: Bool) {
+    func confirmPendingTool(id: UUID, allow: Bool) {
+        guard pendingConfirmation?.id == id else { return }
         resolvePendingConfirmation(allow: allow)
     }
 
@@ -225,9 +246,11 @@ final class AskMishController {
     /// `shutdownWaitSeconds` we stop waiting and let termination continue: an
     /// orphaned request can only fail harmlessly once the pool closes.
     func shutdown() async {
+        let task = turn.task
+        turn = .shutDown
+        task?.cancel()
         resolvePendingConfirmation(allow: false)
-        turnTask?.cancel()
-        if let task = turnTask {
+        if let task {
             let flag = DoneFlag()
             let waiter = Task { @MainActor in
                 _ = await task.value
@@ -239,14 +262,12 @@ final class AskMishController {
             }
             waiter.cancel()
         }
-        turnTask = nil
-        isRunning = false
     }
 
     private func resolvePendingConfirmation(allow: Bool) {
-        pendingConfirmation = nil
-        confirmContinuation?.resume(returning: allow)
-        confirmContinuation = nil
+        let pending = confirmation
+        confirmation = nil
+        pending?.answer.resume(returning: allow)
     }
 
     // MARK: - Conversations
@@ -277,13 +298,14 @@ final class AskMishController {
     /// the handle prompt with the open thread attached. A running turn is
     /// stopped first so the click always does something visible.
     func handleSelectedThread() {
-        let previous = turnTask
+        let previous = turn.task
+        let threadID = store?.selectedThreadId
         if isRunning { stop() }
         Task { [weak self] in
             // Let the cancelled turn unwind first: its completion clears
             // `isRunning`, which must not land on the new turn.
             await previous?.value
-            guard let self else { return }
+            guard let self, case .idle = self.turn, self.store?.selectedThreadId == threadID else { return }
             self.newConversation()
             let assignment = LLMProviderStore.assignment(for: .handle)
             self.providerID = assignment.providerID
@@ -756,15 +778,16 @@ final class AskMishController {
                 offThreadRecipients: offThread)
         }
         if Task.isCancelled { return .declined }
-        pendingConfirmation = PendingToolConfirmation(
+        let card = PendingToolConfirmation(
             id: UUID(), toolName: call.name, summary: summary,
             argumentsJSON: call.argumentsJSON,
             bodyPreview: bodyPreview,
             requiresExplicitClick: fallback.requiresExplicitClick,
             sendFingerprint: fingerprint,
             composeDraftID: composeDraftID)
-        let allowed = await withCheckedContinuation { continuation in
-            confirmContinuation = continuation
+        let allowed: Bool = await withCheckedContinuation { continuation in
+            if Task.isCancelled { continuation.resume(returning: false) }
+            else { confirmation = Confirmation(card: card, answer: continuation) }
         }
         return allowed ? .allowed(sendFingerprint: fingerprint) : .declined
     }
@@ -1006,8 +1029,8 @@ final class AskMishController {
     /// Opens the draft in the real editor. `send_draft` keeps the confirm
     /// card so the user can still Send. `create_draft` declines the tool
     /// so compose does not duplicate the draft.
-    func openPendingInCompose() {
-        guard let pending = pendingConfirmation, let store else { return }
+    func openPendingInCompose(id: UUID) {
+        guard let pending = pendingConfirmation, pending.id == id, let store else { return }
         if let id = pending.composeDraftID,
            let draft = store.messageBody(id: id) {
             store.editDraft(draft)
@@ -1022,17 +1045,13 @@ final class AskMishController {
                 prefillBcc: prefill.bcc.isEmpty ? nil : prefill.bcc,
                 prefillSubject: prefill.subject.isEmpty ? nil : prefill.subject,
                 prefillBody: prefill.body.isEmpty ? nil : prefill.body))
-            confirmPendingTool(allow: false)
+            confirmPendingTool(id: pending.id, allow: false)
         }
     }
 
-    func undoQueuedSend() {
+    func undoQueuedSend(messageID: String) {
+        guard store?.pendingSend?.messageId == messageID else { return }
         store?.cancelPendingSend()
-        for i in bubbles.indices {
-            for j in bubbles[i].toolTraces.indices where bubbles[i].toolTraces[j].canUndoSend {
-                bubbles[i].toolTraces[j].canUndoSend = false
-            }
-        }
     }
 
     private func markInterrupted(_ id: UUID) {

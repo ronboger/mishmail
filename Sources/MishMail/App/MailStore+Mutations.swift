@@ -669,24 +669,22 @@ extension MailStore {
     }
 
     private func offerUndo(_ label: String, undo: @escaping () -> Void) {
-        undoAction = UndoAction(label: label, undo: undo)
+        let id = UUID()
+        triageUndo = UndoAction(id: id, label: label) { [weak self] in
+            guard let self, self.triageUndo?.id == id else { return }
+            self.triageUndo = nil
+            self.undoTimer?.invalidate()
+            self.undoTimer = nil
+            undo()
+        }
         undoTimer?.invalidate()
         undoTimer = Timer.scheduledTimer(withTimeInterval: UndoToast.displayDuration,
                                          repeats: false) { [weak self] _ in
-            Task { @MainActor in self?.clearOrRestoreUndoToast() }
-        }
-    }
-
-    /// Drop a short triage toast, or put "Sending…" back if undo-send is
-    /// still live (archive-after-send must not orphan the cancel-send chord).
-    private func clearOrRestoreUndoToast() {
-        undoTimer = nil
-        if UndoToast.shouldRestoreSendUndo(pendingSend: pendingSend != nil) {
-            undoAction = UndoAction(label: "Sending…") { [weak self] in
-                self?.cancelPendingSend()
+            Task { @MainActor in
+                guard let self, self.triageUndo?.id == id else { return }
+                self.triageUndo = nil
+                self.undoTimer = nil
             }
-        } else {
-            undoAction = nil
         }
     }
 
@@ -725,7 +723,6 @@ extension MailStore {
                 ThreadUndo.restore(.archive, wasInInbox: wasInInbox, &$0)
             }
             self.restoreSelectionFocus(priorFocus)
-            self.undoAction = nil
         }
     }
 
@@ -748,7 +745,6 @@ extension MailStore {
             self.pinReadStateKeep(ids)
             self.undoThreads(.archive, acted: acted, originals: targets)
             self.restoreSelectionFocus(focus)
-            self.undoAction = nil
         }
     }
 
@@ -772,7 +768,6 @@ extension MailStore {
                 ThreadUndo.restore(.spam, wasInInbox: wasInInbox, &$0)
             }
             self.restoreSelectionFocus(priorFocus)
-            self.undoAction = nil
         }
     }
 
@@ -794,7 +789,6 @@ extension MailStore {
                 ThreadUndo.restore(.notSpam, wasInInbox: wasInInbox, &$0)
             }
             self.restoreSelectionFocus(priorFocus)
-            self.undoAction = nil
         }
     }
 
@@ -821,7 +815,6 @@ extension MailStore {
             self.pinReadStateKeep(ids)
             self.undoThreads(action, acted: acted, originals: targets)
             self.restoreSelectionFocus(focus)
-            self.undoAction = nil
         }
     }
 
@@ -850,7 +843,6 @@ extension MailStore {
                 ThreadUndo.restore(.trash, wasInInbox: wasInInbox, &$0)
             }
             self.restoreSelectionFocus(priorFocus)
-            self.undoAction = nil
         }
     }
 
@@ -871,7 +863,6 @@ extension MailStore {
             self.pinReadStateKeep(ids)
             self.undoThreads(.trash, acted: acted, originals: targets)
             self.restoreSelectionFocus(focus)
-            self.undoAction = nil
         }
     }
 
@@ -1041,7 +1032,7 @@ extension MailStore {
         guard snoozingThread != nil || snoozingChecked else { return }
         var t = Transaction()
         t.disablesAnimations = true
-        withTransaction(t) { snoozingThread = nil; snoozingChecked = false }
+        withTransaction(t) { mailboxOverlay = nil }
     }
 
     /// Snooze mirrors what Gmail's own snooze looks like over the API: the
@@ -1084,7 +1075,6 @@ extension MailStore {
             ) {
                 ThreadUndo.restore(action, wasInInbox: wasInInbox, &$0)
             }
-            self.undoAction = nil
         }
     }
 
@@ -1119,7 +1109,6 @@ extension MailStore {
             self.pinReadStateKeep(ids)
             self.undoThreads(action, acted: acted, originals: targets)
             self.restoreSelectionFocus(focus)
-            self.undoAction = nil
         }
     }
 

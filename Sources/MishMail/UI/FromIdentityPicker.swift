@@ -15,6 +15,7 @@ import SwiftUI
 /// control keeps receiving key presses while it is open.
 struct FromIdentityPicker: View {
     @Environment(MailStore.self) private var store
+    let requestID: UUID
     let identities: [SendIdentity]
     @Binding var selectedId: String
     /// Text shown on the closed control (ComposeView decides how identities
@@ -23,7 +24,7 @@ struct FromIdentityPicker: View {
     let rowTitle: (SendIdentity) -> String
 
     @FocusState private var focused: Bool
-    @State private var isOpen = false
+    private var isOpen: Bool { highlighted != nil }
     @State private var highlighted: Int?
     @State private var hovering = false
 
@@ -93,10 +94,12 @@ struct FromIdentityPicker: View {
             // Tabbing away (or a click elsewhere) must not leave the list up.
             if !focused, isOpen { close() }
         }
-        .onChange(of: isOpen) { store.fromPickerOpen = isOpen }
+        .onChange(of: isOpen) {
+            if store.composeRequest?.id == requestID { store.fromPickerOpen = isOpen }
+        }
         .onChange(of: store.fromPickerDismissToken) { if isOpen { close() } }
         .onDisappear {
-            if isOpen { store.fromPickerOpen = false }
+            if store.composeRequest?.id == requestID { store.fromPickerOpen = false }
         }
         .overlay(alignment: .topLeading) {
             if isOpen { list }
@@ -201,13 +204,12 @@ struct FromIdentityPicker: View {
     }
 
     private func open() {
-        guard !identities.isEmpty else { return }
-        highlighted = selectedIndex ?? 0
-        withAnimation(.easeOut(duration: 0.14)) { isOpen = true }
+        guard canChoose else { return }
+        withAnimation(.easeOut(duration: 0.14)) { highlighted = selectedIndex ?? 0 }
     }
 
     private func close() {
-        withAnimation(.easeOut(duration: 0.12)) { isOpen = false }
+        withAnimation(.easeOut(duration: 0.12)) { highlighted = nil }
     }
 
     private func choose(_ index: Int) {

@@ -59,12 +59,12 @@ struct OnboardingView: View {
                         OAuthConfig.clientSecret = clientSecret
                         store.addAccount()
                     } label: {
-                        Label("Connect Google Account", systemImage: "person.crop.circle.badge.plus")
+                        Label(store.connectingAccount ? "Connecting…" : "Connect Google Account", systemImage: "person.crop.circle.badge.plus")
                             .frame(maxWidth: .infinity)
                     }
                     .controlSize(.large)
                     .buttonStyle(.borderedProminent)
-                    .disabled(!configured)
+                    .disabled(!configured || store.connectingAccount)
                     if !configured {
                         Text("Enter a valid Client ID (ends in .apps.googleusercontent.com) and secret to continue.")
                             .font(PMFont.caption()).foregroundStyle(.secondary)
