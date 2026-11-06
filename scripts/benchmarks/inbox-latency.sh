@@ -9,6 +9,8 @@ root=$(git rev-parse --show-toplevel)
 revision=$(git rev-parse --verify --end-of-options "$1^{commit}")
 name=$2
 work="$RUNNER_TEMP/mail-benchmark-$name"
+block=${3:-first}
+if [[ "$block" == first ]]; then
 mkdir -p "$work"
 git archive "$revision" | tar -x -C "$work"
 cp "$root/scripts/benchmarks/InboxLatencyTests.swift" "$work/Tests/MishMailUITests/"
@@ -51,14 +53,19 @@ insert_after("ThreadDetailView.swift", "Text(PlainTextLinks.attributed(text))",
 
 PY
 xcodegen generate
+action=test
+else
+    cd "$work"
+    action=test-without-building
+fi
 # Debug bundle identity keeps fixtures separate; compile app code with release
 # optimization for both revisions. The test runner uses the same settings.
-xcodebuild test -project MishMail.xcodeproj -scheme MishMailUITests \
+xcodebuild "$action" -project MishMail.xcodeproj -scheme MishMailUITests \
     -destination "platform=macOS,arch=$(uname -m)" -derivedDataPath "$work/build" \
     -clonedSourcePackagesDirPath "$RUNNER_TEMP/mail-benchmark-packages" \
     -parallel-testing-enabled NO -only-testing:MishMailUITests/InboxLatencyTests \
     SWIFT_OPTIMIZATION_LEVEL=-O CODE_SIGN_IDENTITY=- CODE_SIGN_STYLE=Manual DEVELOPMENT_TEAM= \
-    > "$RUNNER_TEMP/mail-benchmark-$name.log" 2>&1 || {
-        tail -100 "$RUNNER_TEMP/mail-benchmark-$name.log"; exit 1
+    > "$RUNNER_TEMP/mail-benchmark-$name-$block.log" 2>&1 || {
+        tail -100 "$RUNNER_TEMP/mail-benchmark-$name-$block.log"; exit 1
     }
-grep -E '^MAIL_(NATIVE|LATENCY) ' "$RUNNER_TEMP/mail-benchmark-$name.log"
+grep -E '^MAIL_(NATIVE|LATENCY) ' "$RUNNER_TEMP/mail-benchmark-$name-$block.log"

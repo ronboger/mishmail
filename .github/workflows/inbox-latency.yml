@@ -23,19 +23,38 @@ jobs:
         run: bash scripts/benchmarks/inbox-latency.sh "$BASELINE" baseline
       - name: Measure candidate on the same runner
         run: bash scripts/benchmarks/inbox-latency.sh "$GITHUB_SHA" candidate
+      - name: Repeat in reverse order using the same builds
+        env:
+          BASELINE: ${{ inputs.baseline }}
+        run: |
+          bash scripts/benchmarks/inbox-latency.sh "$GITHUB_SHA" candidate repeat
+          bash scripts/benchmarks/inbox-latency.sh "$BASELINE" baseline repeat
       - name: Compare median end-to-end times
         run: |
           python3 - <<'PY' >> "$GITHUB_STEP_SUMMARY"
           import os, statistics
           from pathlib import Path
-          def samples(build):
-              lines = (Path(os.environ["RUNNER_TEMP"]) / f"mail-benchmark-{build}.log").read_text().splitlines()
-              data = [dict(pair.split("=") for pair in line.split()[1:]) for line in lines if line.startswith("MAIL_LATENCY ")]
-              assert len(data) == 6, f"Expected six measured launches, got {len(data)}"
-              return {key: statistics.median(float(row[key]) for row in data) for key in ("inbox", "short", "long", "scroll")}
-          before, after = samples("baseline"), samples("candidate")
-          print("Median milliseconds across six launches per build. Includes UI automation and settling time.")
-          print("\n| Operation | Baseline | Candidate |\n|---|---:|---:|")
-          for key in before:
-              print(f"| {key} | {before[key]:.1f} | {after[key]:.1f} |")
+          def samples(build, event):
+              data = {}
+              for block in ("first", "repeat"):
+                  path = Path(os.environ["RUNNER_TEMP"]) / f"mail-benchmark-{build}-{block}.log"
+                  for line in path.read_text().splitlines():
+                      if line.startswith(event + " "):
+                          for pair in line.split()[2:]:
+                              key, value = pair.split("=")
+                              data.setdefault(key, []).append(float(value))
+              return data
+          for event, title in [("MAIL_LATENCY", "UI action to verified result (includes XCTest overhead)"),
+                               ("MAIL_NATIVE", "Native launch to inbox draw, click to body draw, wheel to clip movement")]:
+              print(f"### {title}\n")
+              before, after = samples("baseline", event), samples("candidate", event)
+              print("| Operation | Baseline median (ms) | Candidate median (ms) | Samples |")
+              print("|---|---:|---:|---:|")
+              for key in ("inbox", "short", "long", "scroll"):
+                  a, b = before.get(key, []), after.get(key, [])
+                  if event == "MAIL_LATENCY":
+                      assert len(a) == len(b) == 8, f"Missing end-to-end samples for {key}"
+                  if a and b:
+                      print(f"| {key} | {statistics.median(a):.1f} | {statistics.median(b):.1f} | {len(a)} / {len(b)} |")
+              print()
           PY

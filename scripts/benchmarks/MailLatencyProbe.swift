@@ -10,17 +10,17 @@ struct MailLatencyProbe: NSViewRepresentable {
 
     final class Marker: NSView {
         private static var clickTime: TimeInterval?
-        private static var firstWheel: TimeInterval?
         private static var reported: Set<String> = []
-        private static let monitor = NSEvent.addLocalMonitorForEvents(matching: [.leftMouseDown, .scrollWheel]) { event in
-            if event.type == .leftMouseDown { clickTime = event.timestamp }
-            else if firstWheel.map({ event.timestamp - $0 > 0.5 }) ?? true { firstWheel = event.timestamp }
+        private static let monitor = NSEvent.addLocalMonitorForEvents(matching: .leftMouseDown) { event in
+            clickTime = ProcessInfo.processInfo.systemUptime
             return event
         }
 
         let name: String
         private weak var observedClip: NSClipView?
         private var lastY: CGFloat?
+        private var wheelMonitor: Any?
+        private var firstWheel: TimeInterval?
         init(name: String) {
             self.name = name
             super.init(frame: .zero)
@@ -37,14 +37,25 @@ struct MailLatencyProbe: NSViewRepresentable {
                 observedClip = clip
                 lastY = clip.bounds.minY
                 clip.postsBoundsChangedNotifications = true
+                // Arm only after the target body draws. Inbox scrolling to
+                // locate a fixture must never start a message-scroll sample.
+                wheelMonitor = NSEvent.addLocalMonitorForEvents(matching: .scrollWheel) { [weak self] event in
+                    if let self, self.firstWheel == nil, event.window === self.window {
+                        self.firstWheel = ProcessInfo.processInfo.systemUptime
+                    }
+                    return event
+                }
                 NotificationCenter.default.addObserver(self, selector: #selector(scrolled),
                     name: NSView.boundsDidChangeNotification, object: clip)
             }
         }
+        deinit {
+            if let wheelMonitor { NSEvent.removeMonitor(wheelMonitor) }
+        }
         @objc private func scrolled() {
             guard let y = observedClip?.bounds.minY else { return }
             defer { lastY = y }
-            guard let previous = lastY, abs(y - previous) > 0.5, let start = Self.firstWheel else { return }
+            guard let previous = lastY, abs(y - previous) > 0.5, let start = firstWheel else { return }
             record("scroll", since: start)
         }
         private func record(_ key: String, since start: Double) {

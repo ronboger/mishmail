@@ -48,7 +48,7 @@ final class InboxLatencyTests: XCTestCase {
 
         // Each iteration starts a new process with a fresh, disposable DB.
         // Drop the first iteration on each build to warm the system caches.
-        for trial in 0..<7 {
+        for trial in 0..<5 {
             app.terminate()
             let token = UUID().uuidString
             app.launchEnvironment["MAIL_BENCH_TRIAL"] = token
