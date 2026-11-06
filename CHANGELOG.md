@@ -9,9 +9,10 @@ All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
-## [Unreleased]
+## [0.6.0] - 2026-11-07
 
 ### Added
+- Ask Mish supports GPT-6 tool conversations, with model, thinking, speed, and new-chat defaults in the model picker.
 - **AI draft in compose.** Give a short instruction ("ask for two more
   days"); the draft streams into a separate preview. **Use draft** applies
   it and **Undo** restores your text. Rewrite, shorten and tone changes work
@@ -29,12 +30,16 @@ minor versions may still change behavior.
   Snooze and Label in the palette apply to the whole selection.
 
 ### Fixed
+- Failed draft saves keep the editor open. Scheduled sends take ownership of offline drafts when the queue write succeeds.
+- Undo Send and Ask Mish confirmations act on the specific message or action shown.
+- Saved views resolve conflicting filters, and overlapping searches and syncs keep their own progress.
 - Gmail sync now paces each account for the 6,000-unit minute limit on new
   Google Cloud projects and counts each message in a batch at its format-specific cost.
 - **Compose no longer hides the last lines of a reply** at a larger text
   size. The body is sized from the real text layout.
 
 ### Changed
+- The inbox, composer, and message reader have more space. Selectable plain-text links use the app accent, and mail from your own address can show its configured sender name.
 - **Faster everywhere.** A performance pass across launch, the thread list,
   the reading pane and sync:
   - The mail cache now uses its encryption key directly instead of running

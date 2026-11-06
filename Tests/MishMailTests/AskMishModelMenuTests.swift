@@ -121,6 +121,19 @@ final class AskMishModelMenuTests: XCTestCase {
         XCTAssertGreaterThan(result.hiddenCount, 0)
     }
 
+    func testChatGPTKeepsAShippedDefaultMissingFromAStaleCatalog() {
+        let stale = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "ChatGPT",
+            baseURL: "https://api.openai.com/v1", defaultModel: "gpt-6-luna",
+            authMode: .oauth(.chatGPT), models: ["gpt-5.4"])
+        XCTAssertEqual(AskMishModelMenu.preferredDefault(for: stale), "gpt-6-luna")
+        let unknown = LLMProviderConfig(
+            id: UUID(), kind: .openAICompatible, label: "ChatGPT",
+            baseURL: "https://api.openai.com/v1", defaultModel: "gpt-3.5-turbo",
+            authMode: .oauth(.chatGPT), models: ["gpt-5.4"])
+        XCTAssertEqual(AskMishModelMenu.preferredDefault(for: unknown), "gpt-6.1-sol")
+    }
+
     func testGrok42IsNotThePreferredDefault() {
         let p = grok(models: ["grok-4.2", "grok-4.1-fast", "grok-4"],
                      defaultModel: "grok-4.2")

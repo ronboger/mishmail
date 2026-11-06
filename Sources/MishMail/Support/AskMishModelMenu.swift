@@ -202,10 +202,15 @@ enum AskMishModelMenu {
     /// still browse-worthy, otherwise the first shipped id for this vendor.
     static func preferredDefault(for provider: LLMProviderConfig) -> String {
         if provider.kind == .ollama { return provider.defaultModel }
-        let available = Set((provider.models ?? []).filter { !$0.isEmpty })
+        var known = Set((provider.models ?? []).filter { !$0.isEmpty })
+        let hasCatalog = !known.isEmpty
+        // A stale /models list must not drop a shipped id the user already chose.
+        if let vendor = subscriptionVendor(of: provider) {
+            known.formUnion(LLMProviderStore.subscriptionPreset(for: vendor).fallbackModels)
+        }
         if !provider.defaultModel.isEmpty,
            isBrowseWorthy(provider.defaultModel),
-           available.isEmpty || available.contains(provider.defaultModel) {
+           !hasCatalog || known.contains(provider.defaultModel) {
             return provider.defaultModel
         }
         if let vendor = subscriptionVendor(of: provider),

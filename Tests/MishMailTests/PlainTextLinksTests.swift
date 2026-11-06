@@ -1,3 +1,4 @@
+import SwiftUI
 import XCTest
 
 final class PlainTextLinksTests: XCTestCase {
@@ -9,6 +10,12 @@ final class PlainTextLinksTests: XCTestCase {
     private func linkedText(_ text: String) -> [String] {
         let ns = text as NSString
         return PlainTextLinks.links(in: text).map { ns.substring(with: $0.range) }
+    }
+
+    func testCalendarURLIsOneLink() {
+        let text = "Here's my cal: https://calendar.notion.so/meet/rboger/rb30\n\nRon"
+        XCTAssertEqual(urls(text), ["https://calendar.notion.so/meet/rboger/rb30"])
+        XCTAssertEqual(linkedText(text), ["https://calendar.notion.so/meet/rboger/rb30"])
     }
 
     func testHTTPAndHTTPSLinks() {
@@ -80,6 +87,14 @@ final class PlainTextLinksTests: XCTestCase {
         }
         XCTAssertEqual(linked.map(\.0), ["https://a.com/x", "jo@b.com"])
         XCTAssertEqual(linked.map(\.1), ["https://a.com/x", "mailto:jo@b.com"])
+        // Color and underline live on the run. `.tint` on Text does not
+        // paint a selected plain-text body, so a missing color is a black link.
+        for run in attr.runs where run.link != nil {
+            XCTAssertNotNil(run.foregroundColor)
+            XCTAssertEqual(run.underlineStyle, .single)
+            XCTAssertNotNil(run.appKit.foregroundColor)
+            XCTAssertEqual(run.appKit.underlineStyle, .single)
+        }
         // No link: one plain run, text unchanged.
         let plain = PlainTextLinks.attributed("just text")
         XCTAssertEqual(String(plain.characters), "just text")

@@ -51,23 +51,27 @@ enum OpenAIWire {
             // forbid new calls for an answer-only request.
             if toolChoiceNone { body["tool_choice"] = "none" }
         }
-        applyThinking(model: model, thinking: thinking, openRouter: openRouter, to: &body)
+        applyThinking(model: model, thinking: thinking, openRouter: openRouter,
+                      hasTools: !tools.isEmpty, to: &body)
         return try JSONSerialization.data(withJSONObject: body)
     }
 
     /// OpenRouter takes a `reasoning` object; OpenAI, Gemini, and Grok take
     /// `reasoning_effort`. Omit on models that cannot think.
     private static func applyThinking(model: String, thinking: LLMThinking,
-                                      openRouter: Bool,
+                                      openRouter: Bool, hasTools: Bool,
                                       to body: inout [String: Any]) {
         guard LLMHostedThinking.supports(model) else { return }
         switch thinking {
         case .modelDefault:
             return
         case .off:
-            // Omit. `reasoning_effort: "none"` 400s on GPT-5 and o-series;
-            // drafts/summaries/triage default to off, so sending it would
-            // break those tasks for anyone on those models.
+            // Omit on GPT-5 and o-series: `reasoning_effort: "none"` 400s there.
+            // GPT-6 Sol and Luna accept tool calls on Chat Completions only
+            // when the effort is explicitly `none`.
+            if !openRouter, hasTools, OpenAIResponses.isGPT6SolOrLuna(model) {
+                body["reasoning_effort"] = "none"
+            }
             return
         case .level(let level):
             let effort = LLMHostedThinking.openAIEffort(level, model: model)

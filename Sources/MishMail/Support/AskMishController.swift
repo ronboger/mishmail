@@ -144,6 +144,11 @@ final class AskMishController {
 
     private static let hostedSpeedKey = "askMish.hostedSpeed"
 
+    /// A new provider cannot decrypt reasoning items from the current turn.
+    func dropCurrentTurnReasoningItems() {
+        history = OpenAIResponses.withoutCurrentTurnReasoning(history)
+    }
+
     func setHostedSpeedFast(_ fast: Bool) {
         hostedSpeedFast = fast
         UserDefaults.standard.set(fast ? "fast" : "default", forKey: Self.hostedSpeedKey)
@@ -292,6 +297,9 @@ final class AskMishController {
         totalCacheCreationInputTokens = 0
         totalCacheReadInputTokens = 0
         conversationCostLabel = nil
+        let assignment = LLMProviderStore.assignment(for: .askMish)
+        providerID = assignment.providerID
+        modelID = assignment.model
     }
 
     /// Starts a fresh conversation on the Handle-with-Mish model and sends

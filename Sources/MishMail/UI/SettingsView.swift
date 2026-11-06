@@ -2118,7 +2118,8 @@ private struct TaskModelPicker: View {
                     }
                 }
                 listed.models = list
-                let curated = AskMishModelMenu.models(for: listed).models
+                let assigned = provider.id == assignment.providerID ? assignment.model : nil
+                let curated = AskMishModelMenu.models(for: listed, selected: assigned).models
                 models = curated.isEmpty ? [provider.defaultModel] : curated
             }
             return models.map {

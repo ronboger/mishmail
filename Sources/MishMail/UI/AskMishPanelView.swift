@@ -90,41 +90,27 @@ struct AskMishPanelView: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(spacing: 8) {
-            Image(systemName: "sparkles")
-                .foregroundStyle(Color.notionAccent)
-            conversationMenu
-            Spacer(minLength: 4)
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(spacing: 8) {
+                Image(systemName: "sparkles")
+                    .foregroundStyle(Color.notionAccent)
+                conversationMenu
+                Spacer(minLength: 8)
+                Button {
+                    store.showAskMish = false
+                } label: {
+                    Image(systemName: "xmark")
+                        .font(.system(size: 11, weight: .semibold))
+                        .frame(width: 24, height: 24)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(PressScaleButtonStyle())
+                .foregroundStyle(.secondary)
+                .help("Close Ask Mish (⌥⌘M)")
+                .accessibilityLabel("Close Ask Mish")
+                .pmHitTarget()
+            }
             modelMenu
-            if let config = currentProviderConfig {
-                let local = !LLMRemotePolicy.sendsMailOffDevice(config)
-                    || LLMRemotePolicy.isPrivateLAN(config)
-                Text(local ? "Local" : "Hosted")
-                    .font(.caption2)
-                    .foregroundStyle(.tertiary)
-                    .help(local
-                          ? "This model runs on this Mac or on your LAN."
-                          : "This model runs off this Mac. Mail text is sent to the provider.")
-                if config.kind == .ollama || LLMHostedThinking.supports(controller.modelID) {
-                    thinkingMenu
-                }
-                if config.kind != .ollama, LLMRemotePolicy.sendsMailOffDevice(config) {
-                    hostedSpeedMenu
-                }
-            }
-            Button {
-                store.showAskMish = false
-            } label: {
-                Image(systemName: "xmark")
-                    .font(.system(size: 11, weight: .semibold))
-                    .frame(width: 24, height: 24)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(PressScaleButtonStyle())
-            .foregroundStyle(.secondary)
-            .help("Close Ask Mish (⌥⌘M)")
-            .accessibilityLabel("Close Ask Mish")
-            .pmHitTarget()
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 10)
@@ -171,31 +157,42 @@ struct AskMishPanelView: View {
                 .font(.system(size: 13, weight: .semibold))
                 .lineLimit(1)
                 .truncationMode(.tail)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
         .menuStyle(.borderlessButton)
-        .fixedSize()
     }
 
     private var modelMenu: some View {
-        Button {
+        let modelName = controller.modelID.isEmpty
+            ? "Pick a model"
+            : AskMishModelMenu.displayName(controller.modelID)
+        return Button {
             modelPickerShown = true
         } label: {
             HStack(spacing: 4) {
-                Text(controller.modelID.isEmpty ? "Pick a model" : controller.modelID)
+                Text(modelName)
                     .font(.caption)
                     .lineLimit(1)
+                    .truncationMode(.middle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                if let locality = headerLocality {
+                    Text(locality).font(.caption2).foregroundStyle(.secondary)
+                }
                 Image(systemName: "chevron.down")
                     .font(.system(size: 8, weight: .semibold))
             }
             .foregroundStyle(.secondary)
-            // Small label, comfortable target.
             .padding(.horizontal, 6)
             .padding(.vertical, 5)
+            .frame(maxWidth: .infinity, alignment: .leading)
             .contentShape(Rectangle())
         }
         .buttonStyle(.plain)
         .disabled(controller.isRunning)
-        .help("Model for this chat")
+        .help(controller.modelID.isEmpty ? "Model for this chat" : controller.modelID)
+        .accessibilityLabel(controller.modelID.isEmpty
+                            ? "Pick a model"
+                            : "Model \(controller.modelID)")
         // The panel hugs the window's right edge, so the picker opens to the
         // side (leftward), not downward over the transcript.
         .popover(isPresented: $modelPickerShown, arrowEdge: .leading) {
@@ -207,7 +204,11 @@ struct AskMishPanelView: View {
                 onSetThinking: { setThinking($0) },
                 onPick: { providerID, model in
                     let previous = controller.modelID
-                    let wasLocal = controller.providerID == LLMProviderStore.builtInOllamaID
+                    let previousProvider = controller.providerID
+                    let wasLocal = previousProvider == LLMProviderStore.builtInOllamaID
+                    if previousProvider != providerID {
+                        controller.dropCurrentTurnReasoningItems()
+                    }
                     controller.providerID = providerID
                     controller.modelID = model
                     modelPickerShown = false
@@ -219,24 +220,30 @@ struct AskMishPanelView: View {
                     }
                 },
                 onSetDefault: { provider, model in
-                    setDefaultModel(model, for: provider)
+                    setAskMishDefault(model, for: provider)
                 },
                 onTogglePin: { provider, model in
                     togglePin(model, for: provider)
-                })
+                },
+                showsThinking: providerConfig.map { $0.kind == .ollama || LLMHostedThinking.supports(controller.modelID) } ?? false,
+                showsSpeed: providerConfig.map { $0.kind != .ollama && LLMRemotePolicy.sendsMailOffDevice($0) } ?? false,
+                speedFast: controller.hostedSpeedFast,
+                speedHelp: hostedSpeedHelp,
+                onSetSpeed: { controller.setHostedSpeedFast($0) })
         }
     }
 
-    /// Saves `model` as the provider's default and points the Ask Mish task
-    /// assignment at it, so the provider row's one-click pick and every new
-    /// chat use it. The current chat keeps its own selection untouched.
-    private func setDefaultModel(_ model: String, for provider: LLMProviderConfig) {
-        var list = LLMProviderStore.load()
-        guard let index = list.firstIndex(where: { $0.id == provider.id }) else { return }
-        list[index].defaultModel = model
-        LLMProviderStore.save(list)
+    /// Points new Ask Mish chats at this model. The open chat keeps its model.
+    /// Settings → AI → Ask Mish is the same stored assignment.
+    private func setAskMishDefault(_ model: String, for provider: LLMProviderConfig) {
         LLMProviderStore.setAssignment(
             LLMTaskAssignment(providerID: provider.id, model: model), for: .askMish)
+    }
+
+    private var headerLocality: String? {
+        guard let config = providerConfig else { return nil }
+        let cloudModel = config.kind == .ollama && LLMRemotePolicy.isOllamaCloudModel(controller.modelID)
+        return cloudModel || !LLMRemotePolicy.isPrivateLAN(config) ? "Hosted" : "Local"
     }
 
     /// Adds or removes a model from the provider's pin list. Pinned models
@@ -412,10 +419,6 @@ struct AskMishPanelView: View {
         }
     }
 
-    private var currentProviderConfig: LLMProviderConfig? {
-        providerConfig
-    }
-
     private func refreshProviderConfig() {
         providerConfig = LLMProviderStore.load().first { $0.id == controller.providerID }
     }
@@ -574,46 +577,8 @@ struct AskMishPanelView: View {
         }
     }
 
-    private var thinkingMenu: some View {
-        Menu {
-            Button("Off — fastest") { setThinking("off") }
-            Button("Low") { setThinking("low") }
-            Button("Medium") { setThinking("medium") }
-            Button("High") { setThinking("high") }
-            Button("Extra high") { setThinking("xhigh") }
-            Button("Model default") { setThinking("default") }
-        } label: {
-            Text(thinking == "default" ? "Think" : "Think: \(LLMThinking(rawValue: thinking).displayLabel)")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 6)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .disabled(controller.isRunning)
-        .help("How hard the model thinks before it answers")
-    }
-
-    private var hostedSpeedMenu: some View {
-        Menu {
-            Button("Default") { controller.setHostedSpeedFast(false) }
-            Button("Fast") { controller.setHostedSpeedFast(true) }
-        } label: {
-            Text(controller.hostedSpeedFast ? "Fast" : "Default")
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
-                .padding(.horizontal, 4)
-                .padding(.vertical, 6)
-                .contentShape(Rectangle())
-        }
-        .menuStyle(.borderlessButton)
-        .disabled(controller.isRunning)
-        .help(hostedSpeedHelp)
-    }
-
     private var hostedSpeedHelp: String {
-        guard let config = currentProviderConfig else {
+        guard let config = providerConfig else {
             return "Use a cheaper hosted model when one exists in this family."
         }
         let resolved = controller.resolvedModelID(for: config)
@@ -799,7 +764,7 @@ struct AskMishPanelView: View {
         HStack(alignment: .top, spacing: 8) {
             Image(systemName: "lock.slash")
                 .foregroundStyle(.secondary)
-            Text("This chat sends mail text to \(currentProviderConfig?.label ?? "the provider").")
+            Text("This chat sends mail text to \(providerConfig?.label ?? "the provider").")
                 .font(.caption)
                 .fixedSize(horizontal: false, vertical: true)
             Spacer(minLength: 4)
@@ -1002,11 +967,17 @@ private struct ModelPickerPopover: View {
     let onPick: (UUID, String) -> Void
     let onSetDefault: (LLMProviderConfig, String) -> Void
     let onTogglePin: (LLMProviderConfig, String) -> Void
+    let showsThinking: Bool
+    let showsSpeed: Bool
+    let speedFast: Bool
+    let speedHelp: String
+    let onSetSpeed: (Bool) -> Void
 
     /// Snapshot of the store, re-read after every default/pin mutation so the
     /// open popover reflects it immediately. Seeded at init — an empty first
     /// layout pass would let the popover size itself to nothing.
     @State private var providers: [LLMProviderConfig] = LLMProviderStore.load()
+    @State private var askDefault = LLMProviderStore.assignment(for: .askMish)
     @State private var query = ""
     @State private var expandedProviderID: UUID?
     @State private var floor: LLMModelIntelligence? = AskMishModelMenu.storedFloor()
@@ -1015,6 +986,19 @@ private struct ModelPickerPopover: View {
     private func mutate(_ action: () -> Void) {
         action()
         providers = LLMProviderStore.load()
+        askDefault = LLMProviderStore.assignment(for: .askMish)
+    }
+
+    private var defaultCaption: String {
+        let label = providers.first { $0.id == askDefault.providerID }?.label ?? "Model"
+        let model = askDefault.model.isEmpty
+            ? "none"
+            : AskMishModelMenu.displayName(askDefault.model)
+        return "\(label) · \(model)"
+    }
+
+    private func isAskDefault(_ provider: LLMProviderConfig, _ model: String) -> Bool {
+        provider.id == askDefault.providerID && model == askDefault.model
     }
 
     private var isSearching: Bool {
@@ -1039,6 +1023,23 @@ private struct ModelPickerPopover: View {
             }
             .padding(.horizontal, 10)
             .padding(.vertical, 8)
+            Divider()
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Default for new chats")
+                    .font(.caption2)
+                    .foregroundStyle(.tertiary)
+                Text(defaultCaption)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                    .help(askDefault.model)
+                HStack(spacing: 8) {
+                    if showsThinking { popoverThinkingMenu }
+                    if showsSpeed { popoverSpeedMenu }
+                }
+            }
+            .padding(.horizontal, 10)
+            .padding(.vertical, 6)
             if !isSearching {
                 Divider()
                 HStack(spacing: 6) {
@@ -1106,6 +1107,40 @@ private struct ModelPickerPopover: View {
         let isCurrent = provider.id == currentProviderID
         return AskMishModelMenu.models(for: listed, selected: isCurrent ? currentModelID : nil,
                                        floor: floor)
+    }
+
+    private var popoverThinkingMenu: some View {
+        Menu {
+            Button("Off — fastest") { onSetThinking("off") }
+            Button("Low") { onSetThinking("low") }
+            Button("Medium") { onSetThinking("medium") }
+            Button("High") { onSetThinking("high") }
+            Button("Extra high") { onSetThinking("xhigh") }
+            Button("Model default") { onSetThinking("default") }
+        } label: {
+            Text(thinking == "default" ? "Think" : "Think: \(LLMThinking(rawValue: thinking).displayLabel)")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help("How hard the model thinks before it answers")
+    }
+
+    private var popoverSpeedMenu: some View {
+        Menu {
+            Button("Default") { onSetSpeed(false) }
+            Button("Fast") { onSetSpeed(true) }
+        } label: {
+            Text(speedFast ? "Fast" : "Default")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .lineLimit(1)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+        .help(speedHelp)
     }
 
     private func setFloor(_ value: LLMModelIntelligence?) {
@@ -1180,7 +1215,7 @@ private struct ModelPickerPopover: View {
 
     private func modelRow(provider: LLMProviderConfig, model: String) -> some View {
         let isSelected = provider.id == currentProviderID && model == currentModelID
-        let isDefault = model == AskMishModelMenu.preferredDefault(for: provider)
+        let isDefault = isAskDefault(provider, model)
         let isPinned = (provider.pinnedModels ?? []).contains(model)
         let title = AskMishModelMenu.displayName(model)
         return Button {
@@ -1228,7 +1263,7 @@ private struct ModelPickerPopover: View {
         .background(isSelected ? Color.notionAccent.opacity(0.10) : .clear,
                     in: RoundedRectangle(cornerRadius: PMRadius.sm))
         .contextMenu { modelActions(provider: provider, model: model,
-                                    isDefault: model == provider.defaultModel,
+                                    isDefault: isDefault,
                                     isPinned: isPinned) }
     }
 
@@ -1239,7 +1274,7 @@ private struct ModelPickerPopover: View {
             mutate { onTogglePin(provider, model) }
         }
         if !isDefault {
-            Button("Set as default for \(provider.label)") {
+            Button("Use for new Ask Mish chats") {
                 mutate { onSetDefault(provider, model) }
             }
         }
@@ -1309,7 +1344,7 @@ private struct ModelPickerPopover: View {
                 .help(hit.model)
                 .contextMenu {
                     modelActions(provider: provider, model: hit.model,
-                                 isDefault: hit.model == provider.defaultModel,
+                                 isDefault: isAskDefault(provider, hit.model),
                                  isPinned: (provider.pinnedModels ?? []).contains(hit.model))
                 }
             }

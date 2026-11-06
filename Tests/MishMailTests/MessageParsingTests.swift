@@ -86,6 +86,41 @@ final class MessageParsingTests: XCTestCase {
         XCTAssertEqual(MessageParser.displayName(fromHeader: "<jane@x.com>"), "jane@x.com")
     }
 
+    /// A message sent with `From: <ron@x.com>` has no display name. When that
+    /// address is one of ours, the reading pane uses the configured name.
+    func testBareOwnAddressUsesConfiguredName() {
+        let own = ["ron@ronboger.com": "Ron Boger"]
+        XCTAssertEqual(
+            MessageParser.displayName(fromHeader: "<ron@ronboger.com>", ownDisplayNames: own),
+            "Ron Boger")
+        XCTAssertEqual(
+            MessageParser.displayName(fromHeader: "ron@ronboger.com", ownDisplayNames: own),
+            "Ron Boger")
+        XCTAssertEqual(
+            MessageParser.displayName(fromHeader: "RON@RonBoger.com", ownDisplayNames: own),
+            "Ron Boger")
+        // A header that already has a name keeps it.
+        XCTAssertEqual(
+            MessageParser.displayName(
+                fromHeader: "Other Name <ron@ronboger.com>", ownDisplayNames: own),
+            "Other Name")
+        // Someone else's bare address is not renamed.
+        XCTAssertEqual(
+            MessageParser.displayName(fromHeader: "<ada@x.com>", ownDisplayNames: own),
+            "ada@x.com")
+        // A name that is the address, or an empty name, does not count.
+        XCTAssertEqual(
+            MessageParser.displayName(
+                fromHeader: "<ron@ronboger.com>",
+                ownDisplayNames: ["ron@ronboger.com": "ron@ronboger.com"]),
+            "ron@ronboger.com")
+        XCTAssertEqual(
+            MessageParser.displayName(
+                fromHeader: "<ron@ronboger.com>",
+                ownDisplayNames: ["ron@ronboger.com": "  "]),
+            "ron@ronboger.com")
+    }
+
     func testEmailAddress() {
         XCTAssertEqual(MessageParser.emailAddress("Jane Doe <jane@x.com>"), "jane@x.com")
         XCTAssertEqual(MessageParser.emailAddress("jane@x.com"), "jane@x.com")

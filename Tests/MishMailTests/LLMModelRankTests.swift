@@ -15,7 +15,11 @@ final class LLMModelRankTests: XCTestCase {
     }
 
     func testGPTAndOSeriesRanks() {
+        XCTAssertEqual(LLMModelIntelligence.of("gpt-6.1-sol"), .frontier)
+        XCTAssertEqual(LLMModelIntelligence.of("openai/gpt-6-sol"), .frontier)
+        XCTAssertEqual(LLMModelIntelligence.of("gpt-6-luna"), .current)
         XCTAssertEqual(LLMModelIntelligence.of("gpt-5.6-sol"), .frontier)
+        XCTAssertEqual(LLMModelIntelligence.of("gpt-5.6-luna"), .frontier)
         XCTAssertEqual(LLMModelIntelligence.of("gpt-5.4"), .frontier)
         XCTAssertEqual(LLMModelIntelligence.of("gpt-5"), .strong)
         XCTAssertEqual(LLMModelIntelligence.of("gpt-5-mini"), .current)
@@ -52,6 +56,8 @@ final class LLMModelRankTests: XCTestCase {
         XCTAssertFalse(LLMHostedThinking.supports("claude-3-5-haiku"))
         XCTAssertFalse(LLMHostedThinking.supports("claude-3-5-sonnet"))
         XCTAssertTrue(LLMHostedThinking.supports("gpt-5"))
+        XCTAssertTrue(LLMHostedThinking.supports("gpt-6.1-sol"))
+        XCTAssertTrue(LLMHostedThinking.supports("openai/gpt-6-luna"))
         XCTAssertTrue(LLMHostedThinking.supports("o3"))
         XCTAssertFalse(LLMHostedThinking.supports("gpt-4o"))
         XCTAssertTrue(LLMHostedThinking.supports("gemini-3.7-flash"))
@@ -77,5 +83,9 @@ final class LLMModelRankTests: XCTestCase {
         XCTAssertEqual(LLMHostedThinking.anthropicOff("claude-opus-5-5"), .omitWithLowEffort)
         XCTAssertEqual(LLMHostedThinking.anthropicOff("claude-sonnet-5-5"), .betweenTools)
         XCTAssertEqual(LLMHostedThinking.openAIEffort("medium", model: "grok-3-mini"), "high")
+        XCTAssertEqual(LLMHostedThinking.openAIEffort("xhigh", model: "gpt-6.1-sol"), "xhigh")
+        XCTAssertEqual(LLMHostedThinking.openAIEffort("xhigh", model: "gpt-6-sol"), "xhigh")
+        XCTAssertEqual(LLMHostedThinking.openAIEffort("xhigh", model: "gpt-6-luna"), "xhigh")
+        XCTAssertEqual(LLMHostedThinking.openAIEffort("xhigh", model: "gpt-5"), "high")
     }
 }

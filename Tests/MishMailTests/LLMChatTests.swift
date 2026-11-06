@@ -134,6 +134,13 @@ final class LLMChatTests: XCTestCase {
             "gemini-2.5-flash")
         XCTAssertNil(LLMFastModel.fastVariant(of: "grok-4-fast", available: ["grok-4-fast"]))
         XCTAssertNil(LLMFastModel.fastVariant(of: "grok-4", available: ["grok-4"]))
+        XCTAssertEqual(
+            LLMFastModel.fastVariant(
+                of: "gpt-6.1-sol",
+                available: ["gpt-6.1-sol", "gpt-6-luna", "gpt-5.4-mini"]),
+            "gpt-6-luna")
+        XCTAssertNil(LLMFastModel.fastVariant(
+            of: "gpt-6.1-sol", available: ["gpt-6.1-sol", "gpt-5.4-mini"]))
     }
 
     // MARK: - Path derivation
@@ -156,6 +163,15 @@ final class LLMChatTests: XCTestCase {
                        "https://api.anthropic.com/v1/messages")
         XCTAssertEqual(LLMEndpoint.chatPath(kind: .ollama, base: "http://127.0.0.1:11434/v1"),
                        "http://127.0.0.1:11434/v1/api/chat")
+    }
+
+    func testResponsesPathJoinsTheV1Base() {
+        XCTAssertEqual(LLMEndpoint.responsesPath(base: "https://api.openai.com/v1"),
+                       "https://api.openai.com/v1/responses")
+        XCTAssertEqual(LLMEndpoint.responsesPath(base: "https://api.openai.com/v1/chat/completions"),
+                       "https://api.openai.com/v1/responses")
+        XCTAssertEqual(LLMEndpoint.responsesPath(base: "https://api.openai.com"),
+                       "https://api.openai.com/v1/responses")
     }
 
     func testModelsPathForBareAndV1SuffixedBaseURLs() {

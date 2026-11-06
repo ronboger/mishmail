@@ -487,6 +487,21 @@ enum MessageParser {
         return fromHeader.trimmingCharacters(in: CharacterSet(charactersIn: "<> "))
     }
 
+    /// Name to show for `fromHeader`. A header with no display name stays the
+    /// bare address, unless `ownDisplayNames` (lowercased email → name) has
+    /// a name for that address. Mail the user sent without a From name then
+    /// still shows their name.
+    static func displayName(fromHeader: String, ownDisplayNames: [String: String]) -> String {
+        let parsed = displayName(fromHeader: fromHeader)
+        let email = emailAddress(fromHeader)
+        guard parsed.caseInsensitiveCompare(email) == .orderedSame else { return parsed }
+        guard let name = ownDisplayNames[email.lowercased()]?
+            .trimmingCharacters(in: .whitespacesAndNewlines),
+              !name.isEmpty,
+              name.caseInsensitiveCompare(email) != .orderedSame else { return parsed }
+        return name
+    }
+
     /// Extracts a bare email address from an address header.
     /// Tolerates malformed headers (missing or out-of-order angle brackets).
     ///

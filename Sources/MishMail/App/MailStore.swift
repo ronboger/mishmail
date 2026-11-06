@@ -54,7 +54,7 @@ final class MailStore {
     /// Published account rows for views. `lastSyncAt` is deliberately nil here
     /// (see `lastSyncByAccount`) — never write these values back to the
     /// database; re-fetch inside the write transaction instead.
-    var accounts: [Account] = []
+    var accounts: [Account] = [] { didSet { rebuildOwnDisplayNames() } }
     /// Per-account last-sync timestamps, published separately from `accounts`
     /// so a successful poll tick does not reassign the array views enumerate.
     /// Every successful `syncNow` stamps `Account.lastSyncAt`, and leaving that
@@ -64,7 +64,7 @@ final class MailStore {
     private(set) var lastSyncByAccount: [String: Date] = [:]
     /// From identities (primary + Gmail send-as) across all linked accounts.
     /// Used by compose's From picker; never confuse `email` with API mailbox.
-    var sendIdentities: [SendIdentity] = []
+    var sendIdentities: [SendIdentity] = [] { didSet { rebuildOwnDisplayNames() } }
     var labelsByAccount: [String: [LabelRow]] = [:] {
         didSet { rebuildLabelIndexes() }
     }
@@ -1995,6 +1995,30 @@ struct ComposeRequest: Identifiable {
         ContactMiner.ownAddresses(
             accountIds: accounts.map(\.id),
             aliasEmails: sendIdentities.map(\.email))
+    }
+
+    /// Lowercased own address → name recipients should see. Account
+    /// `senderName` fills the primary. A send-as display name replaces it
+    /// when that alias has its own name. An empty name, or a name that is
+    /// the address itself, does not count.
+    private var ownDisplayNames: [String: String] = [:]
+
+    private func rebuildOwnDisplayNames() {
+        var map: [String: String] = [:]
+        func store(_ email: String, _ rawName: String) {
+            let name = rawName.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !name.isEmpty, name.caseInsensitiveCompare(email) != .orderedSame else { return }
+            map[email.lowercased()] = name
+        }
+        for account in accounts { store(account.id, account.senderName) }
+        for identity in sendIdentities { store(identity.email, identity.displayName) }
+        if ownDisplayNames != map { ownDisplayNames = map }
+    }
+
+    /// Sender or recipient label. Uses `ownDisplayNames` when the header
+    /// is only an address, so a bare `From: <me@…>` still shows the name.
+    func participantDisplayName(fromHeader: String) -> String {
+        MessageParser.displayName(fromHeader: fromHeader, ownDisplayNames: ownDisplayNames)
     }
 
     /// From identities offered for a compose mode. Pass the mailbox that

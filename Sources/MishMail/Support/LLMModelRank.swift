@@ -55,6 +55,10 @@ enum LLMModelIntelligence: Int, Comparable, CaseIterable, Hashable, Sendable {
 
     private static func gptRank(_ name: String) -> LLMModelIntelligence {
         if name.contains("gpt-4") { return .older }
+        // Luna is the small GPT-6 model. Check it before the broad "luna"
+        // suffix, which still marks GPT-5.6 Luna as frontier.
+        if name.contains("gpt-6-luna") { return .current }
+        if name.contains("gpt-6.1-sol") || name.contains("gpt-6-sol") { return .frontier }
         if name.contains("mini") || name.contains("nano") { return .current }
         if name.contains("gpt-5.4") || name.contains("gpt-5.5") || name.contains("gpt-5.6")
             || name.contains("gpt-5-4")

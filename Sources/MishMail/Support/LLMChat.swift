@@ -116,7 +116,7 @@ enum LLMHostedThinking {
                 || name.contains("haiku-5") || name.contains("claude-5")
                 || name.contains("fable")
         }
-        if name.hasPrefix("gpt-5") { return true }
+        if name.hasPrefix("gpt-5") || name.hasPrefix("gpt-6") { return true }
         if name.hasPrefix("o1") || name.hasPrefix("o3") || name.hasPrefix("o4") { return true }
         if name.contains("gemini") {
             return name.contains("2.5") || name.contains("2-5")
@@ -245,7 +245,8 @@ enum LLMHostedThinking {
             return "high"
         }
         guard level == "xhigh" else { return level }
-        if name.hasPrefix("gpt-5.1") || name.hasPrefix("gpt-5.2")
+        if name.hasPrefix("gpt-6")
+            || name.hasPrefix("gpt-5.1") || name.hasPrefix("gpt-5.2")
             || name.contains("gpt-5.4") || name.contains("gpt-5.5")
             || name.contains("gpt-5.6") {
             return "xhigh"
@@ -262,6 +263,8 @@ struct LLMThinkingBlock: Codable, Equatable, Sendable {
     var signature: String = ""
     /// When set, the wire form is `redacted_thinking` with this payload.
     var redactedData: String? = nil
+    /// Raw Responses `reasoning` item. The next tool turn must send it back.
+    var responsesItemJSON: String? = nil
 }
 
 struct LLMToolCall: Codable, Equatable, Sendable {
@@ -515,6 +518,15 @@ enum LLMFastModel {
            let haiku = available.first(where: { $0.lowercased().contains("haiku") }) {
             return haiku
         }
+        // GPT-6 has no `-mini` sibling. Luna is its fast model. A shared
+        // "gpt-" prefix must not pick an older GPT-5 mini.
+        if lower.contains("gpt-6") {
+            if !lower.contains("gpt-6-luna"),
+               let luna = available.first(where: { $0.lowercased().contains("gpt-6-luna") }) {
+                return luna
+            }
+            return nil
+        }
         if lower.hasPrefix("gpt"),
            let mini = longestPrefixMatch(model, in: available.filter {
                $0.lowercased().contains("mini")
@@ -572,6 +584,21 @@ extension LLMEndpoint {
         case .ollama:
             return "\(base)/api/chat"
         }
+    }
+
+    /// Responses API URL. Chat Completions cannot call tools on GPT-6.1 Sol,
+    /// and GPT-6 Sol/Luna can call tools there only with reasoning off.
+    static func responsesPath(base rawBase: String) -> String {
+        var base = trimmedBase(rawBase)
+        let chatSuffix = "/chat/completions"
+        if base.hasSuffix(chatSuffix) {
+            base = String(base.dropLast(chatSuffix.count))
+        }
+        if base.hasSuffix("/responses") { return base }
+        if base.hasSuffix("/v1") || base.hasSuffix("/openai") {
+            return "\(base)/responses"
+        }
+        return "\(base)/v1/responses"
     }
 
     /// Model-listing URL string for one provider kind.

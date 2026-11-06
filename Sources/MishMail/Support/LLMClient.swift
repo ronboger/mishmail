@@ -111,10 +111,11 @@ actor LLMClient {
         var attempt = 0
         while true {
             try Task.checkCancellation()
-            let request = try await buildRequest(messages: messages, tools: tools,
-                                                config: config, model: model, task: task,
-                                                maxOutputTokens: maxOutputTokens,
-                                                toolChoiceNone: toolChoiceNone)
+            let prepared = try await buildRequest(messages: messages, tools: tools,
+                                                 config: config, model: model, task: task,
+                                                 maxOutputTokens: maxOutputTokens,
+                                                 toolChoiceNone: toolChoiceNone)
+            let request = prepared.request
             let pair: (URLSession.AsyncBytes, URLResponse)
             do {
                 pair = try await URLSession.shared.bytes(for: request)
@@ -160,11 +161,19 @@ actor LLMClient {
             // A transport failure after that point is never replayed.
             switch config.kind {
             case .openAICompatible:
-                var state = OpenAIWire.StreamState()
-                try await pump(bytes: bytes,
-                               consume: { state.consume(line: $0) },
-                               finalFlush: { state.consume(line: "data: [DONE]") },
-                               yield: yield)
+                if prepared.useResponses {
+                    var state = OpenAIResponses.StreamState()
+                    try await pump(bytes: bytes,
+                                   consume: { state.consume(line: $0) },
+                                   finalFlush: { state.abandon() },
+                                   yield: yield)
+                } else {
+                    var state = OpenAIWire.StreamState()
+                    try await pump(bytes: bytes,
+                                   consume: { state.consume(line: $0) },
+                                   finalFlush: { state.consume(line: "data: [DONE]") },
+                                   yield: yield)
+                }
             case .anthropic:
                 var state = AnthropicWire.StreamState()
                 try await pump(bytes: bytes,
@@ -242,22 +251,43 @@ actor LLMClient {
         try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
+    private struct PreparedRequest {
+        let request: URLRequest
+        /// True when this body is a Responses request. The parser must match it.
+        let useResponses: Bool
+    }
+
     private func buildRequest(messages: [LLMMessage], tools: [LLMToolSpec],
                               config: LLMProviderConfig, model: String,
                               task: LLMTask,
                               maxOutputTokens: Int?,
-                              toolChoiceNone: Bool) async throws -> URLRequest {
-        let path = LLMEndpoint.chatPath(kind: config.kind, base: config.baseURL)
-        let body: Data
+                              toolChoiceNone: Bool) async throws -> PreparedRequest {
         let thinking = Ollama.thinking(for: task)
         let hosted = config.kind == .ollama || LLMHostedThinking.supports(model)
             ? thinking : .modelDefault
+        let chatGPTSubscription = OpenAIResponses.isChatGPTSubscription(config)
+        let useResponses = config.kind == .openAICompatible && OpenAIResponses.usesResponses(
+            host: LLMRemotePolicy.host(of: config.baseURL),
+            model: model, hasTools: !tools.isEmpty, thinking: hosted,
+            chatGPTSubscription: chatGPTSubscription)
+        let path = useResponses
+            ? OpenAIResponses.endpoint(baseURL: config.baseURL,
+                                       chatGPTSubscription: chatGPTSubscription)
+            : LLMEndpoint.chatPath(kind: config.kind, base: config.baseURL)
+        let body: Data
         switch config.kind {
         case .openAICompatible:
-            let openRouter = LLMRemotePolicy.host(of: config.baseURL) == "openrouter.ai"
-            body = try OpenAIWire.requestBody(model: model, messages: messages, tools: tools,
-                                              thinking: hosted, openRouter: openRouter,
-                                              toolChoiceNone: toolChoiceNone)
+            if useResponses {
+                body = try OpenAIResponses.requestBody(
+                    model: model, messages: messages, tools: tools,
+                    thinking: hosted, toolChoiceNone: toolChoiceNone,
+                    codexBackend: chatGPTSubscription)
+            } else {
+                let openRouter = LLMRemotePolicy.host(of: config.baseURL) == "openrouter.ai"
+                body = try OpenAIWire.requestBody(model: model, messages: messages, tools: tools,
+                                                  thinking: hosted, openRouter: openRouter,
+                                                  toolChoiceNone: toolChoiceNone)
+            }
         case .anthropic:
             let anthropicMaxTokens = LLMHostedThinking.anthropicMaxTokens(
                 model: model, thinking: hosted)
@@ -296,16 +326,21 @@ actor LLMClient {
         request.httpMethod = "POST"
         request.timeoutInterval = 300
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+        if useResponses {
+            request.setValue("text/event-stream", forHTTPHeaderField: "Accept")
+        }
         request.httpBody = body
         try applyAuth(to: &request, config: config, model: model,
-                      thinking: hosted, hasTools: !tools.isEmpty)
-        return request
+                      thinking: hosted, hasTools: !tools.isEmpty,
+                      chatGPTResponses: useResponses && chatGPTSubscription)
+        return PreparedRequest(request: request, useResponses: useResponses)
     }
 
     private func applyAuth(to request: inout URLRequest, config: LLMProviderConfig,
                            model: String? = nil,
                            thinking: LLMThinking = .modelDefault,
-                           hasTools: Bool = false) throws {
+                           hasTools: Bool = false,
+                           chatGPTResponses: Bool = false) throws {
         if config.kind == .ollama { return } // local, keyless
         guard OAuthConfig.usesKeychain(environment: ProcessInfo.processInfo.environment) else {
             throw LLMClientError.missingCredential // fixture builds never touch Keychain
@@ -324,6 +359,15 @@ actor LLMClient {
         case .oauth:
             let tokens = try requiredTokens(providerID: config.id)
             request.setValue("Bearer \(tokens.accessToken)", forHTTPHeaderField: "Authorization")
+            if chatGPTResponses {
+                guard let account = OpenAIResponses.chatGPTAccountID(in: tokens.accessToken) else {
+                    throw LLMClientError.http(
+                        0, "ChatGPT account id is missing. Sign in again in Settings → AI.")
+                }
+                request.setValue(account, forHTTPHeaderField: "chatgpt-account-id")
+                // This login is the Codex client. The backend expects that originator.
+                request.setValue("codex_cli_rs", forHTTPHeaderField: "originator")
+            }
             if config.kind == .anthropic {
                 applyAnthropicVersionHeaders(to: &request, oauth: true,
                                              model: model, thinking: thinking, hasTools: hasTools)

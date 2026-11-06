@@ -1393,7 +1393,7 @@ struct DraftMessageCard: View {
 
     private var toSummary: String {
         let names = MessageParser.splitAddresses(message.toHeader)
-            .map { MessageParser.displayName(fromHeader: $0) }
+            .map { store.participantDisplayName(fromHeader: $0) }
             .filter { !$0.isEmpty }
         if names.isEmpty { return "No recipients" }
         if names.count == 1 { return "To \(names[0])" }
@@ -1426,7 +1426,7 @@ struct DraftMessageCard: View {
                     // Sender/recipient chrome is muted like the preview: a draft
                     // is not a message in the conversation, so it must not read
                     // with a sent card's primary-text weight.
-                    Text(MessageParser.displayName(fromHeader: message.fromHeader))
+                    Text(store.participantDisplayName(fromHeader: message.fromHeader))
                         .font(.system(size: 13.5 * fontScale, weight: .medium))
                         .foregroundStyle(.secondary)
                         .lineLimit(1)
@@ -1775,7 +1775,7 @@ struct MessageCard: View {
                             compactRecipientGrid
                         }
                     } else {
-                        Text(MessageParser.displayName(fromHeader: message.fromHeader))
+                        Text(store.participantDisplayName(fromHeader: message.fromHeader))
                             .font(.system(size: 14 * fontScale, weight: .semibold))
                             .lineLimit(1)
                             .truncationMode(.tail)
@@ -2254,7 +2254,7 @@ struct MessageCard: View {
     private func participantMenu(_ raw: String, nameSize: CGFloat = 12.5,
                                  nameWeight: Font.Weight = .regular) -> some View {
         let email = MessageParser.emailAddress(raw)
-        let name = MessageParser.displayName(fromHeader: raw)
+        let name = store.participantDisplayName(fromHeader: raw)
         let showEmail = name.lowercased() != email.lowercased()
         // Canonical "is this me" set (accounts ∪ send-as aliases) — same as
         // reply-all / participant labeling elsewhere in this file.
@@ -2403,11 +2403,10 @@ struct MessageCard: View {
     }
 }
 
-/// File chip under a message. The whole chrome Quick Looks, not just the
-/// filename. Eye and Save keep their own trailing hit targets.
 /// A plain-text message body. Web links and addresses in it are clickable
 /// (`PlainTextLinks`): only http, https and mailto, and a link always shows
-/// its own destination.
+/// its own destination. Link runs carry Notion blue themselves; `.tint`
+/// alone does not color them while text selection is on.
 private struct PlainTextBody: View {
     let text: String
     let fontScale: Double

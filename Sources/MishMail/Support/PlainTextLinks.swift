@@ -1,4 +1,6 @@
+import AppKit
 import Foundation
+import SwiftUI
 
 /// Link detection for plain-text message bodies shown in a SwiftUI `Text`.
 ///
@@ -142,6 +144,12 @@ enum PlainTextLinks {
             }
             var piece = AttributedString(ns.substring(with: link.range))
             piece.link = link.url
+            // SwiftUI `Text` draws the SwiftUI color. The selectable text
+            // view draws the AppKit color. Set both, or the link stays black.
+            piece.foregroundColor = Color.notionAccent
+            piece.underlineStyle = .single
+            piece.appKit.foregroundColor = .mailAccent
+            piece.appKit.underlineStyle = .single
             out.append(piece)
             cursor = NSMaxRange(link.range)
         }
