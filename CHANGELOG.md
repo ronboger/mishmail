@@ -29,6 +29,8 @@ minor versions may still change behavior.
   Snooze and Label in the palette apply to the whole selection.
 
 ### Fixed
+- Gmail sync now paces each account for the 6,000-unit minute limit on new
+  Google Cloud projects and counts each message in a batch at its format-specific cost.
 - **Compose no longer hides the last lines of a reply** at a larger text
   size. The body is sized from the real text layout.
 

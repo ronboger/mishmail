@@ -301,7 +301,7 @@ actor GmailClient {
                              query: [String: String] = [:],
                              jsonBody: [String: Any]? = nil,
                              retryRateLimit: Bool = true) async throws -> Data {
-        let cost = Self.quotaCost(method: method, path: path)
+        let cost = Self.quotaCost(method: method, path: path, format: query["format"] ?? "full")
         var didRefreshAfter401 = false
         var rateAttempt = 0
         while true {
@@ -486,27 +486,35 @@ actor GmailClient {
         return true
     }
 
-    /// Max messages per `batch/gmail/v1` request (Gmail allows up to 100).
-    /// A batch is charged all at once — 5 units per message — against a
-    /// 250 units/s moving average, so 25 keeps one batch within the burst cap.
-    nonisolated static let batchGetChunkSize = 25
+    /// Gmail charges every part at once, so fit each batch within one burst.
+    nonisolated static func batchGetChunkSize(format: String) -> Int {
+        GmailQuotaBucket.defaultCapacity / GmailQuotaBucket.messageGetUnits(format: format)
+    }
 
     /// Max attempts for a single get on retryable errors (429/5xx/network).
     nonisolated static let getRetryAttempts = 3
     nonisolated static let requestRetryAttempts = 3
 
-    nonisolated static func quotaCost(method: String, path: String) -> Int {
-        if path == "/profile" { return 1 }
-        if path == "/labels" { return 1 }
+    nonisolated static func quotaCost(method: String, path: String, format: String = "full") -> Int {
         if path == "/history" { return 2 }
+        if path == "/labels" && method == "POST" { return 5 }
         if path == "/messages" { return 5 }
         if path == "/messages/send" { return 100 }
-        if path.contains("/attachments/") { return 5 }
-        if path.hasPrefix("/messages/") && path.hasSuffix("/modify") { return 10 }
-        if path.hasPrefix("/messages/") { return 5 }
-        if path.hasPrefix("/threads/") { return 10 }
-        if path == "/drafts" || path.hasPrefix("/drafts/") {
-            return method == "GET" ? 1 : 10
+        if path.contains("/attachments/") { return 20 }
+        if path.hasPrefix("/messages/") {
+            if method == "GET" { return GmailQuotaBucket.messageGetUnits(format: format) }
+            if path.hasSuffix("/modify") { return 5 }
+        }
+        if path.hasPrefix("/threads/") {
+            if method == "GET" { return format == "full" ? 120 : 40 }
+            if path.hasSuffix("/trash") { return 20 }
+            return 10
+        }
+        if path == "/drafts" { return method == "GET" ? 5 : 10 }
+        if path.hasPrefix("/drafts/") {
+            if method == "GET" { return GmailQuotaBucket.messageGetUnits(format: format) }
+            if method == "PUT" { return 15 }
+            return 10
         }
         return 1
     }
@@ -537,7 +545,7 @@ actor GmailClient {
         report.messages.reserveCapacity(ids.count)
         var i = ids.startIndex
         while i < ids.endIndex {
-            let end = ids.index(i, offsetBy: Self.batchGetChunkSize, limitedBy: ids.endIndex) ?? ids.endIndex
+            let end = ids.index(i, offsetBy: Self.batchGetChunkSize(format: format), limitedBy: ids.endIndex) ?? ids.endIndex
             let chunk = Array(ids[i..<end])
             let part: MessageFetchReport
             do {
@@ -703,7 +711,7 @@ actor GmailClient {
         try await Task.sleep(nanoseconds: UInt64(seconds * 1_000_000_000))
     }
 
-    /// A batch is charged 5 units per id, all at once, so pace before sending.
+    /// A batch is charged for every id, all at once, so pace before sending.
     /// A rate-limited batch is retried after a whole-second backoff rather
     /// than exploded into singles on a connection Gmail has just dropped —
     /// those singles only fail again and pin the history id for the pass.
@@ -812,7 +820,7 @@ actor GmailClient {
         let body = GmailBatch.buildRequestBody(ids: ids, format: format, boundary: boundary)
         var didRefreshAfter401 = false
         while true {
-            try await pace(units: GmailQuotaBucket.units(forMessageGets: ids.count))
+            try await pace(units: ids.count * GmailQuotaBucket.messageGetUnits(format: format))
             var req = URLRequest(url: URL(string: "https://www.googleapis.com/batch/gmail/v1")!)
             req.httpMethod = "POST"
             req.setValue("Bearer \(try await validToken())", forHTTPHeaderField: "Authorization")

@@ -1,27 +1,12 @@
 import Foundation
 
-/// Token bucket for Gmail's per-user quota: 250 units per second, enforced
-/// as a moving average.
-///
-/// A history catch-up that fires four 50-message batches back to back spends
-/// 1000 units in about two seconds. Gmail answers the one that crosses the
-/// line with 403 `userRateLimitExceeded` and drops the HTTP/3 connection,
-/// which fails every other in-flight get too. The engine then refuses to
-/// advance the history id, and the next pass replays the same range and hits
-/// the same wall — forever. Pacing the spend below the average, in smaller
-/// batches, keeps a pass under the ceiling.
-///
-/// Pure value type so the pacing math is unit-tested; `GmailClient` owns one
-/// per account (the limit is per user) and sleeps for the delay it returns.
+/// Per-account pacing for Gmail's 6,000 units per user per minute quota.
+/// https://developers.google.com/workspace/gmail/api/reference/quota
 struct GmailQuotaBucket {
-    /// `messages.get` costs 5 units regardless of format.
-    static let messageGetUnits = 5
-    /// Keep a half-second of burst capacity. Gmail's 250 units/s limit is a
-    /// moving average, so a 125-unit burst leaves room for refill while the
-    /// next request is in flight.
-    static let defaultCapacity = 125
-    /// Below Gmail's 250/s so the moving average never touches the ceiling.
-    static let defaultRefillPerSecond = 200
+    /// Two full messages fit in one burst. Including refill, a minute can
+    /// spend at most 120 + 60 * 90 = 5,520 units.
+    static let defaultCapacity = 120
+    static let defaultRefillPerSecond = 90
 
     let capacity: Int
     let refillPerSecond: Int
@@ -38,8 +23,11 @@ struct GmailQuotaBucket {
         self.blockedUntil = nil
     }
 
-    static func units(forMessageGets count: Int) -> Int {
-        count * messageGetUnits
+    static func messageGetUnits(format: String) -> Int {
+        switch format {
+        case "minimal", "metadata": return 20
+        default: return 60 // full (the default), raw, or html
+        }
     }
 
     /// Longest penalty the bucket keeps: the longest wait honored from a
@@ -69,7 +57,7 @@ struct GmailQuotaBucket {
     ///
     /// Under a penalty the spend is reserved at the moment the penalty ends,
     /// so callers parked behind it are released one refill apart instead of
-    /// all together. A single delay never exceeds `GmailRateLimit.maxWait`.
+    /// all together. Quota reservations can extend beyond the server penalty cap.
     mutating func delayBeforeSpending(units: Int, now: Date) -> TimeInterval {
         let penalty = penaltyRemaining(now: now)
         let start = now.addingTimeInterval(penalty)
@@ -84,7 +72,7 @@ struct GmailQuotaBucket {
         tokens -= Double(units)
         // Deficit refills at `refillPerSecond`; the caller sleeps that long.
         let deficit = tokens < 0 ? -tokens / Double(refillPerSecond) : 0
-        return min(penalty + deficit, GmailRateLimit.maxWait)
+        return penalty + deficit
     }
 
     /// Blocks every caller until Gmail's penalty window or the local retry
