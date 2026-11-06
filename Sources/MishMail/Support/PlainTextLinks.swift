@@ -67,13 +67,20 @@ enum PlainTextLinks {
             if found.count >= maxLinks { stop.pointee = true }
         }
         if found.count < maxLinks {
+            var nextURL = 0
             emailRegex.enumerateMatches(in: text, options: [], range: scan) { match, _, stop in
                 guard let match else { return }
                 if truncated, NSMaxRange(match.range) == scan.length { return }
                 // Part of a URL (`?email=a@b.com`, `mailto:a@b.com`).
-                guard !urlSpans.contains(where: {
-                    NSIntersectionRange($0, match.range).length > 0
-                }), let url = URL(string: "mailto:" + ns.substring(with: match.range))
+                // Both regexes enumerate in source order, so each URL span
+                // can be retired once its end is behind this address.
+                while nextURL < urlSpans.count, NSMaxRange(urlSpans[nextURL]) <= match.range.location {
+                    nextURL += 1
+                }
+                if nextURL < urlSpans.count, urlSpans[nextURL].location < NSMaxRange(match.range) {
+                    return
+                }
+                guard let url = URL(string: "mailto:" + ns.substring(with: match.range))
                 else { return }
                 found.append(Link(range: match.range, url: url))
                 if found.count >= maxLinks { stop.pointee = true }
@@ -85,14 +92,20 @@ enum PlainTextLinks {
     /// Drop sentence punctuation and unbalanced closing brackets from the end
     /// of a URL match: `(see https://a.com/x).` links `https://a.com/x`.
     private static func trimmed(_ range: NSRange, in ns: NSString) -> NSRange? {
+        var r = range
+        while r.length > 0, trailingPunctuation.contains(ns.character(at: NSMaxRange(r) - 1)) {
+            r.length -= 1
+        }
+        guard r.length > 0 else { return nil }
+        // Ordinary URLs need no scan of their interior.
+        guard closers[ns.character(at: NSMaxRange(r) - 1)] != nil else { return r }
         var counts: [unichar: Int] = [:]
-        for i in range.location..<NSMaxRange(range) {
+        for i in r.location..<NSMaxRange(r) {
             let ch = ns.character(at: i)
             if closers[ch] != nil || closers.values.contains(ch) {
                 counts[ch, default: 0] += 1
             }
         }
-        var r = range
         while r.length > 0 {
             let last = ns.character(at: NSMaxRange(r) - 1)
             if trailingPunctuation.contains(last) {

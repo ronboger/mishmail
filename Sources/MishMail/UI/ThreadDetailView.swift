@@ -4,14 +4,6 @@ import SwiftUI
 import UniformTypeIdentifiers
 import WebKit
 
-/// Per-message card heights — re-scroll when WKWebView grows after a bottom pin.
-private struct ThreadMessageHeightKey: PreferenceKey {
-    static var defaultValue: [String: CGFloat] = [:]
-    static func reduce(value: inout [String: CGFloat], nextValue: () -> [String: CGFloat]) {
-        value.merge(nextValue(), uniquingKeysWith: { $1 })
-    }
-}
-
 /// Disarms auto-pin on trackpad scroll. Offset observation (macOS 15+) is
 /// preferred; scroll-wheel monitor covers macOS 14 and single-message threads
 /// where `scrollPosition` id never changes.
@@ -273,12 +265,12 @@ struct ThreadDetailView: View {
                                     onNeedBody: { loadBodyIfNeeded(id: message.id) })
                                     .padding(.horizontal)
                                     .id(message.id)
-                                    .background { messageHeightReader(id: message.id) }
+                                    .background { pinnedHeightReader(id: message.id, proxy: proxy) }
                             }
                         } else {
                             messageCard(for: message,
                                         lastNonDraftId: messageRoles.lastNonDraftId)
-                                .background { messageHeightReader(id: message.id) }
+                                .background { pinnedHeightReader(id: message.id, proxy: proxy) }
                         }
                     }
 
@@ -289,7 +281,7 @@ struct ThreadDetailView: View {
             // Stable top anchor for reading; inline reply uses one-shot bottom
             // scrollTo so dismiss does not flip anchors and jump the thread.
             .scrollPosition(id: scrollAnchorBinding, anchor: .top)
-            .modifier(ScrollOffsetDisarmModifier { oldY, newY in
+            .modifier(ScrollOffsetDisarmModifier(armed: autoPinInlineScroll && inlineComposeActive) { oldY, newY in
                 noteScrollOffsetChange(from: oldY, to: newY)
             })
             .task(id: thread.id) {
@@ -425,17 +417,6 @@ struct ThreadDetailView: View {
                 neighborPrerenderArmed = false
                 HTMLBodyNeighborPrerender.cancel()
             }
-            .onPreferenceChange(ThreadMessageHeightKey.self) { heights in
-                guard inlineComposeActive, autoPinInlineScroll,
-                      let target = inlineScrollTargetId,
-                      let height = heights[target] else { return }
-                if height > lastPinnedTargetHeight + 8 {
-                    lastPinnedTargetHeight = height
-                    scrollInlineComposeTarget(proxy, releaseTopPin: false)
-                } else if lastPinnedTargetHeight == 0 {
-                    lastPinnedTargetHeight = height
-                }
-            }
             .alert(
                 unsubscribeTarget.map {
                     ListUnsubscribe.confirmationTitle(fromHeader: $0.fromHeader)
@@ -491,7 +472,7 @@ struct ThreadDetailView: View {
             set: { newValue in
                 let changed = newValue != scrollAnchor.id
                 scrollAnchor.id = newValue
-                guard changed else { return }
+                guard changed, autoPinInlineScroll, inlineComposeActive else { return }
                 DispatchQueue.main.async {
                     guard inlineComposeActive, autoPinInlineScroll,
                           scrollWrite == nil else { return }
@@ -524,14 +505,15 @@ struct ThreadDetailView: View {
     }
 
     private struct ScrollOffsetDisarmModifier: ViewModifier {
+        let armed: Bool
         let onOffset: (CGFloat, CGFloat) -> Void
 
         func body(content: Content) -> some View {
             if #available(macOS 15.0, *) {
-                content.onScrollGeometryChange(for: CGFloat.self) { geo in
-                    geo.contentOffset.y
+                content.onScrollGeometryChange(for: CGFloat?.self) { geo in
+                    armed ? geo.contentOffset.y : nil
                 } action: { oldY, newY in
-                    onOffset(oldY, newY)
+                    if let oldY, let newY { onOffset(oldY, newY) }
                 }
             } else {
                 content
@@ -566,11 +548,19 @@ struct ThreadDetailView: View {
             .id(message.id)
     }
 
-    private func messageHeightReader(id: String) -> some View {
-        GeometryReader { geo in
-            Color.clear.preference(
-                key: ThreadMessageHeightKey.self,
-                value: [id: geo.size.height])
+    /// Only the inline reply's target needs height updates as its HTML settles.
+    @ViewBuilder
+    private func pinnedHeightReader(id: String, proxy: ScrollViewProxy) -> some View {
+        if autoPinInlineScroll, inlineScrollTargetId == id, inlineComposeActive {
+            Color.clear.onGeometryChange(for: CGFloat.self) { $0.size.height } action: { height in
+                guard autoPinInlineScroll, inlineScrollTargetId == id, inlineComposeActive else { return }
+                if height > lastPinnedTargetHeight + 8 {
+                    lastPinnedTargetHeight = height
+                    scrollInlineComposeTarget(proxy, releaseTopPin: false)
+                } else if lastPinnedTargetHeight == 0 {
+                    lastPinnedTargetHeight = height
+                }
+            }
         }
     }
 

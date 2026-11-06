@@ -17,8 +17,8 @@ enum FuzzySearch {
     /// - Order: smaller distance, then longer shared prefix, then shorter
     ///   candidate, then lexicographic. At most `limit` results.
     static func candidates(for term: String, in vocab: [String], limit: Int = 3) -> [String] {
-        let needle = term.lowercased()
-        guard needle.count >= 3 else { return [] }
+        let needle = Array(term.lowercased())
+        guard limit > 0, needle.count >= 3 else { return [] }
         let maxDist = allowedDistance(forLength: needle.count)
 
         struct Ranked {
@@ -32,13 +32,15 @@ enum FuzzySearch {
         ranked.reserveCapacity(min(vocab.count, 64))
         for raw in vocab {
             let cand = raw.lowercased()
-            guard cand.count >= 3 else { continue }
-            guard let dist = damerauLevenshtein(needle, cand, max: maxDist) else { continue }
+            let characters = Array(cand)
+            guard characters.count >= 3,
+                  let dist = damerauLevenshtein(needle, characters, max: maxDist)
+            else { continue }
             ranked.append(Ranked(
                 term: cand,
                 dist: dist,
-                prefix: sharedPrefixLength(needle, cand),
-                len: cand.count
+                prefix: zip(needle, characters).prefix(while: { $0 == $1 }).count,
+                len: characters.count
             ))
         }
 
@@ -150,53 +152,36 @@ enum FuzzySearch {
         return prefix ? "\(quoted)*" : quoted
     }
 
-    static func sharedPrefixLength(_ a: String, _ b: String) -> Int {
-        let ac = Array(a)
-        let bc = Array(b)
-        let n = min(ac.count, bc.count)
-        var i = 0
-        while i < n, ac[i] == bc[i] { i += 1 }
-        return i
-    }
-
-    /// Bounded Damerau–Levenshtein (includes adjacent transposition).
-    /// Returns `nil` when the distance would exceed `max` (early-exit on
-    /// row minimum, and when `|n-m| > max`).
-    static func damerauLevenshtein(_ a: String, _ b: String, max maxDist: Int) -> Int? {
-        if maxDist < 0 { return nil }
-        let aChars = Array(a)
-        let bChars = Array(b)
-        let n = aChars.count
-        let m = bChars.count
-        if abs(n - m) > maxDist { return nil }
-        if n == 0 { return m <= maxDist ? m : nil }
-        if m == 0 { return n <= maxDist ? n : nil }
-
-        var d = [[Int]](repeating: [Int](repeating: 0, count: m + 1), count: n + 1)
-        for i in 0...n { d[i][0] = i }
-        for j in 0...m { d[0][j] = j }
+    /// A match within the limit never leaves the diagonal band. Retain the
+    /// preceding two rows so an adjacent transposition still costs one edit.
+    private static func damerauLevenshtein(_ a: [Character], _ b: [Character],
+                                           max limit: Int) -> Int? {
+        let n = a.count, m = b.count
+        guard abs(n - m) <= limit else { return nil }
+        let outside = limit + 1
+        var previous = Array(0...m)
+        var twoBack = Array(repeating: outside, count: m + 1)
+        var current = Array(repeating: outside, count: m + 1)
 
         for i in 1...n {
-            var rowMin = Int.max
-            for j in 1...m {
-                let cost = aChars[i - 1] == bChars[j - 1] ? 0 : 1
-                var v = min(
-                    d[i - 1][j] + 1,          // deletion
-                    d[i][j - 1] + 1,          // insertion
-                    d[i - 1][j - 1] + cost   // substitution
-                )
-                // Adjacent transposition
-                if i > 1, j > 1,
-                   aChars[i - 1] == bChars[j - 2],
-                   aChars[i - 2] == bChars[j - 1] {
-                    v = min(v, d[i - 2][j - 2] + 1)
+            let first = max(1, i - limit)
+            let last = min(m, i + limit)
+            current[first - 1] = first == 1 ? i : outside
+            if last < m { current[last + 1] = outside }
+            var rowMin = outside
+            for j in first...last {
+                let substitution = previous[j - 1] + (a[i - 1] == b[j - 1] ? 0 : 1)
+                var value = min(previous[j] + 1, current[j - 1] + 1, substitution)
+                if i > 1, j > 1, a[i - 1] == b[j - 2], a[i - 2] == b[j - 1] {
+                    value = min(value, twoBack[j - 2] + 1)
                 }
-                d[i][j] = v
-                if v < rowMin { rowMin = v }
+                current[j] = value
+                rowMin = min(rowMin, value)
             }
-            if rowMin > maxDist { return nil }
+            guard rowMin <= limit else { return nil }
+            swap(&twoBack, &previous)
+            swap(&previous, &current)
         }
-        let dist = d[n][m]
-        return dist <= maxDist ? dist : nil
+        return previous[m] <= limit ? previous[m] : nil
     }
 }

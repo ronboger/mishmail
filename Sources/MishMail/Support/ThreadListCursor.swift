@@ -78,21 +78,6 @@ enum ThreadListPaging {
 enum ThreadDateSections {
     static let order = ["Today", "Yesterday", "Last 7 days", "Last 30 days", "Older"]
 
-    static func sectionKey(for date: Date, now: Date = Date(),
-                           calendar: Calendar = .current) -> String {
-        // Compare against the injected `now` (not Calendar's wall-clock
-        // "today") so callers and tests can freeze time. isDateInToday /
-        // isDateInYesterday always use Date(), which breaks fixed-`now` tests.
-        if calendar.isDate(date, inSameDayAs: now) { return "Today" }
-        if let yesterday = calendar.date(byAdding: .day, value: -1, to: now),
-           calendar.isDate(date, inSameDayAs: yesterday) {
-            return "Yesterday"
-        }
-        if date > now.addingTimeInterval(-7 * 86_400) { return "Last 7 days" }
-        if date > now.addingTimeInterval(-30 * 86_400) { return "Last 30 days" }
-        return "Older"
-    }
-
     /// Group threads by `dateKey`, preserving `order` section sequence.
     /// Within each bucket, original relative order of `threads` is kept
     /// (caller usually already sorted by the same activity date DESC).
@@ -100,9 +85,23 @@ enum ThreadDateSections {
                       dateKey: (MailThread) -> Date,
                       now: Date = Date(),
                       calendar: Calendar = .current) -> [(String, [MailThread])] {
+        guard !threads.isEmpty else { return [] }
+        let today = calendar.dateInterval(of: .day, for: now)
+        let yesterday = calendar.date(byAdding: .day, value: -1, to: now)
+            .flatMap { calendar.dateInterval(of: .day, for: $0) }
+        let week = now.addingTimeInterval(-7 * 86_400)
+        let month = now.addingTimeInterval(-30 * 86_400)
         var buckets: [String: [MailThread]] = [:]
         for thread in threads {
-            let key = sectionKey(for: dateKey(thread), now: now, calendar: calendar)
+            let date = dateKey(thread)
+            let key: String
+            // Calendar days span local midnight to (but exclude) the next
+            // midnight. The longer windows are rolling elapsed-time cutoffs.
+            if let today, date >= today.start, date < today.end { key = "Today" }
+            else if let yesterday, date >= yesterday.start, date < yesterday.end { key = "Yesterday" }
+            else if date > week { key = "Last 7 days" }
+            else if date > month { key = "Last 30 days" }
+            else { key = "Older" }
             buckets[key, default: []].append(thread)
         }
         return order.compactMap { key in buckets[key].map { (key, $0) } }

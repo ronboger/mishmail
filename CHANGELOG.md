@@ -9,6 +9,11 @@ All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
+## [0.6.1] - 2026-11-07
+
+- The reading pane tracks message height and scroll position for inline reply pinning only while that feature needs them.
+- Inbox date grouping reuses calendar boundaries across rows. Typo-tolerant search compares fewer characters, and plain-text messages with many links take less work to prepare.
+
 ## [0.6.0] - 2026-11-07
 
 ### Added

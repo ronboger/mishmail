@@ -67,6 +67,12 @@ final class PlainTextLinksTests: XCTestCase {
         XCTAssertEqual(urls("git clone git@github.com:org/repo.git"), [])
     }
 
+    func testMixedAddressesAcrossMultipleURLSpans() {
+        let text = "🌱 a@b.org https://host.org/?to=in@b.org mid@b.org (https://x.org/(v)?to=out@b.org). end@b.org"
+        XCTAssertEqual(linkedText(text), ["a@b.org", "https://host.org/?to=in@b.org", "mid@b.org",
+                                           "https://x.org/(v)?to=out@b.org", "end@b.org"])
+    }
+
     func testLinksAreSortedAndDoNotOverlap() {
         let text = "a@b.com then https://a.com then c@d.org"
         let links = PlainTextLinks.links(in: text)

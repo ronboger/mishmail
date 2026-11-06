@@ -52,6 +52,17 @@ final class FuzzySearchTests: XCTestCase {
         }
     }
 
+    func testTranspositionsAtEitherEndWithAnInsertionOrDeletion() {
+        // Two edits can start at either edge of the diagonal band.
+        let near = ["bacdefg", "xabcdfe", "abced", "ab👩🏽‍🔬def"]
+        let far = ["zbacdefg", "xyzdef", "ab"]
+        for word in near {
+            XCTAssertEqual(FuzzySearch.candidates(for: "abcdef", in: [word]), [word])
+        }
+        XCTAssertEqual(FuzzySearch.candidates(for: "abcdef", in: far), [])
+        XCTAssertEqual(FuzzySearch.candidates(for: "a👩🏽‍🔬b", in: ["ab👩🏽‍🔬"]), ["ab👩🏽‍🔬"])
+    }
+
     func testOriginalTokenIncludedInExpandedGroup() throws {
         // When the original is itself in vocab, candidates returns it at dist 0;
         // expandedPattern always puts the original first in the OR-group even

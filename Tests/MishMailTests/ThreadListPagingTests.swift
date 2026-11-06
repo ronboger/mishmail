@@ -102,6 +102,28 @@ final class ThreadListPagingTests: XCTestCase {
         XCTAssertEqual(sentGroups.map(\.0), ["Today"])
     }
 
+    func testDateSectionsAcrossSpringForwardAndRollingCutoffs() throws {
+        var calendar = Calendar(identifier: .gregorian)
+        calendar.timeZone = try XCTUnwrap(TimeZone(identifier: "America/Los_Angeles"))
+        let now = try XCTUnwrap(calendar.date(from: DateComponents(year: 2026, month: 3, day: 9, hour: 12)))
+        let today = calendar.startOfDay(for: now)
+        let yesterday = try XCTUnwrap(calendar.date(byAdding: .day, value: -1, to: today))
+        let tomorrow = try XCTUnwrap(calendar.date(byAdding: .day, value: 1, to: today))
+        let dates = [yesterday, today, tomorrow, today.addingTimeInterval(-1),
+                     yesterday.addingTimeInterval(-1), now.addingTimeInterval(-7 * 86_400),
+                     now.addingTimeInterval(-30 * 86_400)]
+        let rows = dates.enumerated().map { index, date in
+            MailThread(id: String(index), accountId: "a", gmailThreadId: String(index),
+                       subject: "", snippet: "", fromDisplay: "", lastDate: date, isUnread: false,
+                       isStarred: false, inInbox: true, inTrash: false, labelIds: "INBOX",
+                       snoozeUntil: nil, participants: "", messageCount: 1,
+                       hasAttachment: false, reminderAt: nil)
+        }
+        let sections = ThreadDateSections.group(rows, dateKey: { $0.lastDate }, now: now, calendar: calendar)
+        XCTAssertEqual(sections.map(\.0), ThreadDateSections.order)
+        XCTAssertEqual(sections.map { $0.1.map(\.id) }, [["1"], ["0", "3"], ["2", "4"], ["5"], ["6"]])
+    }
+
     func testNeighborPrefetch() {
         let order = ["a", "b", "c"]
         let mid = NeighborPrefetch.neighbors(selected: "b", in: order)
