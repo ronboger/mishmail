@@ -974,6 +974,8 @@ struct ThreadDetailView: View {
         messages[idx].listUnsubscribePost = headers.1
         // Pre-v43 rows: Reply reads this (ReplyRecipients).
         messages[idx].replyToHeader = headers.replyTo
+        // Pre-v47 rows: the "delivered to" row reads this (DeliveredAddress).
+        messages[idx].deliveredTo = headers.deliveredTo
     }
 
     /// After the open body's first stable paint, warm prev/next newest-message
@@ -2112,9 +2114,72 @@ struct MessageCard: View {
         .background(Color.secondary.opacity(0.07), in: RoundedRectangle(cornerRadius: 8))
     }
 
+    /// Own address this message reached. `needsOwnRow` when To / Cc do not
+    /// already show it (Bcc, mailing list, forwarding).
+    private var deliveredAddress: DeliveredAddress.Result {
+        DeliveredAddress.resolve(message, ownEmails: store.ownEmailAddresses)
+    }
+
+    /// Show the "delivered to" row only when it adds information: the
+    /// address is not in To / Cc, and the message is not the user's own
+    /// sent mail (except an own Bcc). A bare mailbox guess shows only when
+    /// more than one account is linked (unified inbox).
+    private var showsDeliveredRow: Bool {
+        let delivered = deliveredAddress
+        guard delivered.needsOwnRow else { return false }
+        switch delivered.source {
+        case .to, .cc: return false
+        case .bcc: return true
+        case .delivered, .mailbox:
+            let sender = MessageParser.emailAddress(message.fromHeader)
+            let sentByMe = store.ownEmailAddresses.contains {
+                $0.caseInsensitiveCompare(sender) == .orderedSame
+            } || sender.caseInsensitiveCompare(message.accountId) == .orderedSame
+            if sentByMe { return false }
+            // One address, one account: the row would only ever repeat it.
+            let several = store.ownEmailAddresses.count > 1 || store.accounts.count > 1
+            if delivered.source == .mailbox { return store.accounts.count > 1 }
+            return several
+                || delivered.email.caseInsensitiveCompare(message.accountId) != .orderedSame
+        }
+    }
+
+    private var deliveredHelp: String {
+        switch deliveredAddress.source {
+        case .bcc: return "You sent this as Bcc to this address"
+        case .delivered, .mailbox:
+            return "This message came to this address. You were Bcc'd, or it came through a list or a forward."
+        case .to, .cc: return ""
+        }
+    }
+
+    private var deliveredRow: some View {
+        GridRow {
+            recipientRole(deliveredAddress.source == .bcc ? "BCC" : "VIA")
+            Text(deliveredLabel)
+                .font(.system(size: 12.5 * fontScale))
+                .foregroundStyle(.secondary)
+                .lineLimit(1)
+                .truncationMode(.middle)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .help(deliveredHelp)
+                .accessibilityLabel("Delivered to \(deliveredAddress.email)")
+        }
+    }
+
+    /// "me · alias@x.com" so the exact address is always visible.
+    private var deliveredLabel: String {
+        let email = deliveredAddress.email
+        let own = store.ownEmailAddresses.contains { $0.caseInsensitiveCompare(email) == .orderedSame }
+            || store.accounts.contains { $0.id.caseInsensitiveCompare(email) == .orderedSame }
+        return own ? "me · \(email)" : email
+    }
+
     /// Compact recipient value: "me", "Van Ju +3" (extras include Cc).
     private var recipientSummary: String {
-        let own = Set(store.accounts.map { $0.id.lowercased() })
+        let own = Set(store.ownEmailAddresses.map { $0.lowercased() })
+            .union(store.accounts.map { $0.id.lowercased() })
         let recipients = MessageParser.splitAddresses(message.toHeader)
             .map { $0.trimmingCharacters(in: .whitespaces) }
             .filter { !$0.isEmpty }
@@ -2175,6 +2240,7 @@ struct MessageCard: View {
                 .accessibilityHint("Show all senders and recipients")
                 .help("Show all senders and recipients")
             }
+            if showsDeliveredRow { deliveredRow }
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -2205,6 +2271,7 @@ struct MessageCard: View {
             recipientRows("FROM", header: message.fromHeader)
             recipientRows("TO", header: message.toHeader)
             recipientRows("CC", header: message.ccHeader)
+            if showsDeliveredRow { deliveredRow }
             GridRow {
                 Text("")
                 Button("Show less") {

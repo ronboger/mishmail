@@ -24,6 +24,7 @@ final class DatabaseMigrationTests: XCTestCase {
             XCTAssertTrue(messageCols.contains("listUnsubscribe"), "v37 must add listUnsubscribe")
             XCTAssertTrue(messageCols.contains("listUnsubscribePost"), "v37 must add listUnsubscribePost")
             XCTAssertTrue(messageCols.contains("replyToHeader"), "v43 must add replyToHeader")
+            XCTAssertTrue(messageCols.contains("deliveredTo"), "v47 must add deliveredTo")
             let chatCols = try db.columns(in: "chatMessage").map(\.name)
             XCTAssertTrue(chatCols.contains("thinkingBlocksJSON"),
                           "v38 must add thinkingBlocksJSON")
@@ -145,6 +146,8 @@ final class DatabaseMigrationTests: XCTestCase {
         // v43: pre-existing rows have not recorded Reply-To (NULL), and the
         // new column round-trips through the model.
         XCTAssertNil(message?.replyToHeader)
+        // v47: pre-existing rows have not recorded Delivered-To (NULL).
+        XCTAssertNil(message?.deliveredTo)
         if var message {
             message.replyToHeader = "Desk <desk@help.example>"
             try q.write { db in try message.save(db) }

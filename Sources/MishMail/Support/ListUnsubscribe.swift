@@ -267,18 +267,19 @@ enum ListUnsubscribe {
     }
 
     /// From identity for the RFC 2369 mailto: send. Prefer a To/Cc/Bcc
-    /// address that is one of ours (the address that subscribed), else the
-    /// mailbox primary.
+    /// address that is one of ours (the address that subscribed), then an
+    /// own address in the `Delivered-To` chain (list mail rarely names the
+    /// subscriber in To), else the mailbox primary.
     static func fromEmail(toHeader: String, ccHeader: String, bccHeader: String,
+                          deliveredTo: String? = nil,
                           ownEmails: Set<String>, accountId: String) -> String {
+        let result = DeliveredAddress.resolve(
+            toHeader: toHeader, ccHeader: ccHeader, bccHeader: bccHeader,
+            deliveredTo: deliveredTo, ownEmails: ownEmails, accountId: accountId)
+        // Only an own address may send; a non-own Delivered-To hop (an old
+        // forwarding domain, a list) falls back to the mailbox primary.
         let own = Set(ownEmails.map { $0.lowercased() })
-        for header in [toHeader, ccHeader, bccHeader] {
-            for raw in MessageParser.splitAddresses(header) {
-                let email = MessageParser.emailAddress(raw).lowercased()
-                if own.contains(email) { return email }
-            }
-        }
-        return accountId
+        return own.contains(result.email) ? result.email : accountId
     }
 
     /// One-click POST (and HTTPS open) must not target loopback, link-local,

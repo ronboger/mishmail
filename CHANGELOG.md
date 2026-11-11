@@ -4,6 +4,11 @@
   blue underlined label in the editor; MishMail no longer exposes the backing
   `[label](URL)` syntax while drafting. Draft storage, ⌘K editing, and sent HTML
   remain unchanged.
+- **Bcc'd mail now shows which of your addresses it reached.** When To and Cc
+  name none of your addresses (Bcc, a mailing list, a forward), the message
+  header adds a "VIA" row with the address from the `Delivered-To` chain.
+  Reply and the unsubscribe email now send from that address when it is one
+  of your send-as aliases.
 
 All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so

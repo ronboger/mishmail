@@ -284,7 +284,8 @@ enum DemoSeed {
                  body: String, hoursAgo: Double, unread: Bool, starred: Bool = false,
                  attachment: Bool = false, extraLabels: [String] = [],
                  listUnsubscribe: String? = nil,
-                 listUnsubscribePost: String? = nil) {
+                 listUnsubscribePost: String? = nil,
+                 to: String? = nil, deliveredTo: String? = nil) {
             var labels = ["INBOX"] + extraLabels
             if starred { labels.append("STARRED") }
             if unread { labels.append("UNREAD") }
@@ -294,7 +295,7 @@ enum DemoSeed {
                 gmailId: "m_\(t)_\(out.count)",
                 threadId: "\(account):\(t)",
                 fromHeader: from,
-                toHeader: "Alex Rivera <\(account)>",
+                toHeader: to ?? "Alex Rivera <\(account)>",
                 ccHeader: "",
                 subject: subject,
                 date: date(hoursAgo),
@@ -307,7 +308,8 @@ enum DemoSeed {
                 isUnread: unread,
                 hasAttachment: attachment,
                 listUnsubscribe: listUnsubscribe,
-                listUnsubscribePost: listUnsubscribePost))
+                listUnsubscribePost: listUnsubscribePost,
+                deliveredTo: deliveredTo))
         }
 
         add("t1", from: "Dana Okafor <dana@brightloop.io>",
@@ -371,7 +373,11 @@ enum DemoSeed {
             subject: "Dinner Saturday?",
             snippet: "A few of us are getting together Saturday around 7. Would love for you to come — let me know!",
             body: "Hey! A few of us are getting together Saturday around 7.\n\nWould love for you to come — let me know!\n\nJordan",
-            hoursAgo: 52, unread: false, extraLabels: ["Label_personal"])
+            hoursAgo: 52, unread: false, extraLabels: ["Label_personal"],
+            // Bcc'd group invite: To names nobody, so the reading pane shows
+            // which address (a forwarding domain) the message reached.
+            to: "undisclosed-recipients:;",
+            deliveredTo: "\(account), alex@rivera.example")
 
         return out
     }

@@ -21,6 +21,9 @@ struct ComposeView: View {
     @State private var fromEmail: String = ""
     /// OAuth mailbox that owns `fromEmail` (and any reply threadId).
     @State private var fromAccountId: String = ""
+    /// True once the user picks From in the menu. A late send-as load may
+    /// then not move a reply to the alias the message reached.
+    @State private var fromPickedByUser = false
     @State private var toTokens: [String] = []
     @State private var toDraft = ""
     @State private var ccTokens: [String] = []
@@ -1572,6 +1575,7 @@ struct ComposeView: View {
             },
             set: { newId in
                 if let identity = availableFromIdentities.first(where: { $0.id == newId }) {
+                    fromPickedByUser = true
                     selectFrom(identity)
                 }
             }
@@ -1600,6 +1604,14 @@ struct ComposeView: View {
     /// identity load doesn't rewrite a send-as draft to the primary.
     private func ensureFromSelection(preferCurrent: Bool = false) {
         let options = availableFromIdentities
+        // Reply / forward: send from the own address the original reached
+        // (To, Cc, or the Delivered-To chain for Bcc / list mail), as Gmail
+        // does. Drafts and undo-restores keep their own From (sticky below).
+        if stickyFromEmail.isEmpty, !fromPickedByUser,
+           let replyIdentity = replyFromIdentity(in: options) {
+            selectFrom(replyIdentity)
+            return
+        }
         if preferCurrent,
            let keep = options.first(where: {
                $0.email.caseInsensitiveCompare(fromEmail) == .orderedSame
@@ -1648,6 +1660,18 @@ struct ComposeView: View {
         } else if let account = store.accounts.first {
             fromEmail = account.id
             fromAccountId = account.id
+        }
+    }
+
+    /// Identity in `options` matching the address the original reached, in
+    /// the original's own mailbox. Nil for a new compose.
+    private func replyFromIdentity(in options: [SendIdentity]) -> SendIdentity? {
+        guard let original, editingDraft == nil, request.restore == nil else { return nil }
+        guard let email = DeliveredAddress.replyFromEmail(
+            for: original, ownEmails: store.ownEmailAddresses) else { return nil }
+        return options.first {
+            $0.email.caseInsensitiveCompare(email) == .orderedSame
+                && $0.accountId.caseInsensitiveCompare(original.accountId) == .orderedSame
         }
     }
 

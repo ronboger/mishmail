@@ -49,6 +49,11 @@ enum MessageParser {
         func header(_ name: String) -> String {
             g.payload?.headers?.first { $0.name.caseInsensitiveCompare(name) == .orderedSame }?.value ?? ""
         }
+        func allHeaders(_ name: String) -> [String] {
+            (g.payload?.headers ?? [])
+                .filter { $0.name.caseInsensitiveCompare(name) == .orderedSame }
+                .map(\.value)
+        }
         var text = ""
         var html: String?
         var attachments: [AttachmentRow] = []
@@ -90,7 +95,11 @@ enum MessageParser {
             // pre-v37 row that has never recorded these headers.
             listUnsubscribe: header("List-Unsubscribe"),
             listUnsubscribePost: header("List-Unsubscribe-Post"),
-            replyToHeader: header("Reply-To")
+            replyToHeader: header("Reply-To"),
+            deliveredTo: allHeaders("Delivered-To")
+                .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+                .filter { !$0.isEmpty }
+                .joined(separator: ", ")
         )
         return (message, attachments)
     }

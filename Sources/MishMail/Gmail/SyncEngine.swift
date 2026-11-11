@@ -1289,6 +1289,10 @@ actor SyncEngine {
                        let kept = existing.replyToHeader, !kept.isEmpty {
                         msg.replyToHeader = kept
                     }
+                    if (msg.deliveredTo ?? "").isEmpty,
+                       let kept = existing.deliveredTo, !kept.isEmpty {
+                        msg.deliveredTo = kept
+                    }
                 }
                 msg.bodyText = ""
                 msg.bodyHTML = nil

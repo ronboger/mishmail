@@ -930,21 +930,24 @@ final class MailStore {
     /// Fill `listUnsubscribe` on pre-v37 rows and `replyToHeader` on pre-v43
     /// rows (nil) via a metadata get. Returns the header values so the
     /// reading pane can patch in place without replacing the hydrated body.
-    func refreshUnsubscribeHeaders(_ message: Message) async -> (String, String, replyTo: String)? {
-        if let header = message.listUnsubscribe, let replyTo = message.replyToHeader {
-            return (header, message.listUnsubscribePost ?? "", replyTo)
+    func refreshUnsubscribeHeaders(_ message: Message) async
+        -> (String, String, replyTo: String, deliveredTo: String)? {
+        if let header = message.listUnsubscribe, let replyTo = message.replyToHeader,
+           let deliveredTo = message.deliveredTo {
+            return (header, message.listUnsubscribePost ?? "", replyTo, deliveredTo)
         }
         guard let stored = try? await db.read({
             try Message.fetchOne($0, key: message.id)
         }) else {
             return nil
         }
-        if let header = stored.listUnsubscribe, let replyTo = stored.replyToHeader {
-            return (header, stored.listUnsubscribePost ?? "", replyTo)
+        if let header = stored.listUnsubscribe, let replyTo = stored.replyToHeader,
+           let deliveredTo = stored.deliveredTo {
+            return (header, stored.listUnsubscribePost ?? "", replyTo, deliveredTo)
         }
         guard !demoMode else {
             return (stored.listUnsubscribe ?? "", stored.listUnsubscribePost ?? "",
-                    stored.replyToHeader ?? "")
+                    stored.replyToHeader ?? "", stored.deliveredTo ?? "")
         }
         do {
             let g = try await client(for: message.accountId)
@@ -960,7 +963,7 @@ final class MailStore {
                     db, for: [parsed.threadId], accountId: message.accountId)
             }
             return (parsed.listUnsubscribe ?? "", parsed.listUnsubscribePost ?? "",
-                    parsed.replyToHeader ?? "")
+                    parsed.replyToHeader ?? "", parsed.deliveredTo ?? "")
         } catch {
             return nil
         }
@@ -1005,6 +1008,7 @@ final class MailStore {
             toHeader: message.toHeader,
             ccHeader: message.ccHeader,
             bccHeader: message.bccHeader,
+            deliveredTo: message.deliveredTo,
             ownEmails: ownEmailAddresses,
             accountId: message.accountId)
         let raw = MIMEBuilder.build(

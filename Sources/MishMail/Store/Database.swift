@@ -157,6 +157,10 @@ struct Message: Codable, Identifiable, Hashable, FetchableRecord, PersistableRec
     /// Reply and Reply All target it instead of `fromHeader` when it has an
     /// address (`ReplyRecipients`).
     var replyToHeader: String? = nil
+    /// Every `Delivered-To` value, newest hop first, joined with ", " (v47).
+    /// Same nil/empty rule as `listUnsubscribe`. Tells which own address a
+    /// Bcc, list, or forwarded message reached (`DeliveredAddress`).
+    var deliveredTo: String? = nil
 }
 
 /// Off-row body storage (v24). Keeps fat HTML off the `message` row so header
@@ -2144,6 +2148,15 @@ final class AppDatabase: @unchecked Sendable {
         m.registerMigration("v46") { db in
             try db.alter(table: "threadSummary") { t in
                 t.add(column: "contentFingerprint", .text)
+            }
+        }
+
+        // v47: Delivered-To chain, so the reading pane can say which own
+        // address received a Bcc / list / forwarded message. NULL for
+        // pre-v47 rows (the open-time metadata fetch fills it).
+        m.registerMigration("v47") { db in
+            try db.alter(table: "message") { t in
+                t.add(column: "deliveredTo", .text)
             }
         }
         return m
