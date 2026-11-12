@@ -38,6 +38,13 @@ struct ComposeBodyEditor: NSViewRepresentable {
     /// Compose sizes the editor from this instead of estimating from the
     /// character count.
     var onTextHeightChange: ((CGFloat) -> Void)? = nil
+    /// System spelling / grammar checks (Settings ▸ Appearance ▸ Spelling).
+    @AppStorage(ComposeSpellCheck.spellingKey) private var spellCheck = true
+    @AppStorage(ComposeSpellCheck.grammarKey) private var grammarCheck = true
+
+    private var spellOptions: ComposeSpellCheck.Options {
+        .init(spelling: spellCheck, grammar: grammarCheck)
+    }
 
     func makeCoordinator() -> Coordinator {
         Coordinator(text: $text, isFocused: $isFocused, caretUTF16: $caretUTF16,
@@ -65,6 +72,8 @@ struct ComposeBodyEditor: NSViewRepresentable {
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
         textView.isAutomaticSpellingCorrectionEnabled = true
+        ComposeSpellCheck.apply(spellOptions, to: textView)
+        context.coordinator.appliedSpellOptions = spellOptions
         // Opaque fill matching the compose card so partial glyph updates after
         // delete never leave trails (drawsBackground=false + custom ghost draw
         // used to retain deleted characters under the caret).
@@ -137,6 +146,12 @@ struct ComposeBodyEditor: NSViewRepresentable {
         textView.onFilesDropped = { [weak coord = context.coordinator] urls in
             coord?.onFilesDropped?(urls)
         }
+        // Only on a Settings change: re-applying every update would undo a
+        // per-view Edit ▸ Spelling and Grammar toggle on the next keystroke.
+        if context.coordinator.appliedSpellOptions != spellOptions {
+            ComposeSpellCheck.apply(spellOptions, to: textView)
+            context.coordinator.appliedSpellOptions = spellOptions
+        }
 
         if textView.string != text {
             // Suppress publishCaret while rewriting: assigning string and
@@ -193,6 +208,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
         weak var textView: ComposeBodyTextView?
         var fontSize: CGFloat = 14
         var onTextHeightChange: ((CGFloat) -> Void)?
+        var appliedSpellOptions: ComposeSpellCheck.Options?
         private var reportedTextHeight: CGFloat = -1
         private var frameObserver: NSObjectProtocol?
 

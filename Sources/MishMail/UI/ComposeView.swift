@@ -2841,5 +2841,26 @@ struct ComposeSubjectField: NSViewRepresentable {
             guard let field = obj.object as? NSTextField else { return }
             text.wrappedValue = field.stringValue
         }
+
+        /// Field-editor checks as they were before the subject took it.
+        private var editorChecksBefore: ComposeSpellCheck.Options?
+
+        /// The subject edits in the window's shared field editor, so the
+        /// checks go on per editing session, not once at creation — and come
+        /// back off when it ends, or To/Cc/search would underline addresses.
+        func controlTextDidBeginEditing(_ obj: Notification) {
+            guard let editor = obj.userInfo?["NSFieldEditor"] as? NSTextView else { return }
+            editorChecksBefore = .init(spelling: editor.isContinuousSpellCheckingEnabled,
+                                       grammar: editor.isGrammarCheckingEnabled)
+            ComposeSpellCheck.apply(ComposeSpellCheck.options(), to: editor)
+        }
+
+        func controlTextDidEndEditing(_ obj: Notification) {
+            guard let before = editorChecksBefore,
+                  let editor = obj.userInfo?["NSFieldEditor"] as? NSTextView else { return }
+            editorChecksBefore = nil
+            editor.isContinuousSpellCheckingEnabled = before.spelling
+            editor.isGrammarCheckingEnabled = before.grammar
+        }
     }
 }

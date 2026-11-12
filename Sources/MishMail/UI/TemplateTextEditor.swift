@@ -24,6 +24,9 @@ struct TemplateTextEditor: NSViewRepresentable {
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
+        // Underline only — no autocorrect, which would rewrite `{variables}`.
+        textView.isAutomaticSpellingCorrectionEnabled = false
+        ComposeSpellCheck.apply(ComposeSpellCheck.options(), to: textView)
         textView.textContainerInset = NSSize(width: 4, height: 6)
         textView.autoresizingMask = [.width]
         textView.isVerticallyResizable = true

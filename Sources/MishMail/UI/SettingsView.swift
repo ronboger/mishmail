@@ -995,6 +995,8 @@ struct AppearanceSettings: View {
     @AppStorage(AppTheme.storageKey) private var appThemeRaw = AppTheme.system.rawValue
     /// Comma-separated raw values of compose footer / format buttons the user hid.
     @AppStorage(ComposeToolbarVisibility.storageKey) private var composeToolbarHidden = ""
+    @AppStorage(ComposeSpellCheck.spellingKey) private var composeSpellCheck = true
+    @AppStorage(ComposeSpellCheck.grammarKey) private var composeGrammarCheck = true
     @State private var showVIPManager = false
 
     private var priorityMode: PrioritySplit.Mode {
@@ -1130,6 +1132,17 @@ struct AppearanceSettings: View {
                     Text("Compose toolbar")
                 } footer: {
                     Text("Hide buttons you don't use (math, AI draft, format tools…) so the footer stays roomy on narrow windows. Keyboard shortcuts (⌘B, ⌘⇧M, ⌘/, …) and markdown you type still work.")
+                        .font(.caption).foregroundStyle(.secondary)
+                }
+
+                Section {
+                    Toggle("Check spelling while typing", isOn: $composeSpellCheck)
+                    Toggle("Check grammar with spelling", isOn: $composeGrammarCheck)
+                        .disabled(!composeSpellCheck)
+                } header: {
+                    Text("Spelling and grammar")
+                } footer: {
+                    Text("Uses the macOS spell checker in the message body, subject, and snippets. Right-click an underlined word for suggestions, or use Edit ▸ Spelling and Grammar (⌘;).")
                         .font(.caption).foregroundStyle(.secondary)
                 }
 
