@@ -7,6 +7,12 @@ import AppKit
 /// — and typing `{` pops the native completion list of known variables.
 struct TemplateTextEditor: NSViewRepresentable {
     @Binding var text: String
+    @AppStorage(ComposeSpellCheck.spellingKey) private var spellCheck = true
+    @AppStorage(ComposeSpellCheck.grammarKey) private var grammarCheck = true
+
+    private var spellOptions: ComposeSpellCheck.Options {
+        .init(spelling: spellCheck, grammar: grammarCheck)
+    }
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
@@ -26,7 +32,8 @@ struct TemplateTextEditor: NSViewRepresentable {
         textView.isAutomaticTextReplacementEnabled = false
         // Underline only — no autocorrect, which would rewrite `{variables}`.
         textView.isAutomaticSpellingCorrectionEnabled = false
-        ComposeSpellCheck.apply(ComposeSpellCheck.options(), to: textView)
+        ComposeSpellCheck.apply(spellOptions, to: textView)
+        context.coordinator.appliedSpellOptions = spellOptions
         textView.textContainerInset = NSSize(width: 4, height: 6)
         textView.autoresizingMask = [.width]
         textView.isVerticallyResizable = true
@@ -44,14 +51,20 @@ struct TemplateTextEditor: NSViewRepresentable {
     }
 
     func updateNSView(_ scroll: NSScrollView, context: Context) {
-        guard let textView = scroll.documentView as? TemplateTextView,
-              textView.string != text else { return }
+        guard let textView = scroll.documentView as? TemplateTextView else { return }
+        // Only on a Settings change, so a per-view Edit menu toggle survives.
+        if context.coordinator.appliedSpellOptions != spellOptions {
+            ComposeSpellCheck.apply(spellOptions, to: textView)
+            context.coordinator.appliedSpellOptions = spellOptions
+        }
+        guard textView.string != text else { return }
         textView.string = text
         Coordinator.highlight(textView)
     }
 
     final class Coordinator: NSObject, NSTextViewDelegate {
         var text: Binding<String>
+        var appliedSpellOptions: ComposeSpellCheck.Options?
         private var completing = false
         init(text: Binding<String>) { self.text = text }
 

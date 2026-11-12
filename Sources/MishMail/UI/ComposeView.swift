@@ -2766,11 +2766,13 @@ struct ComposeView: View {
 /// Hebrew subjects with Latin/punctuation still reorder wrong.
 struct ComposeSubjectField: NSViewRepresentable {
     @Binding var text: String
+    @AppStorage(ComposeSpellCheck.spellingKey) private var spellCheck = true
+    @AppStorage(ComposeSpellCheck.grammarKey) private var grammarCheck = true
 
     func makeCoordinator() -> Coordinator { Coordinator(text: $text) }
 
     func makeNSView(context: Context) -> NSTextField {
-        let field = NSTextField(string: text)
+        let field = SubjectTextField(string: text)
         field.isBordered = false
         field.isBezeled = false
         field.drawsBackground = false
@@ -2785,6 +2787,7 @@ struct ComposeSubjectField: NSViewRepresentable {
         field.cell?.usesSingleLineMode = true
         field.delegate = context.coordinator
         applyDirection(to: field, text: text)
+        applySpellCheck(to: field, context: context)
         return field
     }
 
@@ -2794,6 +2797,18 @@ struct ComposeSubjectField: NSViewRepresentable {
             field.stringValue = text
         }
         applyDirection(to: field, text: text)
+        applySpellCheck(to: field, context: context)
+    }
+
+    /// The subject's editor is its own, so a live Settings change reaches an
+    /// active editing session. Only on change: every keystroke updates this
+    /// view, and re-applying would undo a per-field Edit menu toggle.
+    private func applySpellCheck(to field: NSTextField, context: Context) {
+        let options = ComposeSpellCheck.Options(spelling: spellCheck, grammar: grammarCheck)
+        guard context.coordinator.appliedSpellOptions != options,
+              let cell = field.cell as? SubjectTextFieldCell else { return }
+        ComposeSpellCheck.apply(options, to: cell.subjectEditor)
+        context.coordinator.appliedSpellOptions = options
     }
 
     private func applyDirection(to field: NSTextField, text: String) {
@@ -2835,6 +2850,7 @@ struct ComposeSubjectField: NSViewRepresentable {
 
     final class Coordinator: NSObject, NSTextFieldDelegate {
         var text: Binding<String>
+        var appliedSpellOptions: ComposeSpellCheck.Options?
         init(text: Binding<String>) { self.text = text }
 
         func controlTextDidChange(_ obj: Notification) {
@@ -2842,25 +2858,28 @@ struct ComposeSubjectField: NSViewRepresentable {
             text.wrappedValue = field.stringValue
         }
 
-        /// Field-editor checks as they were before the subject took it.
-        private var editorChecksBefore: ComposeSpellCheck.Options?
+    }
+}
 
-        /// The subject edits in the window's shared field editor, so the
-        /// checks go on per editing session, not once at creation — and come
-        /// back off when it ends, or To/Cc/search would underline addresses.
-        func controlTextDidBeginEditing(_ obj: Notification) {
-            guard let editor = obj.userInfo?["NSFieldEditor"] as? NSTextView else { return }
-            editorChecksBefore = .init(spelling: editor.isContinuousSpellCheckingEnabled,
-                                       grammar: editor.isGrammarCheckingEnabled)
-            ComposeSpellCheck.apply(ComposeSpellCheck.options(), to: editor)
-        }
+/// Subject field with its own field editor. The window's shared field editor
+/// also serves To/Cc/search, where spell checking would underline addresses;
+/// a dedicated one keeps the checks on from focus (not first keystroke) and
+/// never leaks them to other fields.
+final class SubjectTextField: NSTextField {
+    override class var cellClass: AnyClass? {
+        get { SubjectTextFieldCell.self }
+        set { super.cellClass = newValue }
+    }
+}
 
-        func controlTextDidEndEditing(_ obj: Notification) {
-            guard let before = editorChecksBefore,
-                  let editor = obj.userInfo?["NSFieldEditor"] as? NSTextView else { return }
-            editorChecksBefore = nil
-            editor.isContinuousSpellCheckingEnabled = before.spelling
-            editor.isGrammarCheckingEnabled = before.grammar
-        }
+final class SubjectTextFieldCell: NSTextFieldCell {
+    lazy var subjectEditor: NSTextView = {
+        let editor = NSTextView()
+        editor.isFieldEditor = true
+        return editor
+    }()
+
+    override func fieldEditor(for controlView: NSView) -> NSTextView? {
+        subjectEditor
     }
 }
