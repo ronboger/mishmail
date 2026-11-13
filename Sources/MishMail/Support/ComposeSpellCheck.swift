@@ -28,6 +28,12 @@ enum ComposeSpellCheck {
     /// grammar follows spelling off.
     static func apply(_ options: Options, to textView: NSTextView) {
         let grammar = options.spelling && options.grammar
+        // Mark only, never rewrite. A new NSTextView takes the system
+        // "Correct spelling automatically" setting, so turn it off here for
+        // every writing surface (body, subject, snippet editor).
+        if textView.isAutomaticSpellingCorrectionEnabled {
+            textView.isAutomaticSpellingCorrectionEnabled = false
+        }
         if textView.isContinuousSpellCheckingEnabled != options.spelling {
             textView.isContinuousSpellCheckingEnabled = options.spelling
         }

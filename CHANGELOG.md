@@ -4,6 +4,13 @@
   blue underlined label in the editor; MishMail no longer exposes the backing
   `[label](URL)` syntax while drafting. Draft storage, ⌘K editing, and sent HTML
   remain unchanged.
+- **Spell check no longer rewrites words.** Compose marks a wrong word with
+  the red underline and offers corrections on right-click, but it never
+  changes text by itself.
+- **Return in compose no longer flickers.** The body scrolled down one line
+  and snapped back each time a new line made the editor grow.
+- **Fixed a crash after typing in compose.** A text layout error during a
+  system correction popup could crash the app on the next key press.
 - **Bcc'd mail now shows which of your addresses it reached.** When To and Cc
   name none of your addresses (Bcc, a mailing list, a forward), the message
   header adds a "VIA" row with the address from the `Delivered-To` chain.

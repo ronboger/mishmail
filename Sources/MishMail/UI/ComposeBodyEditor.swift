@@ -71,7 +71,7 @@ struct ComposeBodyEditor: NSViewRepresentable {
         textView.isAutomaticQuoteSubstitutionEnabled = false
         textView.isAutomaticDashSubstitutionEnabled = false
         textView.isAutomaticTextReplacementEnabled = false
-        textView.isAutomaticSpellingCorrectionEnabled = true
+        textView.isAutomaticSpellingCorrectionEnabled = false
         ComposeSpellCheck.apply(spellOptions, to: textView)
         context.coordinator.appliedSpellOptions = spellOptions
         // Opaque fill matching the compose card so partial glyph updates after
@@ -618,7 +618,7 @@ final class OverlayComposeScrollView: NSScrollView {
 
 /// NSTextView that claims markdown formatting key equivalents and reports
 /// first-responder focus (not just the editing session).
-final class ComposeBodyTextView: NSTextView {
+final class ComposeBodyTextView: ComposeCaretSettlingTextView {
     var onFormat: ((ComposeBodyEditor.FormatAction) -> Void)?
     var onFocusChange: ((Bool) -> Void)?
     /// Finder / other-app file drops → compose attachments (not path text).
@@ -684,8 +684,10 @@ final class ComposeBodyTextView: NSTextView {
             lastGhostRect = .null
             return
         }
-        guard let lm = layoutManager, let tc = textContainer else { return }
-        lm.ensureLayout(for: tc)
+        guard let lm = layoutManager, let tc = textContainer,
+              // An Objective-C exception here must not unwind through
+              // SwiftUI (see SafeTextLayout.h).
+              MMEnsureTextLayout(lm, tc) else { return }
         let font = self.font ?? NSFont.systemFont(ofSize: 14)
         let attrs: [NSAttributedString.Key: Any] = [
             .font: font,
@@ -787,30 +789,6 @@ final class ComposeBodyTextView: NSTextView {
         // Never insert file paths / NSTextAttachments into the markdown body.
         onFilesDropped?(urls)
         return true
-    }
-
-    /// `scrollRangeToVisible` (caret after Return) can nudge the clip view
-    /// horizontally when document width and clip width disagree by a pixel —
-    /// classic NSTextView "body jumps sideways while typing" failure mode.
-    /// Pin origin.x so the body never drifts while typing newlines.
-    override func scrollRangeToVisible(_ charRange: NSRange) {
-        super.scrollRangeToVisible(charRange)
-        pinHorizontalScroll()
-    }
-
-    override func layout() {
-        super.layout()
-        pinHorizontalScroll()
-    }
-
-    private func pinHorizontalScroll() {
-        guard let scroll = enclosingScrollView else { return }
-        let clip = scroll.contentView
-        guard abs(clip.bounds.origin.x) > 0.01 else { return }
-        var origin = clip.bounds.origin
-        origin.x = 0
-        clip.setBoundsOrigin(origin)
-        scroll.reflectScrolledClipView(clip)
     }
 
     override func performKeyEquivalent(with event: NSEvent) -> Bool {

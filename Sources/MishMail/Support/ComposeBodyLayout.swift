@@ -49,7 +49,15 @@ enum ComposeBodyLayout {
               // Before the first real layout the container is 0 wide and
               // every character wraps onto its own line.
               textView.bounds.width > 1 else { return nil }
-        lm.ensureLayout(for: tc)
+        // Mid-edit (a SwiftUI update from a nested event loop, e.g. the
+        // system correction panel) the layout manager is out of step with
+        // the storage; `textDidChange` reports the height after the edit.
+        if let storage = textView.textStorage, !storage.editedMask.isEmpty {
+            return nil
+        }
+        // Not `lm.ensureLayout(for:)`: it can raise an Objective-C exception
+        // that must not unwind through SwiftUI (see SafeTextLayout.h).
+        guard MMEnsureTextLayout(lm, tc) else { return nil }
         var used = lm.usedRect(for: tc)
         if lm.extraLineFragmentUsedRect.height > 0 {
             used = used.union(lm.extraLineFragmentUsedRect)
