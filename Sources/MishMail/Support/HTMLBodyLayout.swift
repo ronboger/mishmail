@@ -83,6 +83,10 @@ enum HTMLBodyLayout {
     static let freezeRecoveryHeightTolerance: CGFloat = 8
     /// Max false-freeze adoptions per document; after this the freeze is permanent.
     static let freezeRecoveryMaxAdoptions = 3
+    /// Fixed viewport height (px) that viewport units (`vh`, `vmin`, …) are
+    /// pinned to at install. The real viewport is the card frame, which
+    /// tracks measured height, so live viewport units form a feedback loop.
+    static let pinnedViewportHeight = 800
 
     /// Result of one feedback observation step (unit-tested; JS mirrors).
     struct FeedbackStep: Equatable {
@@ -401,6 +405,7 @@ enum HTMLBodyLayout {
         let recoveryStable = freezeRecoveryStableViewportSamples
         let recoveryTol = Int(freezeRecoveryHeightTolerance.rounded())
         let recoveryMax = freezeRecoveryMaxAdoptions
+        let refVH = pinnedViewportHeight
         return """
         (function(){
           var LAYOUT='\(layout)';
@@ -417,6 +422,7 @@ enum HTMLBodyLayout {
           var RECOVERY_STABLE_VH=\(recoveryStable);
           var RECOVERY_TOL=\(recoveryTol);
           var RECOVERY_MAX_ADOPTIONS=\(recoveryMax);
+          var REF_VH=\(refVH);
 
           function capPair(w, h){
             w = parseInt(w, 10); h = parseInt(h, 10);
@@ -540,6 +546,79 @@ enum HTMLBodyLayout {
           function reflowPlaceholders(){
             var imgs = document.querySelectorAll('img');
             for (var i = 0; i < imgs.length; i++) applyImage(imgs[i]);
+          }
+
+          /* The card frame *is* this view's viewport, so any length in
+             viewport units feeds the measured height back into itself:
+             min-height:80vh, calc(100vh - 20px), padding:50vh, font-size:5vh.
+             Each published height resized the content again, so the card
+             walked through many heights (visible jitter) before settling.
+             The neutralize walk below only catches ~100vh boxes >= 200 px.
+             Pin every viewport unit once, at install: heights collapse
+             (same policy as 100vh), every other length becomes px at a fixed
+             reference viewport. Cross-origin sheets are unreadable and skipped. */
+          var VIEWPORT_UNIT = /(-?(?:\\d+\\.?\\d*|\\.\\d+))(dvh|svh|lvh|vh|vmin|vmax)\\b/gi;
+          var HAS_VIEWPORT_UNIT = /\\d(?:dvh|svh|lvh|vh|vmin|vmax)\\b/i;
+
+          function pinValue(v){
+            var vw = viewportWidth();
+            return String(v).replace(VIEWPORT_UNIT, function(m, n, unit){
+              var u = unit.toLowerCase();
+              var ref = REF_VH;
+              if (u === 'vmin') ref = Math.min(REF_VH, vw);
+              else if (u === 'vmax') ref = Math.max(REF_VH, vw);
+              var px = Math.round(parseFloat(n) * ref) / 100;
+              return px + 'px';
+            });
+          }
+
+          function pinStyle(style){
+            if (!style) return;
+            var names = [];
+            for (var i = 0; i < style.length; i++) names.push(style[i]);
+            for (var j = 0; j < names.length; j++) {
+              var name = names[j];
+              var v = style.getPropertyValue(name);
+              if (!v || !HAS_VIEWPORT_UNIT.test(v)) continue;
+              var prio = style.getPropertyPriority(name);
+              var lower = String(name).toLowerCase();
+              if (lower === 'height' || lower === 'block-size') {
+                style.setProperty(name, 'auto', prio);
+              } else if (lower === 'min-height' || lower === 'min-block-size') {
+                style.setProperty(name, '0', prio);
+              } else {
+                style.setProperty(name, pinValue(v), prio);
+              }
+            }
+          }
+
+          function pinRules(rules, depth){
+            if (!rules || depth > 8) return;
+            for (var i = 0; i < rules.length; i++) {
+              var r = rules[i];
+              try { if (r.style) pinStyle(r.style); } catch (e) {}
+              var kids = null;
+              try { kids = r.cssRules; } catch (e) {}
+              if (kids && kids.length) pinRules(kids, depth + 1);
+            }
+          }
+
+          function pinViewportUnits(){
+            try {
+              var sheets = document.styleSheets;
+              for (var i = 0; i < sheets.length; i++) {
+                var rules = null;
+                try { rules = sheets[i].cssRules; } catch (e) { continue; }
+                pinRules(rules, 0);
+              }
+            } catch (e) {}
+            try {
+              var els = document.querySelectorAll('[style]');
+              for (var k = 0; k < els.length; k++) {
+                var attr = els[k].getAttribute('style');
+                if (attr && HAS_VIEWPORT_UNIT.test(attr)) pinStyle(els[k].style);
+              }
+            } catch (e) {}
           }
 
           /* Kill computed *min-heights* that track the WKWebView viewport, and
@@ -838,6 +917,7 @@ enum HTMLBodyLayout {
           window.__mmPassGen = (window.__mmPassGen || 0) + 1;
           window.__mmReflowW = viewportWidth();
 
+          pinViewportUnits();
           neutralizeViewportHeights();
 
           var imgs = document.querySelectorAll('img');

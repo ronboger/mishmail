@@ -11,6 +11,10 @@
   and snapped back each time a new line made the editor grow.
 - **Fixed a crash after typing in compose.** A text layout error during a
   system correction popup could crash the app on the next key press.
+- **The thread view no longer shakes after a message opens.** Mail sized in
+  viewport units (`vh`, `vmin`) made each message card resize itself several
+  times. The reading pane now pins those units once, so a card settles at one
+  height.
 - **Bcc'd mail now shows which of your addresses it reached.** When To and Cc
   name none of your addresses (Bcc, a mailing list, a forward), the message
   header adds a "VIA" row with the address from the `Delivered-To` chain.
