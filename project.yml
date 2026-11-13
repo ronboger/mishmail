@@ -50,8 +50,8 @@ targets:
         CODE_SIGN_ENTITLEMENTS: $(MISHMAIL_APP_ENTITLEMENTS)
         # Objective-C helpers (exception-safe TextKit calls) for Swift.
         SWIFT_OBJC_BRIDGING_HEADER: Sources/MishMail/Support/MishMail-Bridging-Header.h
-        MARKETING_VERSION: 0.6.1
-        CURRENT_PROJECT_VERSION: 6
+        MARKETING_VERSION: 0.7.0
+        CURRENT_PROJECT_VERSION: 7
         SWIFT_VERSION: 5.10
         GENERATE_INFOPLIST_FILE: true
         # Merged with generated keys: registers mailto: for default email app.

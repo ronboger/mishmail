@@ -1,5 +1,11 @@
 # Changelog
 
+All notable changes to MishMail are documented here. Format loosely follows
+[Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
+minor versions may still change behavior.
+
+## [0.7.0] - 2026-11-13
+
 - **Compose links now read naturally** — links with display text render as the
   blue underlined label in the editor; MishMail no longer exposes the backing
   `[label](URL)` syntax while drafting. Draft storage, ⌘K editing, and sent HTML
@@ -20,10 +26,6 @@
   header adds a "VIA" row with the address from the `Delivered-To` chain.
   Reply and the unsubscribe email now send from that address when it is one
   of your send-as aliases.
-
-All notable changes to MishMail are documented here. Format loosely follows
-[Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
-minor versions may still change behavior.
 
 ## [0.6.1] - 2026-11-07
 
