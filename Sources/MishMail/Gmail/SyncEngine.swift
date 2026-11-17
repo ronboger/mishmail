@@ -630,6 +630,30 @@ actor SyncEngine {
         return .threadRederived
     }
 
+    /// Autosave swap: write the draft Gmail just created, then drop the one
+    /// it replaces, in the caller's transaction. Writing first keeps a
+    /// draft-only thread alive (re-derived, not deleted), so the Drafts row
+    /// and the open conversation hold steady while compose saves. Before
+    /// this, each autosave deleted the old row and wrote nothing until the
+    /// close-path sync, so the Drafts row vanished mid-edit.
+    ///
+    /// `new` must be a full parse of the server message: a later sync treats
+    /// an existing row as cached and does not re-fetch its body or headers.
+    /// Returns every thread id touched (old and new differ when the From
+    /// mailbox changed or Gmail moved the draft to a new thread).
+    @discardableResult
+    static func replaceLocalDraft(_ db: Database, replacing old: Message?,
+                                  with new: PendingUpsert) throws -> Set<String> {
+        var touched = try upsertPending(db, items: [new])
+        try deriveThreads(db, for: [new.message.threadId], accountId: new.message.accountId)
+        if let old, old.id != new.message.id {
+            _ = try deleteLocalMessage(db, messageId: old.id, threadId: old.threadId,
+                                       accountId: old.accountId)
+            touched.insert(old.threadId)
+        }
+        return touched
+    }
+
     /// Outcome of a server-side search: cache invalidation keys plus the
     /// Gmail-ranked local thread ids (even for messages already cached).
     struct ServerSearchResult: Sendable {

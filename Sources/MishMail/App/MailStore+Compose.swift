@@ -659,7 +659,8 @@ extension MailStore {
                    attachments: [MIMEBuilder.Attachment] = [],
                    replacing draft: Message? = nil,
                    silent: Bool = false,
-                   syncAfter: Bool? = nil) async throws -> Message? {
+                   syncAfter: Bool? = nil,
+                   composingRequestId: UUID? = nil) async throws -> Message? {
         let shouldSync = syncAfter ?? !silent
         guard !demoMode else {
             if !silent { showNotice("Drafts aren't saved in the demo inbox") }
@@ -705,7 +706,24 @@ extension MailStore {
                 created = try await gmail.createDraft(raw: raw, threadId: nil)
                 keptExistingThread = false
             }
-            if let draft { await deleteUnderlyingDraft(draft, silent: true) }
+            let newLocalId = "\(apiAccountId):\(created.message.id)"
+            // Claim the new id for the open editor before its row can appear
+            // locally, so the orange draft card and the long-thread banner
+            // never flash under the editor that owns this draft.
+            if let composingRequestId {
+                noteComposingDraft(newLocalId, requestId: composingRequestId)
+            }
+            // Write the real new draft locally and drop the old one in one
+            // transaction. The Drafts row and the open conversation then stay
+            // in place across autosaves (see `SyncEngine.replaceLocalDraft`).
+            // One messages.get per save; a failure falls back to the old
+            // delete-only path and the next sync fills the row in.
+            let swapped = await adoptSavedDraft(gmailMessageId: created.message.id,
+                                                accountId: apiAccountId, replacing: draft)
+            if let draft {
+                await deleteUnderlyingDraft(draft, silent: true,
+                                            removeLocal: swapped == nil)
+            }
             if !silent {
                 showNotice("Draft saved — find it in Drafts")
             }
@@ -713,6 +731,7 @@ extension MailStore {
                 // Not awaited: a save must not wait behind a queued sync pass.
                 Task { await self.sync(accountId: apiAccountId) }
             }
+            if let swapped { return swapped }
             // Stand-in for replace chaining. Prefer the local account-prefixed
             // id we already know only when Gmail actually accepted that thread.
             let localThreadId: String
@@ -731,7 +750,11 @@ extension MailStore {
                 toHeader: to, ccHeader: cc, bccHeader: bcc,
                 subject: subject, date: Date(), snippet: String(body.prefix(120)),
                 bodyText: body, bodyHTML: nil,
-                messageIdHeader: "", referencesHeader: "",
+                messageIdHeader: "",
+                // Carry the chain forward: the next replace builds References
+                // from this when there is no reply parent to read it from.
+                referencesHeader: threadParent?.referencesHeader
+                    ?? draft?.referencesHeader ?? "",
                 labelIds: "DRAFT", isUnread: false, hasAttachment: !attachments.isEmpty)
         } catch {
             // Always surface close-path failures (silent=false). Autosave keeps
@@ -743,6 +766,56 @@ extension MailStore {
             }
             throw error
         }
+    }
+
+    /// Fetch the draft Gmail just created and swap it in for `old` locally.
+    /// Returns the stored message (full headers and body, for the next
+    /// replace), or nil when the fetch or write failed — the caller then
+    /// removes `old` the old way and relies on the next sync.
+    private func adoptSavedDraft(gmailMessageId: String, accountId: String,
+                                 replacing old: Message?) async -> Message? {
+        do {
+            let g = try await client(for: accountId).getMessage(id: gmailMessageId, format: "full")
+            let (parsed, atts) = MessageParser.parse(g, accountId: accountId)
+            guard ForwardComposer.isLiveDraft(parsed.labelIds) else { return nil }
+            let touched = try await db.write { db in
+                try SyncEngine.replaceLocalDraft(
+                    db, replacing: old,
+                    with: .init(message: parsed, attachments: atts, headersOnly: false))
+            }
+            applyThreadContentChange(.threads(touched))
+            for threadId in touched {
+                await threadDetailRepository.drop(threadId: threadId)
+            }
+            refreshListRows(forDraftThreads: touched)
+            return parsed
+        } catch {
+            return nil
+        }
+    }
+
+    /// Patch the loaded list after an autosave swap without a full reload,
+    /// so selection and scroll stay put while the user types. A thread that
+    /// is new to the Drafts list (first save of a new compose, or Gmail
+    /// moved the draft) needs a reload to be inserted in order.
+    private func refreshListRows(forDraftThreads ids: Set<String>) {
+        let rows = (try? db.read { db in
+            try MailThread.filter(ids.contains(Column("id"))).fetchAll(db)
+        }) ?? []
+        let byId = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, $0) })
+        var updated = threads
+        var missingFromDrafts = false
+        for id in ids {
+            let idx = updated.firstIndex(where: { $0.id == id })
+            switch (idx, byId[id]) {
+            case let (idx?, row?): updated[idx] = row
+            case let (idx?, nil): updated.remove(at: idx)
+            case (nil, let row?): if row.inDrafts { missingFromDrafts = true }
+            case (nil, nil): break
+            }
+        }
+        if updated != threads { threads = updated }
+        if missingFromDrafts, selectedView == .drafts { reloadThreads() }
     }
 
     /// Where a compose draft ended up.
@@ -768,7 +841,8 @@ extension MailStore {
                       replacing draft: Message? = nil,
                       local: LocalDraft? = nil,
                       silent: Bool = false,
-                      syncAfter: Bool? = nil) async -> DraftSaveOutcome {
+                      syncAfter: Bool? = nil,
+                      composingRequestId: UUID? = nil) async -> DraftSaveOutcome {
         // Set when Gmail was reachable but refused the save on the close path.
         var rejection: Error?
         if !isOffline {
@@ -777,7 +851,8 @@ extension MailStore {
                     from: accountId, fromEmail: fromEmail, to: to, cc: cc, bcc: bcc,
                     subject: subject, body: body, replyTo: message, forward: forward,
                     attachments: attachments, replacing: draft, silent: silent,
-                    syncAfter: syncAfter) else { return .failed }
+                    syncAfter: syncAfter,
+                    composingRequestId: composingRequestId) else { return .failed }
                 if let local { deleteLocalDraft(local, silent: true) }
                 isOffline = false
                 return .uploaded(saved)
@@ -1028,8 +1103,13 @@ extension MailStore {
     /// Local row is removed first so Discard cannot leave a stuck card when
     /// `drafts.list` has no match (orphaned local, already-trashed DRAFT, race
     /// after replace). Remote delete is best-effort after that.
-    func deleteUnderlyingDraft(_ draftMessage: Message, silent: Bool = false) async {
-        removeLocalDraftMessage(draftMessage, refreshList: !silent)
+    /// `removeLocal: false` when the caller already dropped the row (the
+    /// autosave swap); only the remote delete runs then.
+    func deleteUnderlyingDraft(_ draftMessage: Message, silent: Bool = false,
+                               removeLocal: Bool = true) async {
+        if removeLocal {
+            removeLocalDraftMessage(draftMessage, refreshList: !silent)
+        }
 
         guard !demoMode else {
             if !silent { showNotice("Draft deleted") }

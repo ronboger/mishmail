@@ -526,7 +526,8 @@ struct ComposeView: View {
                                                attachments: atts, replacing: old,
                                                local: localDraft,
                                                silent: silent,
-                                               syncAfter: syncAfter)
+                                               syncAfter: syncAfter,
+                                               composingRequestId: request.id)
         switch outcome {
         case .keptLocally(let row):
             if ComposeFinish.dropsLateDraftSave(finish) {

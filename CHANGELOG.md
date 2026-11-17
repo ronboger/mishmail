@@ -4,6 +4,15 @@ All notable changes to MishMail are documented here. Format loosely follows
 [Keep a Changelog](https://keepachangelog.com/); the project is pre-1.0, so
 minor versions may still change behavior.
 
+## [Unreleased]
+
+- **A draft no longer disappears from Drafts while you write it.** Each
+  autosave removed the old draft from the local mailbox and wrote nothing new
+  until compose closed. A new-message draft vanished from the Drafts list, and
+  a reply draft's conversation dropped out of Drafts on the next list refresh.
+  Autosave now stores the saved draft from Gmail and drops the old one in one
+  step, so the row and the open conversation stay in place.
+
 ## [0.7.0] - 2026-11-13
 
 - **Compose links now read naturally** — links with display text render as the
