@@ -1088,6 +1088,16 @@ extension MailStore {
             .max(by: { $0.date < $1.date })
             ?? newestDraft(inThread: thread.id)
         guard let draft = candidate else { return }
+        // The draft is already open (its Drafts row now stays put while
+        // compose autosaves). Reopening would remount the editor on an id
+        // the outgoing card is about to replace — two drafts. Show the
+        // open card instead.
+        if ComposingDraftVisibility.reusesOpenCompose(
+            draftId: draft.id, composingDraftIds: composing,
+            hasOpenCompose: composeRequest != nil) {
+            if composeMinimized { composeMode = .expanded }
+            return
+        }
         editDraft(draft)
     }
 

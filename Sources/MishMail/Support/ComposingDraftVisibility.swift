@@ -29,6 +29,14 @@ enum ComposingDraftVisibility {
         return liveDraftIds.contains { !composingDraftIds.contains($0) }
     }
 
+    /// Opening a draft that an open compose already owns shows that card
+    /// instead of mounting a second editor on the same draft chain.
+    static func reusesOpenCompose(draftId: String,
+                                  composingDraftIds: Set<String>,
+                                  hasOpenCompose: Bool) -> Bool {
+        hasOpenCompose && composingDraftIds.contains(draftId)
+    }
+
     /// Autosave that outlives its compose card must not re-claim a dead
     /// requestId (would permanently hide the draft card). Only the active
     /// `composeRequest` may register ownership.

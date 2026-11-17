@@ -88,4 +88,14 @@ final class ComposingDraftVisibilityTests: XCTestCase {
             messageId: draftId, composingDraftIds: claimed),
             "card must return after compose closes even if save finishes late")
     }
+
+    func testReopeningTheOpenDraftReusesTheCard() {
+        XCTAssertTrue(ComposingDraftVisibility.reusesOpenCompose(
+            draftId: "a:d2", composingDraftIds: ["a:d1", "a:d2"], hasOpenCompose: true))
+        XCTAssertFalse(ComposingDraftVisibility.reusesOpenCompose(
+            draftId: "a:d3", composingDraftIds: ["a:d1", "a:d2"], hasOpenCompose: true),
+            "a sibling draft still opens its own editor")
+        XCTAssertFalse(ComposingDraftVisibility.reusesOpenCompose(
+            draftId: "a:d2", composingDraftIds: ["a:d2"], hasOpenCompose: false))
+    }
 }
